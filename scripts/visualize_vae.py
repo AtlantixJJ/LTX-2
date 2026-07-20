@@ -15,26 +15,31 @@ Run:
     python3 scripts/visualize_vae.py
 
 Useful overrides:
-    MAX_ANALYSIS_FRAMES=145 python3 scripts/visualize_vae.py
-    VAE_VIS_SAMPLE_IDS=static_red_bicycle_seed_54321,dolly_blue_ball_seed_12345 python3 scripts/visualize_vae.py
+    python3 scripts/visualize_vae.py --max-analysis-frames 145
+    python3 scripts/visualize_vae.py --sample-ids static_red_bicycle_seed_54321,dolly_blue_ball_seed_12345
 """
 
 from __future__ import annotations
 
+import argparse
 import json
-import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-import decord
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
-from einops import rearrange
-from sklearn.decomposition import PCA
+
+# decord must be imported after torch has touched CUDA, otherwise the two
+# libraries race to initialize the CUDA driver and the process segfaults.
+torch.cuda.init()
+
+import decord  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
+from einops import rearrange  # noqa: E402
+from sklearn.decomposition import PCA  # noqa: E402
 
 
 decord.bridge.set_bridge("torch")
@@ -45,89 +50,137 @@ sys.path.append(str(REPO_ROOT / "packages" / "ltx-core" / "src"))
 sys.path.append(str(REPO_ROOT / "packages" / "ltx-trainer" / "src"))
 
 from ltx_core.model.video_vae.ops import patchify  # noqa: E402
-from ltx_trainer.model_loader import load_video_vae_encoder  # noqa: E402
+from ltx_trainer.model_loader import load_video_vae_decoder, load_video_vae_encoder  # noqa: E402
+from ltx_trainer.video_utils import save_video  # noqa: E402
 
-
-CHECKPOINT_PATH = Path(
-    os.environ.get(
-        "CHECKPOINT_PATH",
-        str(WORKSPACE_ROOT / "checkpoints" / "LTX-2.3" / "ltx-2.3-22b-distilled-1.1.safetensors"),
-    )
-)
-VIDEO_ROOT = Path(
-    os.environ.get("VIDEO_ROOT", str(WORKSPACE_ROOT / "expr" / "video-eval-baseline-v1" / "raw"))
-)
-OUTPUT_DIR = Path(
-    os.environ.get("OUTPUT_DIR", str(REPO_ROOT / "results" / "vae_multivideo_tail_pca"))
-)
 
 DTYPE = torch.bfloat16
-MAX_ANALYSIS_FRAMES = int(os.environ.get("MAX_ANALYSIS_FRAMES", "145"))
-NUM_HEATMAP_COMPONENTS = int(os.environ.get("NUM_HEATMAP_COMPONENTS", "4"))
-NUM_HEATMAP_FRAMES = int(os.environ.get("NUM_HEATMAP_FRAMES", "4"))
+# DNARendering source videos are shot at 2448x2048 (5MP), far larger than the
+# ~256x384 expr/VBench clips this script was tuned for; encoding at native
+# resolution tries to allocate >100GiB for a single conv3d. Downscale the long
+# side to --max-side, rounded to a multiple of 32 for encoder compatibility.
+RESIZE_MULTIPLE = 32
 PCA_RGB_COMPONENTS = 3
 
 # Chosen to cover static, motion, composition, and stress prompts plus low/high
 # interior-rank cases found in the dataset analysis.
 DEFAULT_SAMPLE_IDS = [
-    "static_green_teapot_seed_12345",
-    "static_red_bicycle_seed_54321",
-    "dolly_blue_ball_seed_12345",
-    "composition_books_seed_12345",
-    "cat_behind_box_seed_54321",
+    "264_00001_Camera_5mp_cam025",
 ]
 
-STAGES = [
-    ("enc_b8", "enc_b8 raw"),
+TAIL_STAGES = [
     ("post_pixelnorm", "after PixelNorm"),
     ("conv_out_means", "after conv_out means"),
     ("latent_normalized", "normalized latent"),
 ]
-COMPONENT_HEATMAP_STAGES = {"enc_b8"}
 VARIANCE_CURVE_STAGES = {"post_pixelnorm", "conv_out_means", "latent_normalized"}
 
 
-def select_free_gpu() -> torch.device:
-    if not torch.cuda.is_available():
-        print("No CUDA device available, falling back to CPU.")
-        return torch.device("cpu")
-    try:
-        out = subprocess.check_output(
-            [
-                "nvidia-smi",
-                "--query-gpu=index,memory.used,utilization.gpu",
-                "--format=csv,noheader,nounits",
-            ],
-            text=True,
-        )
-        rows = [tuple(int(x.strip()) for x in line.split(",")) for line in out.strip().splitlines()]
-        idx, mem_used, util = min(rows, key=lambda r: (r[1], r[2]))
-        print(f"Selected GPU {idx} (memory.used={mem_used} MiB, utilization={util}%)")
-        return torch.device(f"cuda:{idx}")
-    except Exception as exc:
-        print(f"GPU auto-selection failed ({exc}); falling back to cuda:0")
-        return torch.device("cuda:0")
+def build_stage_defs(encoder: torch.nn.Module) -> tuple[list[tuple[str, str]], set[str]]:
+    """Enumerate one raw stage per encoder down_block, plus the fixed bottleneck tail."""
+    block_stages = [(f"enc_b{i}", f"enc block {i} raw") for i in range(len(encoder.down_blocks))]
+    component_heatmap_stages = {key for key, _ in block_stages}
+    return block_stages + TAIL_STAGES, component_heatmap_stages
 
 
-def sample_ids() -> list[str]:
-    override = os.environ.get("VAE_VIS_SAMPLE_IDS")
-    if override:
-        return [item.strip() for item in override.split(",") if item.strip()]
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=WORKSPACE_ROOT / "checkpoints" / "LTX-2.3" / "ltx-2.3-22b-distilled-1.1.safetensors",
+        help="VAE checkpoint path.",
+    )
+    parser.add_argument(
+        "--video-root",
+        type=Path,
+        default=WORKSPACE_ROOT / "data" / "DNARendering" / "Videos" / "Part_5" / "0264_01",
+        help="Directory containing <sample_id>.mp4 videos.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=REPO_ROOT / "results" / "human",
+        help="Output directory; wiped and recreated at the start of each run.",
+    )
+    parser.add_argument(
+        "--sample-ids",
+        default=None,
+        help="Comma-separated sample ids (video basenames without .mp4). "
+        f"Defaults to: {','.join(DEFAULT_SAMPLE_IDS)}",
+    )
+    parser.add_argument("--max-analysis-frames", type=int, default=145)
+    parser.add_argument(
+        "--max-side",
+        type=int,
+        default=512,
+        help="Downscale the longer spatial side to this many pixels (rounded to a multiple of 32).",
+    )
+    parser.add_argument(
+        "--crop-aspect-wh",
+        default="1:1.5",
+        help="Center-crop target aspect ratio as width:height, e.g. 1:1.5 for a portrait human capture.",
+    )
+    parser.add_argument("--num-heatmap-components", type=int, default=4)
+    parser.add_argument("--num-heatmap-frames", type=int, default=4)
+    parser.add_argument(
+        "--diff-gain",
+        type=float,
+        default=4.0,
+        help="Multiplier applied to |original - decoded| before clamping to [0, 1] for the diff panel.",
+    )
+    return parser
+
+
+def sample_ids(args: argparse.Namespace) -> list[str]:
+    if args.sample_ids:
+        return [item.strip() for item in args.sample_ids.split(",") if item.strip()]
     return DEFAULT_SAMPLE_IDS
 
 
-def prepare_output_dir() -> None:
-    if OUTPUT_DIR.exists():
-        shutil.rmtree(OUTPUT_DIR)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def prepare_output_dir(output_dir: Path) -> None:
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
 
-def load_video(path: Path, device: torch.device) -> torch.Tensor:
+def center_crop_to_aspect(video: torch.Tensor, aspect_wh: str) -> torch.Tensor:
+    w_ratio, h_ratio = (float(v) for v in aspect_wh.split(":"))
+    target_w_over_h = w_ratio / h_ratio
+    _, _, _, h, w = video.shape
+    if w / h > target_w_over_h:
+        new_h, new_w = h, max(1, round(h * target_w_over_h))
+    else:
+        new_h, new_w = max(1, round(w / target_w_over_h)), w
+    top = (h - new_h) // 2
+    left = (w - new_w) // 2
+    return video[:, :, :, top : top + new_h, left : left + new_w]
+
+
+def resize_video(video: torch.Tensor, max_side: int) -> torch.Tensor:
+    _, _, _, h, w = video.shape
+    scale = min(1.0, max_side / max(h, w))
+    new_h = max(RESIZE_MULTIPLE, round(h * scale / RESIZE_MULTIPLE) * RESIZE_MULTIPLE)
+    new_w = max(RESIZE_MULTIPLE, round(w * scale / RESIZE_MULTIPLE) * RESIZE_MULTIPLE)
+    if new_h == h and new_w == w:
+        return video
+    frames = rearrange(video, "b c f h w -> (b f) c h w").float()
+    frames = F.interpolate(frames, size=(new_h, new_w), mode="bilinear", align_corners=False)
+    return rearrange(frames.to(video.dtype), "(b f) c h w -> b c f h w", b=video.shape[0])
+
+
+def video_fps(path: Path) -> float:
+    return float(decord.VideoReader(str(path)).get_avg_fps())
+
+
+def load_video(path: Path, device: torch.device, args: argparse.Namespace) -> torch.Tensor:
     vr = decord.VideoReader(str(path))
-    count = min(len(vr), MAX_ANALYSIS_FRAMES)
+    count = min(len(vr), args.max_analysis_frames)
     frames = vr.get_batch(range(count))
     video = frames.permute(3, 0, 1, 2).unsqueeze(0).to(DTYPE).to(device)
     video = (video / 127.5) - 1.0
+    video = center_crop_to_aspect(video, args.crop_aspect_wh)
+    video = resize_video(video, args.max_side)
     valid_f = ((video.shape[2] - 1) // 8) * 8 + 1
     return video[:, :, :valid_f]
 
@@ -209,8 +262,8 @@ def frame_indices(num_frames: int, count: int) -> list[int]:
     return sorted(set(np.linspace(0, num_frames - 1, min(count, num_frames)).astype(int).tolist()))
 
 
-def plot_rgb_frames(rgb: np.ndarray, title: str, save_path: Path) -> None:
-    indices = frame_indices(rgb.shape[0], NUM_HEATMAP_FRAMES)
+def plot_rgb_frames(rgb: np.ndarray, title: str, save_path: Path, num_heatmap_frames: int) -> None:
+    indices = frame_indices(rgb.shape[0], num_heatmap_frames)
     fig, axes = plt.subplots(1, len(indices), figsize=(3.2 * len(indices), 3.0), squeeze=False)
     for col, idx in enumerate(indices):
         ax = axes[0, col]
@@ -223,9 +276,11 @@ def plot_rgb_frames(rgb: np.ndarray, title: str, save_path: Path) -> None:
     plt.close()
 
 
-def plot_component_heatmaps(comps: np.ndarray, title: str, save_path: Path) -> None:
-    ncomp = min(NUM_HEATMAP_COMPONENTS, comps.shape[-1])
-    indices = frame_indices(comps.shape[0], NUM_HEATMAP_FRAMES)
+def plot_component_heatmaps(
+    comps: np.ndarray, title: str, save_path: Path, num_heatmap_components: int, num_heatmap_frames: int
+) -> None:
+    ncomp = min(num_heatmap_components, comps.shape[-1])
+    indices = frame_indices(comps.shape[0], num_heatmap_frames)
     fig, axes = plt.subplots(ncomp, len(indices), figsize=(3.2 * len(indices), 2.8 * ncomp), squeeze=False)
     for row in range(ncomp):
         for col, idx in enumerate(indices):
@@ -258,16 +313,16 @@ def plot_variance_curve(rank: dict[str, Any], title: str, save_path: Path) -> No
     plt.close()
 
 
-def plot_overview(records: list[dict[str, Any]], save_path: Path) -> None:
+def plot_overview(records: list[dict[str, Any]], stages: list[tuple[str, str]], save_path: Path) -> None:
     fig, axes = plt.subplots(
         len(records),
-        len(STAGES),
-        figsize=(3.4 * len(STAGES), 2.4 * len(records)),
+        len(stages),
+        figsize=(3.4 * len(stages), 2.4 * len(records)),
         squeeze=False,
     )
     for row, record in enumerate(records):
         sample_id = record["sample_id"]
-        for col, (stage_key, stage_label) in enumerate(STAGES):
+        for col, (stage_key, stage_label) in enumerate(stages):
             stage = record["stages"][stage_key]
             rgb = stage["rgb"]
             frame = rgb.shape[0] // 2
@@ -289,40 +344,77 @@ def plot_overview(records: list[dict[str, Any]], save_path: Path) -> None:
 
 
 @torch.no_grad()
-def encode_tail_stages(encoder: torch.nn.Module, video_path: Path, device: torch.device) -> dict[str, torch.Tensor]:
-    video = load_video(video_path, device)
+def encode_tail_stages(encoder: torch.nn.Module, video: torch.Tensor) -> dict[str, torch.Tensor]:
     x = encoder.conv_in(patchify(video, patch_size_hw=4, patch_size_t=1))
-    del video
+    stages: dict[str, torch.Tensor] = {}
     for index, block in enumerate(encoder.down_blocks):
         x = block(x)
-        if index == 8:
-            b8 = x
+        stages[f"enc_b{index}"] = x.detach()
 
-    post_pixelnorm = encoder.conv_norm_out(b8)
+    post_pixelnorm = encoder.conv_norm_out(x)
     conv_out_means = encoder.conv_out(encoder.conv_act(post_pixelnorm))[:, : encoder.latent_channels]
     latent = encoder.per_channel_statistics.normalize(conv_out_means)
-    return {
-        "enc_b8": b8.detach(),
-        "post_pixelnorm": post_pixelnorm.detach(),
-        "conv_out_means": conv_out_means.detach(),
-        "latent_normalized": latent.detach(),
-    }
+    stages["post_pixelnorm"] = post_pixelnorm.detach()
+    stages["conv_out_means"] = conv_out_means.detach()
+    stages["latent_normalized"] = latent.detach()
+    return stages
 
 
-def visualize_stage(sample_dir: Path, sample_id: str, stage_key: str, stage_label: str, feature: torch.Tensor) -> dict[str, Any]:
-    n_pca = NUM_HEATMAP_COMPONENTS if stage_key in COMPONENT_HEATMAP_STAGES else PCA_RGB_COMPONENTS
+@torch.no_grad()
+def decode_latent_to_video(decoder: torch.nn.Module, latent: torch.Tensor) -> torch.Tensor:
+    """Decode a normalized latent back to pixel space as [F, C, H, W] in [0, 1]."""
+    video = decoder(latent)  # [1, C, F, H, W], approximately in [-1, 1]
+    video = rearrange(video, "1 c f h w -> f c h w")
+    return ((video + 1) / 2).clamp(0, 1).float()
+
+
+def prepare_pixel_video(video: torch.Tensor) -> torch.Tensor:
+    """Convert the encoder-input video ([1, C, F, H, W] in [-1, 1]) to [F, C, H, W] in [0, 1]."""
+    video = rearrange(video, "1 c f h w -> f c h w")
+    return ((video + 1) / 2).clamp(0, 1).float()
+
+
+def save_comparison_video(
+    original: torch.Tensor, decoded: torch.Tensor, save_path: Path, fps: float, diff_gain: float
+) -> None:
+    """Save a side-by-side [original (resized) | decoded | |diff|*gain] comparison video."""
+    num_frames = min(original.shape[0], decoded.shape[0])
+    original = original[:num_frames]
+    decoded = decoded[:num_frames]
+    diff = ((original - decoded).abs() * diff_gain).clamp(0, 1)
+    combined = torch.cat([original, decoded, diff], dim=-1)  # panels side by side along width
+    save_video(combined, save_path, fps=fps, video_format="FCHW")
+
+
+def visualize_stage(
+    sample_dir: Path,
+    sample_id: str,
+    stage_key: str,
+    stage_label: str,
+    feature: torch.Tensor,
+    args: argparse.Namespace,
+    component_heatmap_stages: set[str],
+) -> dict[str, Any]:
+    n_pca = args.num_heatmap_components if stage_key in component_heatmap_stages else PCA_RGB_COMPONENTS
     x, comps = pca_projection(feature, n_pca)
     rgb = rgb_from_components(comps)
     rank = exact_rank_metrics(x)
     stats = channel_stats(x)
 
     prefix = sample_dir / f"{sample_id}_{stage_key}"
-    plot_rgb_frames(rgb, f"{sample_id}: {stage_label} top-3 PCA RGB", prefix.with_name(prefix.name + "_rgb_frames.png"))
-    if stage_key in COMPONENT_HEATMAP_STAGES:
+    plot_rgb_frames(
+        rgb,
+        f"{sample_id}: {stage_label} top-3 PCA RGB",
+        prefix.with_name(prefix.name + "_rgb_frames.png"),
+        args.num_heatmap_frames,
+    )
+    if stage_key in component_heatmap_stages:
         plot_component_heatmaps(
             comps,
             f"{sample_id}: {stage_label} PCA component heatmaps",
             prefix.with_name(prefix.name + "_component_heatmaps.png"),
+            args.num_heatmap_components,
+            args.num_heatmap_frames,
         )
     if stage_key in VARIANCE_CURVE_STAGES:
         plot_variance_curve(
@@ -340,34 +432,38 @@ def visualize_stage(sample_dir: Path, sample_id: str, stage_key: str, stage_labe
 
 
 def main() -> int:
-    prepare_output_dir()
-    device = select_free_gpu()
-    selected = sample_ids()
+    args = build_arg_parser().parse_args()
+    prepare_output_dir(args.output_dir)
+    device = torch.device("cuda")
+    selected = sample_ids(args)
 
-    print(f"Checkpoint: {CHECKPOINT_PATH}")
-    print(f"Video root: {VIDEO_ROOT}")
-    print(f"Output dir: {OUTPUT_DIR}")
+    print(f"Checkpoint: {args.checkpoint}")
+    print(f"Video root: {args.video_root}")
+    print(f"Output dir: {args.output_dir}")
     print(f"Videos: {', '.join(selected)}")
 
-    encoder = load_video_vae_encoder(str(CHECKPOINT_PATH), device=device, dtype=DTYPE)
+    encoder = load_video_vae_encoder(str(args.checkpoint), device=device, dtype=DTYPE)
+    decoder = load_video_vae_decoder(str(args.checkpoint), device=device, dtype=DTYPE)
+    stages_def, component_heatmap_stages = build_stage_defs(encoder)
     overview_records: list[dict[str, Any]] = []
     summary: dict[str, Any] = {
-        "checkpoint": str(CHECKPOINT_PATH),
-        "video_root": str(VIDEO_ROOT),
-        "max_analysis_frames": MAX_ANALYSIS_FRAMES,
+        "checkpoint": str(args.checkpoint),
+        "video_root": str(args.video_root),
+        "max_analysis_frames": args.max_analysis_frames,
         "sample_ids": selected,
         "records": [],
     }
 
     for sample_id in selected:
-        video_path = VIDEO_ROOT / f"{sample_id}.mp4"
+        video_path = args.video_root / f"{sample_id}.mp4"
         if not video_path.exists():
             raise FileNotFoundError(video_path)
 
         print(f"Visualizing {sample_id}")
-        sample_dir = OUTPUT_DIR / sample_id
+        sample_dir = args.output_dir / sample_id
         sample_dir.mkdir(parents=True, exist_ok=True)
-        stages = encode_tail_stages(encoder, video_path, device)
+        video = load_video(video_path, device, args)
+        stages = encode_tail_stages(encoder, video)
 
         overview_stage_records: dict[str, Any] = {}
         sample_summary: dict[str, Any] = {
@@ -375,8 +471,10 @@ def main() -> int:
             "video_path": str(video_path),
             "stages": {},
         }
-        for stage_key, stage_label in STAGES:
-            stage_record = visualize_stage(sample_dir, sample_id, stage_key, stage_label, stages[stage_key])
+        for stage_key, stage_label in stages_def:
+            stage_record = visualize_stage(
+                sample_dir, sample_id, stage_key, stage_label, stages[stage_key], args, component_heatmap_stages
+            )
             overview_stage_records[stage_key] = {
                 "rgb": stage_record.pop("rgb"),
                 "rank": stage_record["rank"],
@@ -391,17 +489,24 @@ def main() -> int:
                 f"active={stage_record['channels']['active_channel_fraction_1e-2xmax']:.3f}"
             )
 
+        decoded = decode_latent_to_video(decoder, stages["latent_normalized"])
+        original = prepare_pixel_video(video)
+        comparison_path = sample_dir / f"{sample_id}_comparison.mp4"
+        save_comparison_video(original, decoded, comparison_path, video_fps(video_path), args.diff_gain)
+        print(f"  saved comparison video (original | decoded | diff) to {comparison_path}")
+
         overview_records.append({"sample_id": sample_id, "stages": overview_stage_records})
         summary["records"].append(sample_summary)
         (sample_dir / f"{sample_id}_summary.json").write_text(json.dumps(sample_summary, indent=2) + "\n")
 
+        del video, decoded, original, stages
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
-    plot_overview(overview_records, OUTPUT_DIR / "tail_pca_overview.png")
-    (OUTPUT_DIR / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    print(f"Saved overview to {OUTPUT_DIR / 'tail_pca_overview.png'}")
-    print(f"Saved summary to {OUTPUT_DIR / 'summary.json'}")
+    plot_overview(overview_records, stages_def, args.output_dir / "tail_pca_overview.png")
+    (args.output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    print(f"Saved overview to {args.output_dir / 'tail_pca_overview.png'}")
+    print(f"Saved summary to {args.output_dir / 'summary.json'}")
     return 0
 
 
