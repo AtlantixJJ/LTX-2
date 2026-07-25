@@ -281,7 +281,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--max-side",
         type=int,
         default=512,
-        help="Downscale the longer spatial side to this many pixels (rounded to a multiple of 32).",
+        help="Downscale the longer spatial side to this many pixels (rounded to a multiple of 32). "
+        "Pass -1 to keep the raw resolution (still rounded to a multiple of 32); combine with --tiled "
+        "for large sources to avoid OOM.",
     )
     parser.add_argument(
         "--crop-aspect-wh",
@@ -352,8 +354,10 @@ def center_crop_to_aspect(video: torch.Tensor, aspect_wh: str | None) -> torch.T
 
 
 def resize_video(video: torch.Tensor, max_side: int) -> torch.Tensor:
+    """max_side <= 0 keeps the raw resolution (still rounded to a multiple of 32, which the
+    encoder requires)."""
     _, _, _, h, w = video.shape
-    scale = min(1.0, max_side / max(h, w))
+    scale = 1.0 if max_side <= 0 else min(1.0, max_side / max(h, w))
     new_h = max(RESIZE_MULTIPLE, round(h * scale / RESIZE_MULTIPLE) * RESIZE_MULTIPLE)
     new_w = max(RESIZE_MULTIPLE, round(w * scale / RESIZE_MULTIPLE) * RESIZE_MULTIPLE)
     if new_h == h and new_w == w:
@@ -432,11 +436,21 @@ def channel_stats(x: np.ndarray) -> dict[str, Any]:
     }
 
 
+# scipy's LAPACK-backed exact SVD (sklearn's svd_solver="full") indexes the matrix with a 32-bit
+# int internally and raises past this many elements; randomized SVD has no such limit and is the
+# solver sklearn's own "auto" heuristic would pick for matrices this large anyway.
+_PCA_FULL_SOLVER_MAX_ELEMENTS = 2**31 - 1
+
+
 def pca_projection(feature: torch.Tensor, n_components: int) -> tuple[np.ndarray, np.ndarray]:
     b, _, f, h, w = feature.shape
     x = rows_from_feature(feature)
     n = min(n_components, x.shape[0], x.shape[1])
-    projected = PCA(n_components=n, svd_solver="full").fit_transform(x)
+    if x.shape[0] * x.shape[1] <= _PCA_FULL_SOLVER_MAX_ELEMENTS:
+        pca = PCA(n_components=n, svd_solver="full")
+    else:
+        pca = PCA(n_components=n, svd_solver="randomized", random_state=0)
+    projected = pca.fit_transform(x)
     comps = rearrange(projected, "(b f h w) c -> b f h w c", b=b, f=f, h=h, w=w)[0]
     return x, comps
 
@@ -539,9 +553,14 @@ def encode_tail_stages_tiled(
     VideoEncoder.tiled_encode uses, runs each tile through conv_in + every down_block (capturing
     every stage's tile output along the way), and blends tiles back together per stage using the
     matching scale mapping + trapezoidal/rectangular masks -- exactly mirroring how tiled_encode
-    stitches the final latent, just applied at every intermediate resolution too."""
+    stitches the final latent, just applied at every intermediate resolution too. Unlike the real
+    tiled_encode (which only ever keeps the final latent), this keeps one stitched buffer per stage
+    -- e.g. enc_b0 is barely downsampled -- alive simultaneously for the whole tile loop, so at raw
+    (untiled-resolution) input sizes those buffers are accumulated on CPU instead of GPU to avoid OOM;
+    only each tile's own (small) forward pass runs on GPU."""
     device = next(encoder.parameters()).device
     dtype = next(encoder.parameters()).dtype
+    accum_device = torch.device("cpu")
     _, _, frames, height, width = video.shape
 
     intervals = video_axis_intervals(video.shape, tiling_config)
@@ -554,6 +573,10 @@ def encode_tail_stages_tiled(
     weight_buffers: dict[str, torch.Tensor] = {}
 
     def accumulate(stage_key: str, tensor: torch.Tensor, tile_idx: int) -> None:
+        # latent_normalized is tiny (it's the real VAE latent) and downstream decode calls assume
+        # it's already on the model's device (VideoDecoder.forward only casts dtype, not device) --
+        # only the much larger, visualization-only intermediate stages need CPU accumulation.
+        buf_device = device if stage_key == "latent_normalized" else accum_device
         if stage_key not in stage_buffers:
             spatial_scale, temporal_scale = scale_by_stage[stage_key]
             full_shape = (
@@ -563,11 +586,11 @@ def encode_tail_stages_tiled(
                 height // spatial_scale,
                 width // spatial_scale,
             )
-            stage_buffers[stage_key] = torch.zeros(full_shape, device=device, dtype=dtype)
-            weight_buffers[stage_key] = torch.zeros(full_shape, device=device, dtype=dtype)
+            stage_buffers[stage_key] = torch.zeros(full_shape, device=buf_device, dtype=dtype)
+            weight_buffers[stage_key] = torch.zeros(full_shape, device=buf_device, dtype=dtype)
         tile = tiles_by_stage[stage_key][tile_idx]
-        mask = tile.blend_mask.to(device=device, dtype=dtype)
-        stage_buffers[stage_key][tile.out_coords] += tensor.detach() * mask
+        mask = tile.blend_mask.to(device=buf_device, dtype=dtype)
+        stage_buffers[stage_key][tile.out_coords] += tensor.detach().to(buf_device) * mask
         weight_buffers[stage_key][tile.out_coords] += mask
 
     for tile_idx, in_coords in enumerate(in_coords_list):
@@ -637,9 +660,13 @@ def decode_tail_stages_tiled(
     decoder.tiled_decode effectively uses (see latent_axis_intervals), runs each tile through the full
     decoder (capturing every stage's tile output via decode_tail_stages), and blends tiles back together
     per stage using decoder_tiles_at_scale's matching scale mapping + blend masks -- mirroring
-    encode_tail_stages_tiled but with the multiply-based (upsampling) mapping the decoder needs."""
+    encode_tail_stages_tiled but with the multiply-based (upsampling) mapping the decoder needs.
+    Like encode_tail_stages_tiled, the per-stage stitched buffers are accumulated on CPU (not GPU)
+    since dec_b7/dec_b8/tail are near full pixel resolution and, unlike the real tiled_decode, we
+    keep every stage's full buffer alive for the whole tile loop rather than discarding intermediates."""
     device = next(decoder.parameters()).device
     dtype = next(decoder.parameters()).dtype
+    accum_device = torch.device("cpu")
     _, _, frames, height, width = latent.shape
     scales = decoder.video_downscale_factors
 
@@ -667,11 +694,11 @@ def decode_tail_stages_tiled(
                 height * spatial_mult,
                 width * spatial_mult,
             )
-            stage_buffers[stage_key] = torch.zeros(full_shape, device=device, dtype=dtype)
-            weight_buffers[stage_key] = torch.zeros(full_shape, device=device, dtype=dtype)
+            stage_buffers[stage_key] = torch.zeros(full_shape, device=accum_device, dtype=dtype)
+            weight_buffers[stage_key] = torch.zeros(full_shape, device=accum_device, dtype=dtype)
         tile = tiles_by_stage[stage_key][tile_idx]
-        mask = tile.blend_mask.to(device=device, dtype=dtype)
-        stage_buffers[stage_key][tile.out_coords] += tensor.detach() * mask
+        mask = tile.blend_mask.to(device=accum_device, dtype=dtype)
+        stage_buffers[stage_key][tile.out_coords] += tensor.detach().to(accum_device) * mask
         weight_buffers[stage_key][tile.out_coords] += mask
 
     for tile_idx, in_coords in enumerate(in_coords_list):
@@ -866,6 +893,10 @@ def main() -> int:
             decoder_stages, raw_decoded = decode_tail_stages(decoder, stages["latent_normalized"])
             decoded = postprocess_decoded_video(raw_decoded)
             del raw_decoded
+        # At raw (untiled-resolution) input sizes, original/decoded/diff held at once as fp32 on GPU
+        # can exceed VRAM (e.g. ~8.7GB each at native 5MP/145 frames); comparison-video assembly and
+        # PSNR are cheap enough to do on CPU, so move off GPU as soon as decoding is done.
+        decoded = decoded.cpu()
         for stage_key, _stage_label in decoder_stages_def:
             stage_record = visualize_stage(sample_dir, sample_id, stage_key, decoder_stages[stage_key], args)
             decoder_overview_stage_records[stage_key] = {
@@ -883,7 +914,7 @@ def main() -> int:
             )
         del decoder_stages
 
-        original = prepare_pixel_video(video)
+        original = prepare_pixel_video(video).cpu()
         comparison_path = sample_dir / f"{sample_id}_comparison.mp4"
         save_comparison_video(original, decoded, comparison_path, video_fps(video_path), args.diff_gain)
         psnr = compute_psnr(original, decoded)
