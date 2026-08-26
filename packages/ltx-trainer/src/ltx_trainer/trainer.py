@@ -13,10 +13,11 @@ import torch
 import wandb
 import yaml
 from accelerate import Accelerator, DistributedType
-from accelerate.utils import DistributedDataParallelKwargs, gather_object, set_seed
+from accelerate.utils import DistributedDataParallelKwargs, set_seed
 from peft import LoraConfig, get_peft_model, get_peft_model_state_dict, set_peft_model_state_dict
 from peft.tuners.tuners_utils import BaseTunerLayer
 from peft.utils import ModulesToSaveWrapper
+from peft.utils.other import fsdp_auto_wrap_policy
 from pydantic import BaseModel
 from safetensors.torch import load_file, save_file
 from torch import Tensor
@@ -73,6 +74,105 @@ StepCallback = Callable[[int, int, list[Path]], None]  # (step, total, list[samp
 MEMORY_CHECK_INTERVAL = 200
 
 
+class _StepProfiler:
+    """Small opt-in CUDA profiler for diagnosing distributed training stalls.
+
+    ``torch.profiler`` is unnecessarily intrusive for the normal training path and
+    produces very large traces for this model.  This records just the timings that
+    decide whether a full-resolution FSDP step is compute or collective bound.
+    """
+
+    def __init__(self, transformer: torch.nn.Module) -> None:
+        self._enabled_steps = int(os.environ.get("LTX_PROFILE_TRAIN_STEPS", "0"))
+        self._active = False
+        self._in_forward = False
+        self._events: dict[str, tuple[torch.cuda.Event, torch.cuda.Event]] = {}
+        self._block_events: list[tuple[int, torch.cuda.Event, torch.cuda.Event]] = []
+        self._handles: list[Any] = []
+        if self._enabled_steps <= 0 or not torch.cuda.is_available():
+            return
+
+        model = transformer.get_base_model() if hasattr(transformer, "get_base_model") else transformer
+        blocks = getattr(model, "transformer_blocks", None)
+        if blocks is None:
+            blocks = next(
+                (
+                    module.transformer_blocks
+                    for module in model.modules()
+                    if hasattr(module, "transformer_blocks")
+                ),
+                None,
+            )
+        if blocks is None:
+            logger.warning("Step profiler requested, but transformer blocks were not found")
+            self._enabled_steps = 0
+            return
+
+        for index, block in enumerate(blocks):
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            self._block_events.append((index, start, end))
+            self._handles.append(
+                block.register_forward_pre_hook(lambda *_args, event=start: self._record_block_start(event))
+            )
+            self._handles.append(
+                block.register_forward_hook(
+                    lambda _module, _inputs, _output, event=end: self._record_block_end(event)
+                )
+            )
+        logger.info("Step profiler enabled for the first %d optimizer steps", self._enabled_steps)
+
+    def start_step(self, step: int) -> bool:
+        self._active = step <= self._enabled_steps
+        self._in_forward = False
+        self._events = {}
+        if not self._active and self._handles:
+            # Forward hooks on FSDP-wrapped, checkpointed blocks alter the
+            # autograd graph even when they are no-ops. Remove them before the
+            # first unprofiled step so diagnostics cannot affect training.
+            for handle in self._handles:
+                handle.remove()
+            self._handles.clear()
+        return self._active
+
+    def _record_block_start(self, event: torch.cuda.Event) -> None:
+        if self._in_forward:
+            event.record()
+
+    def _record_block_end(self, event: torch.cuda.Event) -> None:
+        if self._in_forward:
+            event.record()
+
+    def begin_forward(self) -> None:
+        if self._active:
+            self._in_forward = True
+
+    def end_forward(self) -> None:
+        self._in_forward = False
+
+    def mark_start(self, name: str) -> None:
+        if self._active:
+            self._events[name] = (torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True))
+            self._events[name][0].record()
+
+    def mark_end(self, name: str) -> None:
+        if self._active:
+            self._events[name][1].record()
+
+    def log(self, step: int) -> None:
+        if not self._active:
+            return
+        torch.cuda.synchronize()
+        phases = ", ".join(
+            f"{name}={start.elapsed_time(end):.0f}ms" for name, (start, end) in self._events.items()
+        )
+        blocks = sorted(
+            ((start.elapsed_time(end), index) for index, start, end in self._block_events), reverse=True
+        )[:8]
+        slow_blocks = ", ".join(f"block{index}={elapsed:.0f}ms" for elapsed, index in blocks)
+        logger.info("FSDP step profile %d: %s; slowest forward blocks: %s", step, phases, slow_blocks)
+
+
 class TrainingStats(BaseModel):
     """Statistics collected during training"""
 
@@ -122,7 +222,10 @@ class LtxvTrainer:
         self._collect_trainable_params()
         self._loaded_checkpoint_path: Path | None = None
         self._load_checkpoint()
+        if self._is_fsdp2:
+            self._init_optimizer(prepare_with_accelerator=False)
         self._prepare_models_for_training()
+        self._step_profiler = _StepProfiler(self._transformer)
         self._dataset = None
         self._global_step = -1
         self._checkpoint_paths: list[Path] = []
@@ -156,7 +259,8 @@ class LtxvTrainer:
         set_seed(cfg.seed)
         logger.debug(f"Process {self._accelerator.process_index} using seed: {cfg.seed}")
 
-        self._init_optimizer()
+        if not self._is_fsdp2:
+            self._init_optimizer()
 
         if training_state is not None and not self._restore_training_state(training_state):
             initial_step = 0
@@ -228,8 +332,18 @@ class LtxvTrainer:
                     if is_optimization_step:
                         self._global_step += 1
 
+                    is_profiled_step = is_optimization_step and self._step_profiler.start_step(self._global_step)
+                    if is_profiled_step:
+                        self._step_profiler.mark_start("forward")
+                        self._step_profiler.begin_forward()
                     output = self._training_step(batch)
+                    if is_profiled_step:
+                        self._step_profiler.end_forward()
+                        self._step_profiler.mark_end("forward")
+                        self._step_profiler.mark_start("backward")
                     self._accelerator.backward(output.loss.mean())
+                    if is_profiled_step:
+                        self._step_profiler.mark_end("backward")
 
                     if self._accelerator.sync_gradients and cfg.optimization.max_grad_norm > 0:
                         self._accelerator.clip_grad_norm_(
@@ -237,8 +351,13 @@ class LtxvTrainer:
                             cfg.optimization.max_grad_norm,
                         )
 
+                    if is_profiled_step:
+                        self._step_profiler.mark_start("optimizer")
                     self._optimizer.step()
                     self._optimizer.zero_grad()
+                    if is_profiled_step:
+                        self._step_profiler.mark_end("optimizer")
+                        self._step_profiler.log(self._global_step)
 
                     if self._lr_scheduler is not None:
                         self._lr_scheduler.step()
@@ -370,11 +489,11 @@ class LtxvTrainer:
         if "video_prompt_embeds" in conditions:
             # New format: separate video/audio features from precompute()
             video_features = conditions["video_prompt_embeds"]
-            audio_features = conditions.get("audio_prompt_embeds")
+            audio_features = None if self._is_video_only_training else conditions.get("audio_prompt_embeds")
         else:
             # Legacy format: single prompt_embeds tensor — duplicate for both modalities
             video_features = conditions["prompt_embeds"]
-            audio_features = conditions["prompt_embeds"]
+            audio_features = None if self._is_video_only_training else conditions["prompt_embeds"]
 
         mask = conditions["prompt_attention_mask"]
         additive_mask = convert_to_additive_mask(mask, video_features.dtype)
@@ -409,12 +528,19 @@ class LtxvTrainer:
 
     def _load_models(self) -> None:
         """Load the transformer and embeddings processor for training."""
+        strategy_config = self._config.training_strategy
+        self._is_video_only_training = (
+            getattr(strategy_config, "video", None) is not None and getattr(strategy_config, "audio", None) is None
+        )
         logger.debug("Loading transformer...")
         self._transformer = load_transformer(
             checkpoint_path=self._config.model.model_path,
             device="cpu",
             dtype=torch.bfloat16,
+            video_only=self._is_video_only_training,
         )
+        if self._is_video_only_training:
+            logger.info("Video-only training: omitting the unused audio transformer branch")
 
         # DDP-safe: LOCAL_RANK is set by accelerate before trainer init. Loading on bare
         # "cuda" would resolve to cuda:0 on every rank and crash with a device mismatch.
@@ -432,6 +558,11 @@ class LtxvTrainer:
             dtype=torch.bfloat16,
         )
         self._embeddings_processor.feature_extractor = None
+        if self._is_video_only_training:
+            # FlexibleStrategy does not construct an audio modality when its
+            # configuration has no `audio` section, so this frozen connector
+            # would otherwise occupy 0.72 GiB on every rank without use.
+            self._embeddings_processor.audio_connector = None
 
         transformer_dtype = torch.bfloat16 if self._config.model.training_mode == "lora" else torch.float32
         self._transformer = self._transformer.to(dtype=transformer_dtype)
@@ -444,6 +575,7 @@ class LtxvTrainer:
             self._transformer = quantize_model(
                 self._transformer,
                 precision=self._config.acceleration.quantization,
+                device=init_device,
             )
 
         self._transformer.requires_grad_(False)
@@ -619,13 +751,14 @@ class LtxvTrainer:
     def _prepare_models_for_training(self) -> None:
         """Prepare models for training with Accelerate."""
 
-        # For FSDP + LoRA: Cast entire model to FP32.
-        # FSDP requires uniform dtype across all parameters in wrapped modules.
-        # In LoRA mode, PEFT creates LoRA params in FP32 while base model is BF16.
-        # We cast the base model to FP32 to match the LoRA params.
+        # FSDP requires every individual flat parameter to have one dtype. PEFT
+        # creates trainable LoRA weights in FP32 while the frozen checkpoint is
+        # BF16. Its FSDP policy wraps those trainable leaf modules separately
+        # from the transformer blocks, preserving both dtypes without a costly
+        # full-model FP32 copy on host RAM before FSDP shards the model.
         if self._accelerator.distributed_type == DistributedType.FSDP and self._config.model.training_mode == "lora":
-            logger.debug("FSDP: casting transformer to FP32 for uniform dtype")
-            self._transformer = self._transformer.to(dtype=torch.float32)
+            self._accelerator.state.fsdp_plugin.auto_wrap_policy = fsdp_auto_wrap_policy(self._transformer)
+            logger.info("FSDP LoRA: keeping frozen base weights in BF16 and trainable adapters in FP32")
 
         # Enable gradient checkpointing if requested
         # For PeftModel, we need to access the underlying base model
@@ -635,8 +768,18 @@ class LtxvTrainer:
 
         transformer.set_gradient_checkpointing(self._config.optimization.enable_gradient_checkpointing)
 
-        # noinspection PyTypeChecker
-        self._transformer = self._accelerator.prepare(self._transformer)
+        if self._is_fsdp2:
+            prepared = (
+                self._accelerator.prepare(self._transformer, self._optimizer, self._lr_scheduler)
+                if self._lr_scheduler is not None
+                else self._accelerator.prepare(self._transformer, self._optimizer)
+            )
+            self._transformer, self._optimizer, *prepared_scheduler = prepared
+            if prepared_scheduler:
+                self._lr_scheduler = prepared_scheduler[0]
+        else:
+            # noinspection PyTypeChecker
+            self._transformer = self._accelerator.prepare(self._transformer)
 
         # Log GPU memory usage after model preparation
         vram_usage_gb = torch.cuda.memory_allocated() / 1024**3
@@ -701,7 +844,14 @@ class LtxvTrainer:
             if isinstance(module, (BaseTunerLayer, ModulesToSaveWrapper)):
                 module.reset_lora_parameters(adapter_name="default", init_lora_weights=True)
 
-    def _init_optimizer(self) -> None:
+    @property
+    def _is_fsdp2(self) -> bool:
+        return (
+            self._accelerator.distributed_type == DistributedType.FSDP
+            and self._accelerator.state.fsdp_plugin.fsdp_version == 2
+        )
+
+    def _init_optimizer(self, prepare_with_accelerator: bool = True) -> None:
         """Initialize the optimizer and learning rate scheduler."""
         opt_cfg = self._config.optimization
 
@@ -718,8 +868,11 @@ class LtxvTrainer:
 
         lr_scheduler = self._create_scheduler(optimizer)
 
-        # noinspection PyTypeChecker
-        self._optimizer, self._lr_scheduler = self._accelerator.prepare(optimizer, lr_scheduler)
+        if prepare_with_accelerator:
+            # noinspection PyTypeChecker
+            self._optimizer, self._lr_scheduler = self._accelerator.prepare(optimizer, lr_scheduler)
+        else:
+            self._optimizer, self._lr_scheduler = optimizer, lr_scheduler
 
     def _create_scheduler(self, optimizer: torch.optim.Optimizer) -> LRScheduler | None:
         """Create learning rate scheduler based on config."""
@@ -891,7 +1044,7 @@ class LtxvTrainer:
 
         # W&B logging is handled by the trainer (after gathering across ranks),
         # so we always pass wandb_run=None to the runner.
-        sampled = self._validation_runner.run(
+        self._validation_runner.run(
             transformer=self._transformer,
             step=self._global_step,
             output_dir=Path(self._config.output_dir),
@@ -901,10 +1054,16 @@ class LtxvTrainer:
             work_items=work_items,
         )
 
-        if world_size > 1:
-            sampled = sorted(gather_object(sampled), key=lambda x: x[0])
-
-        paths = [p for _, p in sampled]
+        # Do not use Accelerate's gather_object here: it serializes Python objects through
+        # CUDA tensors and can attempt an absurd allocation when a rank has just completed
+        # video validation with little VRAM headroom. Validation outputs are written to the
+        # shared output directory, so synchronize first and let rank 0 discover the files.
+        self._accelerator.wait_for_everyone()
+        if self._accelerator.is_main_process:
+            samples_dir = Path(self._config.output_dir) / "samples"
+            paths = sorted(samples_dir.glob(f"step_{self._global_step:06d}_*"))
+        else:
+            paths = []
 
         if (
             self._accelerator.is_main_process

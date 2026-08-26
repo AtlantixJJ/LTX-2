@@ -146,12 +146,15 @@ def load_transformer(
     checkpoint_path: str | Path,
     device: Device = "cpu",
     dtype: torch.dtype = torch.bfloat16,
+    video_only: bool = False,
 ) -> "LTXModel":
     """Load the LTX transformer model.
     Args:
         checkpoint_path: Path to the safetensors checkpoint file
         device: Device to load model on
         dtype: Data type for model weights
+        video_only: Build only the video branch. This is lossless when training
+            a video-only strategy because the audio branch is never executed.
     Returns:
         Loaded LTXModel transformer
     """
@@ -159,11 +162,14 @@ def load_transformer(
     from ltx_core.model.transformer.model_configurator import (
         LTXV_MODEL_COMFY_RENAMING_MAP,
         LTXModelConfigurator,
+        LTXVideoOnlyModelConfigurator,
     )
+
+    model_configurator = LTXVideoOnlyModelConfigurator if video_only else LTXModelConfigurator
 
     return SingleGPUModelBuilder(
         model_path=str(checkpoint_path),
-        model_class_configurator=LTXModelConfigurator,
+        model_class_configurator=model_configurator,
         model_sd_ops=LTXV_MODEL_COMFY_RENAMING_MAP,
     ).build(device=_to_torch_device(device), dtype=dtype)
 
