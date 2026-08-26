@@ -5,6 +5,7 @@ build/
 dist/
 wheels/
 checkpoints/
+models/
 *.egg-info
 *.annotation_maps
 # Virtual environments

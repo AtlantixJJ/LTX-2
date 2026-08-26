@@ -13,6 +13,12 @@ LTX-2 is a DiT-based audio-video foundation model. This repo is a `uv` monorepo 
 
 There is also a top-level `scripts/` directory of standalone analysis/research scripts (e.g. VAE latent visualization). These are not part of any package -- they `sys.path.append` into `packages/*/src` directly rather than importing an installed package, and each is a self-contained probe rather than a shared library.
 
+For a deep technical reference covering the data-flow spine, model class hierarchy, tensor
+shapes, config loading chain, training internals, and a common-pitfalls list mined from
+`assert`/`no_grad`/`detach`/`strict=False` across the whole repo, see
+[docs/ANNOTATION.md](docs/ANNOTATION.md) -- read it before making a non-trivial change instead
+of re-deriving the architecture from source.
+
 ## Setup
 
 `uv sync` (optionally `uv sync --group kernels` for the compiled CUDA kernels) builds the workspace, but on this machine the packages are also editably installed into a pre-existing conda env named **`ltx`** (`ltx-core`, `ltx-pipelines`, `ltx-trainer` all point back into this checkout's `packages/*/src`). **Run all Python in this repo -- pipelines, training, and `scripts/` -- through the `ltx` conda env, not `uv run` or base/system Python**:
@@ -67,6 +73,13 @@ Tests (pytest is a root dev dependency; run from within the package under test, 
 
 ```bash
 cd packages/ltx-trainer && uv run pytest
+```
+
+Training:
+
+```bash
+CUDA_VISIBLE_DEVICES=4,5,6,7 accelerate launch --main_process_port 29503 --config_file LTX-2/packages/ltx-trainer/configs/accelerate/fsdp.yaml LTX-2/packages/ltx-trainer/scripts/train.py expr/i2v-dna-0264-01-20260728-0048/config.yaml
+
 ```
 
 ## Architecture notes
