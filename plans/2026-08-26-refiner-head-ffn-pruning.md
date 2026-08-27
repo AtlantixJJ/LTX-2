@@ -522,12 +522,20 @@ def rel_l2(pred_x0, x0_star, state):            # the T0 metric
   brightness/saturation drift. **This is the gate that matters** — a 1% per-chunk error
   invisible in isolation compounds over a 600-frame rollout, and no single-chunk metric
   catches it.
-- **T3** side-by-side grids on 5 clips.
+- **T3** side-by-side `source | teacher | candidate` review artifacts on 5 clips, in **both**
+  forms: a still frame grid (`t3_grid` → PNG) *and* a frame-aligned horizontally-concatenated
+  **MP4** (`t3_video` → H.264 via `ffmpeg`, `-crf 18`, `yuv420p`). The video is not optional
+  garnish: temporal artifacts are the failure mode this task is most exposed to — flicker,
+  chunk-boundary seams, and the slow brightness/saturation drift T2 scores numerically are all
+  invisible in a still grid. Every stage that decodes pixels for review (teacher validation,
+  T1, T2 rollouts, and every pruned candidate in §7–§9) writes both, plus a `figures/INDEX.md`
+  naming them, following the `scripts/ltx23_diag` figure conventions.
 
 **Gate:** teacher cached; T0/T1/T2 near-zero for the unpruned student against itself; the
 unpruned model's own T2 rollout characterizes the **intrinsic drift floor** (not zero — the
 sliding-window script's carryover design exists because of it); the 2.5 Euler-vs-ancestral
-A/B (§4) is decided and recorded.
+A/B (§4) is decided and recorded; and the T3 pair (grid PNG **and** MP4) is written for the
+teacher-vs-student comparison, so the drift floor is inspectable and not only tabulated.
 
 ---
 
@@ -812,7 +820,7 @@ mask-only export first, then apply reconstruction and fall back to a T0 toleranc
 | T0 latent rel-L2 vs teacher (held-out chunks) | ≤ 2% (soft), hard fail above 5% |
 | T1 PSNR vs teacher decode | ≥ 38 dB |
 | T2 200-chunk AR rollout | PSNR-vs-teacher slope ≈ flat; no monotone brightness/saturation drift beyond the unpruned model's own floor |
-| T3 | no reviewer-visible difference on 5 clips |
+| T3 | no reviewer-visible difference on 5 clips, judged on the **MP4s** (temporal artifacts do not show in the still grid); PNG grid + MP4 both written |
 | Speed | measured ms/step at chunk ∈ {1,2,3}; **≥1.4× at 30% params off** |
 
 **Target: 30% of executed (video-branch) parameters removed**, training-free, with the gates
@@ -869,7 +877,7 @@ scripts/prune/
   chunk_states.py     # AR-geometry calibration states (frozen ctx + 1-3 fresh latent frames) (§6)
   teacher.py          # deep-schedule x0* targets + on-policy/renoised state families (§6)
   losses.py           # masked x0-space loss and rel_l2 (§6)
-  metrics.py          # T0 latent / T1 pixel / T2 AR-rollout / T3 grids (§6)
+  metrics.py          # T0 latent / T1 pixel / T2 AR-rollout / T3 grids + MP4s (§6)
   bench_refiner.py    # Phase 0 latency + FLOP baseline table (§5)
   head_scores.py      # 2d block ablation, 2a contribution norm, 2b Michel + Gauss-Newton (§7)
   ffn_scores.py       # channel scores + per-layer budget allocation (§8)
@@ -878,7 +886,8 @@ scripts/prune/
   export_pruned.py    # checkpoint surgery + provenance + bit-exactness test (§9)
   gates.py            # one JSON verdict per candidate (§10)
   README.md           # how to run the whole thing, in order
-expr/refiner_prune/<model-key>/<run-id>/   # scores, masks, metrics, figures -- per generation
+expr/refiner_prune/<model-key>/<run-id>/   # scores, masks, metrics -- per generation
+expr/refiner_prune/<model-key>/<run-id>/figures/   # PNG plots/grids, T3 MP4s, INDEX.md
 plans/2026-08-26-refiner-head-ffn-pruning.md      # this file
 plans/2026-08-27-refiner-pruning-training.md      # the training follow-on
 ```

@@ -54,7 +54,7 @@ from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.samplers import _step_state
 from ltx_pipelines.utils.types import ModalitySpec
 
-from scripts.prune import chunk_states, model_registry, preflight, prompt_cache, provenance, refine_task
+from scripts.prune import chunk_states, metrics, model_registry, preflight, prompt_cache, provenance, refine_task
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
 
 decord.bridge.set_bridge("torch")
@@ -274,6 +274,7 @@ def validate(model: RefinerModel, spec: TeacherSpec, device: torch.device, num_c
     torch.cuda.empty_cache()
 
     rows = []
+    visual_rows: list[tuple[str, torch.Tensor, torch.Tensor, torch.Tensor]] = []
     with torch.no_grad():
         decoder_holder = VideoDecoder(model.paths.video_vae(), DTYPE, device)
         with gpu_model(decoder_holder._decoder_builder.build(device=device, dtype=DTYPE).eval()) as decoder:
@@ -296,8 +297,43 @@ def validate(model: RefinerModel, spec: TeacherSpec, device: torch.device, num_c
                         "on_disk_k2_psnr_vs_source": (item.get("k_psnr_vs_source") or {}).get("k2"),
                     }
                 )
+                # Preserve small CPU copies for a reviewable source | teacher |
+                # student grid and MP4 after the decoder is released.
+                visual_rows.append((item["clip"], source.cpu(), outs["teacher"].cpu(), outs["student"].cpu()))
                 print(json.dumps(rows[-1], indent=2), flush=True)
-    return {"clips": rows}
+    # Rendering must never cost us the measurements. By the time control reaches
+    # here this function has spent ~20 GPU-minutes on transformer runs and DiffVAE
+    # decodes; a figure that fails to compose (an odd frame dimension, a missing
+    # ffmpeg) is a reporting problem, not a reason to discard the numbers. The
+    # first version of this block did exactly that -- a mismatched-resolution
+    # `t3_grid` raised and a completed 3-clip validation run was lost at the last
+    # step. The failure is recorded rather than swallowed.
+    figures = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / "teacher" / "figures"
+    artifacts: dict = {}
+    try:
+        grids = []
+        for clip, source, teacher_px, student_px in visual_rows[:5]:
+            # Corpus clips legitimately span 768p, 1024p, and 1280x704; keep each
+            # review grid native rather than silently resizing a quality comparison.
+            safe_clip = clip.replace("/", "_")
+            grids.append(metrics.t3_grid([(clip, source, teacher_px, student_px)], figures / f"{safe_clip}_grid.png"))
+        artifacts["grids"] = [str(p) for p in grids]
+        # Keep the video compact but representative: the first selected clip carries
+        # aligned source, teacher, and student frames at native validation FPS.
+        clip, source, teacher_px, student_px = visual_rows[0]
+        artifacts["video"] = str(
+            metrics.t3_video(source, teacher_px, student_px, figures / "teacher_vs_student.mp4", fps=24.0)
+        )
+        artifacts["video_clip"] = clip
+        (figures / "INDEX.md").write_text(
+            "# Phase 1 teacher validation visuals\n\n"
+            "- `*_grid.png`: native-resolution source | teacher | k2 student frames\n"
+            f"- `teacher_vs_student.mp4`: aligned source | teacher | k2 student video ({clip})\n"
+        )
+    except Exception as exc:  # noqa: BLE001 -- reporting must not sink a completed run
+        artifacts["error"] = f"{type(exc).__name__}: {exc}"
+        print(f"[teacher] WARNING: figures not written: {artifacts['error']}", flush=True)
+    return {"clips": rows, "figures": artifacts}
 
 
 def _tools_for_latent(model: RefinerModel, latent: torch.Tensor) -> VideoLatentTools:
@@ -310,14 +346,15 @@ def _tools_for_latent(model: RefinerModel, latent: torch.Tensor) -> VideoLatentT
     )
 
 
-def _read_chunk(path: Path, frames: int, device: torch.device) -> torch.Tensor:
+def _read_chunk(path: Path, frames: int, device: torch.device, *, spatial_scale: tuple[int, int]) -> torch.Tensor:
     """Read exactly one causal-VAE-aligned short AR chunk from a source clip."""
     vr = decord.VideoReader(str(path))
     if len(vr) < frames:
         raise ValueError(f"{path}: {len(vr)} frames, need >= {frames} for this AR calibration chunk")
     raw = vr.get_batch(range(frames))
     _, h, w, _ = raw.shape
-    h, w = (h // 32) * 32, (w // 32) * 32
+    scale_h, scale_w = spatial_scale
+    h, w = (h // scale_h) * scale_h, (w // scale_w) * scale_w
     raw = raw[:, :h, :w, :]
     return raw.permute(3, 0, 1, 2).unsqueeze(0).to(device=device, dtype=DTYPE) / 127.5 - 1.0
 
@@ -361,7 +398,12 @@ def build_calibration(
                 total_latents = 1 + refine_task.CTX_LATENT_FRAMES + n_new
                 frames = model.scale_factors.time * (total_latents - 1) + 1
                 try:
-                    pixels = _read_chunk(Path(c["source"]), frames, device)
+                    pixels = _read_chunk(
+                        Path(c["source"]),
+                        frames,
+                        device,
+                        spatial_scale=(model.scale_factors.height, model.scale_factors.width),
+                    )
                     encoded.append((c, n_new, encoder.tiled_encode(pixels, None).cpu()))
                 except ValueError as exc:
                     print(f"[teacher] skipping {c['clip']} n={n_new}: {exc}", flush=True)

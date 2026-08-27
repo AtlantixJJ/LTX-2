@@ -14,6 +14,8 @@ import argparse
 import json
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+
 from scripts.prune.model_registry import WORKSPACE_ROOT
 
 OUT_ROOT = WORKSPACE_ROOT / "expr" / "refiner_prune"
@@ -149,7 +151,58 @@ def collect(key: str) -> dict:
     if gates["teacher_validation"]:
         summary["teacher"]["validation"] = gates["teacher_validation"]["clips"]
 
+    summary["phase1"] = _phase1(root)
     return summary
+
+
+def _phase1(root: Path) -> dict:
+    """The §6 gate: calibration cache, sampler A/B, and the unpruned T0/T1/T2 run.
+
+    Kept mechanical for the same reason as everything above -- "Phase 1 passed" has
+    to be readable off one JSON, not reconstructed by opening four files and
+    remembering which one had the rollout in it.
+    """
+    out: dict = {}
+    index = _load(root / "calibration" / "index.json")
+    if index:
+        records = index["records"]
+        splits = {s: sum(1 for r in records if r["split"] == s) for s in ("calibration", "held_out")}
+        out["calibration_cache"] = {
+            "records": len(records),
+            "clips": len({r["clip"] for r in records}),
+            "by_split": splits,
+            "families": sorted({r["family"] for r in records}),
+            "chunk_sizes": sorted({r["chunk_latent_frames"] for r in records}),
+            # Records carry both counts; the gap is the index-0 keyframe that
+            # `denoise_mask` includes and the AR chunk does not.
+            "keyframe_share_of_fresh_tokens": sorted({
+                round(1 - r["chunk_tokens"] / r["fresh_tokens"], 3)
+                for r in records if r.get("fresh_tokens") and r.get("chunk_tokens") is not None
+            }),
+            # A calibration cache with no calibration-split records cannot drive
+            # Phase 2 at all, however many records it holds.
+            "usable_for_phase2": splits.get("calibration", 0) > 0,
+        }
+    ab = _load(root / "sampler_ab.json")
+    if ab:
+        out["sampler_ab"] = {
+            "states": len(ab["states"]),
+            "euler_t0_mean": ab["euler_t0_mean"],
+            "ancestral_t0_mean": ab["ancestral_t0_mean"],
+            "chosen_sampler": ab["chosen_sampler"],
+        }
+    g = _load(root / "phase1_gates.json")
+    if g:
+        out["T0"] = {
+            k: g["T0"].get(k) for k in ("calibration", "held_out", "loss_nonzero_at_every_step",
+                                        "min_per_step_x0_mse_chunk")
+        }
+        out["T1"] = g.get("T1")
+        t2 = g.get("T2") or {}
+        out["T2"] = {k: v for k, v in t2.items() if k != "psnr_vs_teacher"}
+        out["T3"] = g.get("T3")
+    out["gate_complete"] = all(k in out for k in ("calibration_cache", "sampler_ab", "T0", "T2"))
+    return out
 
 
 def markdown(summary: dict) -> str:
@@ -188,7 +241,65 @@ def markdown(summary: dict) -> str:
                 f"| {r['variant']} | {r['n_new']} | {r['ctx']} | {r['ms_per_fwd']} | {r['speedup_vs_eager']} |"
             )
         lines.append("")
+    p1 = summary.get("phase1") or {}
+    if p1:
+        cache, ab, t2 = p1.get("calibration_cache"), p1.get("sampler_ab"), p1.get("T2")
+        lines += ["| Phase 1 gate | Result |", "|---|---|"]
+        lines.append(
+            f"| calibration cache | {cache['records']} records / {cache['clips']} clips, "
+            f"calib {cache['by_split'].get('calibration', 0)} / held-out {cache['by_split'].get('held_out', 0)}, "
+            f"usable {cache['usable_for_phase2']} |" if cache else "| calibration cache | MISSING |"
+        )
+        lines.append(
+            f"| sampler A/B | {ab['chosen_sampler']} (euler {ab['euler_t0_mean']:.4f} vs "
+            f"ancestral {ab['ancestral_t0_mean']:.4f}, {ab['states']} states) |" if ab else "| sampler A/B | MISSING |"
+        )
+        t0 = p1.get("T0")
+        lines.append(
+            f"| T0 unpruned (held-out, chunk tokens) | {t0['held_out']['rel_l2_chunk']['mean']:.4f} mean |"
+            if t0 and (t0.get("held_out") or {}).get("rel_l2_chunk") else "| T0 unpruned | MISSING |"
+        )
+        lines.append(
+            f"| T2 drift floor | {t2['chunks']} chunks, "
+            f"{t2['psnr_slope_db_per_100_chunks']:.2f} dB/100 chunks |" if t2 else "| T2 drift floor | MISSING |"
+        )
+        lines += [f"| §6 gate complete | {p1.get('gate_complete')} |", ""]
     return "\n".join(lines)
+
+
+def write_figures(summary: dict) -> list[Path]:
+    """Render the Phase 0 measurements as durable review artifacts.
+
+    JSON is authoritative for downstream computation; these plots make the
+    small-chunk latency cliff and measured-vs-analytic FLOP agreement reviewable
+    without manually reconstructing a chart from a table.
+    """
+    rows = summary.get("bench", {}).get("rows", [])
+    if not rows:
+        return []
+    root = OUT_ROOT / summary["model"] / "figures"
+    root.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for ctx in sorted({r["ctx"] for r in rows}):
+        subset = sorted((r for r in rows if r["ctx"] == ctx), key=lambda r: r["n_new"])
+        fig, ax = plt.subplots(figsize=(6.4, 4.0), layout="constrained")
+        ax.plot([r["n_new"] for r in subset], [r["ms_per_fwd"] for r in subset], "o-", label="uncached")
+        cached = [r for r in subset if r["ms_per_fwd_kv_cached"] is not None]
+        if cached:
+            ax.plot([r["n_new"] for r in cached], [r["ms_per_fwd_kv_cached"] for r in cached], "o--", label="K/V cached")
+        ax.set(xlabel="fresh latent frames", ylabel="ms / transformer forward", title=f"LTX-{summary['model']} Phase 0 latency (ctx={ctx})")
+        ax.grid(alpha=0.25); ax.legend()
+        path = root / f"phase0_latency_ctx{ctx}.png"; fig.savefig(path, dpi=160); plt.close(fig); paths.append(path)
+    fig, ax = plt.subplots(figsize=(6.4, 4.0), layout="constrained")
+    measured = [r["tflop_measured"] for r in rows]; analytic = [r["tflop_analytic"] for r in rows]
+    hi = max(measured + analytic) * 1.05
+    ax.scatter(analytic, measured, c=[r["ctx"] for r in rows], cmap="viridis", s=60)
+    ax.plot([0, hi], [0, hi], "k--", linewidth=1, label="agreement")
+    ax.set(xlabel="analytic TFLOP / forward", ylabel="measured TFLOP / forward", title=f"LTX-{summary['model']} FLOP cross-check", xlim=(0, hi), ylim=(0, hi))
+    ax.grid(alpha=0.25); ax.legend()
+    path = root / "phase0_flops_measured_vs_analytic.png"; fig.savefig(path, dpi=160); plt.close(fig); paths.append(path)
+    (root / "INDEX.md").write_text("# Phase 0 figures\n\n" + "\n".join(f"- `{p.name}`" for p in paths) + "\n")
+    return paths
 
 
 def main() -> int:
@@ -204,7 +315,10 @@ def main() -> int:
         path = OUT_ROOT / key / "analysis_summary.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(summary, indent=2))
+        figures = write_figures(summary)
         print(markdown(summary))
+        if figures:
+            print("<!-- wrote figures: " + ", ".join(str(p) for p in figures) + " -->")
         print(f"<!-- wrote {path} -->\n")
     return 0
 

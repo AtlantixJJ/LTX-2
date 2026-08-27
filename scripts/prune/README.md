@@ -56,6 +56,8 @@ python -m scripts.prune.bench_refiner --model 2.5 --gpu-id N --tag compile \
 | `chunk_states.py` | Persistent patchified state/x0* records, including the frozen-context keyframe caveat (§6). |
 | `losses.py` | Fresh-token-only x0 MSE and T0 relative L2 (§6). |
 | `metrics.py` | T0 latent, T1 decoded pixels, T2 sequential-rollout slopes, and T3 review grids (§6). |
+| `sampler_ab.py` | Reproducible 2.5 Euler/ancestral T0 comparison and recorded sampler decision (§4, §6). |
+| `phase1_gates.py` | Runs the **unpruned** student through T0/T1/T2/T3 — the §6 gate itself, and the reference level every pruned candidate is measured against. |
 | `summarize_phase0.py` | Collects every artifact into `analysis_summary.json` + markdown tables (§12). |
 
 Phase 2+ modules named in §12 (`hooks.py`, `head_scores.py`, `ffn_scores.py`, `lstsq.py`, `prune_schedule.py`,
@@ -68,13 +70,33 @@ useful before launching the complete 52-clip build:
 
 ```bash
 python -m scripts.prune.teacher --model 2.5 --freeze
+python -m scripts.prune.teacher --model 2.5 --gpu-id N --validate --num-clips 3
 python -m scripts.prune.teacher --model 2.5 --gpu-id N --build-calibration --max-clips 2
 python -m scripts.prune.teacher --model 2.5 --gpu-id N --build-calibration
+python -m scripts.prune.sampler_ab --model 2.5 --gpu-id N
+python -m scripts.prune.phase1_gates --model 2.5 --gpu-id N     # the §6 gate
+python -m scripts.prune.summarize_phase0 --model 2.5            # renders the gate table
 ```
+
+`--max-clips 2` takes the manifest's *first* two clips, which both fall in the
+held-out subject set — a smoke cache built that way contains **zero**
+calibration-split records and cannot drive Phase 2. `summarize_phase0`'s
+`usable_for_phase2` flag exists to catch exactly that; check it before assuming a
+cache is real.
 
 The cache contains both on-policy k2 states and independently renoised x0*
 states at every deployed nonterminal sigma.  Every future scorer must load these
 ``.pt`` records via `chunk_states.load_record`, rather than generate its own noise.
+The current corpus holds 44 clips; its frozen 29/15 subject-disjoint split is
+recorded in `teacher_manifest.json` and each cache index.  It intentionally
+supersedes the plan's stale 52-clip / 40–12 estimate.
+
+Phase 0 summaries save latency/FLOP charts in `expr/refiner_prune/<model>/figures/`.
+For Phase 1 visual review, call `metrics.t3_grid(...)` and
+`metrics.t3_video(source, teacher, candidate, output)` to save PNG grids and
+aligned `source | teacher | candidate` MP4s under the candidate run's `figures/`.
+`teacher --validate` does this automatically at
+`expr/refiner_prune/<model>/teacher/figures/`.
 
 ## Two places the plan is wrong, and what was done instead
 
@@ -89,3 +111,32 @@ states at every deployed nonterminal sigma.  Every future scorer must load these
    at 4.44 dB vs source — the latent is erased and regenerated from the prompt.
    `teacher.py` instead subdivides the interval below the *student's* sigma_0.
    See its module docstring.
+
+## What `--validate` actually measured (2.5, 3 subjects, 2026-08-27)
+
+`teacher --validate` was written to be falsifiable and it should be read that way,
+because the result is **not** the one its own docstring predicts.
+
+| clip | VAE round-trip | student k2 | teacher (16 steps) | teacher vs student | on-disk k8 |
+|---|---:|---:|---:|---:|---:|
+| `2K2K_00052_0__man_dance_2_crop` | 36.42 | 27.21 | **27.13** | 33.34 | 4.00 |
+| `2K2K_01331_0__woman_mocap_1_c5_original` | 36.80 | 26.38 | **26.38** | 33.76 | — |
+| `2K2K_01465_0__man_dance_2_crop` | 34.37 | 25.49 | **25.43** | 31.44 | — |
+
+(dB PSNR vs source.) Two things follow, and both matter for how Phase 2 reads its
+own numbers:
+
+* **The k8 critique is confirmed** — 4.00 dB measured here against 4.44 dB in
+  `FINDINGS.md`. Dropping the plan's k8 teacher was right.
+* **But the replacement teacher is not a better refinement either.** Eight times
+  the compute moves PSNR-vs-source by −0.08/−0.00/−0.06 dB: within noise, and if
+  anything slightly *down*. The 16-step solution is a different point (31–34 dB
+  away from the student) but not a better one. Both sit ~9 dB below the plain VAE
+  round-trip, i.e. at `k2` this pipeline *degrades* the latent it is given rather
+  than repairing it.
+
+  So `x0*` is a **stable, seed-independent reference point on the deployment
+  manifold** — which is all §7's estimators need, and it does keep the
+  mask-gradient loss nonzero at ξ=1 — but it is **not a quality ceiling**, and no
+  Phase 2 conclusion may be phrased as "closer to the teacher ⇒ better output".
+  Quality claims have to come from T1/T2/T3 against the *source*, not from T0.
