@@ -57,6 +57,7 @@ decord.bridge.set_bridge("torch")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = REPO_ROOT.parent
+sys.path.append(str(REPO_ROOT))
 sys.path.append(str(REPO_ROOT / "packages" / "ltx-core" / "src"))
 sys.path.append(str(REPO_ROOT / "packages" / "ltx-trainer" / "src"))
 sys.path.append(str(REPO_ROOT / "packages" / "ltx-pipelines" / "src"))
@@ -66,6 +67,7 @@ from ltx_core.components.diffusion_steps import EulerDiffusionStep  # noqa: E402
 from ltx_core.components.noisers import GaussianNoiser  # noqa: E402
 from ltx_core.conditioning.types.latent_cond import VideoConditionByLatentIndex  # noqa: E402
 from ltx_core.components.patchifiers import VideoLatentPatchifier  # noqa: E402
+from ltx_core.model.transformer import LTXModelConfigurator, LTXVideoOnlyModelConfigurator  # noqa: E402
 from ltx_core.tools import VideoLatentTools  # noqa: E402
 from ltx_core.types import VideoLatentShape, VideoPixelShape  # noqa: E402
 from ltx_pipelines.utils.blocks import (  # noqa: E402
@@ -80,21 +82,21 @@ from ltx_pipelines.utils.blocks import (  # noqa: E402
 from ltx_pipelines.utils.constants import DISTILLED_SIGMA_VALUES  # noqa: E402
 from ltx_pipelines.utils.denoisers import SimpleDenoiser  # noqa: E402
 from ltx_pipelines.utils.gpu_model import gpu_model  # noqa: E402
-from ltx_pipelines.utils.model_paths import ModelPaths  # noqa: E402
 from ltx_pipelines.utils.samplers import _step_state  # noqa: E402, PLC2701 -- see _build_state note above
 from ltx_pipelines.utils.types import ModalitySpec  # noqa: E402
 from ltx_trainer.video_utils import save_video  # noqa: E402
+
+from scripts.prune import geometry, model_registry, preflight  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("vae_refine_sliding_window")
 
 DTYPE = torch.bfloat16
-DEFAULT_VAE_CHECKPOINT = WORKSPACE_ROOT / "checkpoints" / "LTX-2.3" / "ltx-2.3-22b-distilled-1.1.safetensors"
-DEFAULT_GEMMA_ROOT = WORKSPACE_ROOT / "checkpoints" / "google" / "gemma-3-12b-it-qat-q4_0-unquantized"
 DEFAULT_PROMPT = "a high quality, sharp, detailed video with fine texture and natural lighting"
 
 WINDOW_FRAMES = 121  # F % 8 == 1
-OVERLAP_FRAMES = 16
+OVERLAP_FRAMES = 17  # (overlap - 1) % 8 == 0, i.e. 2 whole latent frames of carryover.
+                    # 16 fails the validator below -- every real run has passed 17 explicitly.
 FLUSH_EVERY_FRAMES = 24 * 30  # per user: update the on-disk video every 720 finalized frames
 
 
@@ -190,8 +192,24 @@ def main() -> int:
     ap.add_argument("--gpu-id", type=int, default=7)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--prompt", default=DEFAULT_PROMPT)
-    ap.add_argument("--vae-checkpoint", type=Path, default=DEFAULT_VAE_CHECKPOINT)
-    ap.add_argument("--gemma-root", type=Path, default=DEFAULT_GEMMA_ROOT)
+    ap.add_argument(
+        "--model", default="2.5", choices=model_registry.SUPPORTED_MODELS,
+        help="Generation to refine with (see scripts/prune/model_registry.py). Per-component "
+        "flags below always override this generation's default path for that component.",
+    )
+    ap.add_argument("--sampler", default="euler", choices=model_registry.SAMPLER_CHOICES)
+    ap.add_argument(
+        "--video-only", dest="video_only", action="store_true", default=True,
+        help="Build the transformer with LTXVideoOnlyModelConfigurator (skips the audio branch "
+        "entirely; documented + gated lossless by scripts/prune/video_only_check.py). Default on.",
+    )
+    ap.add_argument("--no-video-only", dest="video_only", action="store_false")
+    ap.add_argument("--transformer-path", type=Path, default=None, help="Override this --model's transformer checkpoint.")
+    ap.add_argument(
+        "--text-encoder-path", type=Path, default=None,
+        help="Override this --model's text encoder (gemma root dir for 2.3, gemma4 file for 2.5).",
+    )
+    ap.add_argument("--video-vae-path", type=Path, default=None, help="Override this --model's video VAE checkpoint.")
     ap.add_argument("--window-frames", type=int, default=WINDOW_FRAMES)
     ap.add_argument("--overlap-frames", type=int, default=OVERLAP_FRAMES)
     ap.add_argument("--flush-every-frames", type=int, default=FLUSH_EVERY_FRAMES)
@@ -218,15 +236,38 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    if (args.overlap_frames - 1) % 8 != 0:
+    model = preflight.check(
+        args.model,
+        sampler=args.sampler,
+        gpu_id=args.gpu_id,
+        transformer_path=args.transformer_path,
+        text_encoder_path=args.text_encoder_path,
+        video_vae_path=args.video_vae_path,
+    )
+    if model.stepper_kind == "ancestral":
+        # EulerAncestralDiffusionStep needs a per-step noise draw (eta=1.0 renoises after every
+        # step); this script's manual _step_state() loop below doesn't supply one. Plan §4
+        # decision 1 defaults the refiner to Euler on both generations and defers the ancestral
+        # A/B to Phase 1 (needs the noise-injecting loop, mirroring
+        # ltx_pipelines.utils.samplers._ancestral_euler_denoising_loop).
         raise SystemExit(
-            f"--overlap-frames must satisfy (overlap_frames - 1) % 8 == 0 (got {args.overlap_frames}), the "
-            "same F%8==1 grid every window size already follows. Reason: each window's OWN latent frame 0 "
-            "is a special single-pixel causal keyframe (not an 8-pixel block like every later latent "
-            "frame), so the overlap region -- if it were its own standalone clip -- needs that same grid "
-            "for the carryover to land on whole latent frames of the *next* window's REGULAR (non-frame-0) "
-            "latent frames. See the latent-carryover note in run_batch()."
+            f"--model {args.model} --sampler {args.sampler} resolved to the ancestral stepper, which "
+            "isn't wired into this script's step loop yet (Phase 1 item per plan §4 decision 1). "
+            "Pass --sampler euler explicitly."
         )
+    # The window grid is checked against the VAE's PROBED temporal scale factor rather than a
+    # literal 8 (plan §4 decision 2), which is why this runs after the model resolve. The rule
+    # itself is unchanged: each window's own latent frame 0 is a single-pixel causal keyframe
+    # rather than a full temporal block, so the carried-over overlap needs the same F%t==1 grid
+    # for it to land on whole *regular* latent frames of the next window. See run_batch().
+    geometry.check_window_rules(args.window_frames, args.overlap_frames, model.scale_factors)
+
+    configurator = LTXVideoOnlyModelConfigurator if args.video_only else LTXModelConfigurator
+    logger.info(
+        f"model={model.key} (version {model.version}) sampler={model.stepper_kind} "
+        f"video_only={args.video_only} scale_factors={tuple(model.scale_factors)} "
+        f"(from {model.scale_factors_source})"
+    )
 
     device = torch.device(f"cuda:{args.gpu_id}")
     out_dir = args.output_dir
@@ -237,7 +278,7 @@ def main() -> int:
     segments_dir.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
     latent_cache_dir.mkdir(parents=True, exist_ok=True)
-    overlap_latent_frames = (args.overlap_frames - 1) // 8
+    overlap_latent_frames = (args.overlap_frames - 1) // model.scale_factors.time
 
     vr = decord.VideoReader(str(args.video))
     fps = float(vr.get_avg_fps())
@@ -267,14 +308,17 @@ def main() -> int:
 
     # Encode prompt once -- identical text conditioning for every window.
     with torch.no_grad():
-        prompt_encoder = PromptEncoder(ModelPaths.from_monolith(str(args.vae_checkpoint), str(args.gemma_root)), DTYPE, device)
+        prompt_encoder = PromptEncoder(model.paths, DTYPE, device)
         (ctx,) = prompt_encoder([args.prompt])
         video_context = ctx.video_encoding
         del prompt_encoder
         gc.collect()
         torch.cuda.empty_cache()
 
-    diffusion_stage = DiffusionStage.from_checkpoint(str(args.vae_checkpoint), DTYPE, device)
+    diffusion_stage = DiffusionStage.from_checkpoint(
+        model.paths.transformer(), DTYPE, device, model_configurator=configurator,
+        scale_factors=model.scale_factors,
+    )
 
     # Geometry is identical for every window (fixed window_frames, one source video), so the
     # tools DiffusionStage.__call__ would normally rebuild per-call can be built once and reused.
@@ -360,7 +404,7 @@ def main() -> int:
         # window's "encode" number -- it's its own line in the profile.
         with torch.no_grad():
             with StageTimer("encoder_build", device) as t_enc_build:
-                image_conditioner = ImageConditioner(str(args.vae_checkpoint), DTYPE, device)
+                image_conditioner = ImageConditioner(model.paths.video_vae(), DTYPE, device)
                 encoder_ctx = gpu_model(image_conditioner._build_encoder())
                 encoder = encoder_ctx.__enter__()
             chunk_encoder_build_s = t_enc_build.elapsed_s
@@ -472,7 +516,7 @@ def main() -> int:
         decoded_map: dict[int, torch.Tensor] = {}
         with torch.no_grad():
             with StageTimer("decoder_build", device) as t_dec_build:
-                video_decoder = VideoDecoder(str(args.vae_checkpoint), DTYPE, device)
+                video_decoder = VideoDecoder(model.paths.video_vae(), DTYPE, device)
                 decoder_ctx = gpu_model(video_decoder._decoder_builder.build(device=device, dtype=DTYPE).eval())
                 decoder = decoder_ctx.__enter__()
             chunk_decoder_build_s = t_dec_build.elapsed_s
