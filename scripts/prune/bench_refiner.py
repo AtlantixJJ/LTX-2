@@ -239,7 +239,12 @@ def main() -> int:  # noqa: PLR0915
     ap.add_argument("--no-video-only", dest="video_only", action="store_false")
     ap.add_argument(
         "--compile-chunks", type=int, nargs="*", default=None,
-        help="Chunk sizes to ALSO measure under torch.compile (separate build). Empty/omitted = no compile axis.",
+        help="Chunk sizes to ALSO measure compiled (each variant gets its own build). Omitted = eager only.",
+    )
+    ap.add_argument(
+        "--compile-variants", nargs="+", default=["compile", "compile+cudagraphs"],
+        choices=["compile", "compile+cudagraphs"],
+        help="Which compiled variants to measure when --compile-chunks is given.",
     )
     ap.add_argument("--no-kv-cache", dest="kv_cache", action="store_false", default=True,
                     help="Skip the cross-attention K/V cache axis.")
@@ -275,16 +280,22 @@ def main() -> int:  # noqa: PLR0915
     compile_chunks = set(args.compile_chunks or [])
     kv_axis = [False, True] if args.kv_cache else [False]
 
+    # (label, CompilationConfig | None). `capture=True` is the CUDA-graph variant: per-block
+    # compile plus one graph over the block loop, which the plan asks to be measured separately
+    # from plain compilation so neither gets folded into a later pruning number.
+    variants: list[tuple[str, object]] = [("eager", None)]
+    if compile_chunks:
+        from ltx_core.model.transformer.compiling import CompilationConfig
+
+        for name in args.compile_variants:
+            variants.append((name, CompilationConfig(capture=(name == "compile+cudagraphs"))))
+
     rows: list[dict] = []
     builds: list[dict] = []
 
-    for compiled in [False, True] if compile_chunks else [False]:
+    for variant, compilation_config in variants:
+        compiled = variant != "eager"
         chunks = sorted(compile_chunks) if compiled else args.chunk_latent_frames
-        compilation_config = None
-        if compiled:
-            from ltx_core.model.transformer.compiling import CompilationConfig
-
-            compilation_config = CompilationConfig()
 
         stage = DiffusionStage.from_checkpoint(
             model.paths.transformer(),
@@ -305,6 +316,7 @@ def main() -> int:  # noqa: PLR0915
             transformer = ctx.__enter__()
         builds.append(
             {
+                "variant": variant,
                 "compile": compiled,
                 "video_only": args.video_only,
                 "build_s": t_build.elapsed_s,
@@ -313,7 +325,7 @@ def main() -> int:  # noqa: PLR0915
             }
         )
         print(
-            f"[bench] built transformer (compile={compiled}, video_only={args.video_only}) in "
+            f"[bench] built transformer (variant={variant}, video_only={args.video_only}) in "
             f"{t_build.elapsed_s:.1f}s, build peak {t_build.peak_alloc_gb:.1f} GB, "
             f"resident {torch.cuda.memory_allocated(device) / 1e9:.1f} GB",
             flush=True,
@@ -325,7 +337,7 @@ def main() -> int:  # noqa: PLR0915
                     for kv in kv_axis:
                         label = (
                             f"model={model.key} n_new={chunk} ctx={ctx_frames} "
-                            f"kv_cache={kv} compile={compiled}"
+                            f"kv_cache={kv} variant={variant}"
                         )
                         print(f"[bench] {label} ...", flush=True)
                         row = bench_one(
@@ -342,6 +354,7 @@ def main() -> int:  # noqa: PLR0915
                             warmup_steps=args.warmup_steps,
                             seed=args.seed,
                         )
+                        row["variant"] = variant
                         row["compile"] = compiled
                         row["video_only"] = args.video_only
                         rows.append(row)
@@ -368,6 +381,7 @@ def main() -> int:  # noqa: PLR0915
             "chunk_latent_frames": args.chunk_latent_frames,
             "ctx_latent_frames": args.ctx_latent_frames,
             "compile_chunks": sorted(compile_chunks),
+            "compile_variants": [v for v, _ in variants],
             "video_only": args.video_only,
         },
         "builds": builds,
