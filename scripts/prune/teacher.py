@@ -36,7 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import decord
@@ -54,7 +54,7 @@ from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.samplers import _step_state
 from ltx_pipelines.utils.types import ModalitySpec
 
-from scripts.prune import model_registry, preflight, prompt_cache, provenance, refine_task
+from scripts.prune import chunk_states, model_registry, preflight, prompt_cache, provenance, refine_task
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
 
 decord.bridge.set_bridge("torch")
@@ -300,6 +300,125 @@ def validate(model: RefinerModel, spec: TeacherSpec, device: torch.device, num_c
     return {"clips": rows}
 
 
+def _tools_for_latent(model: RefinerModel, latent: torch.Tensor) -> VideoLatentTools:
+    """Construct tools from an encoded tensor, avoiding a second geometry assumption."""
+    return VideoLatentTools(
+        VideoLatentPatchifier(patch_size=1),
+        VideoLatentShape.from_torch_shape(latent.shape),
+        24.0,
+        scale_factors=model.scale_factors,
+    )
+
+
+def _read_chunk(path: Path, frames: int, device: torch.device) -> torch.Tensor:
+    """Read exactly one causal-VAE-aligned short AR chunk from a source clip."""
+    vr = decord.VideoReader(str(path))
+    if len(vr) < frames:
+        raise ValueError(f"{path}: {len(vr)} frames, need >= {frames} for this AR calibration chunk")
+    raw = vr.get_batch(range(frames))
+    _, h, w, _ = raw.shape
+    h, w = (h // 32) * 32, (w // 32) * 32
+    raw = raw[:, :h, :w, :]
+    return raw.permute(3, 0, 1, 2).unsqueeze(0).to(device=device, dtype=DTYPE) / 127.5 - 1.0
+
+
+def build_calibration(
+    model: RefinerModel, spec: TeacherSpec, device: torch.device, *, max_clips: int | None, seed: int
+) -> Path:
+    """Build the reusable Phase 1 on-policy and renoised state cache.
+
+    A source is VAE encoded once per chunk size.  Four carryover frames occupy
+    latent indices 1..4 (index 0 is the causal-keyframe caveat), and the teacher
+    supplies x0* for the full token grid.  Each student trajectory state and a
+    fresh-noise reconstitution of x0* are persisted independently.
+    """
+    manifest_path = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / "teacher" / "teacher_manifest.json"
+    if not manifest_path.exists():
+        raise SystemExit(f"Missing {manifest_path}; run --freeze before --build-calibration.")
+    manifest = json.loads(manifest_path.read_text())
+    split_of = {clip: "calibration" for clip in manifest["split"]["calibration"]}
+    split_of.update({clip: "held_out" for clip in manifest["split"]["held_out"]})
+    clips = [c for c in manifest["corpus"] if c["clip"] in split_of]
+    if max_clips is not None:
+        clips = clips[:max_clips]
+    if not clips:
+        raise SystemExit("Frozen teacher manifest contains no selected clips.")
+
+    out = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / "calibration"
+    out.mkdir(parents=True, exist_ok=True)
+    prompt = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
+    student_sigmas = refine_task.schedule_for(model.sigmas, refine_task.K_STEP)
+    stepper = EulerDiffusionStep()
+    records: list[Path] = []
+
+    # Encoder and transformer cannot coexist on the target cards, so encode all
+    # small inputs first; their CPU tensors are only a few MB apiece.
+    encoded: list[tuple[dict, int, torch.Tensor]] = []
+    conditioner = ImageConditioner(model.paths.video_vae(), DTYPE, device)
+    with torch.no_grad(), gpu_model(conditioner._build_encoder()) as encoder:
+        for c in clips:
+            for n_new in refine_task.CHUNK_LATENT_FRAMES:
+                total_latents = 1 + refine_task.CTX_LATENT_FRAMES + n_new
+                frames = model.scale_factors.time * (total_latents - 1) + 1
+                try:
+                    pixels = _read_chunk(Path(c["source"]), frames, device)
+                    encoded.append((c, n_new, encoder.tiled_encode(pixels, None).cpu()))
+                except ValueError as exc:
+                    print(f"[teacher] skipping {c['clip']} n={n_new}: {exc}", flush=True)
+    if not encoded:
+        raise SystemExit("No source clip was long enough to build an AR calibration state.")
+    torch.cuda.empty_cache()
+
+    stage = DiffusionStage.from_checkpoint(
+        model.paths.transformer(), DTYPE, device, model_configurator=LTXVideoOnlyModelConfigurator,
+        scale_factors=model.scale_factors,
+    )
+    denoiser = SimpleDenoiser(prompt, None)
+    with torch.no_grad(), stage._transformer_ctx(video_tools=_tools_for_latent(model, encoded[0][2].to(device))) as transformer:
+        for clip_index, (clip, n_new, cpu_latent) in enumerate(encoded):
+            l_init = cpu_latent.to(device=device, dtype=DTYPE)
+            tools = _tools_for_latent(model, l_init)
+            ctx = l_init[:, :, 1 : 1 + refine_task.CTX_LATENT_FRAMES].contiguous()
+            state_seed = seed + clip_index * 1000 + n_new
+            initial = chunk_states.make_state(l_init, ctx, student_sigmas[0], tools, state_seed, device)
+
+            # The teacher starts from the identical noise draw.  This makes x0*
+            # a true deeper solution for the specific student trajectory, rather
+            # than a target from a different random sample.
+            teacher_state = chunk_states.make_state(l_init, ctx, spec.sigmas[0], tools, state_seed, device)
+            teacher_sigmas = torch.tensor(spec.sigmas, dtype=torch.float32, device=device)
+            for i in range(len(spec.sigmas) - 1):
+                result, _ = denoiser(transformer, teacher_state, None, teacher_sigmas, i)
+                teacher_state = _step_state(teacher_state, result.denoised, stepper, teacher_sigmas, i)
+            x0_star = teacher_state.latent.detach()
+
+            current = initial
+            sigmas = torch.tensor(student_sigmas, dtype=torch.float32, device=device)
+            for i in range(len(student_sigmas) - 1):
+                stem = f"{clip['clip']}__n{n_new}__s{i}"
+                meta = chunk_states.ChunkStateMeta(clip["clip"], split_of[clip["clip"]], "on_policy", student_sigmas[i], i, n_new, refine_task.CTX_LATENT_FRAMES, state_seed)
+                records.append(chunk_states.save_record(out / f"{stem}__on_policy.pt", current, x0_star, meta))
+                result, _ = denoiser(transformer, current, None, sigmas, i)
+                current = _step_state(current, result.denoised, stepper, sigmas, i)
+
+            # Rerandomize the teacher target at every deployed sigma. Frozen tokens
+            # remain exactly frozen; fresh tokens use the Gaussian noiser definition.
+            for i, sigma in enumerate(student_sigmas[:-1]):
+                noise = torch.randn(x0_star.shape, device=device, dtype=x0_star.dtype,
+                                    generator=torch.Generator(device=device).manual_seed(state_seed + 100 + i))
+                clean = torch.where(initial.denoise_mask.bool(), x0_star, initial.clean_latent)
+                latent = torch.lerp(clean.float(), noise.float(), sigma).to(DTYPE)
+                latent = torch.lerp(clean.float(), latent.float(), initial.denoise_mask).to(DTYPE)
+                renoised = replace(initial, latent=latent, clean_latent=clean)
+                meta = chunk_states.ChunkStateMeta(clip["clip"], split_of[clip["clip"]], "renoised", sigma, i, n_new, refine_task.CTX_LATENT_FRAMES, state_seed + 100 + i)
+                records.append(chunk_states.save_record(out / f"{clip['clip']}__n{n_new}__s{i}__renoised.pt", renoised, x0_star, meta))
+            print(f"[teacher] cached {clip['clip']} n={n_new}", flush=True)
+    return chunk_states.write_index(
+        out, records, provenance=provenance.stamp(model, device, script="teacher.build_calibration"),
+        extra={"teacher": asdict(spec), "student_sigmas": student_sigmas, "manifest": str(manifest_path)},
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", default="2.5", choices=model_registry.SUPPORTED_MODELS)
@@ -307,11 +426,13 @@ def main() -> int:
     ap.add_argument("--teacher-steps", type=int, default=TEACHER_STEPS)
     ap.add_argument("--freeze", action="store_true", help="Write the frozen teacher manifest.")
     ap.add_argument("--validate", action="store_true", help="Run student vs teacher on real clips (GPU).")
+    ap.add_argument("--build-calibration", action="store_true", help="Cache Phase 1 on-policy + renoised AR states.")
+    ap.add_argument("--max-clips", type=int, default=None, help="Limit --build-calibration for a smoke run.")
     ap.add_argument("--num-clips", type=int, default=2)
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
-    model = preflight.check(args.model, gpu_id=args.gpu_id if args.validate else None)
+    model = preflight.check(args.model, gpu_id=args.gpu_id if (args.validate or args.build_calibration) else None)
     spec = spec_for(model, steps=args.teacher_steps)
     print(f"teacher sigma_0={spec.sigma_0} steps={spec.steps}")
     print(f"teacher sigmas: {[round(s, 4) for s in spec.sigmas]}")
@@ -342,6 +463,9 @@ def main() -> int:
             )
         )
         print(f"Wrote {out_path}")
+    if args.build_calibration:
+        device = torch.device(f"cuda:{args.gpu_id}")
+        print(f"Wrote {build_calibration(model, spec, device, max_clips=args.max_clips, seed=args.seed)}")
     return 0
 
 

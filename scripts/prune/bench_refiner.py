@@ -297,14 +297,23 @@ def main() -> int:  # noqa: PLR0915
         compiled = variant != "eager"
         chunks = sorted(compile_chunks) if compiled else args.chunk_latent_frames
 
-        stage = DiffusionStage.from_checkpoint(
-            model.paths.transformer(),
-            DTYPE,
-            device,
-            model_configurator=configurator,
-            compilation_config=compilation_config,
-            scale_factors=model.scale_factors,
-        )
+        try:
+            stage = DiffusionStage.from_checkpoint(
+                model.paths.transformer(),
+                DTYPE,
+                device,
+                model_configurator=configurator,
+                compilation_config=compilation_config,
+                scale_factors=model.scale_factors,
+            )
+        except ValueError as exc:
+            # A variant this build path cannot serve is a *result*, not a crash: on the plain
+            # single-GPU builder `capture=True` raises because CUDA graphs need GPU-resident
+            # weights. Record the refusal so the report can cite it, and keep the variants
+            # that do run.
+            print(f"[bench] variant={variant} unsupported on this build path: {exc}", flush=True)
+            builds.append({"variant": variant, "unsupported": str(exc)})
+            continue
         # video_tools is only consulted by the tiled-data-parallel builder; the standard
         # builder ignores it and positional embeddings are computed per call from the
         # state, so one build serves every geometry below.

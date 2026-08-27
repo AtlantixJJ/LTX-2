@@ -94,6 +94,12 @@ def check(
                 f"--gpu-id {gpu_id} has only {free_gb:.1f} GB free (need >= {min_free_gb}). "
                 f"Free devices right now: {others or 'none'}. `nvidia-smi` to see what's busy."
             )
+        # Make the requested device *current*, not just the one tensors are allocated on.
+        # Triton launches kernels on the current device's context, so the 2.5 diffusion VAE
+        # decoder's neighborhood-attention fallback dies with "Pointer argument (at 0) cannot
+        # be accessed from Triton (cpu tensor?)" when the tensors live on cuda:N while cuda:0
+        # is still current. Setting it once here fixes it for every script.
+        torch.cuda.set_device(gpu_id)
     elif not free_gpus(min_free_gb):
         raise SystemExit(f"No CUDA device with >= {min_free_gb} GB free. `nvidia-smi` to see what's busy.")
 
