@@ -178,35 +178,50 @@ def run_schedule(denoiser, transformer, state, sigmas, stepper, step_state, cach
 def verify(denoiser, transformer, state, sigmas, stepper, step_state) -> dict:
     """Assert the cached path is bit-for-bit identical to the uncached path.
 
-    Runs the whole k-step tail twice (cache off, cache on) from the same state and
-    compares every step's x0 prediction with ``torch.equal``. Bit-for-bit, not a
-    tolerance: the cache is supposed to return *the same tensor* the projection
-    would have produced, so any difference means the K/V depend on something the
-    sigma key does not capture, and every downstream measurement taken with the
-    cache on would be quietly wrong.
+    Runs the whole k-step tail three times from the same state: cache off, cache on
+    (every projection a miss, so the cache is populated), and cache on again (every
+    projection a **hit**). The third pass is the one that matters -- the first
+    cached pass only proves the wrapper forwards to the original module, which is
+    trivially true; deployment reuses the cache across windows and AR chunks, so
+    the hit path is what every later measurement actually runs on.
+
+    Bit-for-bit, not a tolerance: the cache is supposed to return *the same tensor*
+    the projection would have produced, so any difference means the K/V depend on
+    something the sigma key does not capture.
     """
     with torch.no_grad():
         uncached = [t.clone() for t in run_schedule(denoiser, transformer, state, sigmas, stepper, step_state, None)]
         with CrossKVCache(transformer) as cache:
-            cached = [t.clone() for t in run_schedule(denoiser, transformer, state, sigmas, stepper, step_state, cache)]
+            fill = [t.clone() for t in run_schedule(denoiser, transformer, state, sigmas, stepper, step_state, cache)]
+            fill_stats = {"hits": cache.hits, "misses": cache.misses}
+            cache.hits = cache.misses = 0
+            reuse = [t.clone() for t in run_schedule(denoiser, transformer, state, sigmas, stepper, step_state, cache)]
             stats = {
-                "hits": cache.hits,
-                "misses": cache.misses,
+                "fill_pass": fill_stats,
+                "reuse_pass": {"hits": cache.hits, "misses": cache.misses},
                 "cached_tensors": cache.cached_tensors,
                 "cached_mb": round(cache.cached_bytes / 1e6, 1),
             }
 
+    if stats["reuse_pass"]["misses"]:
+        raise AssertionError(
+            f"reuse pass still took {stats['reuse_pass']['misses']} cache misses -- the sigma key is "
+            "not stable across identical schedules, so the cache is not doing what it claims."
+        )
+
     steps = []
     all_equal = True
-    for i, (a, b) in enumerate(zip(uncached, cached)):
-        equal = torch.equal(a, b)
-        all_equal &= equal
+    for i, (a, b, c) in enumerate(zip(uncached, fill, reuse)):
+        fill_equal = torch.equal(a, b)
+        reuse_equal = torch.equal(a, c)
+        all_equal &= fill_equal and reuse_equal
         steps.append(
             {
                 "step": i,
                 "sigma": float(sigmas[i]),
-                "bit_exact": equal,
-                "max_abs_diff": float((a.float() - b.float()).abs().max()),
+                "bit_exact_fill": fill_equal,
+                "bit_exact_reuse": reuse_equal,
+                "max_abs_diff_reuse": float((a.float() - c.float()).abs().max()),
             }
         )
     return {"bit_exact": all_equal, "steps": steps, **stats}

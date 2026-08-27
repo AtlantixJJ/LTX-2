@@ -32,6 +32,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import decord
 import torch
 
 from scripts.prune import model_registry, preflight, provenance
@@ -42,16 +43,73 @@ BASELINE_COPY = REPO_ROOT / "scripts" / "_parity_baseline_vae_refine.py"
 SCRIPT = REPO_ROOT / "scripts" / "vae_refine_sliding_window.py"
 
 
-def _write_baseline_copy(rev: str) -> str:
-    """Extract ``<rev>:scripts/vae_refine_sliding_window.py`` next to the current one."""
-    out = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "show", f"{rev}:scripts/vae_refine_sliding_window.py"],
+REL_SCRIPT = "scripts/vae_refine_sliding_window.py"
+# The pre-refactor script located its components itself; the ported one imports the
+# registry. That import is the marker used to tell the two apart in git history.
+REFACTOR_MARKER = "scripts.prune"
+
+
+def _blob(rev: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "show", f"{rev}:{REL_SCRIPT}"],
         capture_output=True,
         text=True,
         check=True,
+    ).stdout
+
+
+def find_baseline_rev() -> str:
+    """Newest revision of the refine script that predates the registry port.
+
+    Not simply ``HEAD``: this workspace auto-commits, so by the time the gate runs,
+    ``HEAD`` can already *contain* the refactor being checked -- which would make the
+    comparison trivially pass by comparing the new script against itself. Walk the
+    file's history instead and take the newest blob without the registry import.
+    """
+    revs = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "log", "--format=%H", "--", REL_SCRIPT],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    for rev in revs:
+        if REFACTOR_MARKER not in _blob(rev):
+            return rev
+    raise SystemExit(
+        f"No revision of {REL_SCRIPT} in this history predates the registry port "
+        f"(searched {len(revs)} commits for one without `{REFACTOR_MARKER}`). "
+        "Pass --rev explicitly."
     )
-    BASELINE_COPY.write_text(out.stdout)
-    return out.stdout
+
+
+def _write_baseline_copy(rev: str) -> str:
+    """Extract ``<rev>:scripts/vae_refine_sliding_window.py`` next to the current one."""
+    content = _blob(rev)
+    if REFACTOR_MARKER in content:
+        raise SystemExit(
+            f"--rev {rev} already contains the registry refactor (`{REFACTOR_MARKER}`), so comparing "
+            "against it would compare the new script with itself. Omit --rev to auto-detect the "
+            "pre-refactor revision."
+        )
+    BASELINE_COPY.write_text(content)
+    return content
+
+
+def _pick_clip(max_windows: int, window: int, overlap: int) -> Path:
+    """First corpus clip long enough to plan *max_windows* whole windows.
+
+    Alphabetically the first clip is a 113-frame ``canonical_rotation`` render --
+    shorter than one window -- so the baseline run would die before producing
+    anything to compare.
+    """
+    need = window + (max_windows - 1) * (window - overlap)
+    for source in sorted(CORPUS_DIR.glob("*/source.mp4")):
+        try:
+            if len(decord.VideoReader(str(source))) >= need:
+                return source
+        except Exception:
+            continue
+    raise SystemExit(f"No clip under {CORPUS_DIR} has the >= {need} frames needed for {max_windows} window(s).")
 
 
 def _run(cmd: list[str], label: str) -> None:
@@ -69,9 +127,21 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", default="2.3", choices=model_registry.SUPPORTED_MODELS)
     ap.add_argument("--gpu-id", type=int, default=0)
-    ap.add_argument("--rev", default="HEAD", help="Git revision holding the pre-refactor script.")
+    ap.add_argument(
+        "--rev", default=None,
+        help="Git revision holding the pre-refactor script. Default: auto-detect the newest "
+        "revision of the script without the registry import (this workspace auto-commits, so "
+        "HEAD is not a safe default).",
+    )
     ap.add_argument("--clip", type=Path, default=None)
     ap.add_argument("--max-windows", type=int, default=2)
+    # The corpus tops out at 145 frames, so the script's default 121-frame window fits
+    # only once -- and a single-window run never exercises the window-to-window latent
+    # carryover, which is exactly the stateful path a refactor is most likely to break.
+    # A 57-frame window (57 % 8 == 1) with the standard 17-frame overlap gives a stride
+    # of 40, so two windows fit in 97 frames and the carryover IS compared.
+    ap.add_argument("--window-frames", type=int, default=57)
+    ap.add_argument("--overlap-frames", type=int, default=17)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--keep-runs", action="store_true", help="Do not delete the two run directories.")
     args = ap.parse_args()
@@ -83,21 +153,25 @@ def main() -> int:
         )
 
     model = preflight.check(args.model, gpu_id=args.gpu_id)
-    clip = args.clip or next(iter(sorted(CORPUS_DIR.glob("*/source.mp4"))))
+    rev = args.rev or find_baseline_rev()
+    clip = args.clip or _pick_clip(args.max_windows, args.window_frames, args.overlap_frames)
+    print(f"[parity] baseline rev {rev[:12]}, clip {clip.parent.name}", flush=True)
     out_root = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / provenance.run_id("parity")
     before_dir, after_dir = out_root / "pre_refactor", out_root / "registry"
 
     python = sys.executable
     try:
-        _write_baseline_copy(args.rev)
+        _write_baseline_copy(rev)
         common = [
             "--video", str(clip),
             "--k-step", "k2",
             "--gpu-id", str(args.gpu_id),
             "--seed", str(args.seed),
             "--max-windows", str(args.max_windows),
+            "--window-frames", str(args.window_frames),
+            "--overlap-frames", str(args.overlap_frames),
         ]
-        _run([python, str(BASELINE_COPY), *common, "--output-dir", str(before_dir)], f"pre-refactor ({args.rev})")
+        _run([python, str(BASELINE_COPY), *common, "--output-dir", str(before_dir)], f"pre-refactor ({rev[:12]})")
         # The pre-refactor script had no --model/--video-only: it always built the
         # audio-video configurator against the 2.3 monolith. Match that exactly --
         # video-only is gated separately by video_only_check.py, and folding it in
@@ -134,9 +208,11 @@ def main() -> int:
     out_root.mkdir(parents=True, exist_ok=True)
     report = {
         "provenance": provenance.stamp(model, torch.device(f"cuda:{args.gpu_id}"), script="parity_check"),
-        "baseline_rev": args.rev,
+        "baseline_rev": rev,
         "clip": str(clip),
         "max_windows": args.max_windows,
+        "window_frames": args.window_frames,
+        "overlap_frames": args.overlap_frames,
         "windows": rows,
         "pass": all_pass,
     }

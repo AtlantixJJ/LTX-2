@@ -197,11 +197,22 @@ def validate(model: RefinerModel, spec: TeacherSpec, device: torch.device, num_c
     came out at 4 dB too, the construction would be wrong and Phase 1 would have
     been built on it.
     """
-    clips = corpus()
+    # One clip per subject, and only clips holding a whole F%t==1 window -- some
+    # corpus entries (the `canonical_rotation` renders) are 113 frames.
     by_subject: dict[str, dict] = {}
-    for c in clips:
-        by_subject.setdefault(c["subject"], c)
-    chosen = list(by_subject.values())[:num_clips]
+    for c in corpus():
+        if c["subject"] in by_subject:
+            continue
+        try:
+            if len(decord.VideoReader(c["source"])) >= WINDOW_FRAMES:
+                by_subject[c["subject"]] = c
+        except Exception:
+            continue
+        if len(by_subject) >= num_clips:
+            break
+    if len(by_subject) < num_clips:
+        raise SystemExit(f"Only {len(by_subject)} subjects have a >= {WINDOW_FRAMES}-frame clip, need {num_clips}.")
+    chosen = list(by_subject.values())
 
     student_sigmas = refine_task.schedule_for(model.sigmas, refine_task.K_STEP)
     video_context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)

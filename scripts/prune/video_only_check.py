@@ -45,11 +45,17 @@ decord.bridge.set_bridge("torch")
 
 DTYPE = torch.bfloat16
 CORPUS_DIR = WORKSPACE_ROOT / "expr" / "sam3dgs_vae_refine"
-WINDOW_FRAMES = 121  # F % 8 == 1, matches vae_refine_sliding_window.py's window grid
+# 25 pixel frames = 4 latent frames, the `k2_chunk25_overlap2` geometry every run under
+# expr/sam3dgs_vae_refine/ was produced at. Deliberately not the 121-frame window: this gate
+# compares two *builds*, and the audio-video configurator is the full 18.5 B (2.3) transformer,
+# which together with a 121-frame activation footprint at the corpus's 1280x704 framing does
+# not fit on a 49 GB card. Configurator equivalence does not depend on window length -- the
+# audio branch is skipped by the same `audio is None` guards at any geometry.
+WINDOW_FRAMES = 25
 TOLERANCE = 1e-2  # bf16 noise floor (plan §5), not exact zero
 
 
-def _read_pixel_window(path: Path, device: torch.device, frames: int = WINDOW_FRAMES) -> torch.Tensor:
+def _read_pixel_window(path: Path, device: torch.device, frames: int) -> torch.Tensor:
     """Returns norm_video [1,C,F,H,W] in [-1,1] on device. Mirrors
     vae_refine_sliding_window.read_pixel_window's cropping (reimplemented, not
     imported -- that script is a run script, not a library)."""
@@ -70,7 +76,7 @@ def _subject_of(clip_dir: Path) -> str:
     return clip_dir.name.split("__", 1)[0]
 
 
-def _pick_clips(num_clips: int) -> list[Path]:
+def _pick_clips(num_clips: int, window_frames: int) -> list[Path]:
     """First usable clip per distinct subject, up to *num_clips*."""
     by_subject: dict[str, Path] = {}
     for p in sorted(CORPUS_DIR.glob("*/source.mp4")):
@@ -78,7 +84,7 @@ def _pick_clips(num_clips: int) -> list[Path]:
         if subject in by_subject:
             continue
         try:
-            if len(decord.VideoReader(str(p))) >= WINDOW_FRAMES:
+            if len(decord.VideoReader(str(p))) >= window_frames:
                 by_subject[subject] = p
         except Exception:
             continue
@@ -86,20 +92,20 @@ def _pick_clips(num_clips: int) -> list[Path]:
             break
     if len(by_subject) < num_clips:
         raise SystemExit(
-            f"Only found {len(by_subject)} subjects with a >= {WINDOW_FRAMES}-frame clip under "
+            f"Only found {len(by_subject)} subjects with a >= {window_frames}-frame clip under "
             f"{CORPUS_DIR}, need {num_clips}."
         )
     return list(by_subject.values())
 
 
-def _encode(model: RefinerModel, clips: list[Path], device: torch.device) -> list[dict]:
+def _encode(model: RefinerModel, clips: list[Path], device: torch.device, window_frames: int) -> list[dict]:
     """VAE-encode one window per clip; the encoder is built once and freed."""
     out = []
     with torch.no_grad():
         image_conditioner = ImageConditioner(model.paths.video_vae(), DTYPE, device)
         with gpu_model(image_conditioner._build_encoder()) as encoder:
             for clip in clips:
-                norm_video = _read_pixel_window(clip, device)
+                norm_video = _read_pixel_window(clip, device, window_frames)
                 _, _, frames, height, width = norm_video.shape
                 out.append(
                     {
@@ -137,19 +143,24 @@ def _run_all(
     outputs = []
     torch.cuda.reset_peak_memory_stats(device)
     stats: dict = {}
-    with torch.no_grad():
+
+    def tools_for(item: dict) -> VideoLatentTools:
+        # Per clip, not once from the first: the corpus mixes 1024x1024 `_crop`,
+        # 1280x704 `_original` and 768x768 `canonical_rotation` framings, and a
+        # shared LatentTools asserts the first clip's target shape against every
+        # later clip's encode.
         pixel_shape = VideoPixelShape(
-            batch=1, frames=encoded[0]["frames"], height=encoded[0]["height"], width=encoded[0]["width"], fps=24.0
+            batch=1, frames=item["frames"], height=item["height"], width=item["width"], fps=24.0
         )
         v_shape = VideoLatentShape.from_pixel_shape(
             pixel_shape, latent_channels=model.caps.latent_channels, scale_factors=model.scale_factors
         )
-        video_tools = VideoLatentTools(
-            VideoLatentPatchifier(patch_size=1), v_shape, 24.0, scale_factors=model.scale_factors
-        )
+        return VideoLatentTools(VideoLatentPatchifier(patch_size=1), v_shape, 24.0, scale_factors=model.scale_factors)
+
+    with torch.no_grad():
         denoiser = SimpleDenoiser(video_context, None)
         sigmas = torch.tensor([sigma0, 0.0], dtype=torch.float32, device=device)
-        with stage._transformer_ctx(video_tools=video_tools) as transformer:
+        with stage._transformer_ctx(video_tools=tools_for(encoded[0])) as transformer:
             stats["resident_alloc_gb"] = torch.cuda.memory_allocated(device) / 1e9
             stats["build_peak_alloc_gb"] = torch.cuda.max_memory_allocated(device) / 1e9
             for item in encoded:
@@ -158,7 +169,7 @@ def _run_all(
                     ModalitySpec(
                         context=video_context, conditionings=[], noise_scale=sigma0, initial_latent=item["latent"]
                     ),
-                    video_tools,
+                    tools_for(item),
                     noiser,
                     DTYPE,
                     device,
@@ -177,6 +188,7 @@ def main() -> int:
     ap.add_argument("--num-clips", type=int, default=3)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--tolerance", type=float, default=TOLERANCE)
+    ap.add_argument("--window-frames", type=int, default=WINDOW_FRAMES, help="Must satisfy F %% t == 1.")
     args = ap.parse_args()
 
     model = preflight.check(args.model, gpu_id=args.gpu_id)
@@ -184,9 +196,13 @@ def main() -> int:
     video_context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
     sigma0 = refine_task.schedule_for(model.sigmas, refine_task.K_STEP)[0]
 
-    clips = _pick_clips(args.num_clips)
+    if (args.window_frames - 1) % model.scale_factors.time != 0:
+        raise SystemExit(
+            f"--window-frames {args.window_frames} must satisfy F %% {model.scale_factors.time} == 1."
+        )
+    clips = _pick_clips(args.num_clips, args.window_frames)
     print(f"[video_only_check] subjects: {[_subject_of(c.parent) for c in clips]}", flush=True)
-    encoded = _encode(model, clips, device)
+    encoded = _encode(model, clips, device, args.window_frames)
 
     print("[video_only_check] audio-video build ...", flush=True)
     av_out, av_mem = _run_all(model, LTXModelConfigurator, encoded, video_context, sigma0, device, args.seed)
@@ -223,6 +239,7 @@ def main() -> int:
             {
                 "provenance": provenance.stamp(model, device, script="video_only_check"),
                 "tolerance": args.tolerance,
+                "window_frames": args.window_frames,
                 "sigma0": sigma0,
                 "memory": {
                     "audio_video": av_mem,

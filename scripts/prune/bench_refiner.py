@@ -246,6 +246,12 @@ def main() -> int:  # noqa: PLR0915
     ap.add_argument("--warmup-steps", type=int, default=1)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out-dir", type=Path, default=None)
+    ap.add_argument(
+        "--tag", default="baseline",
+        help="Names the output file (bench_<tag>.json) in both the run dir and the stable "
+        "per-generation pointer, so a partial sweep (e.g. --tag compile) never clobbers the "
+        "canonical baseline table.",
+    )
     args = ap.parse_args()
 
     model = preflight.check(args.model, sampler=args.sampler, gpu_id=args.gpu_id)
@@ -349,7 +355,7 @@ def main() -> int:  # noqa: PLR0915
             del transformer, stage
             torch.cuda.empty_cache()
 
-    out_dir = args.out_dir or (DEFAULT_OUT_DIR / model.key / provenance.run_id("bench"))
+    out_dir = args.out_dir or (DEFAULT_OUT_DIR / model.key / provenance.run_id(f"bench-{args.tag}"))
     out_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "provenance": provenance.stamp(model, device, script="bench_refiner"),
@@ -367,11 +373,11 @@ def main() -> int:  # noqa: PLR0915
         "builds": builds,
         "rows": rows,
     }
-    out_path = out_dir / "bench_baseline.json"
+    out_path = out_dir / f"bench_{args.tag}.json"
     out_path.write_text(json.dumps(payload, indent=2))
     # Also refresh the stable per-generation pointer so downstream scripts do not
     # have to know the run id.
-    (DEFAULT_OUT_DIR / model.key / "bench_baseline.json").write_text(json.dumps(payload, indent=2))
+    (DEFAULT_OUT_DIR / model.key / f"bench_{args.tag}.json").write_text(json.dumps(payload, indent=2))
     print(f"Wrote {out_path}")
     return 0
 
