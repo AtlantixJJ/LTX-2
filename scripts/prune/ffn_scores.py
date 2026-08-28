@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 import argparse
 import json
 
 import torch
 
-from scripts.prune import artifacts, chunk_states, hooks, losses, lstsq, prune_schedule, records
-from scripts.prune import model_registry, preflight, prompt_cache, provenance, refine_task
+from scripts.prune import artifacts, chunk_states, hooks, losses, lstsq, prune_schedule, records, session
+from scripts.prune import model_registry, provenance, refine_task
 from scripts.prune.model_registry import WORKSPACE_ROOT
 from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
 from ltx_pipelines.utils.blocks import DiffusionStage
@@ -117,10 +118,9 @@ def masked_t0(model, masks: dict[str, torch.Tensor], records: list[Path], denois
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--model", choices=model_registry.SUPPORTED_MODELS, default="2.5")
-    ap.add_argument("--gpu-id", type=int, default=0); ap.add_argument("--states", type=Path)
-    ap.add_argument("--split", choices=("calibration", "held_out"), default="calibration")
-    ap.add_argument("--max-records", type=int); ap.add_argument("--target-sparsity", type=float, default=0.5)
+    session.add_model_args(ap)
+    session.add_record_args(ap)
+    ap.add_argument("--target-sparsity", type=float, default=0.5)
     ap.add_argument("--evaluate-sparsities", type=float, nargs="*", default=(),
                     help="Real masked T0 sweep, performed before any structural export.")
     ap.add_argument("--iterative-rounds", type=int, default=0,
@@ -129,28 +129,24 @@ def main() -> int:
                     help="Layer numbers to ridge-reconstruct for the selected target mask (real activation solve).")
     ap.add_argument("--save-reconstruction", type=Path,
                     help="Write fitted projections for export_pruned --reconstruction-state.")
-    args = ap.parse_args(); model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id)
-    root = args.states or artifacts.calibration(model.key)
+    args = ap.parse_args(); s = session.open_session(args, script="ffn_scores")
+    root = s.states_root(args.states)
     paths = records.select(root, split=args.split, limit=args.max_records)
     if not paths: raise SystemExit(f"No {args.split} records under {root}")
-    device = torch.device(f"cuda:{args.gpu_id}"); context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
-    sigmas = torch.tensor(refine_task.schedule_for(model.sigmas, refine_task.K_STEP), dtype=torch.float32, device=device)
-    stage = DiffusionStage.from_checkpoint(model.paths.transformer(), DTYPE, device, model_configurator=LTXVideoOnlyModelConfigurator, scale_factors=model.scale_factors)
-    with stage._transformer_ctx() as transformer:
-        denoiser = SimpleDenoiser(context, None)
-        rms = channel_rms(transformer, paths, denoiser, sigmas, device); scores = channel_scores(transformer, rms)
+    with s.transformer() as transformer:
+        rms = channel_rms(transformer, paths, s.denoiser, s.sigmas, s.device); scores = channel_scores(transformer, rms)
         masks = masks_from_scores(scores, args.target_sparsity)
-        evaluation = {str(s): masked_t0(transformer, masks_from_scores(scores, s), paths, denoiser, sigmas, device)
-                      for s in args.evaluate_sparsities}
+        evaluation = {str(sparsity): masked_t0(transformer, masks_from_scores(scores, sparsity), paths, s.denoiser, s.sigmas, s.device)
+                      for sparsity in args.evaluate_sparsities}
         iterative = None
         if args.iterative_rounds:
             def rescore(active):
-                return channel_scores(transformer, channel_rms(transformer, paths, denoiser, sigmas, device, active))
+                return channel_scores(transformer, channel_rms(transformer, paths, s.denoiser, s.sigmas, s.device, active))
             iterative_masks, history = prune_schedule.iterative_ffn_masks(
                 transformer, target_sparsity=args.target_sparsity, rounds=args.iterative_rounds, rescore=rescore,
             )
             iterative = {"rounds": args.iterative_rounds, "masks": {k: v.tolist() for k, v in iterative_masks.items()},
-                         "history": history, "masked_t0_rel_l2": masked_t0(transformer, iterative_masks, paths, denoiser, sigmas, device)}
+                         "history": history, "masked_t0_rel_l2": masked_t0(transformer, iterative_masks, paths, s.denoiser, s.sigmas, s.device)}
         reconstruction = None
         reconstruction_tensors: dict[str, torch.Tensor] = {}
         if args.reconstruct_layers:
@@ -160,15 +156,15 @@ def main() -> int:
                 if name not in masks:
                     raise ValueError(f"unknown FFN layer {layer}")
                 keep = torch.nonzero(masks[name] != 0).flatten()
-                naive_t0 = masked_t0(transformer, {name: masks[name]}, paths, denoiser, sigmas, device)
-                projection = reconstruct_ffn_projection(transformer, name, keep, paths, denoiser, sigmas, device)
+                naive_t0 = masked_t0(transformer, {name: masks[name]}, paths, s.denoiser, s.sigmas, s.device)
+                projection = reconstruct_ffn_projection(transformer, name, keep, paths, s.denoiser, s.sigmas, s.device)
                 fitted[name] = list(projection.shape)
                 reconstruction_tensors[name] = projection.cpu()
-                fitted[name + ".isolated_t0"] = [naive_t0, masked_t0(transformer, {name: masks[name]}, paths, denoiser, sigmas, device)]
+                fitted[name + ".isolated_t0"] = [naive_t0, masked_t0(transformer, {name: masks[name]}, paths, s.denoiser, s.sigmas, s.device)]
             reconstruction = {"layers": list(args.reconstruct_layers), "fitted_shapes": fitted,
-                              "masked_t0_rel_l2_after_all_layers_masked": masked_t0(transformer, masks, paths, denoiser, sigmas, device)}
-    out = artifacts.run_dir(model.key, "ffn-scores", script="ffn_scores", argv=sys.argv[1:])
-    report = {"provenance": provenance.stamp(model, device, script="ffn_scores"), "records": [x.name for x in paths],
+                              "masked_t0_rel_l2_after_all_layers_masked": masked_t0(transformer, masks, paths, s.denoiser, s.sigmas, s.device)}
+    out = artifacts.run_dir(s.key, "ffn-scores", script="ffn_scores", argv=sys.argv[1:])
+    report = {"provenance": s.stamp(), "records": [x.name for x in paths],
               "target_sparsity": args.target_sparsity, "scores": {k: v.tolist() for k,v in scores.items()}, "masks": {k: v.tolist() for k,v in masks.items()},
               "kept": {k: int(v.sum()) for k,v in masks.items()}, "masked_t0_rel_l2": evaluation, "iterative": iterative,
               "reconstruction": reconstruction}
