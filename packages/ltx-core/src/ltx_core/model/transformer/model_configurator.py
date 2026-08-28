@@ -80,6 +80,11 @@ class LTXModelConfigurator(ModelConfigurator[LTXModel]):
             audio_ff_bias=config.get("audio_ff_bias", True),
             # Only generated-keyframe checkpoints set this; defaults off so older ones are untouched.
             use_keyframes_abs_pos_embedding=config.get("use_keyframes_abs_pos_embedding", False),
+            per_layer_video_attn1_heads=config.get("per_layer_video_attn1_heads"),
+            per_layer_video_attn2_heads=config.get("per_layer_video_attn2_heads"),
+            per_layer_ff_inner_dim=config.get("per_layer_ff_inner_dim"),
+            per_layer_video_attn1_rope_head_indices=config.get("per_layer_video_attn1_rope_head_indices"),
+            per_layer_video_attn2_rope_head_indices=config.get("per_layer_video_attn2_rope_head_indices"),
         )
 
 
@@ -140,6 +145,11 @@ class LTXVideoOnlyModelConfigurator(ModelConfigurator[LTXModel]):
             ff_bias=config.get("ff_bias", True),
             # Only generated-keyframe checkpoints set this; defaults off so older ones are untouched.
             use_keyframes_abs_pos_embedding=config.get("use_keyframes_abs_pos_embedding", False),
+            per_layer_video_attn1_heads=config.get("per_layer_video_attn1_heads"),
+            per_layer_video_attn2_heads=config.get("per_layer_video_attn2_heads"),
+            per_layer_ff_inner_dim=config.get("per_layer_ff_inner_dim"),
+            per_layer_video_attn1_rope_head_indices=config.get("per_layer_video_attn1_rope_head_indices"),
+            per_layer_video_attn2_rope_head_indices=config.get("per_layer_video_attn2_rope_head_indices"),
         )
 
 

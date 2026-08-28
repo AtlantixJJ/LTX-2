@@ -62,3 +62,21 @@ def attention_accumulator(
         acc.add(x[idx], full_weight.float() @ x.float())
 
     return acc, add
+
+
+@torch.no_grad()
+def ffn_accumulator(ff, keep: torch.Tensor) -> tuple[RidgeAccumulator, Callable[[torch.Tensor, torch.Tensor | None], None]]:
+    """Streaming ridge system for a post-GELU FFN channel subset."""
+    keep = keep.to(device=ff.net[2].weight.device, dtype=torch.long)
+    weight = ff.net[2].weight.detach()
+    acc = RidgeAccumulator(keep.numel(), weight.shape[0], keep.device)
+
+    def add(activation: torch.Tensor, token_mask: torch.Tensor | None = None) -> None:
+        if token_mask is not None:
+            if token_mask.shape != activation.shape[:2] + (1,):
+                raise ValueError(f"token mask {tuple(token_mask.shape)} != activation {tuple(activation.shape)}")
+            activation = activation[token_mask[..., 0].bool()]
+        x = activation.detach().reshape(-1, activation.shape[-1]).T
+        acc.add(x[keep], weight.float() @ x.float())
+
+    return acc, add

@@ -92,7 +92,8 @@ def contribution_scores(model, paths: list[Path], denoiser, sigmas: torch.Tensor
             state, _, meta = chunk_states.load_record(path, device)
             token_mask = chunk_states.chunk_token_mask(state, meta)
             _run(denoiser, model, state, sigmas, meta.step_index)
-    return {name: (value / max(count[name], 1)).sqrt().cpu() for name, value in acc.items()}
+    raw = {name: (value / max(count[name], 1)).sqrt().cpu() for name, value in acc.items()}
+    return _normalize(raw)
 
 
 def _freeze_weights(model) -> None:

@@ -71,6 +71,16 @@ python -m scripts.prune.head_scores --model 2.5 --gpu-id 0 --methods contributio
 python -m scripts.prune.head_scores --model 2.5 --gpu-id 1 --methods michel
 python -m scripts.prune.head_scores --model 2.5 --gpu-id 2 --methods gauss_newton --gauss-newton-projections 16
 python -m scripts.prune.head_scores --model 2.5 --gpu-id 3 --methods contribution --ablate-layers --validate-heads 200
+
+# Compare estimates from matched scoring runs visually (block rows × head columns).
+python -m scripts.prune.plot_head_scores \
+  --scores expr/refiner_prune/2.5/*-head-scores/head_scores.json \
+  --output-dir expr/refiner_prune/2.5/head-score-figures
+
+# Functionally remove selected heads, then compare x0 latents and a decoded MP4
+# with the unpruned result. (Structural tensor export is Phase 4.)
+python -m scripts.prune.head_ablation_eval --model 2.5 --gpu-id N \
+  --remove-head 7.attn2:14 --split held_out --max-records 8
 ```
 
 ## Phase 1 — build calibration data

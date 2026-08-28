@@ -78,6 +78,11 @@ class LTXModel(torch.nn.Module, Disposable):
         ff_bias: bool = True,
         audio_ff_bias: bool = True,
         use_keyframes_abs_pos_embedding: bool = False,
+        per_layer_video_attn1_heads: list[int] | None = None,
+        per_layer_video_attn2_heads: list[int] | None = None,
+        per_layer_ff_inner_dim: list[int] | None = None,
+        per_layer_video_attn1_rope_head_indices: list[list[int]] | None = None,
+        per_layer_video_attn2_rope_head_indices: list[list[int]] | None = None,
     ):
         super().__init__()
         # Log the attention backends this transformer is built with. Reading the resolved
@@ -145,6 +150,11 @@ class LTXModel(torch.nn.Module, Disposable):
             apply_gated_attention=apply_gated_attention,
             ff_bias=ff_bias,
             audio_ff_bias=audio_ff_bias,
+            per_layer_video_attn1_heads=per_layer_video_attn1_heads,
+            per_layer_video_attn2_heads=per_layer_video_attn2_heads,
+            per_layer_ff_inner_dim=per_layer_ff_inner_dim,
+            per_layer_video_attn1_rope_head_indices=per_layer_video_attn1_rope_head_indices,
+            per_layer_video_attn2_rope_head_indices=per_layer_video_attn2_rope_head_indices,
         )
         # Hook for per-block input prep. Compile transforms in `compiling.py`
         # wrap (not replace) this with a processor that also marks the seq dim
@@ -376,21 +386,24 @@ class LTXModel(torch.nn.Module, Disposable):
         apply_gated_attention: bool,
         ff_bias: bool = True,
         audio_ff_bias: bool = True,
+        per_layer_video_attn1_heads: list[int] | None = None,
+        per_layer_video_attn2_heads: list[int] | None = None,
+        per_layer_ff_inner_dim: list[int] | None = None,
+        per_layer_video_attn1_rope_head_indices: list[list[int]] | None = None,
+        per_layer_video_attn2_rope_head_indices: list[list[int]] | None = None,
     ) -> None:
         """Initialize transformer blocks for LTX."""
-        video_config = (
-            TransformerConfig(
-                dim=self.inner_dim,
-                heads=self.num_attention_heads,
-                d_head=attention_head_dim,
-                context_dim=cross_attention_dim,
-                apply_gated_attention=apply_gated_attention,
-                cross_attention_adaln=self.cross_attention_adaln,
-                ff_bias=ff_bias,
-            )
-            if self.model_type.is_video_enabled()
-            else None
-        )
+        def layer_values(values, default, label):
+            values = [default] * num_layers if values is None else list(values)
+            if len(values) != num_layers:
+                raise ValueError(f"{label} requires {num_layers} entries, got {len(values)}")
+            return values
+
+        a1 = layer_values(per_layer_video_attn1_heads, self.num_attention_heads, "per_layer_video_attn1_heads")
+        a2 = layer_values(per_layer_video_attn2_heads, self.num_attention_heads, "per_layer_video_attn2_heads")
+        ffn = layer_values(per_layer_ff_inner_dim, self.inner_dim * 4, "per_layer_ff_inner_dim")
+        a1_idx = layer_values(per_layer_video_attn1_rope_head_indices, None, "per_layer_video_attn1_rope_head_indices")
+        a2_idx = layer_values(per_layer_video_attn2_rope_head_indices, None, "per_layer_video_attn2_rope_head_indices")
         audio_config = (
             TransformerConfig(
                 dim=self.audio_inner_dim,
@@ -407,13 +420,19 @@ class LTXModel(torch.nn.Module, Disposable):
         self.transformer_blocks = torch.nn.ModuleList(
             [
                 BasicAVTransformerBlock(
-                    video=video_config,
+                    video=TransformerConfig(
+                        dim=self.inner_dim, heads=self.num_attention_heads, d_head=attention_head_dim,
+                        context_dim=cross_attention_dim, apply_gated_attention=apply_gated_attention,
+                        cross_attention_adaln=self.cross_attention_adaln, ff_bias=ff_bias,
+                        attn1_heads=a1[i], attn2_heads=a2[i], ff_inner_dim=ffn[i],
+                        attn1_rope_head_indices=a1_idx[i], attn2_rope_head_indices=a2_idx[i],
+                    ) if self.model_type.is_video_enabled() else None,
                     audio=audio_config,
                     rope_type=self.rope_type,
                     norm_eps=norm_eps,
                     ops=ops,
                 )
-                for _ in range(num_layers)
+                for i in range(num_layers)
             ]
         )
 

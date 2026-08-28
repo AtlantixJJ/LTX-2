@@ -32,8 +32,24 @@ class PytorchPreAttention(PreAttentionCallable):
         q = attn_module.q_norm(q)
         k = attn_module.k_norm(k)
         if pe is not None:
-            q = apply_rotary_emb(q, pe, attn_module.rope_type)
-            k = apply_rotary_emb(k, pe if k_pe is None else k_pe, attn_module.rope_type)
+            # A structurally pruned branch keeps arbitrary original heads. RoPE
+            # frequencies are head-major, so retaining only the first H slices
+            # would change positional encoding.  Select the recorded original
+            # slices before applying RoPE; stock checkpoints leave this None.
+            indices = getattr(attn_module, "rope_head_indices", None)
+            def select_heads(freqs):
+                if indices is None:
+                    return freqs
+                # RoPE is a (cos, sin) pair in the split implementation.
+                # Keep this tolerant of a future tensor-only representation.
+                if isinstance(freqs, tuple):
+                    return tuple(value[:, indices] for value in freqs)
+                return freqs[:, indices]
+
+            q_pe = select_heads(pe)
+            k_pe = select_heads(pe if k_pe is None else k_pe)
+            q = apply_rotary_emb(q, q_pe, attn_module.rope_type)
+            k = apply_rotary_emb(k, k_pe, attn_module.rope_type)
         return q, k
 
 

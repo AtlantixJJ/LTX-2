@@ -223,6 +223,10 @@ def main() -> int:
     ap.add_argument("--model", default="2.5", choices=model_registry.SUPPORTED_MODELS)
     ap.add_argument("--gpu-id", type=int, default=0)
     ap.add_argument("--states", type=Path, default=None)
+    ap.add_argument("--transformer-path", type=Path, default=None,
+                    help="Evaluate a freshly exported pruned transformer rather than the registry default.")
+    ap.add_argument("--output", type=Path, default=None,
+                    help="JSON destination; defaults to the unpruned Phase-1 baseline path.")
     ap.add_argument("--rollout-chunks", type=int, default=12)
     ap.add_argument("--cycle-source", action="store_true",
                     help="Extend the rollout past the clip's own length by cycling its latent frames.")
@@ -231,7 +235,8 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
-    model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id)
+    model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id,
+                            transformer_path=args.transformer_path)
     device = torch.device(f"cuda:{args.gpu_id}")
     out_root = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key
     states_root = args.states or (out_root / "calibration")
@@ -330,7 +335,8 @@ def main() -> int:
             "- `phase1_rollout.mp4`: aligned source | source target | student AR rollout\n"
         )
 
-    path = out_root / "phase1_gates.json"
+    path = args.output or (out_root / "phase1_gates.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result, indent=2))
     print(json.dumps({k: v for k, v in result.items() if k != "T0"}, indent=2))
     print(f"Wrote {path}")

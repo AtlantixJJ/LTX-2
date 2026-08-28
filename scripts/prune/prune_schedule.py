@@ -54,6 +54,36 @@ def iterative_head_masks(model, *, target_sparsity: float, rounds: int,
     return {name: value.cpu() for name, value in masks.items()}, history
 
 
+def iterative_ffn_masks(model, *, target_sparsity: float, rounds: int,
+                        rescore: Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]]) -> tuple[dict[str, torch.Tensor], list[dict]]:
+    """Iteratively remove FFN channels, re-scoring surviving activations each round.
+
+    Unlike attention's global head pool, channels are allocated per layer.  This
+    prevents an AdaLN-scale mismatch from silently eliminating an entire FFN.
+    ``rescore`` receives the active masks and must measure the masked model.
+    """
+    if not 0 <= target_sparsity < 1 or rounds < 1:
+        raise ValueError("target_sparsity must be in [0, 1) and rounds must be positive")
+    masks = {name: torch.ones(ff.net[2].weight.shape[1]) for name, ff in hooks.iter_video_ffn(model)}
+    history: list[dict] = []
+    for round_idx in range(rounds):
+        scores = rescore(masks)
+        removed = []
+        for name, values in scores.items():
+            target = round(values.numel() * target_sparsity * (round_idx + 1) / rounds)
+            current = int((masks[name] == 0).sum())
+            take = max(0, target - current)
+            live = torch.nonzero(masks[name] != 0).flatten()
+            if take:
+                chosen = live[torch.argsort(values[live])[:take]]
+                masks[name][chosen] = 0
+                removed.extend({"name": name, "channel": int(i)} for i in chosen)
+        history.append({"round": round_idx + 1, "removed": removed,
+                        "dropped": sum(int((m == 0).sum()) for m in masks.values()),
+                        "total": sum(m.numel() for m in masks.values())})
+    return {name: value.cpu() for name, value in masks.items()}, history
+
+
 @torch.no_grad()
 def reconstruct_attention_projection(model, name: str, keep: torch.Tensor, records: list[Path], denoiser, sigmas: torch.Tensor,
                                      device: torch.device, ridge: float = 1e-4) -> torch.Tensor:
