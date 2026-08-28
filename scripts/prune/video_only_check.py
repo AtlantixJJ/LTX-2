@@ -82,6 +82,7 @@ def _encode(model: RefinerModel, clips: list[Path], device: torch.device, window
                     {
                         "clip": clip.parent.name,
                         "subject": corpus.subject_of(clip.parent.name),
+                        "source": clip,
                         "latent": encoder.tiled_encode(norm_video, None),
                         "frames": frames,
                         "height": height,
@@ -119,14 +120,19 @@ def _run_all(
         # Per clip, not once from the first: the corpus mixes 1024x1024 `_crop`,
         # 1280x704 `_original` and 768x768 `canonical_rotation` framings, and a
         # shared LatentTools asserts the first clip's target shape against every
-        # later clip's encode.
+        # later clip's encode. fps is the clip's own rate, not a literal: it's RoPE
+        # (VideoLatentTools divides the temporal axis by it), and this gate compares
+        # two *builds* of the SAME clip at the SAME fps, so max_abs_diff stays exactly
+        # 0.0 regardless of which real fps is used -- that invariance is the proof
+        # this change is safe.
+        fps = corpus.fps(item["source"])
         pixel_shape = VideoPixelShape(
-            batch=1, frames=item["frames"], height=item["height"], width=item["width"], fps=24.0
+            batch=1, frames=item["frames"], height=item["height"], width=item["width"], fps=fps
         )
         v_shape = VideoLatentShape.from_pixel_shape(
             pixel_shape, latent_channels=model.caps.latent_channels, scale_factors=model.scale_factors
         )
-        return VideoLatentTools(VideoLatentPatchifier(patch_size=1), v_shape, 24.0, scale_factors=model.scale_factors)
+        return VideoLatentTools(VideoLatentPatchifier(patch_size=1), v_shape, fps, scale_factors=model.scale_factors)
 
     with torch.no_grad():
         denoiser = SimpleDenoiser(video_context, None)

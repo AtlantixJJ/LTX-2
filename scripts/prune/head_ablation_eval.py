@@ -137,7 +137,7 @@ def main() -> int:
                 flush=True,
             )
             if render_data is None and not args.no_render:
-                render_data = (path.name, state, target.cpu(), baseline.cpu(), candidate.cpu())
+                render_data = (path.name, state, target.cpu(), baseline.cpu(), candidate.cpu(), meta.fps)
     output = artifacts.run_dir(s.key, "head-ablation", script="head_ablation_eval", argv=sys.argv[1:])
     result = {
         "provenance": s.stamp(),
@@ -155,7 +155,7 @@ def main() -> int:
                 "candidate": render_data[4] if render_data else None}, output / "latents.pt")
 
     if render_data is not None:
-        record, state, target, baseline, candidate = render_data
+        record, state, target, baseline, candidate, fps = render_data
         holder = VideoDecoder(model.paths.video_vae(), DTYPE, device)
         with torch.no_grad(), gpu_model(holder._decoder_builder.build(device=device, dtype=DTYPE).eval()) as decoder:
             source_px = _decode_token_latent(model, state, target.to(device), decoder, device)
@@ -164,7 +164,9 @@ def main() -> int:
         figures = output / "figures"
         figures.mkdir(exist_ok=True)
         grid = metrics.t3_grid([(record, source_px, baseline_px, candidate_px)], figures / "ablation_grid.png")
-        video = metrics.t3_video(source_px, baseline_px, candidate_px, figures / "ablation_comparison.mp4", fps=24.0)
+        # meta.fps, not the metrics.t3_video default: this is the review MP4's playback
+        # rate for a real corpus clip, and 41 of 44 clips are 30 fps, not 24.
+        video = metrics.t3_video(source_px, baseline_px, candidate_px, figures / "ablation_comparison.mp4", fps=fps)
         (figures / "INDEX.md").write_text(
             "# Head ablation artifacts\n\n"
             "- `ablation_grid.png`: VAE source target | unpruned x0 | masked-head x0.\n"
