@@ -13,6 +13,7 @@ Example:
 
 from __future__ import annotations
 
+import sys
 import argparse
 import json
 from dataclasses import replace
@@ -29,7 +30,7 @@ from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.helpers import post_process_latent
 
-from scripts.prune import artifacts, chunk_states, hooks, losses, metrics, model_registry, preflight, prompt_cache, provenance, records, refine_task
+from scripts.prune import artifacts, chunk_states, hooks, losses, metrics, model_registry, provenance, records, refine_task, session
 from scripts.prune.model_registry import WORKSPACE_ROOT
 
 DTYPE = torch.bfloat16
@@ -91,39 +92,29 @@ def _mean(rows: list[dict], key: str) -> float:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default="2.5", choices=model_registry.SUPPORTED_MODELS)
-    parser.add_argument("--gpu-id", type=int, default=0)
-    parser.add_argument("--states", type=Path, default=None)
-    parser.add_argument("--split", choices=("calibration", "held_out"), default="held_out")
-    parser.add_argument("--max-records", type=int, default=1, help="Use 0 for all records in the selected split.")
+    session.add_model_args(parser)
+    session.add_record_args(parser, default_split="held_out")
     parser.add_argument("--remove-head", type=_parse_head, action="append", required=True)
     parser.add_argument("--no-render", action="store_true", help="Skip the first-record latent/video artifacts.")
     args = parser.parse_args()
 
-    model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id)
-    device = torch.device(f"cuda:{args.gpu_id}")
-    states_root = args.states or artifacts.calibration(model.key)
+    s = session.open_session(args, script="head_ablation_eval")
+    model, device = s.model, s.device
+    states_root = s.states_root(args.states)
     paths = records.select(states_root, split=args.split, limit=args.max_records)
 
-    context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
-    denoiser = SimpleDenoiser(context, None)
-    sigmas = torch.tensor(refine_task.schedule_for(model.sigmas, refine_task.K_STEP), dtype=torch.float32, device=device)
-    stage = DiffusionStage.from_checkpoint(
-        model.paths.transformer(), DTYPE, device,
-        model_configurator=LTXVideoOnlyModelConfigurator, scale_factors=model.scale_factors,
-    )
     rows: list[dict] = []
     render_data = None
-    with torch.no_grad(), stage._transformer_ctx() as transformer:
+    with s.transformer() as transformer:
         masks = _mask_for(transformer, args.remove_head, device)
         for path in paths:
             state, target, meta = chunk_states.load_record(path, device)
             chunk_mask = chunk_states.chunk_token_mask(state, meta)
-            baseline_result, _ = denoiser(transformer, state, None, sigmas, meta.step_index)
+            baseline_result, _ = s.denoiser(transformer, state, None, s.sigmas, meta.step_index)
             if baseline_result is None:
                 raise RuntimeError("unpruned denoiser returned no video result")
             with hooks.attach_head_masks(transformer, masks, requires_grad=False):
-                candidate_result, _ = denoiser(transformer, state, None, sigmas, meta.step_index)
+                candidate_result, _ = s.denoiser(transformer, state, None, s.sigmas, meta.step_index)
             if candidate_result is None:
                 raise RuntimeError("masked denoiser returned no video result")
             baseline, candidate = baseline_result.denoised, candidate_result.denoised
@@ -150,12 +141,9 @@ def main() -> int:
             )
             if render_data is None and not args.no_render:
                 render_data = (path.name, state, target.cpu(), baseline.cpu(), candidate.cpu())
-    del stage
-    torch.cuda.empty_cache()
-
-    output = artifacts.run_dir(model.key, "head-ablation", script="head_ablation_eval", argv=sys.argv[1:])
+    output = artifacts.run_dir(s.key, "head-ablation", script="head_ablation_eval", argv=sys.argv[1:])
     result = {
-        "provenance": provenance.stamp(model, device, script="head_ablation_eval"),
+        "provenance": s.stamp(),
         "removed_heads": [{"name": name, "head": head} for name, head in args.remove_head],
         "records": rows,
         "summary": {
