@@ -42,7 +42,7 @@ import torch
 from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
 from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
-from scripts.prune import artifacts, corpus, model_registry, phase1_gates, preflight, prompt_cache, provenance, refine_core, refine_task
+from scripts.prune import artifacts, corpus, model_registry, phase1_gates, preflight, provenance, refine_core, refine_task, session
 from scripts.prune.model_registry import REPO_ROOT, WORKSPACE_ROOT
 
 DTYPE = torch.bfloat16
@@ -75,23 +75,14 @@ def run_reference(model, clip: Path, geometry: refine_core.WindowGeometry, windo
     return [torch.load(p, map_location="cpu") for p in cached]
 
 
-def run_harness(model, clip: Path, geometry: refine_core.WindowGeometry, windows: int, seed: int,
-                device: torch.device) -> list[torch.Tensor]:
+def run_harness(s, clip: Path, geometry: refine_core.WindowGeometry, windows: int, seed: int) -> list[torch.Tensor]:
     """Run the gates' own rollout -- the same two functions ``phase1_gates.main`` calls."""
     plan = geometry.plan(corpus.frame_count(clip))[:windows]
-    latents, _, fps = phase1_gates._encode_windows(model, clip, plan, device)
-    context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
-    denoiser = SimpleDenoiser(context, None)
-    sigmas = refine_task.schedule_for(model.sigmas, refine_task.K_STEP)
-    stage = DiffusionStage.from_checkpoint(
-        model.paths.transformer(), DTYPE, device,
-        model_configurator=LTXVideoOnlyModelConfigurator, scale_factors=model.scale_factors,
-    )
-    with torch.no_grad(), stage._transformer_ctx() as transformer:
-        refined = phase1_gates._rollout(transformer, denoiser, latents, geometry, sigmas, fps,
-                                        seed=seed, device=device)
-    del stage
-    torch.cuda.empty_cache()
+    latents, _, fps = phase1_gates._encode_windows(s.model, clip, plan, s.device)
+    sigmas = refine_task.schedule_for(s.model.sigmas, refine_task.K_STEP)
+    with s.transformer() as transformer:
+        refined = phase1_gates._rollout(transformer, s.denoiser, latents, geometry, sigmas, fps,
+                                        seed=seed, device=s.device)
     # The refine script persists its cache as bf16 on CPU; match that before comparing
     # so the gate tests the model rather than a dtype round-trip.
     return [latent.to(torch.bfloat16).cpu() for latent in refined]
@@ -99,13 +90,11 @@ def run_harness(model, clip: Path, geometry: refine_core.WindowGeometry, windows
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--model", default="2.5", choices=model_registry.SUPPORTED_MODELS)
-    ap.add_argument("--gpu-id", type=int, default=0)
+    session.add_model_args(ap)
     ap.add_argument("--clip", default=None, help="Corpus clip directory name; default: first long enough.")
     ap.add_argument("--windows", type=int, default=2, help="Windows to compare; >= 2 exercises the carryover.")
     ap.add_argument("--window-frames", type=int, default=refine_task.WINDOW_FRAMES)
     ap.add_argument("--overlap-frames", type=int, default=refine_task.OVERLAP_FRAMES)
-    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--keep-runs", action="store_true", help="Do not delete the reference run directory on PASS.")
     args = ap.parse_args()
 
@@ -123,7 +112,8 @@ def main() -> int:
     print(f"[parity] clip {clip.parent.name}, geometry {geometry.as_dict()}", flush=True)
 
     reference = run_reference(model, clip, geometry, args.windows, args.seed, args.gpu_id, reference_dir)
-    harness = run_harness(model, clip, geometry, args.windows, args.seed, device)
+    s = session.open_session(args, script="method_parity")
+    harness = run_harness(s, clip, geometry, args.windows, args.seed)
 
     rows, all_pass = [], len(reference) == len(harness) and bool(reference)
     for i, (a, b) in enumerate(zip(reference, harness, strict=False)):
@@ -141,7 +131,7 @@ def main() -> int:
         print(f"  window COUNT differs: reference {len(reference)} vs harness {len(harness)}")
 
     report = {
-        "provenance": provenance.stamp(model, device, script="method_parity"),
+        "provenance": s.stamp(),
         "clip": str(clip),
         "geometry": geometry.as_dict(),
         "windows_compared": len(rows),
