@@ -10,14 +10,10 @@ from pathlib import Path
 import torch
 
 from ltx_core.components.diffusion_steps import EulerAncestralDiffusionStep, EulerDiffusionStep
-from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
-from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.helpers import post_process_latent
 
-from scripts.prune import artifacts, chunk_states, losses, model_registry, preflight, prompt_cache, provenance, records, refine_task
-
-DTYPE = torch.bfloat16
+from scripts.prune import artifacts, chunk_states, losses, records, session
 
 
 def _run(transformer, state, context, sigmas: torch.Tensor, *, ancestral: bool, seed: int):
@@ -44,33 +40,27 @@ def _run(transformer, state, context, sigmas: torch.Tensor, *, ancestral: bool, 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--model", default="2.5", choices=model_registry.SUPPORTED_MODELS)
-    ap.add_argument("--gpu-id", type=int, default=0)
+    session.add_model_args(ap)
     ap.add_argument("--states", type=Path, default=None)
     ap.add_argument("--max-states", type=int, default=12)
-    ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
-    model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id)
-    root = args.states or artifacts.calibration(model.key)
+    s = session.open_session(args, script="sampler_ab")
+    root = s.states_root(args.states)
     # Only step-0 on-policy records: the A/B has to run the whole k2 trajectory from
     # its start, and a step-1 record is already half-way down a Euler-stepped one.
     # Read each record once -- `load_record` deserializes the tensors, so the obvious
     # double-call in a comprehension filter costs a full extra pass over the cache.
     paths = records.select(root, family="on_policy", step_index=0, limit=args.max_states)
-    device = torch.device(f"cuda:{args.gpu_id}")
-    context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
-    sigmas = torch.tensor(refine_task.schedule_for(model.sigmas, refine_task.K_STEP), device=device)
-    stage = DiffusionStage.from_checkpoint(model.paths.transformer(), DTYPE, device, model_configurator=LTXVideoOnlyModelConfigurator, scale_factors=model.scale_factors)
     rows = []
-    with torch.no_grad(), stage._transformer_ctx() as transformer:
+    with s.transformer() as transformer:
         for i, path in enumerate(paths):
-            state, target, meta = chunk_states.load_record(path, device)
-            euler = _run(transformer, state.clone(), context, sigmas, ancestral=False, seed=args.seed + i)
-            ancestral = _run(transformer, state.clone(), context, sigmas, ancestral=True, seed=args.seed + i)
+            state, target, meta = chunk_states.load_record(path, s.device)
+            euler = _run(transformer, state.clone(), s.context, s.sigmas, ancestral=False, seed=args.seed + i)
+            ancestral = _run(transformer, state.clone(), s.context, s.sigmas, ancestral=True, seed=args.seed + i)
             rows.append({"record": path.name, "clip": meta.clip, "euler_t0": float(losses.rel_l2(euler, target, state)), "ancestral_t0": float(losses.rel_l2(ancestral, target, state))})
     e = sum(r["euler_t0"] for r in rows) / len(rows); a = sum(r["ancestral_t0"] for r in rows) / len(rows)
-    result = {"provenance": provenance.stamp(model, device, script="sampler_ab"), "states": rows, "euler_t0_mean": e, "ancestral_t0_mean": a, "chosen_sampler": "euler" if e <= a else "ancestral", "decision_metric": "mean T0 relative L2 vs source target"}
-    out = artifacts.gate(model.key, "sampler_ab")
+    result = {"provenance": s.stamp(), "states": rows, "euler_t0_mean": e, "ancestral_t0_mean": a, "chosen_sampler": "euler" if e <= a else "ancestral", "decision_metric": "mean T0 relative L2 vs source target"}
+    out = artifacts.gate(s.key, "sampler_ab")
     out.write_text(json.dumps(result, indent=2)); print(json.dumps(result, indent=2)); return 0
 
 
