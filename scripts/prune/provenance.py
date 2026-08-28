@@ -86,8 +86,19 @@ def _git_rev() -> str:
 
 
 def run_id(prefix: str = "") -> str:
-    """Timestamped run id -- the ``<run-id>`` level of ``expr/refiner_prune/<key>/<run-id>/`` (§12)."""
-    stamp = time.strftime("%Y%m%d-%H%M%S")
+    """Timestamped, collision-safe run id -- the ``<run-id>`` level of
+    ``expr/refiner_prune/<key>/<run-id>/`` (§12).
+
+    The timestamp alone has 1-second resolution, and parallel sweeps call this at the
+    *end* of their work, so a per-GPU launch stagger does not separate them: two jobs
+    that happen to finish in the same second get the same directory and one silently
+    overwrites the other's report. That happened twice -- once in the first published
+    sweep (two schedules, one file, both gates loaded the survivor) and again the first
+    time this sweep was re-run with a 7-second stagger. The PID suffix removes the
+    failure mode instead of narrowing its window; ids stay sortable because the
+    timestamp still leads.
+    """
+    stamp = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid():06d}"
     return f"{stamp}-{prefix}" if prefix else stamp
 
 

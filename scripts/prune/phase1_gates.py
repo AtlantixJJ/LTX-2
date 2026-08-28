@@ -26,30 +26,36 @@ What this measures, and why each part is here:
 * **T1** -- the same comparison after decoding, so the latent-space number has a
   pixel-space anchor (§10's gate is stated in dB).
 
-* **T2** -- the sequential AR rollout. Each chunk's *own* output becomes the next
-  chunk's frozen context, for both the student and a teacher rolled out the same
-  way. This is the only thing here that can catch compounding error, and the
-  unpruned model's slope is the floor a pruned model has to be judged against.
+* **T2** -- the sequential sliding-window rollout, run through ``refine_core`` at the
+  DEPLOYED geometry: 25-frame windows with a 9-frame overlap, each window noised from
+  its own VAE encode and continued from the previous window's refined carryover, then
+  cross-faded in pixel space. That is precisely what produced
+  ``expr/sam3dgs_vae_refine/*/k2_longform_v3_carryover/decode_full.mp4``, and
+  ``scripts/prune/method_parity.py`` is the gate that proves the two agree
+  bit-for-bit. Chunk index is rollout depth: chunk *j* is native frames
+  ``[j*stride, (j+1)*stride)``, so the PSNR slope still measures compounding error.
 
-  The corpus caps this: sources are 89-145 frames, i.e. 12-19 latent frames, so a
-  single clip affords ~7-14 chunks, not §6's 200. ``--cycle-source`` extends the
-  rollout by cycling the clip's own latent frames back through the fresh slot; the
-  *context* chain is never reset, so the drift being measured is still purely the
-  refiner feeding on its own output. The realized chunk count and whether cycling
-  was used are both recorded, so a 200-chunk claim can never be read off a
-  14-chunk run.
+  An earlier version of this module rolled out a *different* geometry it invented
+  (4 frozen latent frames, 1 fresh, a regular latent frame spliced into the causal
+  keyframe slot, 24 fps hardcoded against 30 fps clips). Its baseline video was
+  visibly softer than ``decode_full.mp4``, which made every pruning delta measured
+  against it a delta on a method nobody deploys.
+
+  The corpus caps the rollout length: sources are 89-145 frames, so a clip affords
+  ~5-8 windows. ``--rollout-windows`` caps it further; nothing extends it past the
+  clip, because a wrapped window is no longer frame-aligned with the source and a
+  PSNR against it compares unrelated frames.
 
 * **T3** -- the review pair, grid PNG and MP4, per §6.
 
     conda run -n ltx python -m scripts.prune.phase1_gates --model 2.5 --gpu-id 6
-    conda run -n ltx python -m scripts.prune.phase1_gates --model 2.5 --gpu-id 6 \
-        --rollout-chunks 200 --cycle-source
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 
@@ -57,33 +63,30 @@ import decord
 import torch
 
 from ltx_core.components.diffusion_steps import EulerDiffusionStep
-from ltx_core.components.patchifiers import VideoLatentPatchifier
 from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
-from ltx_core.tools import VideoLatentTools
-from ltx_core.types import VideoLatentShape
 from ltx_pipelines.utils.blocks import DiffusionStage, ImageConditioner, VideoDecoder
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.samplers import _step_state
 
 from scripts.prune import (
-    chunk_states, losses, metrics, model_registry, preflight, prompt_cache, provenance, refine_task, teacher,
+    chunk_states, hooks, losses, metrics, model_registry, preflight, prompt_cache, provenance, refine_core,
+    refine_task,
 )
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
 
 decord.bridge.set_bridge("torch")
 
 DTYPE = torch.bfloat16
-ROLLOUT_CHUNK_LATENT_FRAMES = 1  # the hardest AR geometry: shortest chunk, most steps
 
 
-def _tools(model: RefinerModel, latent: torch.Tensor) -> VideoLatentTools:
-    return VideoLatentTools(
-        VideoLatentPatchifier(patch_size=1),
-        VideoLatentShape.from_torch_shape(latent.shape),
-        24.0,
-        scale_factors=model.scale_factors,
-    )
+def _load_head_masks(path: Path, device: torch.device) -> dict[str, torch.Tensor]:
+    """Load a runtime head mask from a ``head_scores.json`` iterative-pruning report."""
+    data = json.loads(path.read_text())
+    masks = data.get("iterative", {}).get("masks", data.get("masks"))
+    if masks is None:
+        raise SystemExit(f"{path}: no 'iterative.masks' (or top-level 'masks') found")
+    return {name: torch.tensor(values, device=device, dtype=torch.float32) for name, values in masks.items()}
 
 
 def _run_schedule(transformer, denoiser, state, sigmas: torch.Tensor, stepper) -> torch.Tensor:
@@ -99,13 +102,21 @@ def _run_schedule(transformer, denoiser, state, sigmas: torch.Tensor, stepper) -
 # ---------------------------------------------------------------------------
 
 
-def run_t0(model: RefinerModel, transformer, denoiser, device: torch.device, root: Path) -> dict:
+def run_t0(model: RefinerModel, transformer, denoiser, device: torch.device, root: Path, max_records: int | None = None) -> dict:
     """Student rel_l2 vs the frozen teacher target, on every cached on-policy state."""
     stepper = EulerDiffusionStep()
     sigmas_list = refine_task.schedule_for(model.sigmas, refine_task.K_STEP)
     sigmas = torch.tensor(sigmas_list, dtype=torch.float32, device=device)
     rows: list[dict] = []
-    for path in chunk_states.iter_records(root):
+    candidates = [p for p in chunk_states.iter_records(root)]
+    if max_records:
+        # Evenly stride across the corpus (sorted by filename, i.e. by clip) rather
+        # than taking a prefix, so a small sample still spans multiple clips/subjects.
+        on_policy_step0 = [p for p in candidates if "__s0__on_policy" in p.name]
+        stride = max(1, len(on_policy_step0) // max_records)
+        keep = set(on_policy_step0[::stride][:max_records])
+        candidates = [p for p in candidates if p in keep]
+    for path in candidates:
         state, target, meta = chunk_states.load_record(path, device)
         if meta.family != "on_policy" or meta.step_index != 0:
             continue
@@ -164,58 +175,88 @@ def run_t0(model: RefinerModel, transformer, denoiser, device: torch.device, roo
 # ---------------------------------------------------------------------------
 
 
-def _rollout(model: RefinerModel, transformer, denoiser, source_latent: torch.Tensor,
-             sigmas_list: list[float], chunks: int, *, seed: int, cycle: bool, device: torch.device) -> tuple[torch.Tensor, int, int]:
-    """Sequential AR rollout: each chunk's output is the next chunk's frozen context.
+def _encode_windows(model: RefinerModel, clip_path: Path, windows: list[tuple[int, int]],
+                    device: torch.device) -> tuple[list[torch.Tensor], torch.Tensor, float]:
+    """VAE-encode every planned window, plus the source pixels the metrics compare against.
 
-    Returns ``(stream, chunks_run, linear_chunks)``. The stream starts as the raw
-    encoded ``1 + CTX`` leading latent frames -- both the student and the teacher
-    start from the identical unrefined context, so the per-chunk comparison
-    isolates their own accumulated error.
+    Done in its own phase with the transformer NOT resident -- the 22B video-only
+    transformer peaks around 42 GB and the encoder around 4 GB on this geometry, which
+    together do not fit a 49 GB A6000. This is the same A/B/C phase split
+    ``vae_refine_sliding_window.run_batch`` uses, and it is free: a window's encode
+    depends only on source pixels, never on any earlier window's refinement.
+    """
+    vr = decord.VideoReader(str(clip_path))
+    covered = windows[-1][1]
+    latents: list[torch.Tensor] = []
+    conditioner = ImageConditioner(model.paths.video_vae(), DTYPE, device)
+    with torch.no_grad(), gpu_model(conditioner._build_encoder()) as encoder:
+        source_px = refine_core.read_pixel_window(vr, 0, covered, device, DTYPE)[1]
+        for start, stop in windows:
+            norm, _ = refine_core.read_pixel_window(vr, start, stop, device, DTYPE)
+            latents.append(encoder.tiled_encode(norm, None).cpu())
+            del norm
+    torch.cuda.empty_cache()
+    return latents, source_px, float(vr.get_avg_fps())
 
-    ``linear_chunks`` is how many chunks consumed source frames in their natural
-    order before ``--cycle-source`` began wrapping. Past that point the stream is
-    no longer frame-aligned with the source clip, so any comparison *against the
-    source* (T1, the T3 panels) must be truncated to ``linear_chunks``. The
-    student-vs-teacher T2 comparison stays valid for the whole run: both rollouts
-    consume the identical cycled frame order.
+
+def _rollout(transformer, denoiser, window_latents: list[torch.Tensor], geometry: refine_core.WindowGeometry,
+             sigmas_list: list[float], fps: float, *, seed: int, device: torch.device) -> list[torch.Tensor]:
+    """The deployed sliding-window rollout: window i+1 continues from window i's output.
+
+    Exactly ``scripts/vae_refine_sliding_window.py``'s phase B, through the shared
+    ``refine_core`` primitives -- each window is noised from its OWN full VAE encode
+    (so latent index 0 is a genuine causal keyframe) and the previous window's trailing
+    ``geometry.context_latent_frames`` refined latent frames are frozen in at index 1.
+    ``scripts/prune/method_parity.py`` asserts this reproduces that script's
+    ``latent_cache/*.pt`` bit-for-bit.
+
+    The seed is constant across windows, as in the run script: each window draws the
+    same noise realization, and continuity comes from the frozen carryover rather than
+    from correlating the draws.
     """
     stepper = EulerDiffusionStep()
     sigmas = torch.tensor(sigmas_list, dtype=torch.float32, device=device)
-    ctx_n, n_new = refine_task.CTX_LATENT_FRAMES, ROLLOUT_CHUNK_LATENT_FRAMES
-    available = source_latent.shape[2]
+    refined: list[torch.Tensor] = []
+    carry: torch.Tensor | None = None
+    for index, encoded in enumerate(window_latents):
+        l_init = encoded.to(device=device, dtype=DTYPE)
+        tools = refine_core.build_tools(l_init, fps, geometry.scale_factors)
+        latent = refine_core.refine_window(
+            transformer, denoiser, l_init, carry, sigmas, tools, seed, device, DTYPE, stepper
+        )
+        carry = refine_core.carry_from(latent, geometry)
+        refined.append(latent.cpu())
+        if (index + 1) % 5 == 0:
+            print(f"[t2] window {index + 1}/{len(window_latents)}", flush=True)
+    return refined
 
-    stream = source_latent[:, :, : 1 + ctx_n].clone()
-    done = linear = 0
-    for j in range(chunks):
-        start = 1 + ctx_n + j * n_new
-        if start + n_new > available:
-            if not cycle:
-                break
-            # Cycle the clip's own latent frames back through the fresh slot. The
-            # context chain is deliberately NOT reset, so what is being measured is
-            # still the refiner consuming its own output, just for longer than the
-            # clip alone allows.
-            start = 1 + ctx_n + ((start - (1 + ctx_n)) % max(available - ctx_n - n_new, 1))
-        else:
-            linear = j + 1
-        fresh = source_latent[:, :, start : start + n_new]
-        if fresh.shape[2] != n_new:
-            break
-        ctx = stream[:, :, -ctx_n:].contiguous()
-        keyframe = stream[:, :, -(ctx_n + 1) : -ctx_n].contiguous()
-        l_init = torch.cat([keyframe, ctx, fresh], dim=2)
-        state = chunk_states.make_state(l_init, ctx, sigmas_list[0], _tools(model, l_init), seed + j, device)
-        final = _run_schedule(transformer, denoiser, state, sigmas, stepper)
-        tools = _tools(model, l_init)
-        refined = tools.unpatchify(tools.clear_conditioning(replace(state, latent=final))).latent
-        # Append only the chunk frames; the regenerated index-0 keyframe is a
-        # by-product of the calibration geometry and is not part of the stream.
-        stream = torch.cat([stream, refined[:, :, -n_new:]], dim=2)
-        done = j + 1
-        if done % 10 == 0:
-            print(f"[t2] chunk {done}/{chunks}", flush=True)
-    return stream, done, linear
+
+def _stitch(decoded: list[torch.Tensor], windows: list[tuple[int, int]]) -> torch.Tensor:
+    """Linear cross-fade over each overlap, exactly as the run script finalizes frames.
+
+    ``decoded[i]`` is window i's decoded pixels ``[F, H, W, C]``; the result is the
+    contiguous native-frame range ``[0, windows[-1][1])`` -- the same frames that end up
+    in ``decode_full.mp4``.
+    """
+    out: list[torch.Tensor] = []
+    pending_tail: torch.Tensor | None = None
+    for i, pixels in enumerate(decoded):
+        start, end = windows[i]
+        overlap_prev = max(0, windows[i - 1][1] - start) if i > 0 else 0
+        taken = 0
+        if overlap_prev > 0 and pending_tail is not None:
+            ov = min(overlap_prev, pending_tail.shape[0], pixels.shape[0])
+            w = torch.linspace(0.0, 1.0, ov).view(ov, 1, 1, 1)
+            out.append((1.0 - w) * pending_tail[:ov] + w * pixels[:ov])
+            taken = ov
+        overlap_next = max(0, end - windows[i + 1][0]) if i < len(windows) - 1 else 0
+        body_end = pixels.shape[0] - overlap_next
+        if body_end > taken:
+            out.append(pixels[taken:body_end])
+        pending_tail = pixels[body_end:] if overlap_next > 0 else None
+    if pending_tail is not None and pending_tail.numel():
+        out.append(pending_tail)
+    return torch.cat(out, dim=0)
 
 
 def main() -> int:
@@ -225,11 +266,21 @@ def main() -> int:
     ap.add_argument("--states", type=Path, default=None)
     ap.add_argument("--transformer-path", type=Path, default=None,
                     help="Evaluate a freshly exported pruned transformer rather than the registry default.")
+    ap.add_argument("--head-masks", type=Path, default=None,
+                    help="Apply a runtime head mask (a head_scores.json iterative-pruning report) for the whole run.")
     ap.add_argument("--output", type=Path, default=None,
                     help="JSON destination; defaults to the unpruned Phase-1 baseline path.")
-    ap.add_argument("--rollout-chunks", type=int, default=12)
-    ap.add_argument("--cycle-source", action="store_true",
-                    help="Extend the rollout past the clip's own length by cycling its latent frames.")
+    ap.add_argument("--figures-dir", type=Path, default=None,
+                    help="Where to write the T3 grid/video; defaults to <out_root>/figures. "
+                         "Set this to a distinct directory for concurrent runs to avoid clobbering each other.")
+    ap.add_argument("--t0-max-records", type=int, default=None,
+                    help="Cap T0 to an evenly-strided sample of on-policy step-0 records (default: all).")
+    ap.add_argument("--rollout-windows", "--rollout-chunks", dest="rollout_windows", type=int, default=None,
+                    help="Cap the rollout to this many sliding windows (default: as many as the clip affords).")
+    ap.add_argument("--window-frames", type=int, default=refine_task.WINDOW_FRAMES,
+                    help="Deployed window length; the default is the geometry that produced "
+                         "expr/sam3dgs_vae_refine/*/k2_longform_v3_carryover/decode_full.mp4.")
+    ap.add_argument("--overlap-frames", type=int, default=refine_task.OVERLAP_FRAMES)
     ap.add_argument("--t2-clip", default=None, help="Clip directory name; defaults to the longest held-out clip.")
     ap.add_argument("--skip-t2", action="store_true")
     ap.add_argument("--seed", type=int, default=42)
@@ -243,9 +294,12 @@ def main() -> int:
     context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
     denoiser = SimpleDenoiser(context, None)
     student_sigmas = refine_task.schedule_for(model.sigmas, refine_task.K_STEP)
+    geometry = refine_core.WindowGeometry(
+        window_frames=args.window_frames, overlap_frames=args.overlap_frames, scale_factors=model.scale_factors
+    )
 
     # --- pick and encode the T2 clip before the transformer is resident ---
-    t2_source = None
+    t2 = None
     if not args.skip_t2:
         manifest = json.loads((out_root / "source_target" / "manifest.json").read_text())
         held = set(manifest["split"]["held_out"])
@@ -253,86 +307,87 @@ def main() -> int:
         if args.t2_clip:
             pool = [c for c in manifest["corpus"] if c["clip"] == args.t2_clip] or pool
         pick = max(pool, key=lambda c: len(decord.VideoReader(c["source"])))
-        frames = len(decord.VideoReader(pick["source"]))
-        frames = model.scale_factors.time * ((frames - 1) // model.scale_factors.time) + 1
-        conditioner = ImageConditioner(model.paths.video_vae(), DTYPE, device)
-        with torch.no_grad(), gpu_model(conditioner._build_encoder()) as encoder:
-            pixels = teacher._read_chunk(
-                Path(pick["source"]), frames, device,
-                spatial_scale=(model.scale_factors.height, model.scale_factors.width),
-            )
-            t2_source = {"clip": pick["clip"], "pixels": pixels.cpu(), "latent": encoder.tiled_encode(pixels, None).cpu()}
-            del pixels
-        torch.cuda.empty_cache()
-        print(f"[t2] clip {pick['clip']}: {t2_source['latent'].shape[2]} latent frames", flush=True)
+        total = len(decord.VideoReader(pick["source"]))
+        windows = geometry.plan(total)
+        if args.rollout_windows:
+            windows = windows[: args.rollout_windows]
+        latents, source_px, fps = _encode_windows(model, Path(pick["source"]), windows, device)
+        t2 = {"clip": pick["clip"], "windows": windows, "latents": latents, "source_px": source_px, "fps": fps}
+        print(f"[t2] clip {pick['clip']}: {total} frames -> {len(windows)} windows of "
+              f"{geometry.window_frames} (overlap {geometry.overlap_frames}, stride {geometry.stride_frames}) "
+              f"at {fps} fps", flush=True)
 
-    # --- transformer-resident phase: T0 and source-aligned student rollout ---
+    # --- transformer-resident phase: T0 and the sliding-window rollout ---
     stage = DiffusionStage.from_checkpoint(
         model.paths.transformer(), DTYPE, device,
         model_configurator=LTXVideoOnlyModelConfigurator, scale_factors=model.scale_factors,
     )
-    result: dict = {"provenance": provenance.stamp(model, device, script="phase1_gates"), "student_sigmas": student_sigmas, "target": "vae_encoded_source_latent"}
-    latents: dict = {}
+    result: dict = {
+        "provenance": provenance.stamp(model, device, script="phase1_gates"),
+        "student_sigmas": student_sigmas,
+        "target": "vae_encoded_source_latent",
+        "geometry": geometry.as_dict(),
+        "seed": args.seed,
+    }
+    refined: list[torch.Tensor] = []
     with torch.no_grad(), stage._transformer_ctx() as transformer:
-        result["T0"] = run_t0(model, transformer, denoiser, device, states_root)
-        if t2_source is not None:
-            src = t2_source["latent"].to(device=device, dtype=DTYPE)
-            stream, done, linear = _rollout(model, transformer, denoiser, src, student_sigmas, args.rollout_chunks,
-                                            seed=args.seed, cycle=args.cycle_source, device=device)
-            latents["student"] = stream.cpu()
-            result.setdefault("T2", {}).update({"student_chunks": done, "student_linear_chunks": linear})
-            print(f"[t2] student: {done} chunks ({linear} source-aligned)", flush=True)
+        mask_ctx = hooks.attach_head_masks(transformer, _load_head_masks(args.head_masks, device), requires_grad=False) \
+            if args.head_masks is not None else nullcontext()
+        with mask_ctx as masks:
+            if masks is not None:
+                dropped = sum(int((v == 0).sum()) for v in masks.values())
+                total_heads = sum(v.numel() for v in masks.values())
+                result["head_masks"] = {"source": str(args.head_masks), "heads_dropped": dropped, "heads_total": total_heads}
+                print(f"[head-masks] {dropped}/{total_heads} heads zeroed from {args.head_masks}", flush=True)
+            result["T0"] = run_t0(model, transformer, denoiser, device, states_root, args.t0_max_records)
+            if t2 is not None:
+                refined = _rollout(transformer, denoiser, t2["latents"], geometry, student_sigmas, t2["fps"],
+                                   seed=args.seed, device=device)
+                result.setdefault("T2", {}).update({"windows": len(refined), "clip": t2["clip"], "fps": t2["fps"]})
+                print(f"[t2] rollout: {len(refined)} windows refined", flush=True)
     del stage
     torch.cuda.empty_cache()
 
     # --- decode-resident phase: T1, T2 pixel metrics, T3 artifacts ---
-    if latents:
-        figures = out_root / "figures"
-        chunks_done = result["T2"]["student_chunks"]
-        ctx_n, n_new = refine_task.CTX_LATENT_FRAMES, ROLLOUT_CHUNK_LATENT_FRAMES
+    if refined:
+        figures = args.figures_dir or (out_root / "figures")
+        figures.mkdir(parents=True, exist_ok=True)
         decoder_holder = VideoDecoder(model.paths.video_vae(), DTYPE, device)
         with torch.no_grad(), gpu_model(decoder_holder._decoder_builder.build(device=device, dtype=DTYPE).eval()) as decoder:
-            decoded = {}
-            for name in ("student",):
-                dec = torch.cat(list(decoder.decode_video(latents[name].to(device=device, dtype=DTYPE), None, None)), dim=0).cpu().float()
-                decoded[name] = (dec.clamp(0, 1).permute(0, 3, 1, 2) if dec.shape[-1] in (1, 3) else dec.clamp(0, 1))
-        source_px = ((t2_source["pixels"].float() + 1.0) / 2.0)[0].permute(1, 0, 2, 3)
+            decoded = [
+                torch.cat(list(decoder.decode_video(latent.to(device=device, dtype=DTYPE), None, None)), dim=0).cpu().float().clamp(0, 1)
+                for latent in refined
+            ]
+        stitched = _stitch(decoded, t2["windows"])
+        del decoded
 
-        # Chunk j's pixels: latent frame (1 + ctx_n + j) maps to the pixel window
-        # after the leading keyframe, `time` pixel frames per latent frame.
-        t = model.scale_factors.time
+        source_px = t2["source_px"]
+        n = min(stitched.shape[0], source_px.shape[0])
+        pred = stitched[:n].permute(0, 3, 1, 2)
+        source = source_px[:n].permute(0, 3, 1, 2)
+
+        # T2 chunk = one stride of finalized frames, so chunk index IS rollout depth:
+        # chunk j spans native frames [j*stride, (j+1)*stride), the span window j is the
+        # last (and, outside the cross-fade, only) window to touch.
+        stride = geometry.stride_frames
         rollout_rows = []
-        for j in range(chunks_done):
-            lo = 1 + (ctx_n + j * n_new) * t
-            hi = lo + n_new * t
-            if hi > min(decoded["student"].shape[0], source_px.shape[0]):
+        for j in range(len(refined)):
+            lo, hi = j * stride, min((j + 1) * stride, n)
+            if lo >= hi:
                 break
-            rollout_rows.append({"chunk": j, "pred": decoded["student"][lo:hi], "teacher": source_px[lo:hi]})
+            rollout_rows.append({"chunk": j, "pred": pred[lo:hi], "teacher": source[lo:hi]})
         result["T2"].update(metrics.t2(rollout_rows))
-        result["T2"]["clip"] = t2_source["clip"]
-        result["T2"]["cycled_source"] = bool(args.cycle_source)
-        result["T2"]["requested_chunks"] = args.rollout_chunks
+        result["T2"]["stride_frames"] = stride
 
-        # Anything compared against the SOURCE has to stop where the rollout stopped
-        # consuming source frames in order. Past the first --cycle-source wrap the
-        # stream is still a valid student-vs-teacher comparison but is no longer
-        # frame-aligned with the clip, and a PSNR-vs-source over that range would be
-        # comparing unrelated frames.
-        linear = result["T2"]["student_linear_chunks"]
-        aligned = 1 + (ctx_n + linear * n_new) * t
-        n = min(decoded["student"].shape[0], source_px.shape[0], aligned)
-        result["T1"] = metrics.t1(decoded["student"][:n], source_px[:n])
+        result["T1"] = metrics.t1(pred, source)
         result["T1"]["frames_compared"] = n
-        result["T1"]["source_aligned_chunks"] = linear
-        grid = metrics.t3_grid([(t2_source["clip"], source_px[:n], source_px[:n], decoded["student"][:n])],
-                               figures / "phase1_rollout_grid.png")
-        video = metrics.t3_video(source_px[:n], source_px[:n], decoded["student"][:n],
-                                 figures / "phase1_rollout.mp4", fps=24.0)
+        grid = metrics.t3_grid([(t2["clip"], source, source, pred)], figures / "phase1_rollout_grid.png")
+        video = metrics.t3_video(source, source, pred, figures / "phase1_rollout.mp4", fps=t2["fps"])
         result["T3"] = {"grid": str(grid), "video": str(video)}
         (figures / "INDEX.md").write_text(
             "# Phase 1 gate figures\n\n"
-            "- `phase1_rollout_grid.png`: source | source target | student AR-rollout frames\n"
-            "- `phase1_rollout.mp4`: aligned source | source target | student AR rollout\n"
+            "- `phase1_rollout_grid.png`: source | source target | student sliding-window rollout\n"
+            "- `phase1_rollout.mp4`: aligned source | source target | student rollout\n"
         )
 
     path = args.output or (out_root / "phase1_gates.json")

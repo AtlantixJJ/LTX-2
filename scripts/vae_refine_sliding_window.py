@@ -64,29 +64,22 @@ sys.path.append(str(REPO_ROOT / "packages" / "ltx-pipelines" / "src"))
 
 from ltx_core.batch_split import BatchSplitAdapter  # noqa: E402
 from ltx_core.components.diffusion_steps import EulerDiffusionStep  # noqa: E402
-from ltx_core.components.noisers import GaussianNoiser  # noqa: E402
-from ltx_core.conditioning.types.latent_cond import VideoConditionByLatentIndex  # noqa: E402
-from ltx_core.components.patchifiers import VideoLatentPatchifier  # noqa: E402
 from ltx_core.model.transformer import LTXModelConfigurator, LTXVideoOnlyModelConfigurator  # noqa: E402
-from ltx_core.tools import VideoLatentTools  # noqa: E402
-from ltx_core.types import VideoLatentShape, VideoPixelShape  # noqa: E402
 from ltx_pipelines.utils.blocks import (  # noqa: E402
     DiffusionStage,
     ImageConditioner,
     PromptEncoder,
     VideoDecoder,
-    _build_state,  # noqa: PLC2701 -- deliberately reusing DiffusionStage.__call__'s own primitive
-                   # to hold the transformer resident across windows instead of rebuilding it
-                   # per window; see the --resident-transformer docstring below for the tradeoff.
 )
-from ltx_pipelines.utils.constants import DISTILLED_SIGMA_VALUES  # noqa: E402
+from ltx_pipelines.utils.constants import DISTILLED_SIGMA_VALUES, VIDEO_SCALE_FACTORS  # noqa: E402
 from ltx_pipelines.utils.denoisers import SimpleDenoiser  # noqa: E402
 from ltx_pipelines.utils.gpu_model import gpu_model  # noqa: E402
-from ltx_pipelines.utils.samplers import _step_state  # noqa: E402, PLC2701 -- see _build_state note above
-from ltx_pipelines.utils.types import ModalitySpec  # noqa: E402
+from ltx_pipelines.utils.samplers import _step_state  # noqa: E402, PLC2701 -- deliberately reusing
+                   # the sampler's own step primitive so each diffusion step can be timed
+                   # individually; refine_core.run_schedule is the same three lines uninstrumented.
 from ltx_trainer.video_utils import save_video  # noqa: E402
 
-from scripts.prune import geometry, model_registry, preflight  # noqa: E402
+from scripts.prune import geometry, model_registry, preflight, refine_core  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("vae_refine_sliding_window")
@@ -108,28 +101,19 @@ def refinement_schedule(k_step: str) -> list[float]:
     return schedules[k_step]
 
 
-def plan_windows(total_frames: int, window: int = WINDOW_FRAMES, overlap: int = OVERLAP_FRAMES) -> list[tuple[int, int]]:
-    if total_frames < window:
-        raise ValueError(f"Video has {total_frames} frames, shorter than one window ({window})")
-    if 2 * overlap >= window:
-        raise ValueError(
-            f"overlap_frames ({overlap}) must be < window_frames/2 ({window/2}): stride = window - overlap "
-            f"= {window - overlap} would be <= overlap, so a frame could fall in 3+ windows at once. The "
-            "blend/flush bookkeeping (and the latent-carryover chain) only track immediate-neighbor "
-            "overlap -- pick a bigger window or a smaller overlap."
-        )
-    stride = window - overlap
-
-    # Fixed stride, no clipped/adjusted tail: every pairwise overlap is then EXACTLY `overlap`,
-    # which the latent-carryover conditioning depends on (it freezes a fixed-size latent-frame
-    # slice computed from the nominal `overlap`, at a fixed destination latent index -- either a
-    # clipped tail window or evenly-redistributed spacing, both tried earlier, shift the ACTUAL
-    # per-pair overlap by a frame here and there, which is enough to misalign the carried-over
-    # latent frame against the destination window's own grid and visibly hurt boundary
-    # continuity). The tradeoff: up to `stride - 1` trailing frames of the source video may not
-    # be covered by any window and are silently dropped rather than force-fitting a tail window.
-    starts = list(range(0, total_frames - window + 1, stride))
-    return [(s, s + window) for s in starts]
+def plan_windows(
+    total_frames: int,
+    window: int = WINDOW_FRAMES,
+    overlap: int = OVERLAP_FRAMES,
+    scale_factors=None,
+) -> list[tuple[int, int]]:
+    """Fixed-stride window starts. Delegates to ``refine_core.WindowGeometry`` so the
+    gates in ``scripts/prune/`` plan the identical grid (see refine_core's docstring)."""
+    return refine_core.WindowGeometry(
+        window_frames=window,
+        overlap_frames=overlap,
+        scale_factors=scale_factors if scale_factors is not None else VIDEO_SCALE_FACTORS,
+    ).plan(total_frames)
 
 
 @dataclass
@@ -153,20 +137,7 @@ class StageTimer:
 
 def read_pixel_window(vr: decord.VideoReader, start: int, end: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
     """Returns (norm_video [1,C,F,H,W] in [-1,1] on device, pixel_video [F,H,W,C] in [0,1] on cpu)."""
-    frames = vr.get_batch(range(start, end))  # [F,H,W,C] uint8-like
-    f, h, w, c = frames.shape
-    if h % 32 != 0:
-        crop_h = (h // 32) * 32
-        top = (h - crop_h) // 2
-        frames = frames[:, top : top + crop_h, :, :]
-    if w % 32 != 0:
-        crop_w = (w // 32) * 32
-        left = (w - crop_w) // 2
-        frames = frames[:, :, left : left + crop_w, :]
-    pixel_video = (frames.float() / 255.0).clamp(0.0, 1.0)
-    norm_video = frames.permute(3, 0, 1, 2).unsqueeze(0).to(dtype=DTYPE, device=device)
-    norm_video = (norm_video / 127.5) - 1.0
-    return norm_video, pixel_video
+    return refine_core.read_pixel_window(vr, start, end, device, DTYPE)
 
 
 def rebuild_full_concat(segments_dir: Path, out_path: Path) -> None:
@@ -261,6 +232,9 @@ def main() -> int:
     # rather than a full temporal block, so the carried-over overlap needs the same F%t==1 grid
     # for it to land on whole *regular* latent frames of the next window. See run_batch().
     geometry.check_window_rules(args.window_frames, args.overlap_frames, model.scale_factors)
+    window_geometry = refine_core.WindowGeometry(
+        window_frames=args.window_frames, overlap_frames=args.overlap_frames, scale_factors=model.scale_factors
+    )
 
     configurator = LTXVideoOnlyModelConfigurator if args.video_only else LTXModelConfigurator
     logger.info(
@@ -278,21 +252,24 @@ def main() -> int:
     segments_dir.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
     latent_cache_dir.mkdir(parents=True, exist_ok=True)
-    overlap_latent_frames = (args.overlap_frames - 1) // model.scale_factors.time
+    overlap_latent_frames = window_geometry.context_latent_frames
 
     vr = decord.VideoReader(str(args.video))
     fps = float(vr.get_avg_fps())
     total_frames = len(vr)
     if args.max_total_frames is not None:
         total_frames = min(total_frames, args.max_total_frames)
-    windows = plan_windows(total_frames, args.window_frames, args.overlap_frames)
+    windows = window_geometry.plan(total_frames)
     if args.max_windows is not None:
         windows = windows[: args.max_windows]
     logger.info(f"{args.video.name}: {total_frames} native frames -> {len(windows)} windows of {args.window_frames} "
                 f"(overlap {args.overlap_frames}, stride {args.window_frames - args.overlap_frames})")
 
     (out_dir / "window_plan.json").write_text(
-        json.dumps({"total_frames": total_frames, "fps": fps, "windows": windows}, indent=2)
+        json.dumps(
+            {"total_frames": total_frames, "fps": fps, "geometry": window_geometry.as_dict(), "windows": windows},
+            indent=2,
+        )
     )
 
     if args.dry_run:
@@ -325,11 +302,9 @@ def main() -> int:
     probe_nv, _ = read_pixel_window(vr, windows[0][0], windows[0][1], device)
     win_h, win_w = int(probe_nv.shape[-2]), int(probe_nv.shape[-1])
     del probe_nv
-    pixel_shape = VideoPixelShape(batch=1, frames=args.window_frames, height=win_h, width=win_w, fps=fps)
-    v_shape = VideoLatentShape.from_pixel_shape(pixel_shape, scale_factors=diffusion_stage.video_scale_factors)
-    video_tools = VideoLatentTools(
-        VideoLatentPatchifier(patch_size=1), v_shape, fps, scale_factors=diffusion_stage.video_scale_factors
-    )
+    # fps is the clip's own, never a constant: VideoLatentTools divides the temporal
+    # position axis by it, so it is part of RoPE. See refine_core.build_tools.
+    video_tools = refine_core.tools_for_window(window_geometry, win_h, win_w, fps)
 
     pending_tail: torch.Tensor | None = None  # decoded pixels [ov, H, W, C] not yet finalized
     finalized_since_flush: list[torch.Tensor] = []
@@ -443,12 +418,11 @@ def main() -> int:
             try:
                 wrapped = BatchSplitAdapter(transformer, max_batch_size=1)
                 for i in todo_idxs:
-                    noiser = GaussianNoiser(generator=torch.Generator(device=device).manual_seed(args.seed))
                     per_win_profile[i]["transformer_build_s"] = chunk_transformer_build_s
                     per_win_profile[i]["transformer_build_peak_alloc_gb"] = chunk_transformer_build_peak_gb
                     per_win_profile[i]["chunk_size"] = len(todo_idxs)
 
-                    conditionings = []
+                    carry = None
                     if i > 0:
                         prev_latent = latent_by_window.get(i - 1)
                         if prev_latent is None:
@@ -459,29 +433,16 @@ def main() -> int:
                                 f"{latent_cache_dir}) -- can't build window {i}'s frozen-overlap conditioning. "
                                 "Windows must be processed in order from a consistent cache."
                             )
-                        # Inject at latent_idx=1, NOT 0: this window's own latent frame 0 is the special
-                        # single-pixel causal keyframe (native pixel `next_start` alone), which has no
-                        # counterpart in window i-1's tail (whose last regular latent frame covers 8 DIFFERENT,
-                        # earlier pixels). Frame 0 is left unconditioned/fresh; only the REGULAR latent frames
-                        # from index 1 onward -- which line up pixel-for-pixel with window i-1's tail -- get
-                        # frozen. The resulting 1-pixel-frame gap at the very start of the overlap is small
-                        # enough for the existing pixel cross-fade to smooth over.
-                        carry = prev_latent[:, :, -overlap_latent_frames:, :, :].to(device=device, dtype=DTYPE)
-                        conditionings = [VideoConditionByLatentIndex(latent=carry, strength=1.0, latent_idx=1)]
+                        # refine_core.make_window_state injects this at latent_idx=1, NOT 0 -- see
+                        # refine_core.CARRYOVER_LATENT_IDX for why the keyframe slot stays fresh.
+                        carry = refine_core.carry_from(
+                            prev_latent.to(device=device, dtype=DTYPE), window_geometry
+                        )
                     per_win_profile[i]["carryover_latent_frames"] = overlap_latent_frames if i > 0 else 0
 
                     with StageTimer("build_state", device) as t_bs:
-                        video_state = _build_state(
-                            ModalitySpec(
-                                context=video_context,
-                                conditionings=conditionings,
-                                noise_scale=sigmas[0].item(),
-                                initial_latent=l_enc_map[i],
-                            ),
-                            video_tools,
-                            noiser,
-                            DTYPE,
-                            device,
+                        video_state = refine_core.make_window_state(
+                            l_enc_map[i], carry, sigmas[0].item(), video_tools, args.seed, device, DTYPE
                         )
                     per_win_profile[i]["build_state_s"] = t_bs.elapsed_s
 
@@ -501,12 +462,11 @@ def main() -> int:
                     per_win_profile[i]["refine_peak_alloc_gb"] = max(t_fwd.peak_alloc_gb, t_step.peak_alloc_gb)
 
                     with StageTimer("postprocess", device) as t_post:
-                        video_state = video_tools.clear_conditioning(video_state)
-                        video_state = video_tools.unpatchify(video_state)
+                        refined = refine_core.finalize(video_state, video_tools)
                     per_win_profile[i]["postprocess_s"] = t_post.elapsed_s
-                    refined_latent_map[i] = video_state.latent
-                    latent_by_window[i] = video_state.latent.detach().cpu()
-                    save_latent_cache(i, video_state.latent)
+                    refined_latent_map[i] = refined
+                    latent_by_window[i] = refined.detach().cpu()
+                    save_latent_cache(i, refined)
             finally:
                 transformer_ctx.__exit__(None, None, None)
 

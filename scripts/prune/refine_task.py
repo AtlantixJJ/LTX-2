@@ -8,7 +8,11 @@ anything else (e.g. full bidirectional 16-latent-frame windows) systematically
 over-values long-range temporal heads the deployed refiner never exercises.
 
 Do not import from vae_refine_sliding_window.py -- that is a run script, not a
-library. Reuse the *patterns* in it, import constants from here instead.
+library. The *behaviour* it shares with this package lives in
+``scripts/prune/refine_core.py``, which both sides import; the constants that
+select which window it runs live here. ``scripts/prune/method_parity.py`` is the
+gate that proves a refine_core-driven rollout reproduces that run script's
+cached latents bit-for-bit, so these two files cannot drift apart silently.
 """
 
 from __future__ import annotations
@@ -30,13 +34,52 @@ REFINE_PROMPT = "a high quality, sharp, detailed video with fine texture and nat
 # literal float lists, which live in ltx_pipelines.utils.constants.
 K_STEP = "k2"
 
-# AR-chunk calibration geometry (Phase 1's chunk_states.py). The upcoming autoregressive
-# refiner predicts this many fresh latent frames per chunk, with CTX_LATENT_FRAMES of
-# already-refined latent frozen ahead of them via VideoConditionByLatentIndex(strength=1.0)
-# -- mirroring vae_refine_sliding_window.py's window-to-window carryover, just at chunk
-# instead of window granularity.
+# The deployed sliding window: exactly the one that produced
+# expr/sam3dgs_vae_refine/*/k2_longform_v3_carryover/decode_full.mp4 -- 25 pixel frames
+# (4 latent frames: the index-0 causal keyframe, 1 frozen carryover frame, 2 fresh) with a
+# 9-frame overlap, i.e. a 16-frame stride. These are the numbers `--window-frames 25
+# --overlap-frames 9` puts in that run's window_plan.json, and scripts/prune/method_parity.py
+# is the gate that keeps the two in step.
+#
+# This USED to be CTX_LATENT_FRAMES = 4 / one fresh frame -- a geometry the refine script
+# has never run. Calibrating on it over-weighted long frozen-context attention and
+# under-weighted exactly the tokens the deployed refiner emits, and the resulting T1/T2
+# rollout was visibly softer than decode_full.mp4. Do not "generalize" it back without
+# re-running method_parity.py.
+WINDOW_FRAMES = 25
+OVERLAP_FRAMES = 9
+CTX_LATENT_FRAMES = 1
+DEPLOY_CHUNK_LATENT_FRAMES = 2
+
+# Calibration sweeps chunk width around the deployed value so importance scores are not
+# fit to one window length; every entry keeps CTX_LATENT_FRAMES and therefore corresponds
+# to a real `--window-frames {17,25,33} --overlap-frames 9` run of the refine script.
 CHUNK_LATENT_FRAMES = (1, 2, 3)
-CTX_LATENT_FRAMES = 4
+
+
+def deployed_geometry(scale_factors):
+    """The deployed window as a ``refine_core.WindowGeometry``.
+
+    Imported lazily so this module stays a pure constants module that any script can
+    import without pulling in torch/ltx_core.
+    """
+    from scripts.prune.refine_core import WindowGeometry
+
+    return WindowGeometry(
+        window_frames=WINDOW_FRAMES, overlap_frames=OVERLAP_FRAMES, scale_factors=scale_factors
+    )
+
+
+def calibration_geometry(chunk_latent_frames: int, scale_factors):
+    """The window that freezes ``CTX_LATENT_FRAMES`` and denoises ``chunk_latent_frames``."""
+    from scripts.prune.refine_core import WindowGeometry
+
+    return WindowGeometry.from_latent_frames(
+        context_latent_frames=CTX_LATENT_FRAMES,
+        chunk_latent_frames=chunk_latent_frames,
+        scale_factors=scale_factors,
+    )
+
 
 _K_STEP_TAIL_LENGTH = {"k1": 2, "k2": 3, "k3": 4, "k4": 5, "k8": 9}
 

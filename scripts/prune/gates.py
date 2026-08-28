@@ -41,7 +41,9 @@ def verdict(*, baseline: dict | None, candidate: dict | None, profile: dict | No
         result["baseline_ms_per_step"] = 1000 * base
         result["speedup"] = base / candidate_time if candidate_time else None
     t2 = result.get("T2") or {}
-    complete_rollout = t2.get("student_chunks", 0) >= rollout_chunks
+    # "windows" since phase1_gates became a sliding-window rollout; "student_chunks" was
+    # the pre-parity field name and is still read so older artifacts keep evaluating.
+    complete_rollout = t2.get("windows", t2.get("student_chunks", 0)) >= rollout_chunks
     has_t1_t3 = bool(result.get("T1")) and bool(result.get("T3"))
     # A speedup needs matched unpruned timing, which this artifact schema does
     # not infer from unrelated runs.

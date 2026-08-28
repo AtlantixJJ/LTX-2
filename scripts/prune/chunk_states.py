@@ -14,13 +14,16 @@ from pathlib import Path
 
 import torch
 
-from ltx_core.components.noisers import GaussianNoiser
-from ltx_core.conditioning.types.latent_cond import VideoConditionByLatentIndex
 from ltx_core.types import LatentState
-from ltx_pipelines.utils.blocks import _build_state
-from ltx_pipelines.utils.types import ModalitySpec
 
-from scripts.prune import refine_task
+from scripts.prune import refine_core, refine_task
+
+
+# Bumped from 1 when ``fps`` joined ChunkStateMeta and CTX_LATENT_FRAMES went 4 -> 1.
+# A format-1 cache was built at the wrong window geometry and with a hardcoded 24 fps,
+# so it is not merely missing a field -- its tensors are states the deployed refiner
+# never sees. Rebuild rather than migrate.
+RECORD_FORMAT = 2
 
 
 @dataclass(frozen=True)
@@ -33,32 +36,23 @@ class ChunkStateMeta:
     chunk_latent_frames: int
     context_latent_frames: int
     seed: int
+    fps: float                  # part of RoPE, not metadata -- see refine_core.build_tools
 
 
 def make_state(l_init, ctx_latent, sigma: float, video_tools, seed: int, device: torch.device) -> LatentState:
-    """Build the plan's frozen-context state with the frame-0 keyframe caveat.
+    """Build the deployed window's frozen-context state.
 
-    ``ctx_latent`` is injected at latent index 1.  Index 0 remains fresh because
-    a causal VAE's first latent frame represents the standalone first pixel frame;
-    it has no one-to-one predecessor in the carryover latent.
+    A thin wrapper over :func:`refine_core.make_window_state` -- the same call
+    ``scripts/vae_refine_sliding_window.py`` makes -- that additionally asserts the
+    carryover is the deployed width. ``ctx_latent`` is injected at latent index 1;
+    index 0 stays fresh because a causal VAE's first latent frame represents the
+    standalone first pixel frame and has no predecessor in the carryover.
     """
     if ctx_latent.shape[2] != refine_task.CTX_LATENT_FRAMES:
         raise ValueError(
             f"expected {refine_task.CTX_LATENT_FRAMES} frozen latent frames, got {ctx_latent.shape[2]}"
         )
-    generator = torch.Generator(device=device).manual_seed(seed)
-    return _build_state(
-        ModalitySpec(
-            context=None,
-            conditionings=[VideoConditionByLatentIndex(latent=ctx_latent, strength=1.0, latent_idx=1)],
-            noise_scale=float(sigma),
-            initial_latent=l_init,
-        ),
-        video_tools,
-        GaussianNoiser(generator=generator),
-        l_init.dtype,
-        device,
-    )
+    return refine_core.make_window_state(l_init, ctx_latent, sigma, video_tools, seed, device, l_init.dtype)
 
 
 def chunk_token_mask(state: LatentState, meta: ChunkStateMeta) -> torch.Tensor:
@@ -108,7 +102,7 @@ def save_record(path: str | Path, state: LatentState, x0_star: torch.Tensor, met
     tmp = path.with_suffix(path.suffix + ".tmp")
     torch.save(
         {
-            "format": 1,
+            "format": RECORD_FORMAT,
             "meta": asdict(meta),
             "state": {
                 "latent": _cpu(state.latent), "denoise_mask": _cpu(state.denoise_mask),
@@ -127,8 +121,12 @@ def save_record(path: str | Path, state: LatentState, x0_star: torch.Tensor, met
 def load_record(path: str | Path, device: torch.device | str = "cpu") -> tuple[LatentState, torch.Tensor, ChunkStateMeta]:
     """Load a record created by :func:`save_record`, restoring a ``LatentState``."""
     payload = torch.load(Path(path), map_location=device, weights_only=True)
-    if payload.get("format") != 1:
-        raise ValueError(f"{path}: unsupported calibration record format {payload.get('format')!r}")
+    if payload.get("format") != RECORD_FORMAT:
+        raise ValueError(
+            f"{path}: calibration record format {payload.get('format')!r}, expected {RECORD_FORMAT}. "
+            "Format 1 caches were built at the pre-parity geometry (4 frozen latent frames, 24 fps) "
+            "and cannot be migrated -- rebuild with `teacher.py --build-calibration`."
+        )
     s = payload["state"]
     state = LatentState(
         latent=s["latent"], denoise_mask=s["denoise_mask"], positions=s["positions"],
@@ -153,7 +151,7 @@ def write_index(root: str | Path, records: list[Path], *, provenance: dict, extr
             "fresh_tokens": int(state.denoise_mask.sum().item()),
             "chunk_tokens": int(chunk_token_mask(state, meta).sum().item()),
         })
-    index = {"format": 1, "provenance": provenance, "records": entries, **(extra or {})}
+    index = {"format": RECORD_FORMAT, "provenance": provenance, "records": entries, **(extra or {})}
     path = root / "index.json"
     path.write_text(json.dumps(index, indent=2))
     return path
