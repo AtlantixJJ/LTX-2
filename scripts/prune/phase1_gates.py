@@ -63,21 +63,18 @@ import decord
 import torch
 
 from ltx_core.components.diffusion_steps import EulerDiffusionStep
-from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
-from ltx_pipelines.utils.blocks import DiffusionStage, ImageConditioner, VideoDecoder
-from ltx_pipelines.utils.denoisers import SimpleDenoiser
+from ltx_pipelines.utils.blocks import ImageConditioner, VideoDecoder
 from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.samplers import _step_state
 
 from scripts.prune import (
-    artifacts, chunk_states, corpus, hooks, losses, metrics, model_registry, preflight, prompt_cache, provenance, records, refine_core,
+    artifacts, chunk_states, corpus, hooks, losses, metrics, model_registry, provenance, records, refine_core, session,
     refine_task,
 )
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
+from scripts.prune.session import DTYPE
 
 decord.bridge.set_bridge("torch")
-
-DTYPE = torch.bfloat16
 
 
 def _load_head_masks(path: Path, device: torch.device) -> dict[str, torch.Tensor]:
@@ -279,13 +276,14 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
-    model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id,
-                            transformer_path=args.transformer_path)
-    device = torch.device(f"cuda:{args.gpu_id}")
+    s = session.open_session(args, script="phase1_gates", transformer_path=args.transformer_path)
+    model, device = s.model, s.device
     out_root = artifacts.root(model.key)
     states_root = args.states or artifacts.calibration(model.key)
-    context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
-    denoiser = SimpleDenoiser(context, None)
+    denoiser = s.denoiser
+    # Raw Python floats, not s.sigmas.tolist(): 0.725 is not exactly representable in
+    # float32, so a tensor round-trip would perturb this JSON's recorded value even
+    # though _rollout's own re-tensorization reconverges to the same bits either way.
     student_sigmas = refine_task.schedule_for(model.sigmas, refine_task.K_STEP)
     geometry = refine_core.WindowGeometry(
         window_frames=args.window_frames, overlap_frames=args.overlap_frames, scale_factors=model.scale_factors
@@ -309,19 +307,15 @@ def main() -> int:
               f"at {fps} fps", flush=True)
 
     # --- transformer-resident phase: T0 and the sliding-window rollout ---
-    stage = DiffusionStage.from_checkpoint(
-        model.paths.transformer(), DTYPE, device,
-        model_configurator=LTXVideoOnlyModelConfigurator, scale_factors=model.scale_factors,
-    )
     result: dict = {
-        "provenance": provenance.stamp(model, device, script="phase1_gates"),
+        "provenance": s.stamp(),
         "student_sigmas": student_sigmas,
         "target": "vae_encoded_source_latent",
         "geometry": geometry.as_dict(),
         "seed": args.seed,
     }
     refined: list[torch.Tensor] = []
-    with torch.no_grad(), stage._transformer_ctx() as transformer:
+    with s.transformer(args.transformer_path) as transformer:
         mask_ctx = hooks.attach_head_masks(transformer, _load_head_masks(args.head_masks, device), requires_grad=False) \
             if args.head_masks is not None else nullcontext()
         with mask_ctx as masks:
@@ -336,8 +330,6 @@ def main() -> int:
                                    seed=args.seed, device=device)
                 result.setdefault("T2", {}).update({"windows": len(refined), "clip": t2["clip"], "fps": t2["fps"]})
                 print(f"[t2] rollout: {len(refined)} windows refined", flush=True)
-    del stage
-    torch.cuda.empty_cache()
 
     # --- decode-resident phase: T1, T2 pixel metrics, T3 artifacts ---
     if refined:
