@@ -64,7 +64,7 @@ class Session:
         )
 
     @contextmanager
-    def transformer(self, transformer_path: Path | None = None):
+    def transformer(self, transformer_path: Path | None = None, *, video_tools=None):
         stage = DiffusionStage.from_checkpoint(
             str(transformer_path or self.model.paths.transformer()),
             DTYPE,
@@ -73,7 +73,7 @@ class Session:
             scale_factors=self.model.scale_factors,
         )
         try:
-            with torch.no_grad(), stage._transformer_ctx() as transformer:
+            with torch.no_grad(), stage._transformer_ctx(video_tools=video_tools) as transformer:
                 yield transformer
         finally:
             del stage

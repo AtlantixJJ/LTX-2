@@ -236,41 +236,31 @@ def main() -> int:
     import torch as _torch
 
     from ltx_core.components.diffusion_steps import EulerDiffusionStep
-    from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
-    from ltx_pipelines.utils.blocks import DiffusionStage
-    from ltx_pipelines.utils.denoisers import SimpleDenoiser
     from ltx_pipelines.utils.samplers import _step_state
 
-    from scripts.prune import bench_refiner, model_registry, preflight, prompt_cache, provenance, refine_task
+    from scripts.prune import artifacts, bench_refiner, refine_task, session
 
     ap = argparse.ArgumentParser(description=main.__doc__)
-    ap.add_argument("--model", default="2.5", choices=model_registry.SUPPORTED_MODELS)
-    ap.add_argument("--gpu-id", type=int, default=0)
+    session.add_model_args(ap)
     ap.add_argument("--n-new", type=int, default=2)
     ap.add_argument("--ctx-latent-frames", type=int, default=refine_task.CTX_LATENT_FRAMES)
     ap.add_argument("--height", type=int, default=1024)
     ap.add_argument("--width", type=int, default=1024)
-    ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
-    model = preflight.check(args.model, gpu_id=args.gpu_id)
-    device = _torch.device(f"cuda:{args.gpu_id}")
-    dtype = _torch.bfloat16
-    video_context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, dtype, device)
+    s = session.open_session(args, script="cross_kv_cache")
+    model, device = s.model, s.device
+    video_context = s.context
 
     sigmas_list = refine_task.schedule_for(model.sigmas, refine_task.K_STEP)
-    sigmas = _torch.tensor(sigmas_list, dtype=_torch.float32, device=device)
+    sigmas = s.sigmas
     video_tools, state, _, _ = bench_refiner.build_state(
         model, video_context, args.n_new, args.ctx_latent_frames, args.height, args.width,
         24.0, sigmas_list[0], device, args.seed,
     )
-    stage = DiffusionStage.from_checkpoint(
-        model.paths.transformer(), dtype, device,
-        model_configurator=LTXVideoOnlyModelConfigurator, scale_factors=model.scale_factors,
-    )
-    with stage._transformer_ctx(video_tools=video_tools) as transformer:
+    with s.transformer(video_tools=video_tools) as transformer:
         report = verify(
-            SimpleDenoiser(video_context, None), transformer, state, sigmas, EulerDiffusionStep(), _step_state
+            s.denoiser, transformer, state, sigmas, EulerDiffusionStep(), _step_state
         )
 
     report["geometry"] = {
@@ -280,11 +270,9 @@ def main() -> int:
         "width": args.width,
         "context_tokens": video_context.shape[1],
     }
-    from scripts.prune import artifacts
-
-    out_path = artifacts.gate(model.key, "kv_cache_check")
+    out_path = artifacts.gate(s.key, "kv_cache_check")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps({"provenance": provenance.stamp(model, device, script="cross_kv_cache"), **report}, indent=2))
+    out_path.write_text(json.dumps({"provenance": s.stamp(), **report}, indent=2))
     print(json.dumps(report, indent=2))
     print(f"Wrote {out_path}. Overall: {'PASS' if report['bit_exact'] else 'FAIL'}")
     return 0 if report["bit_exact"] else 1
