@@ -23,16 +23,9 @@ from ltx_core.guidance.perturbations import (
     PerturbationType,
 )
 from ltx_pipelines.utils.helpers import modality_from_latent_state
-from scripts.prune import (
-    artifacts,
-    chunk_states,
-    hooks,
-    losses,
-    prune_schedule,
-    records,
-    refine_task,
-    session,
-)
+from scripts.prune.core import artifacts, refine_task, session
+from scripts.prune.data import chunk_states, records
+from scripts.prune.score import hooks, losses, prune_schedule
 
 METHODS = ("contribution", "michel", "gauss_newton")
 

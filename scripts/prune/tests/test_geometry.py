@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.prune import geometry, refine_task
+from scripts.prune.core import geometry, refine_task
 
 
 def test_deployed_geometry_is_the_shipped_window(model):

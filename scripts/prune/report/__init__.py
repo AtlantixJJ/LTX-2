@@ -1,9 +1,6 @@
-"""Organizational grouping only -- see ``scripts/prune/core/__init__.py``.
+"""Collecting every gate/number into ``analysis_summary.json``, and plotting
+head scores. Physically relocated here -- see ``scripts/prune/core/__init__.py``
+for the relocation note.
 
-Collecting every gate/number into ``analysis_summary.json``, and plotting
-head scores.
+Modules: plot_head_scores, summarize_phase0.
 """
-
-from scripts.prune import plot_head_scores, summarize_phase0
-
-__all__ = ["plot_head_scores", "summarize_phase0"]

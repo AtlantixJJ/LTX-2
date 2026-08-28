@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from scripts.prune import hooks, session
+from scripts.prune.core import session
+from scripts.prune.score import hooks
 
 
 def test_record_args_default_split_is_overridable():
@@ -24,8 +25,14 @@ def test_max_records_defaults_to_all():
 
 
 def test_dtype_is_declared_exactly_once():
-    hits = [f.name for f in Path("scripts/prune").glob("*.py") if re.search(r"^DTYPE\s*=", f.read_text(), re.M)]
-    assert hits == ["session.py"]
+    subpackages = ("core", "data", "score", "evaluate", "checks", "report")
+    hits = [
+        f.relative_to("scripts/prune").as_posix()
+        for sub in subpackages
+        for f in Path("scripts/prune", sub).glob("*.py")
+        if re.search(r"^DTYPE\s*=", f.read_text(), re.M)
+    ]
+    assert hits == ["core/session.py"]
 
 
 @pytest.mark.gpu

@@ -15,7 +15,7 @@ from typing import Callable, Iterable
 import torch
 from PIL import Image
 
-from scripts.prune.losses import rel_l2
+from scripts.prune.score.losses import rel_l2
 
 
 def _as_bchw(x: torch.Tensor) -> torch.Tensor:

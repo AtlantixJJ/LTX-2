@@ -32,7 +32,7 @@ import torch
 _SAMPLE_BYTES = 1 << 20  # 1 MiB per sampled region
 _SAMPLE_FRACTIONS = (0.25, 0.5, 0.75)
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]  # .../LTX-2 (scripts/prune/core/provenance.py)
 
 
 def checkpoint_fingerprint(path: str | Path) -> str:

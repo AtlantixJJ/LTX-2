@@ -5,7 +5,7 @@ numbers are produced mechanically here, and the prose findings report is written
 *from* this output rather than from re-reading logs. Every scalar quoted in
 ``expr/refiner_prune/<key>/FINDINGS.md`` should be traceable to a key emitted here.
 
-    conda run -n ltx python -m scripts.prune.summarize_phase0 --model 2.5 --model 2.3
+    conda run -n ltx python -m scripts.prune.report.summarize_phase0 --model 2.5 --model 2.3
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from scripts.prune import artifacts
+from scripts.prune.core import artifacts
 
 # A6000 dense bf16 tensor-core peak, for the MFU column. Not measured here -- it is
 # the vendor number, quoted so "TFLOPS achieved" has a denominator.

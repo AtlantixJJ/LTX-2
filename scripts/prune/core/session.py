@@ -11,8 +11,9 @@ import torch
 from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
 from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
-from scripts.prune import artifacts, ltx_adapter, preflight, prompt_cache, refine_core, refine_task
-from scripts.prune.model_registry import SUPPORTED_MODELS, RefinerModel
+from scripts.prune.core import artifacts, ltx_adapter, preflight, refine_core, refine_task
+from scripts.prune.core.model_registry import SUPPORTED_MODELS, RefinerModel
+from scripts.prune.data import prompt_cache
 
 DTYPE = torch.bfloat16
 
@@ -83,7 +84,7 @@ class Session:
             yield decoder
 
     def stamp(self, **extra) -> dict:
-        from scripts.prune import provenance
+        from scripts.prune.core import provenance
 
         return provenance.stamp(self.model, self.device, script=self.script, **extra)
 

@@ -6,7 +6,9 @@ from dataclasses import replace
 import pytest
 
 from ltx_pipelines.utils.helpers import post_process_latent
-from scripts.prune import chunk_states, decode, geometry, session
+from scripts.prune.core import geometry, session
+from scripts.prune.data import chunk_states
+from scripts.prune.evaluate import decode
 
 
 @pytest.mark.gpu

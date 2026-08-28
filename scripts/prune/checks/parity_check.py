@@ -18,7 +18,7 @@ resolves ``REPO_ROOT`` as ``Path(__file__).resolve().parents[1]``; running it fr
 anywhere else would point its ``sys.path`` and default checkpoint paths at the
 wrong tree. It is removed again in a ``finally``.
 
-    conda run -n ltx python -m scripts.prune.parity_check --gpu-id 2
+    conda run -n ltx python -m scripts.prune.checks.parity_check --gpu-id 2
 
 Only meaningful for ``--model 2.3``: 2.5 has no pre-refactor behaviour to match
 (the old script could not load a split pack at all).
@@ -34,8 +34,9 @@ from pathlib import Path
 
 import torch
 
-from scripts.prune import artifacts, corpus, model_registry, preflight, provenance, refine_core
-from scripts.prune.model_registry import REPO_ROOT
+from scripts.prune.core import artifacts, model_registry, preflight, provenance, refine_core
+from scripts.prune.core.model_registry import REPO_ROOT
+from scripts.prune.data import corpus
 
 BASELINE_COPY = REPO_ROOT / "scripts" / "_parity_baseline_vae_refine.py"
 SCRIPT = REPO_ROOT / "scripts" / "vae_refine_sliding_window.py"

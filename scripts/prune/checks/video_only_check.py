@@ -16,7 +16,7 @@ would slip through that.
 Both configurators are built **once** and run over every clip, rather than rebuilt
 per clip -- ~20 s per build, and the comparison is per clip, not per build.
 
-    conda run -n ltx python -m scripts.prune.video_only_check --model 2.5 --gpu-id 2
+    conda run -n ltx python -m scripts.prune.checks.video_only_check --model 2.5 --gpu-id 2
 """
 
 from __future__ import annotations
@@ -36,18 +36,10 @@ from ltx_core.types import VideoLatentShape, VideoPixelShape
 from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.types import ModalitySpec
-from scripts.prune import (
-    artifacts,
-    corpus,
-    ltx_adapter,
-    model_registry,
-    preflight,
-    prompt_cache,
-    provenance,
-    refine_task,
-)
-from scripts.prune.model_registry import RefinerModel
-from scripts.prune.session import DTYPE
+from scripts.prune.core import artifacts, ltx_adapter, model_registry, preflight, provenance, refine_task
+from scripts.prune.core.model_registry import RefinerModel
+from scripts.prune.core.session import DTYPE
+from scripts.prune.data import corpus, prompt_cache
 
 decord.bridge.set_bridge("torch")
 # 25 pixel frames = 4 latent frames, the `k2_chunk25_overlap2` geometry every run under

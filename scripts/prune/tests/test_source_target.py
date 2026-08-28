@@ -3,15 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scripts.prune import artifacts, source_target, teacher
-
-
-def test_the_deprecated_alias_still_dispatches():
-    assert teacher.main is source_target.main
+from scripts.prune.core import artifacts
+from scripts.prune.data import source_target
 
 
 def test_no_module_refers_to_a_teacher_schedule_any_more():
-    src = Path("scripts/prune/source_target.py").read_text()
+    src = Path("scripts/prune/data/source_target.py").read_text()
     assert "--validate" not in src and "16 step" not in src.lower()
 
 

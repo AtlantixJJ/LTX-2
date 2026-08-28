@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.prune import artifacts
+from scripts.prune.core import artifacts
 
 
 def test_every_gate_name_resolves_under_model_root():
@@ -40,5 +40,5 @@ def test_run_dir_appends_to_run_index(tmp_path, monkeypatch):
 
 
 def test_summarize_reads_only_paths_artifacts_can_produce():
-    source = Path("scripts/prune/summarize_phase0.py").read_text()
+    source = Path("scripts/prune/report/summarize_phase0.py").read_text()
     assert "teacher_manifest" not in source and '"refiner_prune"' not in source

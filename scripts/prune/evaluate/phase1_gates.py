@@ -48,7 +48,7 @@ What this measures, and why each part is here:
 
 * **T3** -- the review pair, grid PNG and MP4, per §6.
 
-    conda run -n ltx python -m scripts.prune.phase1_gates --model 2.5 --gpu-id 6
+    conda run -n ltx python -m scripts.prune.evaluate.phase1_gates --model 2.5 --gpu-id 6
 """
 
 from __future__ import annotations
@@ -62,23 +62,12 @@ import decord
 import torch
 
 from ltx_core.components.diffusion_steps import EulerDiffusionStep
-from scripts.prune import (
-    artifacts,
-    chunk_states,
-    corpus,
-    decode,
-    hooks,
-    losses,
-    ltx_adapter,
-    metrics,
-    model_registry,
-    records,
-    refine_core,
-    refine_task,
-    session,
-)
-from scripts.prune.model_registry import RefinerModel
-from scripts.prune.session import DTYPE
+from scripts.prune.core import artifacts, ltx_adapter, model_registry, refine_core, refine_task, session
+from scripts.prune.core.model_registry import RefinerModel
+from scripts.prune.core.session import DTYPE
+from scripts.prune.data import chunk_states, corpus, records
+from scripts.prune.evaluate import decode, metrics
+from scripts.prune.score import hooks, losses
 
 decord.bridge.set_bridge("torch")
 

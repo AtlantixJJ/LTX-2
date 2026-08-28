@@ -6,7 +6,7 @@ encoder -- 26 GB on 2.5 -- and the embeddings connector from every calibration
 run and from deployment entirely. See plans/2026-08-26-refiner-head-ffn-pruning.md
 §5 item 3.
 
-    conda run -n ltx python -m scripts.prune.prompt_cache --model 2.5 --gpu-id 0 --verify
+    conda run -n ltx python -m scripts.prune.data.prompt_cache --model 2.5 --gpu-id 0 --verify
 
 Cache key is (model key, prompt hash): the model key because video-encoding
 dim/values differ across generations (gemma3 vs gemma4, different connector),
@@ -25,8 +25,8 @@ from pathlib import Path
 import torch
 
 from ltx_pipelines.utils.blocks import PromptEncoder
-from scripts.prune import artifacts, model_registry, preflight, provenance, refine_task
-from scripts.prune.model_registry import RefinerModel
+from scripts.prune.core import artifacts, model_registry, preflight, provenance, refine_task
+from scripts.prune.core.model_registry import RefinerModel
 
 DEFAULT_CACHE_DIR = artifacts.OUT_ROOT / "prompt_cache"
 

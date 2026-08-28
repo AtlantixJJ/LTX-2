@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from scripts.prune import corpus, refine_task
+from scripts.prune.core import refine_task
+from scripts.prune.data import corpus
 
 
 def test_fps_is_read_per_clip_and_not_uniform():
@@ -49,15 +50,17 @@ def test_no_module_builds_latent_tools_at_a_hardcoded_frame_rate():
       metrics.t3_video(fps=24.0)  -- an ffmpeg display rate, not a model input
       bench_refiner --fps 24.0    -- a synthetic benchmark that never opens a clip
     """
+    subpackages = ("core", "data", "score", "evaluate", "checks", "report")
     offenders = set()
-    for f in Path("scripts/prune").glob("*.py"):
-        for line in f.read_text().splitlines():
-            if "fps" in line and re.search(r"=\s*24(\.0)?\b", line):
-                offenders.add(f.name)
-                break
+    for sub in subpackages:
+        for f in Path("scripts/prune", sub).glob("*.py"):
+            for line in f.read_text().splitlines():
+                if "fps" in line and re.search(r"=\s*24(\.0)?\b", line):
+                    offenders.add(f.name)
+                    break
     assert offenders == {"metrics.py", "bench_refiner.py"}
 
 
 def test_the_allowed_defaults_are_not_on_a_model_input_path():
-    src = Path("scripts/prune/metrics.py").read_text()
+    src = Path("scripts/prune/evaluate/metrics.py").read_text()
     assert "VideoLatentTools" not in src  # metrics never builds RoPE positions

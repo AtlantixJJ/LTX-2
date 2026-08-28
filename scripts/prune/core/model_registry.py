@@ -30,9 +30,9 @@ from safetensors import safe_open
 from ltx_core.types import SpatioTemporalScaleFactors
 from ltx_pipelines.utils.constants import DISTILLED_SIGMA_VALUES, detect_model_version
 from ltx_pipelines.utils.model_paths import ModelPaths
-from scripts.prune import geometry, ltx_adapter
+from scripts.prune.core import geometry, ltx_adapter
 
-REPO_ROOT = Path(__file__).resolve().parents[2]  # .../LTX-2
+REPO_ROOT = Path(__file__).resolve().parents[3]  # .../LTX-2 (scripts/prune/core/model_registry.py)
 WORKSPACE_ROOT = REPO_ROOT.parent
 CKPT_ROOT = Path(os.environ.get("LTX_CHECKPOINTS", WORKSPACE_ROOT / "checkpoints"))
 

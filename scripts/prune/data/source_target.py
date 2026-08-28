@@ -18,19 +18,11 @@ import torch
 
 from ltx_core.components.diffusion_steps import EulerDiffusionStep
 from ltx_core.tools import VideoLatentTools
-from scripts.prune import (
-    artifacts,
-    chunk_states,
-    ltx_adapter,
-    model_registry,
-    provenance,
-    refine_core,
-    refine_task,
-    session,
-)
-from scripts.prune import corpus as refine_corpus
-from scripts.prune.model_registry import RefinerModel
-from scripts.prune.session import DTYPE
+from scripts.prune.core import artifacts, ltx_adapter, model_registry, provenance, refine_core, refine_task, session
+from scripts.prune.core.model_registry import RefinerModel
+from scripts.prune.core.session import DTYPE
+from scripts.prune.data import chunk_states
+from scripts.prune.data import corpus as refine_corpus
 
 decord.bridge.set_bridge("torch")
 

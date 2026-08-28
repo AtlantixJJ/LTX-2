@@ -5,7 +5,8 @@ import json
 
 import pytest
 
-from scripts.prune import artifacts, chunk_states, records
+from scripts.prune.core import artifacts
+from scripts.prune.data import chunk_states, records
 
 
 def test_select_spans_many_clips_not_one(model):

@@ -79,7 +79,7 @@ from ltx_pipelines.utils.samplers import _step_state  # noqa: E402, PLC2701 -- d
                    # individually; refine_core.run_schedule is the same three lines uninstrumented.
 from ltx_trainer.video_utils import save_video  # noqa: E402
 
-from scripts.prune import geometry, model_registry, preflight, refine_core  # noqa: E402
+from scripts.prune.core import geometry, model_registry, preflight, refine_core  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("vae_refine_sliding_window")

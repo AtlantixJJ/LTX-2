@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from scripts.prune import lstsq
+from scripts.prune.score import lstsq
 
 
 def test_ridge_recovers_a_known_linear_map():

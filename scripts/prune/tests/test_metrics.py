@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from scripts.prune import metrics
+from scripts.prune.evaluate import metrics
 
 
 def test_psnr_of_identical_frames_is_infinite():

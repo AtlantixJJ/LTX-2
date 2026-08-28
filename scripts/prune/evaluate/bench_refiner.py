@@ -23,7 +23,7 @@ not from the build -- instead of paying ~20 s per row.
 with a compilation gain, and the per-sigma cross-attention K/V cache (§5 item 4)
 is measured as its own axis on top of the uncached baseline.
 
-    conda run -n ltx python -m scripts.prune.bench_refiner --model 2.5 --gpu-id 2
+    conda run -n ltx python -m scripts.prune.evaluate.bench_refiner --model 2.5 --gpu-id 2
 """
 
 from __future__ import annotations
@@ -44,19 +44,11 @@ from ltx_core.tools import VideoLatentTools
 from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.types import ModalitySpec
-from scripts.prune import (
-    artifacts,
-    cross_kv_cache,
-    geometry,
-    ltx_adapter,
-    model_registry,
-    provenance,
-    refine_task,
-    session,
-)
-from scripts.prune.model_registry import RefinerModel
-from scripts.prune.session import DTYPE
-from scripts.prune.timing import StageTimer, count_flops
+from scripts.prune.core import artifacts, geometry, ltx_adapter, model_registry, provenance, refine_task, session
+from scripts.prune.core.model_registry import RefinerModel
+from scripts.prune.core.session import DTYPE
+from scripts.prune.evaluate import cross_kv_cache
+from scripts.prune.evaluate.timing import StageTimer, count_flops
 
 DEFAULT_CHUNK_LATENT_FRAMES = (1, 2, 3, 4, 16)
 DEFAULT_OUT_DIR = artifacts.OUT_ROOT

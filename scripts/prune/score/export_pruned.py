@@ -10,7 +10,7 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-from scripts.prune import model_registry, preflight, provenance
+from scripts.prune.core import model_registry, preflight, provenance
 
 PREFIX = "model.diffusion_model.transformer_blocks"
 

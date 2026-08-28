@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from scripts.prune import hooks
+from scripts.prune.score import hooks
 
 
 def test_head_mask_zeroes_exactly_that_heads_slice(block):

@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 import torch
 
-from scripts.prune import chunk_states
+from scripts.prune.data import chunk_states
 
 
 def test_real_record_token_layout(record_paths):

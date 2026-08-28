@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.prune import refine_task
+from scripts.prune.core import refine_task
 
 
 def test_k2_is_the_deployed_two_forward_schedule(model):

@@ -13,7 +13,8 @@ from pathlib import Path
 
 import torch
 
-from scripts.prune import chunk_states, hooks, lstsq
+from scripts.prune.data import chunk_states
+from scripts.prune.score import hooks, lstsq
 
 
 def initial_head_masks(model, device: torch.device | str | None = None) -> dict[str, torch.Tensor]:

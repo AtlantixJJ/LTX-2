@@ -15,7 +15,7 @@ from pathlib import Path
 import torch
 
 from ltx_core.types import LatentState
-from scripts.prune import refine_core, refine_task
+from scripts.prune.core import refine_core, refine_task
 
 # Bumped from 1 when ``fps`` joined ChunkStateMeta and CTX_LATENT_FRAMES went 4 -> 1.
 # A format-1 cache was built at the wrong window geometry and with a hardcoded 24 fps,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from scripts.prune import gates
+from scripts.prune.evaluate import gates
 
 
 def _candidate(windows):

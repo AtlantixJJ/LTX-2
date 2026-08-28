@@ -26,7 +26,7 @@ Two windows minimum (the default), because a one-window run never exercises the
 window-to-window latent carryover -- the stateful path a refactor is most likely to
 break.
 
-    conda run -n ltx python -m scripts.prune.method_parity --model 2.5 --gpu-id 0
+    conda run -n ltx python -m scripts.prune.checks.method_parity --model 2.5 --gpu-id 0
 """
 
 from __future__ import annotations
@@ -39,16 +39,10 @@ from pathlib import Path
 
 import torch
 
-from scripts.prune import (
-    artifacts,
-    corpus,
-    phase1_gates,
-    preflight,
-    refine_core,
-    refine_task,
-    session,
-)
-from scripts.prune.model_registry import REPO_ROOT
+from scripts.prune.core import artifacts, preflight, refine_core, refine_task, session
+from scripts.prune.core.model_registry import REPO_ROOT
+from scripts.prune.data import corpus
+from scripts.prune.evaluate import phase1_gates
 
 SCRIPT = REPO_ROOT / "scripts" / "vae_refine_sliding_window.py"
 
@@ -142,7 +136,7 @@ def main() -> int:
         "seed": args.seed,
         "k_step": refine_task.K_STEP,
         "reference_script": str(SCRIPT.relative_to(REPO_ROOT)),
-        "harness": "scripts.prune.phase1_gates._encode_windows + _rollout",
+        "harness": "scripts.prune.evaluate.phase1_gates._encode_windows + _rollout",
         "windows": rows,
         "pass": bool(all_pass),
     }

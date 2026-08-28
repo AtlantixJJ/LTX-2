@@ -7,7 +7,7 @@ import json
 import pytest
 import torch
 
-from scripts.prune.model_registry import WORKSPACE_ROOT
+from scripts.prune.core.model_registry import WORKSPACE_ROOT
 
 CALIB = WORKSPACE_ROOT / "expr" / "refiner_prune" / "2.5" / "calibration"
 CORPUS = WORKSPACE_ROOT / "expr" / "sam3dgs_vae_refine"
@@ -16,7 +16,7 @@ CORPUS = WORKSPACE_ROOT / "expr" / "sam3dgs_vae_refine"
 @pytest.fixture(scope="session")
 def model():
     """The real 2.5 registry entry; resolution reads checkpoint metadata only."""
-    from scripts.prune import model_registry
+    from scripts.prune.core import model_registry
 
     try:
         return model_registry.resolve("2.5")

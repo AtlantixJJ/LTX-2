@@ -5,14 +5,14 @@
 #     bash scripts/prune/run_head_sweep.sh 2.5 "0 1 2 3"
 #
 # Per sparsity target it does two things on one GPU:
-#   1. scripts.prune.head_scores  --target-sparsity P   -> a head_scores.json whose
+#   1. scripts.prune.score.head_scores     --target-sparsity P   -> a head_scores.json whose
 #      `iterative.masks` is the exact per-attention-module mask
-#   2. scripts.prune.phase1_gates --head-masks <that>   -> the full T0/T1/T2/T3 gate
+#   2. scripts.prune.evaluate.phase1_gates --head-masks <that>   -> the full T0/T1/T2/T3 gate
 #
 # Prerequisites, in order (this script checks for the first two and refuses otherwise):
-#   scripts.prune.method_parity      -> PASS  (the harness reproduces the refine script)
-#   scripts.prune.source_target --build-calibration  (format-2 records at ctx=1, real fps)
-#   scripts.prune.phase1_gates ... --output phase1_gates_baseline.json
+#   scripts.prune.checks.method_parity   -> PASS  (the harness reproduces the refine script)
+#   scripts.prune.data.source_target --build-calibration  (format-2 records at ctx=1, real fps)
+#   scripts.prune.evaluate.phase1_gates ... --output phase1_gates_baseline.json
 #
 # Two operational bugs this script exists to avoid, both hit by the first sweep:
 #   * `conda run` appends a blank line to stdout, so `$(... | tail -1)` captured "" and
@@ -36,9 +36,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="$ROOT/../expr/refiner_prune/$MODEL"
 cd "$ROOT" || exit 1
 
-[ -f "$OUT/method_parity.json" ] || { echo "missing $OUT/method_parity.json -- run scripts.prune.method_parity first"; exit 1; }
+[ -f "$OUT/method_parity.json" ] || { echo "missing $OUT/method_parity.json -- run scripts.prune.checks.method_parity first"; exit 1; }
 grep -q '"pass": true' "$OUT/method_parity.json" || { echo "method_parity did not PASS -- fix that before measuring pruning deltas"; exit 1; }
-[ -f "$OUT/calibration/index.json" ] || { echo "missing $OUT/calibration/index.json -- run scripts.prune.source_target --build-calibration first"; exit 1; }
+[ -f "$OUT/calibration/index.json" ] || { echo "missing $OUT/calibration/index.json -- run scripts.prune.data.source_target --build-calibration first"; exit 1; }
 
 run_one() {
     local sparsity="$1" gpu="$2"
@@ -46,7 +46,7 @@ run_one() {
     local log="$OUT/sweep_${tag}_gpu${gpu}.log"
     {
         echo "=== $tag on GPU $gpu: head_scores --target-sparsity $sparsity"
-        "$PYTHON" -m scripts.prune.head_scores --model "$MODEL" --gpu-id "$gpu" \
+        "$PYTHON" -m scripts.prune.score.head_scores --model "$MODEL" --gpu-id "$gpu" \
             --methods michel --iterative-method michel \
             --target-sparsity "$sparsity" --rounds "$ROUNDS" --max-records "$MAX_RECORDS"
     } >"$log" 2>&1
@@ -67,7 +67,7 @@ run_one() {
     fi
     {
         echo "=== $tag on GPU $gpu: phase1_gates --head-masks $schedule"
-        "$PYTHON" -m scripts.prune.phase1_gates --model "$MODEL" --gpu-id "$gpu" \
+        "$PYTHON" -m scripts.prune.evaluate.phase1_gates --model "$MODEL" --gpu-id "$gpu" \
             --head-masks "$schedule" \
             --output "$OUT/phase1_gates_pruned_${tag}.json" \
             --figures-dir "$OUT/figures_pruned_${tag}" \

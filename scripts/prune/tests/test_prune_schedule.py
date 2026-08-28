@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from scripts.prune import ffn_scores, hooks, prune_schedule
+from scripts.prune.score import ffn_scores, hooks, prune_schedule
 
 
 def test_iterative_head_masks_hit_target_exactly(block):

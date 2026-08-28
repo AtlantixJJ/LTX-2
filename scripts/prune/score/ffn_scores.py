@@ -9,16 +9,9 @@ from pathlib import Path
 
 import torch
 
-from scripts.prune import (
-    artifacts,
-    chunk_states,
-    hooks,
-    losses,
-    lstsq,
-    prune_schedule,
-    records,
-    session,
-)
+from scripts.prune.core import artifacts, session
+from scripts.prune.data import chunk_states, records
+from scripts.prune.score import hooks, losses, lstsq, prune_schedule
 
 
 @torch.no_grad()

@@ -12,7 +12,9 @@ import torch
 from ltx_core.components.diffusion_steps import EulerAncestralDiffusionStep, EulerDiffusionStep
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.helpers import post_process_latent
-from scripts.prune import artifacts, chunk_states, losses, records, session
+from scripts.prune.core import artifacts, session
+from scripts.prune.data import chunk_states, records
+from scripts.prune.score import losses
 
 
 def _run(transformer, state, context, sigmas: torch.Tensor, *, ancestral: bool, seed: int):

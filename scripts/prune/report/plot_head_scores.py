@@ -6,7 +6,7 @@ lowest-ranked candidates in that block?  The agreement plot compares complete
 rankings from estimators run on the same checkpoint and calibration records.
 
 Example:
-    conda run -n ltx python -m scripts.prune.plot_head_scores \
+    conda run -n ltx python -m scripts.prune.report.plot_head_scores \
         --scores expr/refiner_prune/2.5/*-head-scores/head_scores.json \
         --output-dir expr/refiner_prune/2.5/head-score-figures
 """

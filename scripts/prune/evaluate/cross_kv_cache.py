@@ -234,7 +234,8 @@ def main() -> int:
     import json
 
     from ltx_core.components.diffusion_steps import EulerDiffusionStep
-    from scripts.prune import artifacts, bench_refiner, ltx_adapter, refine_task, session
+    from scripts.prune.core import artifacts, ltx_adapter, refine_task, session
+    from scripts.prune.evaluate import bench_refiner
 
     ap = argparse.ArgumentParser(description=main.__doc__)
     session.add_model_args(ap)

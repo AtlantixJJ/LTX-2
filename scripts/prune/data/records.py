@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.prune import chunk_states
+from scripts.prune.data import chunk_states
 
 
 def select(root: Path, *, split: str | None = None, limit: int | None = None, family: str | None = None,

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import decord
 
-from scripts.prune import artifacts
-from scripts.prune.model_registry import WORKSPACE_ROOT
+from scripts.prune.core import artifacts
+from scripts.prune.core.model_registry import WORKSPACE_ROOT
 
 CORPUS_DIR = WORKSPACE_ROOT / "expr" / "sam3dgs_vae_refine"
 

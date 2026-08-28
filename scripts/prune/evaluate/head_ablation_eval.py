@@ -7,7 +7,7 @@ records chunk-token latent deviation, source-target T0 change, and (by default)
 an aligned source | unpruned | masked MP4 for the first evaluated record.
 
 Example:
-    conda run -n ltx python -m scripts.prune.head_ablation_eval --model 2.5 --gpu-id 0 \
+    conda run -n ltx python -m scripts.prune.evaluate.head_ablation_eval --model 2.5 --gpu-id 0 \
         --remove-head 7.attn2:14 --split held_out --max-records 8
 """
 
@@ -19,16 +19,10 @@ import sys
 
 import torch
 
-from scripts.prune import (
-    artifacts,
-    chunk_states,
-    decode,
-    hooks,
-    losses,
-    metrics,
-    records,
-    session,
-)
+from scripts.prune.core import artifacts, session
+from scripts.prune.data import chunk_states, records
+from scripts.prune.evaluate import decode, metrics
+from scripts.prune.score import hooks, losses
 
 
 def _parse_head(value: str) -> tuple[str, int]:

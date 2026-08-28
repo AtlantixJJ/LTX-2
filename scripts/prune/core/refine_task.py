@@ -63,7 +63,7 @@ def deployed_geometry(scale_factors):
     Imported lazily so this module stays a pure constants module that any script can
     import without pulling in torch/ltx_core.
     """
-    from scripts.prune.refine_core import WindowGeometry
+    from scripts.prune.core.refine_core import WindowGeometry
 
     return WindowGeometry(
         window_frames=WINDOW_FRAMES, overlap_frames=OVERLAP_FRAMES, scale_factors=scale_factors
@@ -72,7 +72,7 @@ def deployed_geometry(scale_factors):
 
 def calibration_geometry(chunk_latent_frames: int, scale_factors):
     """The window that freezes ``CTX_LATENT_FRAMES`` and denoises ``chunk_latent_frames``."""
-    from scripts.prune.refine_core import WindowGeometry
+    from scripts.prune.core.refine_core import WindowGeometry
 
     return WindowGeometry.from_latent_frames(
         context_latent_frames=CTX_LATENT_FRAMES,

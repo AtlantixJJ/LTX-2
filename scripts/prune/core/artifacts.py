@@ -10,7 +10,7 @@ import json
 import os
 from pathlib import Path
 
-from scripts.prune.model_registry import WORKSPACE_ROOT
+from scripts.prune.core.model_registry import WORKSPACE_ROOT
 
 OUT_ROOT = WORKSPACE_ROOT / "expr" / "refiner_prune"
 GATES = (
@@ -59,7 +59,7 @@ def gate(key: str, name: str) -> Path:
 
 def run_dir(key: str, prefix: str, *, script: str, argv: list[str]) -> Path:
     """Create an attributable run directory and append it to ``runs/index.jsonl``."""
-    from scripts.prune import provenance
+    from scripts.prune.core import provenance
 
     path = root(key) / provenance.run_id(prefix)
     suffix = 1

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.prune import chunk_states, losses
+from scripts.prune.data import chunk_states
+from scripts.prune.score import losses
 
 
 def test_zero_error_is_zero_loss(record_paths):

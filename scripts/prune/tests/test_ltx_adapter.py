@@ -14,9 +14,13 @@ def test_no_module_but_the_adapter_imports_ltx_privates():
         r"from ltx_\w+[\w.]* import [^\n]*\b_\w+"
         r"|\._(build_state|step_state|transformer_ctx|decoder_builder|build_encoder)\b"
     )
-    offenders = {f.name for f in Path("scripts/prune").glob("*.py") if pattern.search(f.read_text())} - {
-        "ltx_adapter.py"
-    }
+    subpackages = ("core", "data", "score", "evaluate", "checks", "report")
+    offenders = {
+        f.relative_to("scripts/prune").as_posix()
+        for sub in subpackages
+        for f in Path("scripts/prune", sub).glob("*.py")
+        if pattern.search(f.read_text())
+    } - {"core/ltx_adapter.py"}
     assert offenders == set()
 
 
@@ -31,7 +35,7 @@ def test_adapter_docstring_names_a_resolvable_pinned_commit():
     state", refreshed when the submodule pin actually moves, not on every
     scripts/prune commit.
     """
-    src = Path("scripts/prune/ltx_adapter.py").read_text()
+    src = Path("scripts/prune/core/ltx_adapter.py").read_text()
     m = re.search(r"[Pp]inned at(?: LTX-2 commit)? ([0-9a-f]{7,40})", src)
     assert m, "ltx_adapter.py must record its pinned LTX-2 commit, e.g. 'Pinned at LTX-2 commit 9a1c49b'"
     result = subprocess.run(["git", "cat-file", "-e", m.group(1)], capture_output=True, check=False)

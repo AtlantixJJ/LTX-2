@@ -3,8 +3,8 @@
 Fails in ~1s on a wrong env or half-downloaded checkpoint pack instead of ~25s
 into a real run. See plans/2026-08-26-refiner-head-ffn-pruning.md §3.
 
-    conda run -n ltx python -m scripts.prune.preflight --model 2.5
-    conda run -n ltx python -m scripts.prune.preflight --model 2.5 --dump-caps
+    conda run -n ltx python -m scripts.prune.core.preflight --model 2.5
+    conda run -n ltx python -m scripts.prune.core.preflight --model 2.5 --dump-caps
 
 ``--dump-caps`` writes ``expr/refiner_prune/<key>/caps.json`` -- the Phase 0 gate's
 "``ModelCaps`` dumped to JSON per generation" (plan §5). Printing to stdout is not
@@ -22,8 +22,8 @@ from pathlib import Path
 
 import torch
 
-from scripts.prune import artifacts, model_registry, provenance
-from scripts.prune.model_registry import RefinerModel
+from scripts.prune.core import artifacts, model_registry, provenance
+from scripts.prune.core.model_registry import RefinerModel
 
 
 def free_gpus(min_free_gb: float = 4.0) -> list[dict]:
