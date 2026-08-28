@@ -75,7 +75,7 @@ def main() -> int:
             ancestral = _run(transformer, state.clone(), context, sigmas, ancestral=True, seed=args.seed + i)
             rows.append({"record": path.name, "clip": meta.clip, "euler_t0": float(losses.rel_l2(euler, target, state)), "ancestral_t0": float(losses.rel_l2(ancestral, target, state))})
     e = sum(r["euler_t0"] for r in rows) / len(rows); a = sum(r["ancestral_t0"] for r in rows) / len(rows)
-    result = {"provenance": provenance.stamp(model, device, script="sampler_ab"), "states": rows, "euler_t0_mean": e, "ancestral_t0_mean": a, "chosen_sampler": "euler" if e <= a else "ancestral", "decision_metric": "mean T0 relative L2 vs frozen teacher"}
+    result = {"provenance": provenance.stamp(model, device, script="sampler_ab"), "states": rows, "euler_t0_mean": e, "ancestral_t0_mean": a, "chosen_sampler": "euler" if e <= a else "ancestral", "decision_metric": "mean T0 relative L2 vs source target"}
     out = model_registry.WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / "sampler_ab.json"
     out.write_text(json.dumps(result, indent=2)); print(json.dumps(result, indent=2)); return 0
 

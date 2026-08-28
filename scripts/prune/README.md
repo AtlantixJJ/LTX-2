@@ -60,8 +60,18 @@ python -m scripts.prune.bench_refiner --model 2.5 --gpu-id N --tag compile \
 | `phase1_gates.py` | Runs the **unpruned** student through T0/T1/T2/T3 — the §6 gate itself, and the reference level every pruned candidate is measured against. |
 | `summarize_phase0.py` | Collects every artifact into `analysis_summary.json` + markdown tables (§12). |
 
-Phase 2+ modules named in §12 (`hooks.py`, `head_scores.py`, `ffn_scores.py`, `lstsq.py`, `prune_schedule.py`,
-`export_pruned.py`, `gates.py`) are not written yet.
+Phase 2 is implemented in `hooks.py`, `head_scores.py`, `lstsq.py`, and
+`prune_schedule.py`.  Its estimators can be distributed across GPUs; for
+example, run contribution/Michel/Gauss--Newton on GPUs 0/1/2 and the exact
+ablation/leave-one-out validation on GPU 3.  Phase 3+ modules are not written
+yet.
+
+```bash
+python -m scripts.prune.head_scores --model 2.5 --gpu-id 0 --methods contribution
+python -m scripts.prune.head_scores --model 2.5 --gpu-id 1 --methods michel
+python -m scripts.prune.head_scores --model 2.5 --gpu-id 2 --methods gauss_newton --gauss-newton-projections 16
+python -m scripts.prune.head_scores --model 2.5 --gpu-id 3 --methods contribution --ablate-layers --validate-heads 200
+```
 
 ## Phase 1 — build calibration data
 

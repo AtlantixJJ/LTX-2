@@ -1,4 +1,4 @@
-"""Phase 1's gate: run the **unpruned** student through T0/T1/T2/T3 and record it.
+"""Phase 1's gate: evaluate the unpruned student against the source target.
 
 plans/2026-08-26-refiner-head-ffn-pruning.md §6 ends with a gate that nothing else
 in ``scripts/prune/`` answers: *"teacher cached; T0/T1/T2 near-zero for the unpruned
@@ -238,12 +238,11 @@ def main() -> int:
     context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
     denoiser = SimpleDenoiser(context, None)
     student_sigmas = refine_task.schedule_for(model.sigmas, refine_task.K_STEP)
-    spec = teacher.spec_for(model)
 
     # --- pick and encode the T2 clip before the transformer is resident ---
     t2_source = None
     if not args.skip_t2:
-        manifest = json.loads((out_root / "teacher" / "teacher_manifest.json").read_text())
+        manifest = json.loads((out_root / "source_target" / "manifest.json").read_text())
         held = set(manifest["split"]["held_out"])
         pool = [c for c in manifest["corpus"] if c["clip"] in held] or manifest["corpus"]
         if args.t2_clip:
@@ -262,37 +261,34 @@ def main() -> int:
         torch.cuda.empty_cache()
         print(f"[t2] clip {pick['clip']}: {t2_source['latent'].shape[2]} latent frames", flush=True)
 
-    # --- transformer-resident phase: T0 and both rollouts ---
+    # --- transformer-resident phase: T0 and source-aligned student rollout ---
     stage = DiffusionStage.from_checkpoint(
         model.paths.transformer(), DTYPE, device,
         model_configurator=LTXVideoOnlyModelConfigurator, scale_factors=model.scale_factors,
     )
-    result: dict = {"provenance": provenance.stamp(model, device, script="phase1_gates"),
-                    "student_sigmas": student_sigmas, "teacher_sigmas": spec.sigmas}
+    result: dict = {"provenance": provenance.stamp(model, device, script="phase1_gates"), "student_sigmas": student_sigmas, "target": "vae_encoded_source_latent"}
     latents: dict = {}
     with torch.no_grad(), stage._transformer_ctx() as transformer:
         result["T0"] = run_t0(model, transformer, denoiser, device, states_root)
         if t2_source is not None:
             src = t2_source["latent"].to(device=device, dtype=DTYPE)
-            for name, sig in (("student", student_sigmas), ("teacher", spec.sigmas)):
-                stream, done, linear = _rollout(model, transformer, denoiser, src, sig, args.rollout_chunks,
-                                                seed=args.seed, cycle=args.cycle_source, device=device)
-                latents[name] = stream.cpu()
-                result.setdefault("T2", {})[f"{name}_chunks"] = done
-                result["T2"][f"{name}_linear_chunks"] = linear
-                print(f"[t2] {name}: {done} chunks ({linear} source-aligned)", flush=True)
+            stream, done, linear = _rollout(model, transformer, denoiser, src, student_sigmas, args.rollout_chunks,
+                                            seed=args.seed, cycle=args.cycle_source, device=device)
+            latents["student"] = stream.cpu()
+            result.setdefault("T2", {}).update({"student_chunks": done, "student_linear_chunks": linear})
+            print(f"[t2] student: {done} chunks ({linear} source-aligned)", flush=True)
     del stage
     torch.cuda.empty_cache()
 
     # --- decode-resident phase: T1, T2 pixel metrics, T3 artifacts ---
     if latents:
         figures = out_root / "figures"
-        chunks_done = min(result["T2"]["student_chunks"], result["T2"]["teacher_chunks"])
+        chunks_done = result["T2"]["student_chunks"]
         ctx_n, n_new = refine_task.CTX_LATENT_FRAMES, ROLLOUT_CHUNK_LATENT_FRAMES
         decoder_holder = VideoDecoder(model.paths.video_vae(), DTYPE, device)
         with torch.no_grad(), gpu_model(decoder_holder._decoder_builder.build(device=device, dtype=DTYPE).eval()) as decoder:
             decoded = {}
-            for name in ("student", "teacher"):
+            for name in ("student",):
                 dec = torch.cat(list(decoder.decode_video(latents[name].to(device=device, dtype=DTYPE), None, None)), dim=0).cpu().float()
                 decoded[name] = (dec.clamp(0, 1).permute(0, 3, 1, 2) if dec.shape[-1] in (1, 3) else dec.clamp(0, 1))
         source_px = ((t2_source["pixels"].float() + 1.0) / 2.0)[0].permute(1, 0, 2, 3)
@@ -304,9 +300,9 @@ def main() -> int:
         for j in range(chunks_done):
             lo = 1 + (ctx_n + j * n_new) * t
             hi = lo + n_new * t
-            if hi > min(decoded["student"].shape[0], decoded["teacher"].shape[0]):
+            if hi > min(decoded["student"].shape[0], source_px.shape[0]):
                 break
-            rollout_rows.append({"chunk": j, "pred": decoded["student"][lo:hi], "teacher": decoded["teacher"][lo:hi]})
+            rollout_rows.append({"chunk": j, "pred": decoded["student"][lo:hi], "teacher": source_px[lo:hi]})
         result["T2"].update(metrics.t2(rollout_rows))
         result["T2"]["clip"] = t2_source["clip"]
         result["T2"]["cycled_source"] = bool(args.cycle_source)
@@ -317,21 +313,21 @@ def main() -> int:
         # stream is still a valid student-vs-teacher comparison but is no longer
         # frame-aligned with the clip, and a PSNR-vs-source over that range would be
         # comparing unrelated frames.
-        linear = min(result["T2"]["student_linear_chunks"], result["T2"]["teacher_linear_chunks"])
+        linear = result["T2"]["student_linear_chunks"]
         aligned = 1 + (ctx_n + linear * n_new) * t
-        n = min(decoded["student"].shape[0], decoded["teacher"].shape[0], source_px.shape[0], aligned)
-        result["T1"] = metrics.t1(decoded["student"][:n], decoded["teacher"][:n], source_px[:n])
+        n = min(decoded["student"].shape[0], source_px.shape[0], aligned)
+        result["T1"] = metrics.t1(decoded["student"][:n], source_px[:n])
         result["T1"]["frames_compared"] = n
         result["T1"]["source_aligned_chunks"] = linear
-        grid = metrics.t3_grid([(t2_source["clip"], source_px[:n], decoded["teacher"][:n], decoded["student"][:n])],
+        grid = metrics.t3_grid([(t2_source["clip"], source_px[:n], source_px[:n], decoded["student"][:n])],
                                figures / "phase1_rollout_grid.png")
-        video = metrics.t3_video(source_px[:n], decoded["teacher"][:n], decoded["student"][:n],
+        video = metrics.t3_video(source_px[:n], source_px[:n], decoded["student"][:n],
                                  figures / "phase1_rollout.mp4", fps=24.0)
         result["T3"] = {"grid": str(grid), "video": str(video)}
         (figures / "INDEX.md").write_text(
             "# Phase 1 gate figures\n\n"
-            "- `phase1_rollout_grid.png`: source | teacher | student AR-rollout frames\n"
-            "- `phase1_rollout.mp4`: aligned source | teacher | student AR rollout\n"
+            "- `phase1_rollout_grid.png`: source | source target | student AR-rollout frames\n"
+            "- `phase1_rollout.mp4`: aligned source | source target | student AR rollout\n"
         )
 
     path = out_root / "phase1_gates.json"

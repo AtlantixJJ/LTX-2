@@ -24,13 +24,11 @@ from __future__ import annotations
 # its own text.
 REFINE_PROMPT = "a high quality, sharp, detailed video with fine texture and natural lighting"
 
-# The deployed student schedule (2 forwards: sigma 0.725 -> 0.422 -> 0.0) and the
-# deeper schedule Phase 1's teacher.py builds x0* targets from. Values come from
+# The deployed student schedule (2 forwards: sigma 0.725 -> 0.422 -> 0.0). Values come from
 # vae_refine_sliding_window.refinement_schedule's own k-step table (DISTILLED_SIGMA_VALUES
 # slicing), reproduced here as the *names* Phase 1+ scripts key off rather than the
 # literal float lists, which live in ltx_pipelines.utils.constants.
 K_STEP = "k2"
-TEACHER_K_STEP = "k8"
 
 # AR-chunk calibration geometry (Phase 1's chunk_states.py). The upcoming autoregressive
 # refiner predicts this many fresh latent frames per chunk, with CTX_LATENT_FRAMES of

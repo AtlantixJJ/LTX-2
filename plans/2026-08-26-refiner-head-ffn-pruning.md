@@ -49,7 +49,6 @@ task" is never re-specified inconsistently:
 # scripts/prune/refine_task.py
 REFINE_PROMPT = "a high quality, sharp, detailed video with fine texture and natural lighting"
 K_STEP          = "k2"          # student schedule: the deployed one
-TEACHER_K_STEP  = "k8"          # deeper schedule used to build targets (§6)
 CHUNK_LATENT_FRAMES = (1, 2, 3) # AR chunk sizes to calibrate over
 CTX_LATENT_FRAMES   = 4         # frozen context carried into each chunk
 CALIB_CLIPS, EVAL_CLIPS = ...   # split by CLIP, never by window
@@ -391,7 +390,7 @@ free, strong sanity check on every conclusion in this plan.
    × resolution, plus a FLOP count, **per generation**. This table is the denominator for
    every later speedup claim. Measure `torch.compile` + CUDA graphs on/off separately so
    pruning gains are not confounded with compilation gains.
-6. **Record the teacher** (§6) and freeze it.
+6. **Freeze the source-target corpus split** (§6).
 
 ### Coding guidance
 
@@ -451,13 +450,11 @@ The refiner has no ground-truth "correct" x0. Two constructions matter:
 
 - **Naive self-distillation is degenerate.** `L(ξ) = ‖f(ξ) − f(1)‖²` has gradient
   *identically zero* at ξ = 1, which silently kills the mask-gradient estimator (§7.2b).
-- **The construction that works**: take the teacher's **converged refine output** `x0*`,
-  produced by a schedule *deeper than the student runs* (student `k2`, teacher `k8`; the
-  `k8` outputs for all 52 clips are **already on disk**). For any state `z_σ`, the student's
-  single-step x0 prediction is not `x0*`, so `L = ‖D_θ(z_σ, σ) − x0*‖²` is nonzero at ξ = 1
-  at **every** step — including the last one, where a self-referential target would make it
-  identically zero.
-- **Renoising generates unlimited calibration states.** Renoise `x0*` back to σ_i with a
+- **The construction that works**: use the VAE-encoded **source latent** `x_source` as x0
+  target.  For a noised source state `z_σ`, `L = ‖D_θ(z_σ, σ) − x_source‖²` is ordinary
+  diffusion denoising supervision and is nonzero at ξ = 1. Its mask gradient is the VJP
+  `2 J_ξᵀ(D_θ(z_σ,σ) − x_source)`, so the target supplies a meaningful output-space direction.
+- **Renoising generates unlimited calibration states.** Renoise `x_source` back to σ_i with a
   fresh noise draw; the model does not return to the identical x0 from that renoised state,
   so every draw is a fresh, correctly-targeted sample on the deployment manifold. Sample
   **both** families: *on-policy* states from the natural k2 trajectory (what deployment
@@ -489,16 +486,10 @@ Persist states to disk (~1–4 MB each) so **every estimator sees the identical 
 set** — this is what makes the §7 comparison fair. Split clips 40 calib / 12 held-out,
 **by clip, never by window**.
 
-**`teacher.py`** — run the deep schedule once per (clip, window) for `x0*`, caching the
-on-policy student trajectory states alongside:
+**`teacher.py`** — cache source-target on-policy student states alongside renoised states:
 
 ```python
-sigmas_teacher = torch.tensor(refinement_schedule(TEACHER_K_STEP), device=device)
-state = make_state(l_enc, ctx, sigmas_teacher[0], ...)
-for i in range(len(sigmas_teacher) - 1):
-    res, _ = denoiser(wrapped, state, None, sigmas_teacher, i)
-    state = _step_state(state, res.denoised, stepper, sigmas_teacher, i)
-x0_star = video_tools.unpatchify(video_tools.clear_conditioning(state)).latent
+x_source = video_tools.patchify(video_tools.create_initial_state(device, DTYPE, l_enc)).clean_latent
 ```
 
 **`losses.py`** — always x0 space, always masked to fresh tokens:
@@ -515,14 +506,13 @@ def rel_l2(pred_x0, x0_star, state):            # the T0 metric
 
 **`metrics.py`** — four tiers:
 - **T0 (latent)** `rel_l2` vs `x0*` on fresh tokens. Cheap; runs inside search loops.
-- **T1 (pixel, single chunk)** decode and compare vs teacher decode — PSNR / SSIM / LPIPS;
-  and vs the source clip.
+- **T1 (pixel, single chunk)** decode and compare vs the source clip — PSNR / SSIM / LPIPS.
 - **T2 (AR rollout)** ≥200 sequential chunks, each chunk's own output feeding the next
-  chunk's frozen context. Report PSNR-vs-teacher **as a function of chunk index** plus
+  chunk's frozen context. Report PSNR-vs-source **as a function of chunk index** plus
   brightness/saturation drift. **This is the gate that matters** — a 1% per-chunk error
   invisible in isolation compounds over a 600-frame rollout, and no single-chunk metric
   catches it.
-- **T3** side-by-side `source | teacher | candidate` review artifacts on 5 clips, in **both**
+- **T3** side-by-side `source | source target | candidate` review artifacts on 5 clips, in **both**
   forms: a still frame grid (`t3_grid` → PNG) *and* a frame-aligned horizontally-concatenated
   **MP4** (`t3_video` → H.264 via `ffmpeg`, `-crf 18`, `yuv420p`). The video is not optional
   garnish: temporal artifacts are the failure mode this task is most exposed to — flicker,
@@ -531,11 +521,11 @@ def rel_l2(pred_x0, x0_star, state):            # the T0 metric
   T1, T2 rollouts, and every pruned candidate in §7–§9) writes both, plus a `figures/INDEX.md`
   naming them, following the `scripts/ltx23_diag` figure conventions.
 
-**Gate:** teacher cached; T0/T1/T2 near-zero for the unpruned student against itself; the
+**Gate:** source-target cache written; T0/T1/T2 recorded for the unpruned student; the
 unpruned model's own T2 rollout characterizes the **intrinsic drift floor** (not zero — the
 sliding-window script's carryover design exists because of it); the 2.5 Euler-vs-ancestral
 A/B (§4) is decided and recorded; and the T3 pair (grid PNG **and** MP4) is written for the
-teacher-vs-student comparison, so the drift floor is inspectable and not only tabulated.
+source-vs-student comparison, so the drift floor is inspectable and not only tabulated.
 
 ---
 
@@ -817,9 +807,9 @@ mask-only export first, then apply reconstruction and fall back to a T0 toleranc
 
 | Metric | Gate |
 |---|---|
-| T0 latent rel-L2 vs teacher (held-out chunks) | ≤ 2% (soft), hard fail above 5% |
-| T1 PSNR vs teacher decode | ≥ 38 dB |
-| T2 200-chunk AR rollout | PSNR-vs-teacher slope ≈ flat; no monotone brightness/saturation drift beyond the unpruned model's own floor |
+| T0 latent rel-L2 vs source (held-out chunks) | Report baseline and candidate delta |
+| T1 PSNR vs source decode | Report baseline and candidate delta |
+| T2 200-chunk AR rollout | PSNR-vs-source slope; no monotone brightness/saturation drift beyond the unpruned model's own floor |
 | T3 | no reviewer-visible difference on 5 clips, judged on the **MP4s** (temporal artifacts do not show in the still grid); PNG grid + MP4 both written |
 | Speed | measured ms/step at chunk ∈ {1,2,3}; **≥1.4× at 30% params off** |
 
@@ -851,7 +841,7 @@ conda run -n ltx python -m scripts.prune.gates --model 2.5 \
 
 | Risk | Mitigation |
 |---|---|
-| Self-distillation loss makes the mask-gradient estimator identically zero | §6 target construction (`x0*` from the deeper teacher schedule + renoised states); documented in §7.2b |
+| Self-distillation loss makes the mask-gradient estimator identically zero | §6 uses the VAE-encoded source target + renoised states; documented in §7.2b |
 | Independent head ranking ignores redundancy | Iterative prune-and-rescore + least-squares `to_out[0]` re-solve (§7.2c); training-free ceiling stated honestly, with the companion plan beyond it |
 | AR drift over long rollouts | T2 gate mandatory before any export; ≥200 chunks |
 | Least-squares re-solve overfits the calibration set | Ridge term, held-out clip split, and T0 reported on held-out clips only |
@@ -875,7 +865,7 @@ scripts/prune/
   hooks.py            # head/FFN masks + activation collection on to_out[0] and ff.net[2] (§2)
   timing.py           # StageTimer + FLOP counting (§5)
   chunk_states.py     # AR-geometry calibration states (frozen ctx + 1-3 fresh latent frames) (§6)
-  teacher.py          # deep-schedule x0* targets + on-policy/renoised state families (§6)
+  teacher.py          # source-latent targets + on-policy/renoised state families (§6)
   losses.py           # masked x0-space loss and rel_l2 (§6)
   metrics.py          # T0 latent / T1 pixel / T2 AR-rollout / T3 grids + MP4s (§6)
   bench_refiner.py    # Phase 0 latency + FLOP baseline table (§5)
