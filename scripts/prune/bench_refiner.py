@@ -46,11 +46,11 @@ from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.samplers import _step_state
 from ltx_pipelines.utils.types import ModalitySpec
 
-from scripts.prune import artifacts, cross_kv_cache, geometry, model_registry, preflight, prompt_cache, provenance, refine_task
+from scripts.prune import artifacts, cross_kv_cache, geometry, model_registry, provenance, refine_task, session
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
+from scripts.prune.session import DTYPE
 from scripts.prune.timing import StageTimer, count_flops
 
-DTYPE = torch.bfloat16
 DEFAULT_CHUNK_LATENT_FRAMES = (1, 2, 3, 4, 16)
 DEFAULT_OUT_DIR = artifacts.OUT_ROOT
 
@@ -224,9 +224,8 @@ def bench_one(
 
 def main() -> int:  # noqa: PLR0915
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--model", default="2.5", choices=model_registry.SUPPORTED_MODELS)
+    session.add_model_args(ap)  # --model, --gpu-id, --seed
     ap.add_argument("--sampler", default="euler", choices=model_registry.SAMPLER_CHOICES)
-    ap.add_argument("--gpu-id", type=int, default=0)
     ap.add_argument("--height", type=int, default=1024)
     ap.add_argument("--width", type=int, default=1024)
     ap.add_argument("--fps", type=float, default=24.0)
@@ -249,7 +248,6 @@ def main() -> int:  # noqa: PLR0915
     ap.add_argument("--no-kv-cache", dest="kv_cache", action="store_false", default=True,
                     help="Skip the cross-attention K/V cache axis.")
     ap.add_argument("--warmup-steps", type=int, default=1)
-    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out-dir", type=Path, default=None)
     ap.add_argument(
         "--tag", default="baseline",
@@ -259,7 +257,8 @@ def main() -> int:  # noqa: PLR0915
     )
     args = ap.parse_args()
 
-    model = preflight.check(args.model, sampler=args.sampler, gpu_id=args.gpu_id)
+    s = session.open_session(args, script="bench_refiner", sampler=args.sampler)
+    model, device, video_context = s.model, s.device, s.context
     if model.stepper_kind == "ancestral":
         # EulerAncestralDiffusionStep.step() needs a per-step noise draw (eta=1.0 renoises
         # after every step); the plain _step_state() call below does not supply one. Plan §4
@@ -273,8 +272,6 @@ def main() -> int:  # noqa: PLR0915
             "--sampler euler (the Phase 0 default) or auto on a 2.3 checkpoint."
         )
 
-    device = torch.device(f"cuda:{args.gpu_id}")
-    video_context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
     configurator = LTXVideoOnlyModelConfigurator if args.video_only else LTXModelConfigurator
 
     compile_chunks = set(args.compile_chunks or [])
@@ -380,7 +377,7 @@ def main() -> int:  # noqa: PLR0915
     out_dir = args.out_dir or (DEFAULT_OUT_DIR / model.key / provenance.run_id(f"bench-{args.tag}"))
     out_dir.mkdir(parents=True, exist_ok=True)
     payload = {
-        "provenance": provenance.stamp(model, device, script="bench_refiner"),
+        "provenance": s.stamp(),
         "config": {
             "height": args.height,
             "width": args.width,
