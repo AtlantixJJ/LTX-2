@@ -8,6 +8,7 @@ reused for another generation or checkpoint.
 
 from __future__ import annotations
 
+import sys
 import argparse
 import json
 from contextlib import contextmanager
@@ -21,7 +22,7 @@ from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.helpers import modality_from_latent_state
 
-from scripts.prune import artifacts, chunk_states, hooks, losses, model_registry, preflight, prompt_cache, provenance, prune_schedule, records, refine_task
+from scripts.prune import artifacts, chunk_states, hooks, losses, model_registry, provenance, prune_schedule, records, refine_task, session
 from scripts.prune.model_registry import WORKSPACE_ROOT
 
 DTYPE = torch.bfloat16
@@ -259,12 +260,9 @@ def _spearman(x: list[float], y: list[float]) -> float | None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--model", default="2.5", choices=model_registry.SUPPORTED_MODELS)
-    ap.add_argument("--gpu-id", type=int, default=0)
-    ap.add_argument("--states", type=Path, default=None)
-    ap.add_argument("--split", choices=("calibration", "held_out"), default="calibration")
+    session.add_model_args(ap)
+    session.add_record_args(ap)
     ap.add_argument("--methods", nargs="+", choices=METHODS, default=list(METHODS))
-    ap.add_argument("--max-records", type=int, default=None)
     ap.add_argument("--gauss-newton-projections", type=int, default=8)
     ap.add_argument("--target-sparsity", type=float, default=None,
                     help="Run iterative Michel/Gauss--Newton pruning to this global head sparsity.")
@@ -272,26 +270,19 @@ def main() -> int:
     ap.add_argument("--iterative-method", choices=("michel", "gauss_newton"), default="michel")
     ap.add_argument("--ablate-layers", action="store_true")
     ap.add_argument("--validate-heads", type=int, default=0, help="Random heads for exact leave-one-out ΔT0.")
-    ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
-    model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id)
-    device = torch.device(f"cuda:{args.gpu_id}")
-    root = args.states or artifacts.calibration(model.key)
+    s = session.open_session(args, script="head_scores")
+    root = s.states_root(args.states)
     paths = records.select(root, split=args.split, limit=args.max_records)
-    context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
-    denoiser, sigmas = SimpleDenoiser(context, None), _sigmas(model, device)
-    stage = DiffusionStage.from_checkpoint(model.paths.transformer(), DTYPE, device,
-                                           model_configurator=LTXVideoOnlyModelConfigurator,
-                                           scale_factors=model.scale_factors)
-    report = {"provenance": provenance.stamp(model, device, script="head_scores"), "split": args.split,
+    report = {"provenance": s.stamp(), "split": args.split,
               "records": [p.name for p in paths], "methods": {}}
-    with stage._transformer_ctx() as transformer:
+    with s.transformer() as transformer:
         for method in args.methods:
-            report["methods"][method] = _serializable(score(transformer, paths, denoiser, sigmas, method, device,
+            report["methods"][method] = _serializable(score(transformer, paths, s.denoiser, s.sigmas, method, s.device,
                                                               projections=args.gauss_newton_projections, seed=args.seed))
         if args.target_sparsity is not None:
             def rescore(active):
-                return score(transformer, paths, denoiser, sigmas, args.iterative_method, device,
+                return score(transformer, paths, s.denoiser, s.sigmas, args.iterative_method, s.device,
                              projections=args.gauss_newton_projections, seed=args.seed, initial=active)
             masks, history = prune_schedule.iterative_head_masks(
                 transformer, target_sparsity=args.target_sparsity, rounds=args.rounds, rescore=rescore,
@@ -299,12 +290,12 @@ def main() -> int:
             report["iterative"] = {"method": args.iterative_method, "target_sparsity": args.target_sparsity,
                                    "masks": _serializable(masks), "history": history}
         if args.ablate_layers:
-            report["layer_ablation_delta_t0"] = layer_ablation(transformer, paths, denoiser, sigmas, device)
+            report["layer_ablation_delta_t0"] = layer_ablation(transformer, paths, s.denoiser, s.sigmas, s.device)
         if args.validate_heads:
             all_heads = [(name, h) for name, attn in hooks.iter_video_attention(transformer) for h in range(attn.heads)]
             permutation = torch.randperm(len(all_heads), generator=torch.Generator().manual_seed(args.seed))
             picked = [all_heads[i] for i in permutation[:args.validate_heads].tolist()]
-            loo = leave_one_out(transformer, paths, denoiser, sigmas, device, picked)
+            loo = leave_one_out(transformer, paths, s.denoiser, s.sigmas, s.device, picked)
             report["leave_one_out"] = loo
             # Aggregate repeat records per head, then correlate exact ablation ΔT0
             # with every estimator computed in this invocation.
@@ -319,7 +310,7 @@ def main() -> int:
                     observed.append(sum(values) / len(values))
                 correlations[method] = {"spearman_rho": _spearman(estimated, observed), "heads": len(observed)}
             report["validation_spearman"] = correlations
-    output = artifacts.run_dir(model.key, "head-scores", script="head_scores", argv=sys.argv[1:])
+    output = artifacts.run_dir(s.key, "head-scores", script="head_scores", argv=sys.argv[1:])
     (output / "head_scores.json").write_text(json.dumps(report, indent=2))
     print(output / "head_scores.json")
     return 0
