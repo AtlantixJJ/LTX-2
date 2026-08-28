@@ -26,10 +26,10 @@ import torch
 
 from ltx_pipelines.utils.blocks import PromptEncoder
 
-from scripts.prune import model_registry, preflight, provenance, refine_task
+from scripts.prune import artifacts, model_registry, preflight, provenance, refine_task
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
 
-DEFAULT_CACHE_DIR = WORKSPACE_ROOT / "expr" / "refiner_prune" / "prompt_cache"
+DEFAULT_CACHE_DIR = artifacts.OUT_ROOT / "prompt_cache"
 
 
 def cache_path(model_key: str, prompt: str, cache_dir: Path = DEFAULT_CACHE_DIR) -> Path:
@@ -116,9 +116,8 @@ def main() -> int:
         return 0
 
     report = verify(model, refine_task.REFINE_PROMPT, torch.bfloat16, device)
-    out_dir = model_registry.WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "prompt_cache_check.json"
+    out_path = artifacts.gate(model.key, "prompt_cache_check")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps({**report, "provenance": provenance.stamp(model, device)}, indent=2))
     print(json.dumps(report, indent=2))
     print(f"Wrote {out_path}")

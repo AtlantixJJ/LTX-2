@@ -35,7 +35,7 @@ from pathlib import Path
 import decord
 import torch
 
-from scripts.prune import model_registry, preflight, provenance
+from scripts.prune import artifacts, model_registry, preflight, provenance
 from scripts.prune.model_registry import REPO_ROOT, WORKSPACE_ROOT
 
 CORPUS_DIR = WORKSPACE_ROOT / "expr" / "sam3dgs_vae_refine"
@@ -156,7 +156,7 @@ def main() -> int:
     rev = args.rev or find_baseline_rev()
     clip = args.clip or _pick_clip(args.max_windows, args.window_frames, args.overlap_frames)
     print(f"[parity] baseline rev {rev[:12]}, clip {clip.parent.name}", flush=True)
-    out_root = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / provenance.run_id("parity")
+    out_root = artifacts.run_dir(model.key, "parity", script="parity_check", argv=sys.argv[1:])
     before_dir, after_dir = out_root / "pre_refactor", out_root / "registry"
 
     python = sys.executable
@@ -205,7 +205,6 @@ def main() -> int:
         )
         print(f"  {name}: {'BIT-EXACT' if equal else 'DIFFERS'}")
 
-    out_root.mkdir(parents=True, exist_ok=True)
     report = {
         "provenance": provenance.stamp(model, torch.device(f"cuda:{args.gpu_id}"), script="parity_check"),
         "baseline_rev": rev,
@@ -217,7 +216,7 @@ def main() -> int:
         "pass": all_pass,
     }
     (out_root / "parity_check.json").write_text(json.dumps(report, indent=2))
-    (WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / "parity_check.json").write_text(json.dumps(report, indent=2))
+    artifacts.gate(model.key, "parity_check").write_text(json.dumps(report, indent=2))
 
     if not args.keep_runs and all_pass:
         import shutil

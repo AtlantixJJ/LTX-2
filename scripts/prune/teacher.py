@@ -16,7 +16,7 @@ from ltx_pipelines.utils.blocks import DiffusionStage, ImageConditioner
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.samplers import _step_state
-from scripts.prune import chunk_states, model_registry, preflight, prompt_cache, provenance, refine_core, refine_task
+from scripts.prune import artifacts, chunk_states, model_registry, preflight, prompt_cache, provenance, refine_core, refine_task
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
 
 decord.bridge.set_bridge("torch")
@@ -33,7 +33,7 @@ def freeze(model: RefinerModel) -> Path:
     clips = corpus(); subjects = sorted({c["subject"] for c in clips}); held = set(random.Random(0).sample(subjects, min(3, len(subjects))))
     for c in clips: c["source_sha256"] = provenance.file_sha256(c["source"])
     data = {"provenance": provenance.stamp(model, script="source_target.freeze"), "target": {"kind": "vae_encoded_source_latent", "loss": "masked x0 MSE on fresh chunk tokens", "rationale": "a real source target supplies the nonzero residual for J^T residual gate scoring"}, "student": {"k_step": refine_task.K_STEP, "sigmas": refine_task.schedule_for(model.sigmas, refine_task.K_STEP)}, "split": {"seed": 0, "holdout_subjects": sorted(held), "calibration": [c["clip"] for c in clips if c["subject"] not in held], "held_out": [c["clip"] for c in clips if c["subject"] in held]}, "corpus": clips}
-    root = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / "source_target"; root.mkdir(parents=True, exist_ok=True); path = root / "manifest.json"; path.write_text(json.dumps(data, indent=2)); return path
+    path = artifacts.manifest(model.key); path.parent.mkdir(parents=True, exist_ok=True); path.write_text(json.dumps(data, indent=2)); return path
 
 def _read_chunk(path: Path, frames: int, device: torch.device, *, spatial_scale: tuple[int, int] | None = None) -> torch.Tensor:
     """First ``frames`` source frames as the VAE encoder's ``[-1, 1]`` input.
@@ -58,7 +58,7 @@ def _tools(model: RefinerModel, latent: torch.Tensor, fps: float) -> VideoLatent
     return refine_core.build_tools(latent, fps, model.scale_factors)
 
 def build_calibration(model: RefinerModel, device: torch.device, *, max_clips: int | None, seed: int) -> Path:
-    manifest_path = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / "source_target" / "manifest.json"
+    manifest_path = artifacts.manifest(model.key)
     if not manifest_path.exists(): raise SystemExit(f"Missing {manifest_path}; run --freeze first.")
     manifest = json.loads(manifest_path.read_text()); split = {x: "calibration" for x in manifest["split"]["calibration"]}; split.update({x: "held_out" for x in manifest["split"]["held_out"]})
     clips = [c for c in manifest["corpus"] if c["clip"] in split]; clips = clips if max_clips is None else clips[:max_clips]
@@ -72,7 +72,7 @@ def build_calibration(model: RefinerModel, device: torch.device, *, max_clips: i
                 try: encoded.append((clip, n, encoder.tiled_encode(_read_chunk(Path(clip["source"]), frames, device), None).cpu(), _fps(clip["source"])))
                 except ValueError: continue
     if not encoded: raise SystemExit("No source clip can build an AR calibration state.")
-    out = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / "calibration"; out.mkdir(parents=True, exist_ok=True)
+    out = artifacts.calibration(model.key); out.mkdir(parents=True, exist_ok=True)
     sigmas = refine_task.schedule_for(model.sigmas, refine_task.K_STEP); context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device); records = []
     stage = DiffusionStage.from_checkpoint(model.paths.transformer(), DTYPE, device, model_configurator=LTXVideoOnlyModelConfigurator, scale_factors=model.scale_factors)
     with torch.no_grad(), stage._transformer_ctx() as transformer:

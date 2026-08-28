@@ -22,10 +22,8 @@ from pathlib import Path
 
 import torch
 
-from scripts.prune import model_registry, provenance
+from scripts.prune import artifacts, model_registry, provenance
 from scripts.prune.model_registry import RefinerModel
-
-OUT_ROOT = model_registry.WORKSPACE_ROOT / "expr" / "refiner_prune"
 
 
 def free_gpus(min_free_gb: float = 4.0) -> list[dict]:
@@ -108,9 +106,8 @@ def check(
 
 def dump_caps(model: RefinerModel) -> Path:
     """Write ``expr/refiner_prune/<key>/caps.json`` (plan §5 gate)."""
-    out_dir = OUT_ROOT / model.key
-    out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "caps.json"
+    path = artifacts.gate(model.key, "caps")
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {

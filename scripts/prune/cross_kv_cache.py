@@ -280,9 +280,10 @@ def main() -> int:
         "width": args.width,
         "context_tokens": video_context.shape[1],
     }
-    out_dir = model_registry.WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "kv_cache_check.json"
+    from scripts.prune import artifacts
+
+    out_path = artifacts.gate(model.key, "kv_cache_check")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps({"provenance": provenance.stamp(model, device, script="cross_kv_cache"), **report}, indent=2))
     print(json.dumps(report, indent=2))
     print(f"Wrote {out_path}. Overall: {'PASS' if report['bit_exact'] else 'FAIL'}")

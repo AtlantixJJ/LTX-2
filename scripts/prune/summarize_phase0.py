@@ -16,9 +16,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from scripts.prune.model_registry import WORKSPACE_ROOT
-
-OUT_ROOT = WORKSPACE_ROOT / "expr" / "refiner_prune"
+from scripts.prune import artifacts
 # A6000 dense bf16 tensor-core peak, for the MFU column. Not measured here -- it is
 # the vendor number, quoted so "TFLOPS achieved" has a denominator.
 A6000_BF16_PEAK_TFLOPS = 154.8
@@ -32,18 +30,17 @@ def _load(path: Path) -> dict | None:
 
 
 def collect(key: str) -> dict:
-    root = OUT_ROOT / key
+    root = artifacts.root(key)
     gates = {
-        "caps": _load(root / "caps.json"),
-        "prompt_cache": _load(root / "prompt_cache_check.json"),
-        "kv_cache": _load(root / "kv_cache_check.json"),
-        "video_only": _load(root / "video_only_check.json"),
-        "parity": _load(root / "parity_check.json"),
-        "teacher_manifest": _load(root / "teacher" / "teacher_manifest.json"),
-        "teacher_validation": _load(root / "teacher" / "teacher_validation.json"),
+        "caps": _load(artifacts.gate(key, "caps")),
+        "prompt_cache": _load(artifacts.gate(key, "prompt_cache_check")),
+        "kv_cache": _load(artifacts.gate(key, "kv_cache_check")),
+        "video_only": _load(artifacts.gate(key, "video_only_check")),
+        "parity": _load(artifacts.gate(key, "parity_check")),
+        "manifest": _load(artifacts.manifest(key)),
     }
-    bench = _load(root / "bench_baseline.json")
-    compile_bench = _load(root / "bench_compile.json")
+    bench = _load(artifacts.bench(key, "baseline"))
+    compile_bench = _load(artifacts.bench(key, "compile"))
 
     summary: dict = {"model": key, "gates": {}, "bench": {}, "teacher": {}}
 
@@ -131,9 +128,9 @@ def collect(key: str) -> dict:
             "builds": compile_bench["builds"],
         }
 
-    if gates["teacher_manifest"]:
-        m = gates["teacher_manifest"]
-        summary["teacher"]["spec"] = {k: v for k, v in m["teacher"].items() if k != "sigmas"}
+    if gates["manifest"]:
+        m = gates["manifest"]
+        summary["teacher"]["spec"] = m["target"]
         summary["teacher"]["student_sigmas"] = m["student"]["sigmas"]
         summary["teacher"]["corpus_clips"] = len(m["corpus"])
         summary["teacher"]["corpus_subjects"] = len({c["subject"] for c in m["corpus"]})
@@ -148,9 +145,6 @@ def collect(key: str) -> dict:
         if k8:
             summary["teacher"]["on_disk_k8_psnr_mean"] = round(sum(k8) / len(k8), 2)
             summary["teacher"]["on_disk_k8_psnr_max"] = round(max(k8), 2)
-    if gates["teacher_validation"]:
-        summary["teacher"]["validation"] = gates["teacher_validation"]["clips"]
-
     summary["phase1"] = _phase1(root)
     return summary
 
@@ -163,7 +157,7 @@ def _phase1(root: Path) -> dict:
     remembering which one had the rollout in it.
     """
     out: dict = {}
-    index = _load(root / "calibration" / "index.json")
+    index = _load(artifacts.calibration_index(root.name))
     if index:
         records = index["records"]
         splits = {s: sum(1 for r in records if r["split"] == s) for s in ("calibration", "held_out")}
@@ -183,7 +177,7 @@ def _phase1(root: Path) -> dict:
             # Phase 2 at all, however many records it holds.
             "usable_for_phase2": splits.get("calibration", 0) > 0,
         }
-    ab = _load(root / "sampler_ab.json")
+    ab = _load(artifacts.gate(root.name, "sampler_ab"))
     if ab:
         out["sampler_ab"] = {
             "states": len(ab["states"]),
@@ -191,7 +185,7 @@ def _phase1(root: Path) -> dict:
             "ancestral_t0_mean": ab["ancestral_t0_mean"],
             "chosen_sampler": ab["chosen_sampler"],
         }
-    g = _load(root / "phase1_gates.json")
+    g = _load(artifacts.phase1(root.name))
     if g:
         out["T0"] = {
             k: g["T0"].get(k) for k in ("calibration", "held_out", "loss_nonzero_at_every_step",
@@ -277,7 +271,7 @@ def write_figures(summary: dict) -> list[Path]:
     rows = summary.get("bench", {}).get("rows", [])
     if not rows:
         return []
-    root = OUT_ROOT / summary["model"] / "figures"
+    root = artifacts.figures(summary["model"])
     root.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     for ctx in sorted({r["ctx"] for r in rows}):
@@ -312,7 +306,7 @@ def main() -> int:
     for key in models:
         summary = collect(key)
         out[key] = summary
-        path = OUT_ROOT / key / "analysis_summary.json"
+        path = artifacts.gate(key, "analysis_summary")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(summary, indent=2))
         figures = write_figures(summary)

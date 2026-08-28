@@ -29,7 +29,7 @@ from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.helpers import post_process_latent
 
-from scripts.prune import chunk_states, hooks, losses, metrics, model_registry, preflight, prompt_cache, provenance, refine_task
+from scripts.prune import artifacts, chunk_states, hooks, losses, metrics, model_registry, preflight, prompt_cache, provenance, refine_task
 from scripts.prune.model_registry import WORKSPACE_ROOT
 
 DTYPE = torch.bfloat16
@@ -102,7 +102,7 @@ def main() -> int:
 
     model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id)
     device = torch.device(f"cuda:{args.gpu_id}")
-    states_root = args.states or (WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / "calibration")
+    states_root = args.states or artifacts.calibration(model.key)
     paths = list(chunk_states.iter_records(states_root, args.split))
     if args.max_records:
         paths = paths[: args.max_records]
@@ -157,8 +157,7 @@ def main() -> int:
     del stage
     torch.cuda.empty_cache()
 
-    output = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / provenance.run_id("head-ablation")
-    output.mkdir(parents=True, exist_ok=True)
+    output = artifacts.run_dir(model.key, "head-ablation", script="head_ablation_eval", argv=sys.argv[1:])
     result = {
         "provenance": provenance.stamp(model, device, script="head_ablation_eval"),
         "removed_heads": [{"name": name, "head": head} for name, head in args.remove_head],

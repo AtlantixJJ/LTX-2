@@ -46,13 +46,13 @@ from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.samplers import _step_state
 from ltx_pipelines.utils.types import ModalitySpec
 
-from scripts.prune import cross_kv_cache, geometry, model_registry, preflight, prompt_cache, provenance, refine_task
+from scripts.prune import artifacts, cross_kv_cache, geometry, model_registry, preflight, prompt_cache, provenance, refine_task
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
 from scripts.prune.timing import StageTimer, count_flops
 
 DTYPE = torch.bfloat16
 DEFAULT_CHUNK_LATENT_FRAMES = (1, 2, 3, 4, 16)
-DEFAULT_OUT_DIR = WORKSPACE_ROOT / "expr" / "refiner_prune"
+DEFAULT_OUT_DIR = artifacts.OUT_ROOT
 
 
 def analytic_flops(caps, tokens_video: int, tokens_ctx: int) -> dict:
@@ -400,7 +400,7 @@ def main() -> int:  # noqa: PLR0915
     out_path.write_text(json.dumps(payload, indent=2))
     # Also refresh the stable per-generation pointer so downstream scripts do not
     # have to know the run id.
-    (DEFAULT_OUT_DIR / model.key / f"bench_{args.tag}.json").write_text(json.dumps(payload, indent=2))
+    artifacts.bench(model.key, args.tag).write_text(json.dumps(payload, indent=2))
     print(f"Wrote {out_path}")
     return 0
 

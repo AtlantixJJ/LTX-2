@@ -38,7 +38,7 @@ from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.types import ModalitySpec
 
-from scripts.prune import model_registry, preflight, prompt_cache, provenance, refine_task
+from scripts.prune import artifacts, model_registry, preflight, prompt_cache, provenance, refine_task
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
 
 decord.bridge.set_bridge("torch")
@@ -231,9 +231,8 @@ def main() -> int:
         )
         print(f"  {item['clip']}: max_abs_diff={max_abs_diff:.4g} ({'PASS' if passed else 'FAIL'})")
 
-    out_dir = model_registry.WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "video_only_check.json"
+    out_path = artifacts.gate(model.key, "video_only_check")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
         json.dumps(
             {

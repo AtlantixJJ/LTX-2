@@ -70,7 +70,7 @@ from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.samplers import _step_state
 
 from scripts.prune import (
-    chunk_states, hooks, losses, metrics, model_registry, preflight, prompt_cache, provenance, refine_core,
+    artifacts, chunk_states, hooks, losses, metrics, model_registry, preflight, prompt_cache, provenance, refine_core,
     refine_task,
 )
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
@@ -289,8 +289,8 @@ def main() -> int:
     model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id,
                             transformer_path=args.transformer_path)
     device = torch.device(f"cuda:{args.gpu_id}")
-    out_root = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key
-    states_root = args.states or (out_root / "calibration")
+    out_root = artifacts.root(model.key)
+    states_root = args.states or artifacts.calibration(model.key)
     context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
     denoiser = SimpleDenoiser(context, None)
     student_sigmas = refine_task.schedule_for(model.sigmas, refine_task.K_STEP)
@@ -301,7 +301,7 @@ def main() -> int:
     # --- pick and encode the T2 clip before the transformer is resident ---
     t2 = None
     if not args.skip_t2:
-        manifest = json.loads((out_root / "source_target" / "manifest.json").read_text())
+        manifest = json.loads(artifacts.manifest(model.key).read_text())
         held = set(manifest["split"]["held_out"])
         pool = [c for c in manifest["corpus"] if c["clip"] in held] or manifest["corpus"]
         if args.t2_clip:
@@ -350,7 +350,7 @@ def main() -> int:
 
     # --- decode-resident phase: T1, T2 pixel metrics, T3 artifacts ---
     if refined:
-        figures = args.figures_dir or (out_root / "figures")
+        figures = args.figures_dir or artifacts.figures(model.key)
         figures.mkdir(parents=True, exist_ok=True)
         decoder_holder = VideoDecoder(model.paths.video_vae(), DTYPE, device)
         with torch.no_grad(), gpu_model(decoder_holder._decoder_builder.build(device=device, dtype=DTYPE).eval()) as decoder:
@@ -390,7 +390,7 @@ def main() -> int:
             "- `phase1_rollout.mp4`: aligned source | source target | student rollout\n"
         )
 
-    path = args.output or (out_root / "phase1_gates.json")
+    path = args.output or artifacts.phase1(model.key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result, indent=2))
     print(json.dumps({k: v for k, v in result.items() if k != "T0"}, indent=2))

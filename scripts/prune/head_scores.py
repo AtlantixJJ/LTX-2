@@ -21,7 +21,7 @@ from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.helpers import modality_from_latent_state
 
-from scripts.prune import chunk_states, hooks, losses, model_registry, preflight, prompt_cache, provenance, prune_schedule, refine_task
+from scripts.prune import artifacts, chunk_states, hooks, losses, model_registry, preflight, prompt_cache, provenance, prune_schedule, refine_task
 from scripts.prune.model_registry import WORKSPACE_ROOT
 
 DTYPE = torch.bfloat16
@@ -306,7 +306,7 @@ def main() -> int:
     args = ap.parse_args()
     model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id)
     device = torch.device(f"cuda:{args.gpu_id}")
-    root = args.states or (WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / "calibration")
+    root = args.states or artifacts.calibration(model.key)
     paths = _records(root, args.split, args.max_records)
     context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
     denoiser, sigmas = SimpleDenoiser(context, None), _sigmas(model, device)
@@ -349,8 +349,7 @@ def main() -> int:
                     observed.append(sum(values) / len(values))
                 correlations[method] = {"spearman_rho": _spearman(estimated, observed), "heads": len(observed)}
             report["validation_spearman"] = correlations
-    output = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / provenance.run_id("head-scores")
-    output.mkdir(parents=True, exist_ok=True)
+    output = artifacts.run_dir(model.key, "head-scores", script="head_scores", argv=sys.argv[1:])
     (output / "head_scores.json").write_text(json.dumps(report, indent=2))
     print(output / "head_scores.json")
     return 0

@@ -43,7 +43,7 @@ import torch
 from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
 from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
-from scripts.prune import model_registry, phase1_gates, preflight, prompt_cache, provenance, refine_core, refine_task
+from scripts.prune import artifacts, model_registry, phase1_gates, preflight, prompt_cache, provenance, refine_core, refine_task
 from scripts.prune.model_registry import REPO_ROOT, WORKSPACE_ROOT
 
 decord.bridge.set_bridge("torch")
@@ -143,7 +143,7 @@ def main() -> int:
         window_frames=args.window_frames, overlap_frames=args.overlap_frames, scale_factors=model.scale_factors
     )
     clip = pick_clip(geometry, args.windows, args.clip)
-    out_root = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / provenance.run_id("method-parity")
+    out_root = artifacts.run_dir(model.key, "method-parity", script="method_parity", argv=sys.argv[1:])
     reference_dir = out_root / "reference"
     print(f"[parity] clip {clip.parent.name}, geometry {geometry.as_dict()}", flush=True)
 
@@ -177,9 +177,8 @@ def main() -> int:
         "windows": rows,
         "pass": bool(all_pass),
     }
-    out_root.mkdir(parents=True, exist_ok=True)
     (out_root / "method_parity.json").write_text(json.dumps(report, indent=2))
-    latest = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / "method_parity.json"
+    latest = artifacts.gate(model.key, "method_parity")
     latest.write_text(json.dumps(report, indent=2))
 
     if all_pass and not args.keep_runs:

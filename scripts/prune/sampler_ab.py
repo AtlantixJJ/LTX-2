@@ -15,7 +15,7 @@ from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.helpers import post_process_latent
 
-from scripts.prune import chunk_states, losses, model_registry, preflight, prompt_cache, provenance, refine_task
+from scripts.prune import artifacts, chunk_states, losses, model_registry, preflight, prompt_cache, provenance, refine_task
 
 DTYPE = torch.bfloat16
 
@@ -51,7 +51,7 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
     model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id)
-    root = args.states or (model_registry.WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / "calibration")
+    root = args.states or artifacts.calibration(model.key)
     # Only step-0 on-policy records: the A/B has to run the whole k2 trajectory from
     # its start, and a step-1 record is already half-way down a Euler-stepped one.
     # Read each record once -- `load_record` deserializes the tensors, so the obvious
@@ -76,7 +76,7 @@ def main() -> int:
             rows.append({"record": path.name, "clip": meta.clip, "euler_t0": float(losses.rel_l2(euler, target, state)), "ancestral_t0": float(losses.rel_l2(ancestral, target, state))})
     e = sum(r["euler_t0"] for r in rows) / len(rows); a = sum(r["ancestral_t0"] for r in rows) / len(rows)
     result = {"provenance": provenance.stamp(model, device, script="sampler_ab"), "states": rows, "euler_t0_mean": e, "ancestral_t0_mean": a, "chosen_sampler": "euler" if e <= a else "ancestral", "decision_metric": "mean T0 relative L2 vs source target"}
-    out = model_registry.WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / "sampler_ab.json"
+    out = artifacts.gate(model.key, "sampler_ab")
     out.write_text(json.dumps(result, indent=2)); print(json.dumps(result, indent=2)); return 0
 
 

@@ -8,7 +8,7 @@ import json
 
 import torch
 
-from scripts.prune import chunk_states, hooks, losses, lstsq, prune_schedule
+from scripts.prune import artifacts, chunk_states, hooks, losses, lstsq, prune_schedule
 from scripts.prune import model_registry, preflight, prompt_cache, provenance, refine_task
 from scripts.prune.model_registry import WORKSPACE_ROOT
 from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
@@ -130,7 +130,7 @@ def main() -> int:
     ap.add_argument("--save-reconstruction", type=Path,
                     help="Write fitted projections for export_pruned --reconstruction-state.")
     args = ap.parse_args(); model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id)
-    root = args.states or (WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / "calibration")
+    root = args.states or artifacts.calibration(model.key)
     paths = list(chunk_states.iter_records(root, args.split)); paths = paths[:args.max_records] if args.max_records else paths
     if not paths: raise SystemExit(f"No {args.split} records under {root}")
     device = torch.device(f"cuda:{args.gpu_id}"); context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
@@ -167,7 +167,7 @@ def main() -> int:
                 fitted[name + ".isolated_t0"] = [naive_t0, masked_t0(transformer, {name: masks[name]}, paths, denoiser, sigmas, device)]
             reconstruction = {"layers": list(args.reconstruct_layers), "fitted_shapes": fitted,
                               "masked_t0_rel_l2_after_all_layers_masked": masked_t0(transformer, masks, paths, denoiser, sigmas, device)}
-    out = WORKSPACE_ROOT / "expr" / "refiner_prune" / model.key / provenance.run_id("ffn-scores"); out.mkdir(parents=True, exist_ok=True)
+    out = artifacts.run_dir(model.key, "ffn-scores", script="ffn_scores", argv=sys.argv[1:])
     report = {"provenance": provenance.stamp(model, device, script="ffn_scores"), "records": [x.name for x in paths],
               "target_sparsity": args.target_sparsity, "scores": {k: v.tolist() for k,v in scores.items()}, "masks": {k: v.tolist() for k,v in masks.items()},
               "kept": {k: int(v.sum()) for k,v in masks.items()}, "masked_t0_rel_l2": evaluation, "iterative": iterative,
