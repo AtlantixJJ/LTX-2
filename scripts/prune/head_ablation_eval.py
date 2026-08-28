@@ -16,21 +16,12 @@ from __future__ import annotations
 import sys
 import argparse
 import json
-from dataclasses import replace
 from pathlib import Path
 
 import torch
 
-from ltx_core.components.patchifiers import VideoLatentPatchifier
-from ltx_core.tools import VideoLatentTools
-from ltx_core.types import VideoLatentShape
-from ltx_pipelines.utils.blocks import VideoDecoder
-from ltx_pipelines.utils.gpu_model import gpu_model
-from ltx_pipelines.utils.helpers import post_process_latent
-
-from scripts.prune import artifacts, chunk_states, hooks, losses, metrics, model_registry, provenance, records, refine_task, session
+from scripts.prune import artifacts, chunk_states, decode, hooks, losses, metrics, model_registry, provenance, records, refine_task, session
 from scripts.prune.model_registry import WORKSPACE_ROOT
-from scripts.prune.session import DTYPE
 
 
 def _parse_head(value: str) -> tuple[str, int]:
@@ -56,31 +47,6 @@ def _mask_for(transformer, removed: list[tuple[str, int]], device: torch.device)
             raise ValueError(f"{name}: head {head} is outside [0, {attention[name].heads})")
         masks.setdefault(name, torch.ones(attention[name].heads, device=device))[head] = 0
     return masks
-
-
-def _tools(model, state, token_latent: torch.Tensor) -> VideoLatentTools:
-    """Reconstruct the unpatchifier geometry from the serialized token positions."""
-    positions = state.positions
-    if positions.shape != (token_latent.shape[0], 3, token_latent.shape[1], 2):
-        raise ValueError(f"unexpected position shape {tuple(positions.shape)} for tokens {tuple(token_latent.shape)}")
-    frames, height, width = (int(torch.unique(positions[0, axis, :, 0]).numel()) for axis in range(3))
-    if frames * height * width != token_latent.shape[1]:
-        raise ValueError(f"position grid {(frames, height, width)} does not cover {token_latent.shape[1]} tokens")
-    return VideoLatentTools(
-        VideoLatentPatchifier(patch_size=1),
-        VideoLatentShape(token_latent.shape[0], token_latent.shape[-1], frames, height, width),
-        24.0,
-        scale_factors=model.scale_factors,
-    )
-
-
-def _decode_token_latent(model, state, token_latent: torch.Tensor, decoder, device: torch.device) -> torch.Tensor:
-    """Restore frozen tokens, unpatchify, and decode a token-space x0 prediction."""
-    restored = post_process_latent(token_latent, state.denoise_mask, state.clean_latent)
-    tools = _tools(model, state, restored)
-    latent = tools.unpatchify(tools.clear_conditioning(replace(state, latent=restored))).latent
-    decoded = torch.cat(list(decoder.decode_video(latent.to(device=device, dtype=DTYPE), None, None)), dim=0).float()
-    return decoded.clamp(0, 1).cpu().permute(0, 3, 1, 2)
 
 
 def _mean(rows: list[dict], key: str) -> float:
@@ -156,11 +122,10 @@ def main() -> int:
 
     if render_data is not None:
         record, state, target, baseline, candidate, fps = render_data
-        holder = VideoDecoder(model.paths.video_vae(), DTYPE, device)
-        with torch.no_grad(), gpu_model(holder._decoder_builder.build(device=device, dtype=DTYPE).eval()) as decoder:
-            source_px = _decode_token_latent(model, state, target.to(device), decoder, device)
-            baseline_px = _decode_token_latent(model, state, baseline.to(device), decoder, device)
-            candidate_px = _decode_token_latent(model, state, candidate.to(device), decoder, device)
+        with s.decoder() as decoder:
+            source_px = decode.decode_token_latent(s, state, target.to(device), decoder)
+            baseline_px = decode.decode_token_latent(s, state, baseline.to(device), decoder)
+            candidate_px = decode.decode_token_latent(s, state, candidate.to(device), decoder)
         figures = output / "figures"
         figures.mkdir(exist_ok=True)
         grid = metrics.t3_grid([(record, source_px, baseline_px, candidate_px)], figures / "ablation_grid.png")

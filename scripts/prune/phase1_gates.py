@@ -63,12 +63,12 @@ import decord
 import torch
 
 from ltx_core.components.diffusion_steps import EulerDiffusionStep
-from ltx_pipelines.utils.blocks import ImageConditioner, VideoDecoder
+from ltx_pipelines.utils.blocks import ImageConditioner
 from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.samplers import _step_state
 
 from scripts.prune import (
-    artifacts, chunk_states, corpus, hooks, losses, metrics, model_registry, provenance, records, refine_core, session,
+    artifacts, chunk_states, corpus, decode, hooks, losses, metrics, model_registry, provenance, records, refine_core, session,
     refine_task,
 )
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
@@ -335,12 +335,8 @@ def main() -> int:
     if refined:
         figures = args.figures_dir or artifacts.figures(model.key)
         figures.mkdir(parents=True, exist_ok=True)
-        decoder_holder = VideoDecoder(model.paths.video_vae(), DTYPE, device)
-        with torch.no_grad(), gpu_model(decoder_holder._decoder_builder.build(device=device, dtype=DTYPE).eval()) as decoder:
-            decoded = [
-                torch.cat(list(decoder.decode_video(latent.to(device=device, dtype=DTYPE), None, None)), dim=0).cpu().float().clamp(0, 1)
-                for latent in refined
-            ]
+        with s.decoder() as decoder:
+            decoded = [decode.decode_latent(s, latent, decoder) for latent in refined]
         stitched = _stitch(decoded, t2["windows"])
         del decoded
 
