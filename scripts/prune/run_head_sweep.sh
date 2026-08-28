@@ -11,7 +11,7 @@
 #
 # Prerequisites, in order (this script checks for the first two and refuses otherwise):
 #   scripts.prune.method_parity      -> PASS  (the harness reproduces the refine script)
-#   scripts.prune.teacher --build-calibration        (format-2 records at ctx=1, real fps)
+#   scripts.prune.source_target --build-calibration  (format-2 records at ctx=1, real fps)
 #   scripts.prune.phase1_gates ... --output phase1_gates_baseline.json
 #
 # Two operational bugs this script exists to avoid, both hit by the first sweep:
@@ -38,7 +38,7 @@ cd "$ROOT" || exit 1
 
 [ -f "$OUT/method_parity.json" ] || { echo "missing $OUT/method_parity.json -- run scripts.prune.method_parity first"; exit 1; }
 grep -q '"pass": true' "$OUT/method_parity.json" || { echo "method_parity did not PASS -- fix that before measuring pruning deltas"; exit 1; }
-[ -f "$OUT/calibration/index.json" ] || { echo "missing $OUT/calibration/index.json -- run teacher.py --build-calibration first"; exit 1; }
+[ -f "$OUT/calibration/index.json" ] || { echo "missing $OUT/calibration/index.json -- run scripts.prune.source_target --build-calibration first"; exit 1; }
 
 run_one() {
     local sparsity="$1" gpu="$2"

@@ -27,7 +27,7 @@ not transfer, so every file is namespaced by `2.3` / `2.5` and carries a
 | 4 | `python -m scripts.prune.parity_check --model 2.3 --gpu-id N` | registry refactor reproduces the pre-refactor script bit-for-bit |
 | 4b | `python -m scripts.prune.method_parity --model 2.5 --gpu-id N` | **the gates roll out the deployed method**, bit-for-bit vs `scripts/vae_refine_sliding_window.py` |
 | 5 | `python -m scripts.prune.bench_refiner --model 2.5 --gpu-id N` | baseline latency / FLOP / memory table, incl. the K/V-cache axis |
-| 6 | `python -m scripts.prune.teacher --model 2.5 --freeze` (+ `--validate --gpu-id N`) | teacher recorded and frozen; calibration split fixed |
+| 6 | `python -m scripts.prune.source_target --model 2.5 --freeze` (+ `--validate --gpu-id N`) | source-target recorded and frozen; calibration split fixed |
 | 7 | `python -m scripts.prune.summarize_phase0` | every gate + number collected into `analysis_summary.json` |
 
 The `torch.compile` / CUDA-graph axis is a separate, smaller sweep so it never
@@ -55,7 +55,7 @@ python -m scripts.prune.bench_refiner --model 2.5 --gpu-id N --tag compile \
 | `bench_refiner.py` | The Phase 0 baseline table (§5.5). |
 | `video_only_check.py` | The audio-branch-drop gate (§5.2). |
 | `parity_check.py` | The refactor-parity gate (§5.1). |
-| `teacher.py` | Teacher definition, corpus freeze, plus reproducible on-policy and renoised AR-state cache (§5.6, §6). |
+| `source_target.py` (deprecated alias: `teacher.py`) | Source-target definition, corpus freeze, plus reproducible on-policy and renoised AR-state cache (§5.6, §6). |
 | `chunk_states.py` | Persistent patchified state/x0* records, including the frozen-context keyframe caveat (§6). |
 | `losses.py` | Fresh-token-only x0 MSE and T0 relative L2 (§6). |
 | `metrics.py` | T0 latent, T1 decoded pixels, T2 sequential-rollout slopes, and T3 review grids (§6). |
@@ -125,10 +125,10 @@ First freeze the corpus split, then cache the real states.  A smoke cache is
 useful before launching the complete 52-clip build:
 
 ```bash
-python -m scripts.prune.teacher --model 2.5 --freeze
-python -m scripts.prune.teacher --model 2.5 --gpu-id N --validate --num-clips 3
-python -m scripts.prune.teacher --model 2.5 --gpu-id N --build-calibration --max-clips 2
-python -m scripts.prune.teacher --model 2.5 --gpu-id N --build-calibration
+python -m scripts.prune.source_target --model 2.5 --freeze
+python -m scripts.prune.source_target --model 2.5 --gpu-id N --validate --num-clips 3
+python -m scripts.prune.source_target --model 2.5 --gpu-id N --build-calibration --max-clips 2
+python -m scripts.prune.source_target --model 2.5 --gpu-id N --build-calibration
 python -m scripts.prune.sampler_ab --model 2.5 --gpu-id N
 python -m scripts.prune.phase1_gates --model 2.5 --gpu-id N     # the §6 gate
 python -m scripts.prune.summarize_phase0 --model 2.5            # renders the gate table
