@@ -85,6 +85,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# These are command-line programs; emitting their reports is their purpose.
+"scripts/prune/*.py" = ["T201"]
 # CI gates: stand-alone CLIs whose whole job is printing a report / GitHub annotations.
 ".github/actions/test-collection-completeness/check_test_collection.py" = ["T201"]
 ".github/actions/golden-pairing-gate/check_golden_pairing.py" = ["T201"]
