@@ -42,7 +42,6 @@ from ltx_core.conditioning.types.latent_cond import VideoConditionByLatentIndex
 from ltx_core.tools import VideoLatentTools
 from ltx_core.types import LatentState, SpatioTemporalScaleFactors, VideoLatentShape
 from ltx_pipelines.utils.types import ModalitySpec
-
 from scripts.prune import ltx_adapter
 
 # The carried-over latent is injected at index 1, never 0: this window's own latent

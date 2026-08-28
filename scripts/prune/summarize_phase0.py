@@ -17,6 +17,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 from scripts.prune import artifacts
+
 # A6000 dense bf16 tensor-core peak, for the MFU column. Not measured here -- it is
 # the vendor number, quoted so "TFLOPS achieved" has a denominator.
 A6000_BF16_PEAK_TFLOPS = 154.8
@@ -282,16 +283,25 @@ def write_figures(summary: dict) -> list[Path]:
         if cached:
             ax.plot([r["n_new"] for r in cached], [r["ms_per_fwd_kv_cached"] for r in cached], "o--", label="K/V cached")
         ax.set(xlabel="fresh latent frames", ylabel="ms / transformer forward", title=f"LTX-{summary['model']} Phase 0 latency (ctx={ctx})")
-        ax.grid(alpha=0.25); ax.legend()
-        path = root / f"phase0_latency_ctx{ctx}.png"; fig.savefig(path, dpi=160); plt.close(fig); paths.append(path)
+        ax.grid(alpha=0.25)
+        ax.legend()
+        path = root / f"phase0_latency_ctx{ctx}.png"
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        paths.append(path)
     fig, ax = plt.subplots(figsize=(6.4, 4.0), layout="constrained")
-    measured = [r["tflop_measured"] for r in rows]; analytic = [r["tflop_analytic"] for r in rows]
+    measured = [r["tflop_measured"] for r in rows]
+    analytic = [r["tflop_analytic"] for r in rows]
     hi = max(measured + analytic) * 1.05
     ax.scatter(analytic, measured, c=[r["ctx"] for r in rows], cmap="viridis", s=60)
     ax.plot([0, hi], [0, hi], "k--", linewidth=1, label="agreement")
     ax.set(xlabel="analytic TFLOP / forward", ylabel="measured TFLOP / forward", title=f"LTX-{summary['model']} FLOP cross-check", xlim=(0, hi), ylim=(0, hi))
-    ax.grid(alpha=0.25); ax.legend()
-    path = root / "phase0_flops_measured_vs_analytic.png"; fig.savefig(path, dpi=160); plt.close(fig); paths.append(path)
+    ax.grid(alpha=0.25)
+    ax.legend()
+    path = root / "phase0_flops_measured_vs_analytic.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    paths.append(path)
     (root / "INDEX.md").write_text("# Phase 0 figures\n\n" + "\n".join(f"- `{p.name}`" for p in paths) + "\n")
     return paths
 

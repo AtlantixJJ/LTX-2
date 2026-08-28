@@ -81,7 +81,8 @@ def t1(pred_pixels: torch.Tensor, teacher_pixels: torch.Tensor, source_pixels: t
 def _linear_slope(xs: list[float], ys: list[float]) -> float:
     if len(xs) < 2:
         return 0.0
-    x = torch.tensor(xs, dtype=torch.float64); y = torch.tensor(ys, dtype=torch.float64)
+    x = torch.tensor(xs, dtype=torch.float64)
+    y = torch.tensor(ys, dtype=torch.float64)
     return float(((x - x.mean()) * (y - y.mean())).sum() / (x - x.mean()).square().sum().clamp_min(1e-12))
 
 
@@ -148,7 +149,8 @@ def t3_grid(rows: Iterable[tuple[str, torch.Tensor, torch.Tensor, torch.Tensor]]
         for c, tile in enumerate(triple):
             canvas[:, y : y + h, c * w : (c + 1) * w] = (tile[:3].clamp(0, 1) * 255).round().byte()
         y += h
-    path = Path(output); path.parent.mkdir(parents=True, exist_ok=True)
+    path = Path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(canvas.permute(1, 2, 0).numpy()).save(path)
     return path
 
@@ -165,7 +167,8 @@ def t3_video(source: torch.Tensor, teacher: torch.Tensor, candidate: torch.Tenso
     c, h, w = streams[0].shape[1:]
     if c < 3 or any(v.shape[1:] != (c, h, w) for v in streams):
         raise ValueError("T3 video streams must share an RGB-compatible C,H,W shape")
-    path = Path(output); path.parent.mkdir(parents=True, exist_ok=True)
+    path = Path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
     command = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w * 3}x{h}", "-r", str(fps), "-i", "-", "-an", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", str(path)]
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
@@ -173,7 +176,8 @@ def t3_video(source: torch.Tensor, teacher: torch.Tensor, candidate: torch.Tenso
             frame = torch.cat([v[i, :3] for v in streams], dim=-1).clamp(0, 1)
             process.stdin.write((frame.permute(1, 2, 0).mul(255).round().byte().cpu().numpy()).tobytes())
         process.stdin.close()
-        stderr = process.stderr.read(); code = process.wait()
+        stderr = process.stderr.read()
+        code = process.wait()
     finally:
         if process.stdin and not process.stdin.closed:
             process.stdin.close()

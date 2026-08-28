@@ -4,9 +4,8 @@ import argparse
 from dataclasses import replace
 
 import pytest
-import torch
-from ltx_pipelines.utils.helpers import post_process_latent
 
+from ltx_pipelines.utils.helpers import post_process_latent
 from scripts.prune import chunk_states, decode, geometry, session
 
 

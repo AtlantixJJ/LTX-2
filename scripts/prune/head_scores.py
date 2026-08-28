@@ -8,19 +8,31 @@ reused for another generation or checkpoint.
 
 from __future__ import annotations
 
-import sys
 import argparse
 import json
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 
 import torch
 
-from ltx_core.guidance.perturbations import BatchedPerturbationConfig, Perturbation, PerturbationConfig, PerturbationType
+from ltx_core.guidance.perturbations import (
+    BatchedPerturbationConfig,
+    Perturbation,
+    PerturbationConfig,
+    PerturbationType,
+)
 from ltx_pipelines.utils.helpers import modality_from_latent_state
-
-from scripts.prune import artifacts, chunk_states, hooks, losses, model_registry, provenance, prune_schedule, records, refine_task, session
-from scripts.prune.model_registry import WORKSPACE_ROOT
+from scripts.prune import (
+    artifacts,
+    chunk_states,
+    hooks,
+    losses,
+    prune_schedule,
+    records,
+    refine_task,
+    session,
+)
 
 METHODS = ("contribution", "michel", "gauss_newton")
 
@@ -59,7 +71,7 @@ def _empty_scores(model, device: torch.device) -> dict[str, torch.Tensor]:
 def contribution_scores(model, paths: list[Path], denoiser, sigmas: torch.Tensor, device: torch.device) -> dict[str, torch.Tensor]:
     """Exact post-gate/pre-output-projection contribution norms (§7.2a)."""
     acc = _empty_scores(model, device)
-    count = {name: 0 for name in acc}
+    count = dict.fromkeys(acc, 0)
     token_mask: torch.Tensor | None = None
 
     def callback(name, x, attn):
@@ -115,7 +127,10 @@ def michel_scores(model, paths: list[Path], denoiser, sigmas: torch.Tensor, devi
                   initial: dict[str, torch.Tensor] | None = None) -> dict[str, torch.Tensor]:
     """``E |d x0_loss / d xi_h|`` with per-layer L2 normalization (§7.2b)."""
     _freeze_weights(model)
-    with _gradient_checkpointing(model), hooks.attach_head_masks(model, initial, requires_grad=True) as masks:
+    # enable_grad, not ambient: session.transformer() wraps its whole yield in
+    # torch.no_grad() (every other caller of it never backprops), so the VJP this
+    # estimator needs has to explicitly re-open autograd rather than assume it.
+    with torch.enable_grad(), _gradient_checkpointing(model), hooks.attach_head_masks(model, initial, requires_grad=True) as masks:
         acc = {name: torch.zeros_like(mask) for name, mask in masks.items()}
         for path in paths:
             state, target, meta = chunk_states.load_record(path, device)
@@ -139,7 +154,8 @@ def gauss_newton_scores(model, paths: list[Path], denoiser, sigmas: torch.Tensor
         raise ValueError("projections must be positive")
     _freeze_weights(model)
     generator = torch.Generator(device=device).manual_seed(seed)
-    with _gradient_checkpointing(model), hooks.attach_head_masks(model, initial, requires_grad=True) as masks:
+    # enable_grad: see the matching comment in michel_scores above.
+    with torch.enable_grad(), _gradient_checkpointing(model), hooks.attach_head_masks(model, initial, requires_grad=True) as masks:
         acc = {name: torch.zeros_like(mask) for name, mask in masks.items()}
         for path in paths:
             state, _, meta = chunk_states.load_record(path, device)

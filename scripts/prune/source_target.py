@@ -18,8 +18,17 @@ import torch
 
 from ltx_core.components.diffusion_steps import EulerDiffusionStep
 from ltx_core.tools import VideoLatentTools
-
-from scripts.prune import artifacts, chunk_states, corpus as refine_corpus, ltx_adapter, model_registry, provenance, refine_core, refine_task, session
+from scripts.prune import (
+    artifacts,
+    chunk_states,
+    ltx_adapter,
+    model_registry,
+    provenance,
+    refine_core,
+    refine_task,
+    session,
+)
+from scripts.prune import corpus as refine_corpus
 from scripts.prune.model_registry import RefinerModel
 from scripts.prune.session import DTYPE
 
@@ -97,8 +106,8 @@ def build_calibration(s: session.Session, *, max_clips: int | None, seed: int) -
     if not manifest_path.exists():
         raise SystemExit(f"Missing {manifest_path}; run --freeze first.")
     manifest = json.loads(manifest_path.read_text())
-    split = {x: "calibration" for x in manifest["split"]["calibration"]}
-    split.update({x: "held_out" for x in manifest["split"]["held_out"]})
+    split = dict.fromkeys(manifest["split"]["calibration"], "calibration")
+    split.update(dict.fromkeys(manifest["split"]["held_out"], "held_out"))
     clips = [c for c in manifest["corpus"] if c["clip"] in split]
     clips = clips if max_clips is None else clips[:max_clips]
 

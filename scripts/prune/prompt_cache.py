@@ -25,9 +25,8 @@ from pathlib import Path
 import torch
 
 from ltx_pipelines.utils.blocks import PromptEncoder
-
 from scripts.prune import artifacts, model_registry, preflight, provenance, refine_task
-from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
+from scripts.prune.model_registry import RefinerModel
 
 DEFAULT_CACHE_DIR = artifacts.OUT_ROOT / "prompt_cache"
 

@@ -55,12 +55,21 @@ def verdict(*, baseline: dict | None, candidate: dict | None, profile: dict | No
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--baseline", type=Path); p.add_argument("--candidate", type=Path)
-    p.add_argument("--profile", type=Path); p.add_argument("--baseline-profile", type=Path); p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--rollout-chunks", type=int, default=200); p.add_argument("--minimum-speedup", type=float, default=1.4)
-    a = p.parse_args(); out = verdict(baseline=_read(a.baseline), candidate=_read(a.candidate), profile=_read(a.profile), baseline_profile=_read(a.baseline_profile),
-                                      minimum_speedup=a.minimum_speedup, rollout_chunks=a.rollout_chunks)
-    a.output.parent.mkdir(parents=True, exist_ok=True); a.output.write_text(json.dumps(out, indent=2)); print(json.dumps(out, indent=2)); return 0
+    p.add_argument("--baseline", type=Path)
+    p.add_argument("--candidate", type=Path)
+    p.add_argument("--profile", type=Path)
+    p.add_argument("--baseline-profile", type=Path)
+    p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--rollout-chunks", type=int, default=200)
+    p.add_argument("--minimum-speedup", type=float, default=1.4)
+    a = p.parse_args()
+    out = verdict(baseline=_read(a.baseline), candidate=_read(a.candidate), profile=_read(a.profile), baseline_profile=_read(a.baseline_profile),
+                  minimum_speedup=a.minimum_speedup, rollout_chunks=a.rollout_chunks)
+    a.output.parent.mkdir(parents=True, exist_ok=True)
+    a.output.write_text(json.dumps(out, indent=2))
+    print(json.dumps(out, indent=2))
+    return 0
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())

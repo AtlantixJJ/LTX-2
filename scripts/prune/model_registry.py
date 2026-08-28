@@ -30,7 +30,6 @@ from safetensors import safe_open
 from ltx_core.types import SpatioTemporalScaleFactors
 from ltx_pipelines.utils.constants import DISTILLED_SIGMA_VALUES, detect_model_version
 from ltx_pipelines.utils.model_paths import ModelPaths
-
 from scripts.prune import geometry, ltx_adapter
 
 REPO_ROOT = Path(__file__).resolve().parents[2]  # .../LTX-2

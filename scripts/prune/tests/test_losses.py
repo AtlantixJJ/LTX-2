@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import torch
 import pytest
 
 from scripts.prune import chunk_states, losses

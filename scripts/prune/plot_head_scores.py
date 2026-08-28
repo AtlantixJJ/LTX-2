@@ -24,7 +24,6 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-
 METHOD_ORDER = ("contribution", "michel", "gauss_newton")
 
 

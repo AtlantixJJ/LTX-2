@@ -56,19 +56,28 @@ from __future__ import annotations
 import argparse
 import json
 from contextlib import nullcontext
-from dataclasses import replace
 from pathlib import Path
 
 import decord
 import torch
 
 from ltx_core.components.diffusion_steps import EulerDiffusionStep
-
 from scripts.prune import (
-    artifacts, chunk_states, corpus, decode, hooks, losses, ltx_adapter, metrics, model_registry, provenance, records,
-    refine_core, session, refine_task,
+    artifacts,
+    chunk_states,
+    corpus,
+    decode,
+    hooks,
+    losses,
+    ltx_adapter,
+    metrics,
+    model_registry,
+    records,
+    refine_core,
+    refine_task,
+    session,
 )
-from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
+from scripts.prune.model_registry import RefinerModel
 from scripts.prune.session import DTYPE
 
 decord.bridge.set_bridge("torch")

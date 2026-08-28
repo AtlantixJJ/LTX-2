@@ -39,8 +39,16 @@ from pathlib import Path
 
 import torch
 
-from scripts.prune import artifacts, corpus, model_registry, phase1_gates, preflight, provenance, refine_core, refine_task, session
-from scripts.prune.model_registry import REPO_ROOT, WORKSPACE_ROOT
+from scripts.prune import (
+    artifacts,
+    corpus,
+    phase1_gates,
+    preflight,
+    refine_core,
+    refine_task,
+    session,
+)
+from scripts.prune.model_registry import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "scripts" / "vae_refine_sliding_window.py"
 

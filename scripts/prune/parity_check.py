@@ -35,7 +35,7 @@ from pathlib import Path
 import torch
 
 from scripts.prune import artifacts, corpus, model_registry, preflight, provenance, refine_core
-from scripts.prune.model_registry import REPO_ROOT, WORKSPACE_ROOT
+from scripts.prune.model_registry import REPO_ROOT
 
 BASELINE_COPY = REPO_ROOT / "scripts" / "_parity_baseline_vae_refine.py"
 SCRIPT = REPO_ROOT / "scripts" / "vae_refine_sliding_window.py"

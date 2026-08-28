@@ -11,7 +11,6 @@ import torch
 from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
 from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
-
 from scripts.prune import artifacts, ltx_adapter, preflight, prompt_cache, refine_core, refine_task
 from scripts.prune.model_registry import SUPPORTED_MODELS, RefinerModel
 

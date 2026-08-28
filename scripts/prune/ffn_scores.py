@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 import argparse
 import json
+import sys
+from pathlib import Path
 
 import torch
 
-from scripts.prune import artifacts, chunk_states, hooks, losses, lstsq, prune_schedule, records, session
-from scripts.prune import model_registry, provenance, refine_task
-from scripts.prune.model_registry import WORKSPACE_ROOT
+from scripts.prune import (
+    artifacts,
+    chunk_states,
+    hooks,
+    losses,
+    lstsq,
+    prune_schedule,
+    records,
+    session,
+)
 
 
 @torch.no_grad()
@@ -19,7 +26,7 @@ def channel_rms(model, records: list[Path], denoiser, sigmas: torch.Tensor, devi
                 active_masks: dict[str, torch.Tensor] | None = None) -> dict[str, torch.Tensor]:
     """Fresh-chunk RMS of post-GELU channels, collected from frozen records."""
     sq = {name: torch.zeros(ff.net[2].weight.shape[1], device=device, dtype=torch.float32) for name, ff in hooks.iter_video_ffn(model)}
-    count = {name: 0 for name in sq}
+    count = dict.fromkeys(sq, 0)
     token_mask: torch.Tensor | None = None
 
     def observe(name, activation, _ff):
@@ -124,12 +131,15 @@ def main() -> int:
                     help="Layer numbers to ridge-reconstruct for the selected target mask (real activation solve).")
     ap.add_argument("--save-reconstruction", type=Path,
                     help="Write fitted projections for export_pruned --reconstruction-state.")
-    args = ap.parse_args(); s = session.open_session(args, script="ffn_scores")
+    args = ap.parse_args()
+    s = session.open_session(args, script="ffn_scores")
     root = s.states_root(args.states)
     paths = records.select(root, split=args.split, limit=args.max_records)
-    if not paths: raise SystemExit(f"No {args.split} records under {root}")
+    if not paths:
+        raise SystemExit(f"No {args.split} records under {root}")
     with s.transformer() as transformer:
-        rms = channel_rms(transformer, paths, s.denoiser, s.sigmas, s.device); scores = channel_scores(transformer, rms)
+        rms = channel_rms(transformer, paths, s.denoiser, s.sigmas, s.device)
+        scores = channel_scores(transformer, rms)
         masks = masks_from_scores(scores, args.target_sparsity)
         evaluation = {str(sparsity): masked_t0(transformer, masks_from_scores(scores, sparsity), paths, s.denoiser, s.sigmas, s.device)
                       for sparsity in args.evaluate_sparsities}
@@ -169,7 +179,10 @@ def main() -> int:
         args.save_reconstruction.parent.mkdir(parents=True, exist_ok=True)
         torch.save(reconstruction_tensors, args.save_reconstruction)
         report["reconstruction_state"] = str(args.save_reconstruction)
-    (out / "ffn_scores.json").write_text(json.dumps(report)); print(out / "ffn_scores.json"); return 0
+    (out / "ffn_scores.json").write_text(json.dumps(report))
+    print(out / "ffn_scores.json")
+    return 0
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())

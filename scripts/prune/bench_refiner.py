@@ -44,9 +44,17 @@ from ltx_core.tools import VideoLatentTools
 from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.types import ModalitySpec
-
-from scripts.prune import artifacts, cross_kv_cache, geometry, ltx_adapter, model_registry, provenance, refine_task, session
-from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
+from scripts.prune import (
+    artifacts,
+    cross_kv_cache,
+    geometry,
+    ltx_adapter,
+    model_registry,
+    provenance,
+    refine_task,
+    session,
+)
+from scripts.prune.model_registry import RefinerModel
 from scripts.prune.session import DTYPE
 from scripts.prune.timing import StageTimer, count_flops
 

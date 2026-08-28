@@ -13,15 +13,22 @@ Example:
 
 from __future__ import annotations
 
-import sys
 import argparse
 import json
-from pathlib import Path
+import sys
 
 import torch
 
-from scripts.prune import artifacts, chunk_states, decode, hooks, losses, metrics, model_registry, provenance, records, refine_task, session
-from scripts.prune.model_registry import WORKSPACE_ROOT
+from scripts.prune import (
+    artifacts,
+    chunk_states,
+    decode,
+    hooks,
+    losses,
+    metrics,
+    records,
+    session,
+)
 
 
 def _parse_head(value: str) -> tuple[str, int]:

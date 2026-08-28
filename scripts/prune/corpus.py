@@ -37,8 +37,8 @@ def split(key: str) -> dict[str, str]:
     """Map each frozen-manifest clip name to its calibration/held-out split."""
     manifest = json.loads(artifacts.manifest(key).read_text())
     return {
-        **{clip: "calibration" for clip in manifest["split"]["calibration"]},
-        **{clip: "held_out" for clip in manifest["split"]["held_out"]},
+        **dict.fromkeys(manifest["split"]["calibration"], "calibration"),
+        **dict.fromkeys(manifest["split"]["held_out"], "held_out"),
     }
 
 

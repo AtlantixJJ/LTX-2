@@ -12,7 +12,6 @@ import torch
 from ltx_core.components.diffusion_steps import EulerAncestralDiffusionStep, EulerDiffusionStep
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.helpers import post_process_latent
-
 from scripts.prune import artifacts, chunk_states, losses, records, session
 
 
@@ -58,10 +57,13 @@ def main() -> int:
             euler = _run(transformer, state.clone(), s.context, s.sigmas, ancestral=False, seed=args.seed + i)
             ancestral = _run(transformer, state.clone(), s.context, s.sigmas, ancestral=True, seed=args.seed + i)
             rows.append({"record": path.name, "clip": meta.clip, "euler_t0": float(losses.rel_l2(euler, target, state)), "ancestral_t0": float(losses.rel_l2(ancestral, target, state))})
-    e = sum(r["euler_t0"] for r in rows) / len(rows); a = sum(r["ancestral_t0"] for r in rows) / len(rows)
+    e = sum(r["euler_t0"] for r in rows) / len(rows)
+    a = sum(r["ancestral_t0"] for r in rows) / len(rows)
     result = {"provenance": s.stamp(), "states": rows, "euler_t0_mean": e, "ancestral_t0_mean": a, "chosen_sampler": "euler" if e <= a else "ancestral", "decision_metric": "mean T0 relative L2 vs source target"}
     out = artifacts.gate(s.key, "sampler_ab")
-    out.write_text(json.dumps(result, indent=2)); print(json.dumps(result, indent=2)); return 0
+    out.write_text(json.dumps(result, indent=2))
+    print(json.dumps(result, indent=2))
+    return 0
 
 
 if __name__ == "__main__":

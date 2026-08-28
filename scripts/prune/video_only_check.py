@@ -36,9 +36,17 @@ from ltx_core.types import VideoLatentShape, VideoPixelShape
 from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.types import ModalitySpec
-
-from scripts.prune import artifacts, corpus, ltx_adapter, model_registry, preflight, prompt_cache, provenance, refine_task
-from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
+from scripts.prune import (
+    artifacts,
+    corpus,
+    ltx_adapter,
+    model_registry,
+    preflight,
+    prompt_cache,
+    provenance,
+    refine_task,
+)
+from scripts.prune.model_registry import RefinerModel
 from scripts.prune.session import DTYPE
 
 decord.bridge.set_bridge("torch")
