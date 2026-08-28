@@ -29,7 +29,7 @@ from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.helpers import post_process_latent
 
-from scripts.prune import artifacts, chunk_states, hooks, losses, metrics, model_registry, preflight, prompt_cache, provenance, refine_task
+from scripts.prune import artifacts, chunk_states, hooks, losses, metrics, model_registry, preflight, prompt_cache, provenance, records, refine_task
 from scripts.prune.model_registry import WORKSPACE_ROOT
 
 DTYPE = torch.bfloat16
@@ -103,11 +103,7 @@ def main() -> int:
     model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id)
     device = torch.device(f"cuda:{args.gpu_id}")
     states_root = args.states or artifacts.calibration(model.key)
-    paths = list(chunk_states.iter_records(states_root, args.split))
-    if args.max_records:
-        paths = paths[: args.max_records]
-    if not paths:
-        raise SystemExit(f"No {args.split!r} records under {states_root}")
+    paths = records.select(states_root, split=args.split, limit=args.max_records)
 
     context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
     denoiser = SimpleDenoiser(context, None)

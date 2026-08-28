@@ -8,7 +8,7 @@ import json
 
 import torch
 
-from scripts.prune import artifacts, chunk_states, hooks, losses, lstsq, prune_schedule
+from scripts.prune import artifacts, chunk_states, hooks, losses, lstsq, prune_schedule, records
 from scripts.prune import model_registry, preflight, prompt_cache, provenance, refine_task
 from scripts.prune.model_registry import WORKSPACE_ROOT
 from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
@@ -131,7 +131,7 @@ def main() -> int:
                     help="Write fitted projections for export_pruned --reconstruction-state.")
     args = ap.parse_args(); model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id)
     root = args.states or artifacts.calibration(model.key)
-    paths = list(chunk_states.iter_records(root, args.split)); paths = paths[:args.max_records] if args.max_records else paths
+    paths = records.select(root, split=args.split, limit=args.max_records)
     if not paths: raise SystemExit(f"No {args.split} records under {root}")
     device = torch.device(f"cuda:{args.gpu_id}"); context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
     sigmas = torch.tensor(refine_task.schedule_for(model.sigmas, refine_task.K_STEP), dtype=torch.float32, device=device)

@@ -38,13 +38,12 @@ from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.types import ModalitySpec
 
-from scripts.prune import artifacts, model_registry, preflight, prompt_cache, provenance, refine_task
+from scripts.prune import artifacts, corpus, model_registry, preflight, prompt_cache, provenance, refine_task
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
 
 decord.bridge.set_bridge("torch")
 
 DTYPE = torch.bfloat16
-CORPUS_DIR = WORKSPACE_ROOT / "expr" / "sam3dgs_vae_refine"
 # 25 pixel frames = 4 latent frames, the `k2_chunk25_overlap2` geometry every run under
 # expr/sam3dgs_vae_refine/ was produced at. Deliberately not the 121-frame window: this gate
 # compares two *builds*, and the audio-video configurator is the full 18.5 B (2.3) transformer,
@@ -71,33 +70,6 @@ def _read_pixel_window(path: Path, device: torch.device, frames: int) -> torch.T
     return (norm / 127.5) - 1.0
 
 
-def _subject_of(clip_dir: Path) -> str:
-    """``2K2K_00052_0__man_dance_2_crop`` -> ``2K2K_00052_0`` (the captured subject)."""
-    return clip_dir.name.split("__", 1)[0]
-
-
-def _pick_clips(num_clips: int, window_frames: int) -> list[Path]:
-    """First usable clip per distinct subject, up to *num_clips*."""
-    by_subject: dict[str, Path] = {}
-    for p in sorted(CORPUS_DIR.glob("*/source.mp4")):
-        subject = _subject_of(p.parent)
-        if subject in by_subject:
-            continue
-        try:
-            if len(decord.VideoReader(str(p))) >= window_frames:
-                by_subject[subject] = p
-        except Exception:
-            continue
-        if len(by_subject) >= num_clips:
-            break
-    if len(by_subject) < num_clips:
-        raise SystemExit(
-            f"Only found {len(by_subject)} subjects with a >= {window_frames}-frame clip under "
-            f"{CORPUS_DIR}, need {num_clips}."
-        )
-    return list(by_subject.values())
-
-
 def _encode(model: RefinerModel, clips: list[Path], device: torch.device, window_frames: int) -> list[dict]:
     """VAE-encode one window per clip; the encoder is built once and freed."""
     out = []
@@ -110,7 +82,7 @@ def _encode(model: RefinerModel, clips: list[Path], device: torch.device, window
                 out.append(
                     {
                         "clip": clip.parent.name,
-                        "subject": _subject_of(clip.parent),
+                        "subject": corpus.subject_of(clip.parent.name),
                         "latent": encoder.tiled_encode(norm_video, None),
                         "frames": frames,
                         "height": height,
@@ -200,8 +172,8 @@ def main() -> int:
         raise SystemExit(
             f"--window-frames {args.window_frames} must satisfy F %% {model.scale_factors.time} == 1."
         )
-    clips = _pick_clips(args.num_clips, args.window_frames)
-    print(f"[video_only_check] subjects: {[_subject_of(c.parent) for c in clips]}", flush=True)
+    clips = corpus.pick_one_per_subject(args.num_clips, args.window_frames)
+    print(f"[video_only_check] subjects: {[corpus.subject_of(clip.parent.name) for clip in clips]}", flush=True)
     encoded = _encode(model, clips, device, args.window_frames)
 
     print("[video_only_check] audio-video build ...", flush=True)

@@ -70,7 +70,7 @@ from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.samplers import _step_state
 
 from scripts.prune import (
-    artifacts, chunk_states, hooks, losses, metrics, model_registry, preflight, prompt_cache, provenance, refine_core,
+    artifacts, chunk_states, corpus, hooks, losses, metrics, model_registry, preflight, prompt_cache, provenance, records, refine_core,
     refine_task,
 )
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
@@ -108,14 +108,7 @@ def run_t0(model: RefinerModel, transformer, denoiser, device: torch.device, roo
     sigmas_list = refine_task.schedule_for(model.sigmas, refine_task.K_STEP)
     sigmas = torch.tensor(sigmas_list, dtype=torch.float32, device=device)
     rows: list[dict] = []
-    candidates = [p for p in chunk_states.iter_records(root)]
-    if max_records:
-        # Evenly stride across the corpus (sorted by filename, i.e. by clip) rather
-        # than taking a prefix, so a small sample still spans multiple clips/subjects.
-        on_policy_step0 = [p for p in candidates if "__s0__on_policy" in p.name]
-        stride = max(1, len(on_policy_step0) // max_records)
-        keep = set(on_policy_step0[::stride][:max_records])
-        candidates = [p for p in candidates if p in keep]
+    candidates = records.select(root, family="on_policy", step_index=0, limit=max_records)
     for path in candidates:
         state, target, meta = chunk_states.load_record(path, device)
         if meta.family != "on_policy" or meta.step_index != 0:
@@ -301,13 +294,11 @@ def main() -> int:
     # --- pick and encode the T2 clip before the transformer is resident ---
     t2 = None
     if not args.skip_t2:
-        manifest = json.loads(artifacts.manifest(model.key).read_text())
-        held = set(manifest["split"]["held_out"])
-        pool = [c for c in manifest["corpus"] if c["clip"] in held] or manifest["corpus"]
-        if args.t2_clip:
-            pool = [c for c in manifest["corpus"] if c["clip"] == args.t2_clip] or pool
-        pick = max(pool, key=lambda c: len(decord.VideoReader(c["source"])))
-        total = len(decord.VideoReader(pick["source"]))
+        source = corpus.pick_clip(
+            geometry, name=args.t2_clip, key=model.key, prefer="held_out", longest=True
+        )
+        pick = {"clip": source.parent.name, "source": str(source)}
+        total = corpus.frame_count(source)
         windows = geometry.plan(total)
         if args.rollout_windows:
             windows = windows[: args.rollout_windows]

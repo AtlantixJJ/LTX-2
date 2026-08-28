@@ -21,41 +21,11 @@ from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.helpers import modality_from_latent_state
 
-from scripts.prune import artifacts, chunk_states, hooks, losses, model_registry, preflight, prompt_cache, provenance, prune_schedule, refine_task
+from scripts.prune import artifacts, chunk_states, hooks, losses, model_registry, preflight, prompt_cache, provenance, prune_schedule, records, refine_task
 from scripts.prune.model_registry import WORKSPACE_ROOT
 
 DTYPE = torch.bfloat16
 METHODS = ("contribution", "michel", "gauss_newton")
-
-
-def _records(root: Path, split: str, limit: int | None):
-    """Calibration records, evenly strided across the corpus when *limit* is set.
-
-    Records sort by filename, i.e. by clip, so a prefix (`paths[:limit]`) is all one
-    subject -- which is how the first published sweep ended up ranking 3,072 heads from
-    four records of a single clip. Striding keeps a small sample spanning many
-    clips/subjects at no extra cost.
-    """
-    paths = list(chunk_states.iter_records(root, split))
-    if not paths:
-        raise ValueError(f"no {split!r} calibration records under {root}; build the Phase 1 cache first")
-    if not limit or limit >= len(paths):
-        return paths
-    # Stride WITHIN each family, then merge. A single stride over the flat sorted list
-    # aliases: every clip contributes the same repeating on_policy/renoised pattern, so a
-    # stride sharing a factor with that period silently returns one family only (a stride
-    # of 14 over 12-records-per-clip drew 24 on_policy records and zero renoised ones).
-    families: dict[str, list] = {}
-    for path in paths:
-        families.setdefault("renoised" if "__renoised" in path.name else "on_policy", []).append(path)
-    keep: set = set()
-    for index, (_, group) in enumerate(sorted(families.items())):
-        want = limit // len(families) + (1 if index < limit % len(families) else 0)
-        if want <= 0:
-            continue
-        stride = max(1, len(group) // want)
-        keep.update(group[::stride][:want])
-    return [p for p in paths if p in keep]
 
 
 def _sigmas(model, device: torch.device) -> torch.Tensor:
@@ -307,7 +277,7 @@ def main() -> int:
     model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id)
     device = torch.device(f"cuda:{args.gpu_id}")
     root = args.states or artifacts.calibration(model.key)
-    paths = _records(root, args.split, args.max_records)
+    paths = records.select(root, split=args.split, limit=args.max_records)
     context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
     denoiser, sigmas = SimpleDenoiser(context, None), _sigmas(model, device)
     stage = DiffusionStage.from_checkpoint(model.paths.transformer(), DTYPE, device,

@@ -16,17 +16,17 @@ from ltx_pipelines.utils.blocks import DiffusionStage, ImageConditioner
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.samplers import _step_state
-from scripts.prune import artifacts, chunk_states, model_registry, preflight, prompt_cache, provenance, refine_core, refine_task
+from scripts.prune import artifacts, chunk_states, corpus as refine_corpus, model_registry, preflight, prompt_cache, provenance, refine_core, refine_task
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
 
 decord.bridge.set_bridge("torch")
-DTYPE = torch.bfloat16; CORPUS_DIR = WORKSPACE_ROOT / "expr" / "sam3dgs_vae_refine"
+DTYPE = torch.bfloat16
 
 def corpus() -> list[dict]:
     out = []
-    for source in sorted(CORPUS_DIR.glob("*/source.mp4")):
-        d = source.parent; out.append({"clip": d.name, "source": str(source), "subject": d.name.split("__", 1)[0]})
-    if not out: raise SystemExit(f"No clips with source.mp4 under {CORPUS_DIR}")
+    for source in refine_corpus.sources():
+        directory = source.parent; out.append({"clip": directory.name, "source": str(source), "subject": refine_corpus.subject_of(directory.name)})
+    if not out: raise SystemExit(f"No clips with source.mp4 under {refine_corpus.CORPUS_DIR}")
     return out
 
 def freeze(model: RefinerModel) -> Path:
@@ -52,7 +52,7 @@ def _fps(path: Path | str) -> float:
     """The clip's own frame rate. Never default this: VideoLatentTools divides the
     temporal RoPE axis by it (see refine_core.build_tools), and 41 of the 44 corpus
     clips are 30 fps while the three canonical_rotation renders are 24."""
-    return float(decord.VideoReader(str(path)).get_avg_fps())
+    return refine_corpus.fps(Path(path))
 
 def _tools(model: RefinerModel, latent: torch.Tensor, fps: float) -> VideoLatentTools:
     return refine_core.build_tools(latent, fps, model.scale_factors)

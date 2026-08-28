@@ -32,13 +32,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-import decord
 import torch
 
-from scripts.prune import artifacts, model_registry, preflight, provenance
+from scripts.prune import artifacts, corpus, model_registry, preflight, provenance, refine_core
 from scripts.prune.model_registry import REPO_ROOT, WORKSPACE_ROOT
 
-CORPUS_DIR = WORKSPACE_ROOT / "expr" / "sam3dgs_vae_refine"
 BASELINE_COPY = REPO_ROOT / "scripts" / "_parity_baseline_vae_refine.py"
 SCRIPT = REPO_ROOT / "scripts" / "vae_refine_sliding_window.py"
 
@@ -95,23 +93,6 @@ def _write_baseline_copy(rev: str) -> str:
     return content
 
 
-def _pick_clip(max_windows: int, window: int, overlap: int) -> Path:
-    """First corpus clip long enough to plan *max_windows* whole windows.
-
-    Alphabetically the first clip is a 113-frame ``canonical_rotation`` render --
-    shorter than one window -- so the baseline run would die before producing
-    anything to compare.
-    """
-    need = window + (max_windows - 1) * (window - overlap)
-    for source in sorted(CORPUS_DIR.glob("*/source.mp4")):
-        try:
-            if len(decord.VideoReader(str(source))) >= need:
-                return source
-        except Exception:
-            continue
-    raise SystemExit(f"No clip under {CORPUS_DIR} has the >= {need} frames needed for {max_windows} window(s).")
-
-
 def _run(cmd: list[str], label: str) -> None:
     print(f"[parity] {label}: {' '.join(cmd)}", flush=True)
     proc = subprocess.run(cmd, cwd=str(REPO_ROOT))
@@ -154,7 +135,12 @@ def main() -> int:
 
     model = preflight.check(args.model, gpu_id=args.gpu_id)
     rev = args.rev or find_baseline_rev()
-    clip = args.clip or _pick_clip(args.max_windows, args.window_frames, args.overlap_frames)
+    geometry = refine_core.WindowGeometry(
+        window_frames=args.window_frames,
+        overlap_frames=args.overlap_frames,
+        scale_factors=model.scale_factors,
+    )
+    clip = args.clip or corpus.pick_clip(geometry, args.max_windows)
     print(f"[parity] baseline rev {rev[:12]}, clip {clip.parent.name}", flush=True)
     out_root = artifacts.run_dir(model.key, "parity", script="parity_check", argv=sys.argv[1:])
     before_dir, after_dir = out_root / "pre_refactor", out_root / "registry"

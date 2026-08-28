@@ -37,41 +37,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-import decord
 import torch
 
 from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
 from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
-from scripts.prune import artifacts, model_registry, phase1_gates, preflight, prompt_cache, provenance, refine_core, refine_task
+from scripts.prune import artifacts, corpus, model_registry, phase1_gates, preflight, prompt_cache, provenance, refine_core, refine_task
 from scripts.prune.model_registry import REPO_ROOT, WORKSPACE_ROOT
 
-decord.bridge.set_bridge("torch")
-
 DTYPE = torch.bfloat16
-CORPUS_DIR = WORKSPACE_ROOT / "expr" / "sam3dgs_vae_refine"
 SCRIPT = REPO_ROOT / "scripts" / "vae_refine_sliding_window.py"
-
-
-def pick_clip(geometry: refine_core.WindowGeometry, windows: int, name: str | None = None) -> Path:
-    """First corpus clip long enough for *windows* whole windows of this geometry.
-
-    Alphabetically the first clip is a 113-frame ``canonical_rotation`` render at 24
-    fps; most of the corpus is 121 frames at 30 fps. Both are long enough for the
-    default 25/9 geometry, but the check is explicit so a shorter corpus fails here
-    rather than inside the subprocess.
-    """
-    need = geometry.window_frames + (windows - 1) * geometry.stride_frames
-    candidates = sorted(CORPUS_DIR.glob("*/source.mp4"))
-    if name:
-        candidates = [p for p in candidates if p.parent.name == name] or candidates
-    for source in candidates:
-        try:
-            if len(decord.VideoReader(str(source))) >= need:
-                return source
-        except Exception:
-            continue
-    raise SystemExit(f"No clip under {CORPUS_DIR} has the >= {need} frames needed for {windows} window(s).")
 
 
 def run_reference(model, clip: Path, geometry: refine_core.WindowGeometry, windows: int, seed: int,
@@ -103,7 +78,7 @@ def run_reference(model, clip: Path, geometry: refine_core.WindowGeometry, windo
 def run_harness(model, clip: Path, geometry: refine_core.WindowGeometry, windows: int, seed: int,
                 device: torch.device) -> list[torch.Tensor]:
     """Run the gates' own rollout -- the same two functions ``phase1_gates.main`` calls."""
-    plan = geometry.plan(len(decord.VideoReader(str(clip))))[:windows]
+    plan = geometry.plan(corpus.frame_count(clip))[:windows]
     latents, _, fps = phase1_gates._encode_windows(model, clip, plan, device)
     context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
     denoiser = SimpleDenoiser(context, None)
@@ -142,7 +117,7 @@ def main() -> int:
     geometry = refine_core.WindowGeometry(
         window_frames=args.window_frames, overlap_frames=args.overlap_frames, scale_factors=model.scale_factors
     )
-    clip = pick_clip(geometry, args.windows, args.clip)
+    clip = corpus.pick_clip(geometry, args.windows, name=args.clip)
     out_root = artifacts.run_dir(model.key, "method-parity", script="method_parity", argv=sys.argv[1:])
     reference_dir = out_root / "reference"
     print(f"[parity] clip {clip.parent.name}, geometry {geometry.as_dict()}", flush=True)

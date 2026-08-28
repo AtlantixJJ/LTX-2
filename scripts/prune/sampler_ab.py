@@ -15,7 +15,7 @@ from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.helpers import post_process_latent
 
-from scripts.prune import artifacts, chunk_states, losses, model_registry, preflight, prompt_cache, provenance, refine_task
+from scripts.prune import artifacts, chunk_states, losses, model_registry, preflight, prompt_cache, provenance, records, refine_task
 
 DTYPE = torch.bfloat16
 
@@ -56,13 +56,7 @@ def main() -> int:
     # its start, and a step-1 record is already half-way down a Euler-stepped one.
     # Read each record once -- `load_record` deserializes the tensors, so the obvious
     # double-call in a comprehension filter costs a full extra pass over the cache.
-    candidates = [(p, chunk_states.load_record(p)[2]) for p in chunk_states.iter_records(root)]
-    paths = [p for p, m in candidates if m.family == "on_policy" and m.step_index == 0][: args.max_states]
-    if not paths:
-        raise SystemExit(
-            f"No on-policy step-0 records in {root}. Run "
-            f"`python -m scripts.prune.teacher --model {model.key} --gpu-id N --build-calibration` first."
-        )
+    paths = records.select(root, family="on_policy", step_index=0, limit=args.max_states)
     device = torch.device(f"cuda:{args.gpu_id}")
     context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
     sigmas = torch.tensor(refine_task.schedule_for(model.sigmas, refine_task.K_STEP), device=device)
