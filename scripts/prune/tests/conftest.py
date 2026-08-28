@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import torch
 
 from scripts.prune.model_registry import WORKSPACE_ROOT
 
@@ -40,3 +41,21 @@ def record_paths(calibration_index):
     if any(path is None for path in out):
         pytest.skip("calibration cache does not span the expected families")
     return out
+
+
+@pytest.fixture
+def block():
+    """A small real production transformer block, not a test double."""
+    from ltx_core.model.transformer.transformer import BasicAVTransformerBlock, TransformerConfig
+
+    torch.manual_seed(0)
+    transformer_block = BasicAVTransformerBlock(
+        video=TransformerConfig(dim=32, heads=4, d_head=8, context_dim=32)
+    )
+
+    class Model(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.transformer_blocks = torch.nn.ModuleList([transformer_block])
+
+    return Model()
