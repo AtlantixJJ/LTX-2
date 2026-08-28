@@ -18,11 +18,8 @@ import torch
 
 from ltx_core.components.diffusion_steps import EulerDiffusionStep
 from ltx_core.tools import VideoLatentTools
-from ltx_pipelines.utils.blocks import ImageConditioner
-from ltx_pipelines.utils.gpu_model import gpu_model
-from ltx_pipelines.utils.samplers import _step_state
 
-from scripts.prune import artifacts, chunk_states, corpus as refine_corpus, model_registry, provenance, refine_core, refine_task, session
+from scripts.prune import artifacts, chunk_states, corpus as refine_corpus, ltx_adapter, model_registry, provenance, refine_core, refine_task, session
 from scripts.prune.model_registry import RefinerModel
 from scripts.prune.session import DTYPE
 
@@ -106,7 +103,7 @@ def build_calibration(s: session.Session, *, max_clips: int | None, seed: int) -
     clips = clips if max_clips is None else clips[:max_clips]
 
     encoded = []
-    with torch.no_grad(), gpu_model(ImageConditioner(s.model.paths.video_vae(), DTYPE, s.device)._build_encoder()) as encoder:
+    with ltx_adapter.video_encoder(s.model.paths.video_vae(), DTYPE, s.device) as encoder:
         for clip in clips:
             for n in refine_task.CHUNK_LATENT_FRAMES:
                 # The same window `--window-frames {17,25,33} --overlap-frames 9` gives the
@@ -137,7 +134,7 @@ def build_calibration(s: session.Session, *, max_clips: int | None, seed: int) -
                 meta = chunk_states.ChunkStateMeta(clip["clip"], split[clip["clip"]], "on_policy", sigmas[step], step, n, refine_task.CTX_LATENT_FRAMES, seed + i, fps)
                 records.append(chunk_states.save_record(out / f"{clip['clip']}__n{n}__s{step}__on_policy.pt", state, target, meta))
                 result, _ = s.denoiser(transformer, state, None, s.sigmas, step)
-                state = _step_state(state, result.denoised, stepper, s.sigmas, step)
+                state = ltx_adapter.step_state(state, result.denoised, stepper, s.sigmas, step)
             for step, sigma in enumerate(sigmas[:-1]):
                 noise = torch.randn(target.shape, device=s.device, dtype=target.dtype, generator=torch.Generator(device=s.device).manual_seed(seed + i + 100 + step))
                 latent = torch.lerp(target.float(), noise.float(), sigma)

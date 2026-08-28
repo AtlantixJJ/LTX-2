@@ -63,13 +63,10 @@ import decord
 import torch
 
 from ltx_core.components.diffusion_steps import EulerDiffusionStep
-from ltx_pipelines.utils.blocks import ImageConditioner
-from ltx_pipelines.utils.gpu_model import gpu_model
-from ltx_pipelines.utils.samplers import _step_state
 
 from scripts.prune import (
-    artifacts, chunk_states, corpus, decode, hooks, losses, metrics, model_registry, provenance, records, refine_core, session,
-    refine_task,
+    artifacts, chunk_states, corpus, decode, hooks, losses, ltx_adapter, metrics, model_registry, provenance, records,
+    refine_core, session, refine_task,
 )
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
 from scripts.prune.session import DTYPE
@@ -90,7 +87,7 @@ def _run_schedule(transformer, denoiser, state, sigmas: torch.Tensor, stepper) -
     """Run a full schedule from *state* and return the final token-space latent."""
     for i in range(len(sigmas) - 1):
         result, _ = denoiser(transformer, state, None, sigmas, i)
-        state = _step_state(state, result.denoised, stepper, sigmas, i)
+        state = ltx_adapter.step_state(state, result.denoised, stepper, sigmas, i)
     return state.latent
 
 
@@ -136,7 +133,7 @@ def run_t0(model: RefinerModel, transformer, denoiser, device: torch.device, roo
                 "x0_mse_chunk": float(losses.x0_loss(result.denoised, target, walk, chunk_mask)),
                 "rel_l2_chunk": float(losses.rel_l2(result.denoised, target, walk, chunk_mask)),
             })
-            walk = _step_state(walk, result.denoised, stepper, sigmas, i)
+            walk = ltx_adapter.step_state(walk, result.denoised, stepper, sigmas, i)
         row["per_step"] = step_losses
         rows.append(row)
         print(f"[t0] {path.name}: chunk rel_l2 {row['trajectory_rel_l2_chunk']:.4f}", flush=True)
@@ -178,8 +175,7 @@ def _encode_windows(model: RefinerModel, clip_path: Path, windows: list[tuple[in
     vr = decord.VideoReader(str(clip_path))
     covered = windows[-1][1]
     latents: list[torch.Tensor] = []
-    conditioner = ImageConditioner(model.paths.video_vae(), DTYPE, device)
-    with torch.no_grad(), gpu_model(conditioner._build_encoder()) as encoder:
+    with ltx_adapter.video_encoder(model.paths.video_vae(), DTYPE, device) as encoder:
         source_px = refine_core.read_pixel_window(vr, 0, covered, device, DTYPE)[1]
         for start, stop in windows:
             norm, _ = refine_core.read_pixel_window(vr, start, stop, device, DTYPE)

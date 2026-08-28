@@ -33,12 +33,11 @@ from ltx_core.components.patchifiers import VideoLatentPatchifier
 from ltx_core.model.transformer import LTXModelConfigurator, LTXVideoOnlyModelConfigurator
 from ltx_core.tools import VideoLatentTools
 from ltx_core.types import VideoLatentShape, VideoPixelShape
-from ltx_pipelines.utils.blocks import DiffusionStage, ImageConditioner, _build_state
+from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
-from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.types import ModalitySpec
 
-from scripts.prune import artifacts, corpus, model_registry, preflight, prompt_cache, provenance, refine_task
+from scripts.prune import artifacts, corpus, ltx_adapter, model_registry, preflight, prompt_cache, provenance, refine_task
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
 from scripts.prune.session import DTYPE
 
@@ -72,24 +71,22 @@ def _read_pixel_window(path: Path, device: torch.device, frames: int) -> torch.T
 def _encode(model: RefinerModel, clips: list[Path], device: torch.device, window_frames: int) -> list[dict]:
     """VAE-encode one window per clip; the encoder is built once and freed."""
     out = []
-    with torch.no_grad():
-        image_conditioner = ImageConditioner(model.paths.video_vae(), DTYPE, device)
-        with gpu_model(image_conditioner._build_encoder()) as encoder:
-            for clip in clips:
-                norm_video = _read_pixel_window(clip, device, window_frames)
-                _, _, frames, height, width = norm_video.shape
-                out.append(
-                    {
-                        "clip": clip.parent.name,
-                        "subject": corpus.subject_of(clip.parent.name),
-                        "source": clip,
-                        "latent": encoder.tiled_encode(norm_video, None),
-                        "frames": frames,
-                        "height": height,
-                        "width": width,
-                    }
-                )
-                del norm_video
+    with ltx_adapter.video_encoder(model.paths.video_vae(), DTYPE, device) as encoder:
+        for clip in clips:
+            norm_video = _read_pixel_window(clip, device, window_frames)
+            _, _, frames, height, width = norm_video.shape
+            out.append(
+                {
+                    "clip": clip.parent.name,
+                    "subject": corpus.subject_of(clip.parent.name),
+                    "source": clip,
+                    "latent": encoder.tiled_encode(norm_video, None),
+                    "frames": frames,
+                    "height": height,
+                    "width": width,
+                }
+            )
+            del norm_video
     torch.cuda.empty_cache()
     return out
 
@@ -137,12 +134,12 @@ def _run_all(
     with torch.no_grad():
         denoiser = SimpleDenoiser(video_context, None)
         sigmas = torch.tensor([sigma0, 0.0], dtype=torch.float32, device=device)
-        with stage._transformer_ctx(video_tools=tools_for(encoded[0])) as transformer:
+        with ltx_adapter.transformer_ctx(stage, video_tools=tools_for(encoded[0])) as transformer:
             stats["resident_alloc_gb"] = torch.cuda.memory_allocated(device) / 1e9
             stats["build_peak_alloc_gb"] = torch.cuda.max_memory_allocated(device) / 1e9
             for item in encoded:
                 noiser = GaussianNoiser(generator=torch.Generator(device=device).manual_seed(seed))
-                state = _build_state(
+                state = ltx_adapter.build_state(
                     ModalitySpec(
                         context=video_context, conditionings=[], noise_scale=sigma0, initial_latent=item["latent"]
                     ),

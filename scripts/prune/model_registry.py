@@ -28,11 +28,10 @@ from pathlib import Path
 from safetensors import safe_open
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from ltx_pipelines.distilled import should_use_ancestral_sampler
 from ltx_pipelines.utils.constants import DISTILLED_SIGMA_VALUES, detect_model_version
 from ltx_pipelines.utils.model_paths import ModelPaths
 
-from scripts.prune import geometry
+from scripts.prune import geometry, ltx_adapter
 
 REPO_ROOT = Path(__file__).resolve().parents[2]  # .../LTX-2
 WORKSPACE_ROOT = REPO_ROOT.parent
@@ -192,7 +191,7 @@ def resolve(
     probed = geometry.probe_scale_factors(paths.video_vae(), paths.transformer())
     version = detect_model_version(paths.transformer())
     if sampler == "auto":
-        kind = "ancestral" if should_use_ancestral_sampler(paths.transformer()) else "euler"
+        kind = "ancestral" if ltx_adapter.ancestral_default(paths.transformer()) else "euler"
     else:
         kind = sampler
     return RefinerModel(

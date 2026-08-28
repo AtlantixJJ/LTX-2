@@ -41,9 +41,9 @@ from ltx_core.components.patchifiers import VideoLatentPatchifier
 from ltx_core.conditioning.types.latent_cond import VideoConditionByLatentIndex
 from ltx_core.tools import VideoLatentTools
 from ltx_core.types import LatentState, SpatioTemporalScaleFactors, VideoLatentShape
-from ltx_pipelines.utils.blocks import _build_state
-from ltx_pipelines.utils.samplers import _step_state
 from ltx_pipelines.utils.types import ModalitySpec
+
+from scripts.prune import ltx_adapter
 
 # The carried-over latent is injected at index 1, never 0: this window's own latent
 # frame 0 is the causal VAE's single-pixel keyframe, which has no counterpart in the
@@ -243,9 +243,9 @@ def make_window_state(
         conditionings = [
             VideoConditionByLatentIndex(latent=carry_latent, strength=1.0, latent_idx=CARRYOVER_LATENT_IDX)
         ]
-    return _build_state(
+    return ltx_adapter.build_state(
         ModalitySpec(
-            context=None,  # _build_state ignores spec.context; the denoiser carries it
+            context=None,  # ltx_adapter.build_state ignores spec.context; the denoiser carries it
             conditionings=conditionings,
             noise_scale=float(sigma),
             initial_latent=l_init,
@@ -264,7 +264,7 @@ def run_schedule(transformer, denoiser, state: LatentState, sigmas: torch.Tensor
         result, _ = denoiser(transformer, state, None, sigmas, step_idx)
         if result is None:
             raise RuntimeError("video denoiser unexpectedly returned no result")
-        state = _step_state(state, result.denoised, stepper, sigmas, step_idx)
+        state = ltx_adapter.step_state(state, result.denoised, stepper, sigmas, step_idx)
     return state
 
 

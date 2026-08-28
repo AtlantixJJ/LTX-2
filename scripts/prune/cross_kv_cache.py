@@ -236,9 +236,8 @@ def main() -> int:
     import torch as _torch
 
     from ltx_core.components.diffusion_steps import EulerDiffusionStep
-    from ltx_pipelines.utils.samplers import _step_state
 
-    from scripts.prune import artifacts, bench_refiner, refine_task, session
+    from scripts.prune import artifacts, bench_refiner, ltx_adapter, refine_task, session
 
     ap = argparse.ArgumentParser(description=main.__doc__)
     session.add_model_args(ap)
@@ -260,7 +259,7 @@ def main() -> int:
     )
     with s.transformer(video_tools=video_tools) as transformer:
         report = verify(
-            s.denoiser, transformer, state, sigmas, EulerDiffusionStep(), _step_state
+            s.denoiser, transformer, state, sigmas, EulerDiffusionStep(), ltx_adapter.step_state
         )
 
     report["geometry"] = {

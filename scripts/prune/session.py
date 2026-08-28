@@ -9,11 +9,10 @@ from pathlib import Path
 import torch
 
 from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
-from ltx_pipelines.utils.blocks import DiffusionStage, VideoDecoder
+from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
-from ltx_pipelines.utils.gpu_model import gpu_model
 
-from scripts.prune import artifacts, preflight, prompt_cache, refine_core, refine_task
+from scripts.prune import artifacts, ltx_adapter, preflight, prompt_cache, refine_core, refine_task
 from scripts.prune.model_registry import SUPPORTED_MODELS, RefinerModel
 
 DTYPE = torch.bfloat16
@@ -73,7 +72,7 @@ class Session:
             scale_factors=self.model.scale_factors,
         )
         try:
-            with torch.no_grad(), stage._transformer_ctx(video_tools=video_tools) as transformer:
+            with torch.no_grad(), ltx_adapter.transformer_ctx(stage, video_tools=video_tools) as transformer:
                 yield transformer
         finally:
             del stage
@@ -81,8 +80,7 @@ class Session:
 
     @contextmanager
     def decoder(self):
-        holder = VideoDecoder(self.model.paths.video_vae(), DTYPE, self.device)
-        with torch.no_grad(), gpu_model(holder._decoder_builder.build(device=self.device, dtype=DTYPE).eval()) as decoder:
+        with ltx_adapter.video_decoder(self.model.paths.video_vae(), DTYPE, self.device) as decoder:
             yield decoder
 
     def stamp(self, **extra) -> dict:

@@ -41,12 +41,11 @@ from ltx_core.components.patchifiers import VideoLatentPatchifier
 from ltx_core.conditioning.types.latent_cond import VideoConditionByLatentIndex
 from ltx_core.model.transformer import LTXModelConfigurator, LTXVideoOnlyModelConfigurator
 from ltx_core.tools import VideoLatentTools
-from ltx_pipelines.utils.blocks import DiffusionStage, _build_state
+from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
-from ltx_pipelines.utils.samplers import _step_state
 from ltx_pipelines.utils.types import ModalitySpec
 
-from scripts.prune import artifacts, cross_kv_cache, geometry, model_registry, provenance, refine_task, session
+from scripts.prune import artifacts, cross_kv_cache, geometry, ltx_adapter, model_registry, provenance, refine_task, session
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
 from scripts.prune.session import DTYPE
 from scripts.prune.timing import StageTimer, count_flops
@@ -132,7 +131,7 @@ def build_state(
         conditionings.append(VideoConditionByLatentIndex(latent=ctx_latent, strength=1.0, latent_idx=0))
 
     noiser = GaussianNoiser(generator=torch.Generator(device=device).manual_seed(seed))
-    state = _build_state(
+    state = ltx_adapter.build_state(
         ModalitySpec(context=video_context, conditionings=conditionings, noise_scale=sigma0),
         video_tools,
         noiser,
@@ -190,7 +189,7 @@ def bench_one(
 
         with torch.no_grad():
             for _ in range(max(warmup_steps, 1)):
-                cross_kv_cache.run_schedule(denoiser, transformer, state, sigmas, stepper, _step_state, cache)
+                cross_kv_cache.run_schedule(denoiser, transformer, state, sigmas, stepper, ltx_adapter.step_state, cache)
 
             fwd_s, peak_alloc_gb = [], 0.0
             local = state
@@ -201,7 +200,7 @@ def bench_one(
                     result, _ = denoiser(transformer, local, None, sigmas, step_idx)
                 fwd_s.append(t_fwd.elapsed_s)
                 peak_alloc_gb = max(peak_alloc_gb, t_fwd.peak_alloc_gb)
-                local = _step_state(local, result.denoised, stepper, sigmas, step_idx)
+                local = ltx_adapter.step_state(local, result.denoised, stepper, sigmas, step_idx)
 
             row["fwd_s_per_step"] = fwd_s
             row["ms_per_fwd"] = 1000 * sum(fwd_s) / len(fwd_s)
@@ -261,7 +260,8 @@ def main() -> int:  # noqa: PLR0915
     model, device, video_context = s.model, s.device, s.context
     if model.stepper_kind == "ancestral":
         # EulerAncestralDiffusionStep.step() needs a per-step noise draw (eta=1.0 renoises
-        # after every step); the plain _step_state() call below does not supply one. Plan §4
+        # after every step); the plain ltx_adapter.step_state() call below does not supply
+        # one. Plan §4
         # decision 1 defaults the refiner to Euler on both generations and defers the ancestral
         # A/B to Phase 1's noise-injecting loop (mirroring
         # ltx_pipelines.utils.samplers._ancestral_euler_denoising_loop) -- raise here rather
@@ -318,7 +318,7 @@ def main() -> int:  # noqa: PLR0915
             model, video_context, 1, 0, args.height, args.width, args.fps, 1.0, device, args.seed
         )
         with torch.no_grad(), StageTimer("transformer_build", device) as t_build:
-            ctx = stage._transformer_ctx(video_tools=probe_tools)
+            ctx = ltx_adapter.transformer_ctx(stage, video_tools=probe_tools)
             transformer = ctx.__enter__()
         builds.append(
             {
