@@ -22,18 +22,15 @@ from pathlib import Path
 import torch
 
 from ltx_core.components.patchifiers import VideoLatentPatchifier
-from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
 from ltx_core.tools import VideoLatentTools
 from ltx_core.types import VideoLatentShape
-from ltx_pipelines.utils.blocks import DiffusionStage, VideoDecoder
-from ltx_pipelines.utils.denoisers import SimpleDenoiser
+from ltx_pipelines.utils.blocks import VideoDecoder
 from ltx_pipelines.utils.gpu_model import gpu_model
 from ltx_pipelines.utils.helpers import post_process_latent
 
 from scripts.prune import artifacts, chunk_states, hooks, losses, metrics, model_registry, provenance, records, refine_task, session
 from scripts.prune.model_registry import WORKSPACE_ROOT
-
-DTYPE = torch.bfloat16
+from scripts.prune.session import DTYPE
 
 
 def _parse_head(value: str) -> tuple[str, int]:

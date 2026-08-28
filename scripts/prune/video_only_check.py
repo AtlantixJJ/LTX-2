@@ -40,10 +40,9 @@ from ltx_pipelines.utils.types import ModalitySpec
 
 from scripts.prune import artifacts, corpus, model_registry, preflight, prompt_cache, provenance, refine_task
 from scripts.prune.model_registry import RefinerModel, WORKSPACE_ROOT
+from scripts.prune.session import DTYPE
 
 decord.bridge.set_bridge("torch")
-
-DTYPE = torch.bfloat16
 # 25 pixel frames = 4 latent frames, the `k2_chunk25_overlap2` geometry every run under
 # expr/sam3dgs_vae_refine/ was produced at. Deliberately not the 121-frame window: this gate
 # compares two *builds*, and the audio-video configurator is the full 18.5 B (2.3) transformer,

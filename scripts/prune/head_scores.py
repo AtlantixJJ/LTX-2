@@ -17,15 +17,11 @@ from pathlib import Path
 import torch
 
 from ltx_core.guidance.perturbations import BatchedPerturbationConfig, Perturbation, PerturbationConfig, PerturbationType
-from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
-from ltx_pipelines.utils.blocks import DiffusionStage
-from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from ltx_pipelines.utils.helpers import modality_from_latent_state
 
 from scripts.prune import artifacts, chunk_states, hooks, losses, model_registry, provenance, prune_schedule, records, refine_task, session
 from scripts.prune.model_registry import WORKSPACE_ROOT
 
-DTYPE = torch.bfloat16
 METHODS = ("contribution", "michel", "gauss_newton")
 
 

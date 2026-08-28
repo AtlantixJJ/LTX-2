@@ -40,6 +40,11 @@ dev = [
 # installed), CUDA host required. Install with `uv sync --group kernels`.
 kernels = ["ltx-kernels"]
 
+[tool.pytest.ini_options]
+markers = [
+    "gpu: needs a real CUDA device and checkpoint weights (scripts/prune/tests Tier B, ~10 min); run with -m gpu.",
+]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120

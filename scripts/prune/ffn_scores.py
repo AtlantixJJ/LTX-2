@@ -12,11 +12,6 @@ import torch
 from scripts.prune import artifacts, chunk_states, hooks, losses, lstsq, prune_schedule, records, session
 from scripts.prune import model_registry, provenance, refine_task
 from scripts.prune.model_registry import WORKSPACE_ROOT
-from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
-from ltx_pipelines.utils.blocks import DiffusionStage
-from ltx_pipelines.utils.denoisers import SimpleDenoiser
-
-DTYPE = torch.bfloat16
 
 
 @torch.no_grad()

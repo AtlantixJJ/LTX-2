@@ -39,13 +39,9 @@ from pathlib import Path
 
 import torch
 
-from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
-from ltx_pipelines.utils.blocks import DiffusionStage
-from ltx_pipelines.utils.denoisers import SimpleDenoiser
 from scripts.prune import artifacts, corpus, model_registry, phase1_gates, preflight, provenance, refine_core, refine_task, session
 from scripts.prune.model_registry import REPO_ROOT, WORKSPACE_ROOT
 
-DTYPE = torch.bfloat16
 SCRIPT = REPO_ROOT / "scripts" / "vae_refine_sliding_window.py"
 
 
