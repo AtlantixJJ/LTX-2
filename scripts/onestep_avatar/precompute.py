@@ -277,6 +277,121 @@ def discover_pairs(corpus_root: Path) -> list[Pair]:
     return pairs
 
 
+ALPHA_NAME = "argavatar_alpha.npy"
+
+
+def latent_frame_pixel_range(master_index: int, time_scale: int) -> tuple[int, int]:
+    """Which pixel frames one latent frame of a continuous encode covers.
+
+    The causal VAE's latent frame 0 encodes exactly ONE pixel frame; every later latent
+    frame encodes ``time_scale`` of them (packages/ltx-core video VAE, ``frames % 8 == 1``).
+    Any per-pixel quantity that has to be compared with a latent -- here the subject
+    coverage that weights the loss -- must be reduced over exactly these ranges, or it is
+    off by one frame everywhere past slot 0.
+    """
+    if master_index == 0:
+        return 0, 1
+    start = 1 + (master_index - 1) * time_scale
+    return start, start + time_scale
+
+
+def _pool_to(grid: np.ndarray, height: int, width: int) -> np.ndarray:
+    """Area-average a ``[N, h, w]`` coverage grid down to ``[N, height, width]``."""
+    return np.stack(
+        [cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA) for frame in grid]
+    )
+
+
+def build_loss_masks(
+    pair: Pair,
+    jobs: list[WindowJob],
+    box_xyxy: tuple[float, float, float, float] | None,
+    *,
+    shape: tuple[int, int, int, int],
+    time_scale: int,
+    output_root: Path,
+    overwrite: bool,
+) -> int:
+    """Write each window's latent-resolution subject coverage (plan SS4.3 row 1).
+
+    TWO grids per window, deliberately not pre-combined:
+
+    * ``render_alpha``  -- the ARGAvatar render's own alpha, harvested by
+      ``build_guidance.py`` at 256**2 and pooled here. Where the model is asked to paint.
+    * ``capture_mask``  -- the dataset's ``mask.mp4``, cropped with the SAME manifest box
+      and pooled the same way. Where the loss TARGET is meaningful.
+
+    They disagree by exactly the SSB1 IoU gap (0.78-0.86), and which disagreement region the
+    loss should cover is a training decision, not a precompute one -- so both are stored and
+    ``train.py --loss-mask`` picks. Pre-combining here would bake one answer into the corpus.
+    """
+    if box_xyxy is None:
+        return 0
+    _, latent_frames, latent_height, latent_width = shape
+    alpha_path = Path(pair.guide).with_name(ALPHA_NAME)
+    if not alpha_path.is_file():
+        raise SystemExit(
+            f"{pair.relative_dir}: {ALPHA_NAME} is missing. Re-run build_guidance.py --force "
+            f"for this view; the render's alpha only exists inside its own temp frames."
+        )
+    alpha = np.load(alpha_path).astype(np.float32) / 255.0
+    alpha = _pool_to(alpha, latent_height, latent_width)
+
+    mask_path = Path(pair.guide).with_name("mask.mp4")
+    capture = _read_cropped_masks(mask_path, box_xyxy, latent_height, latent_width)
+    if len(capture) < len(alpha):
+        raise SystemExit(
+            f"{pair.relative_dir}: mask.mp4 has {len(capture)} frames but the render has {len(alpha)}"
+        )
+
+    written = 0
+    for job in jobs:
+        out = output_root / "loss_masks" / job.relative_path
+        if out.is_file() and not overwrite:
+            continue
+        first = job.start // time_scale
+        grids = {}
+        for name, source in (("render_alpha", alpha), ("capture_mask", capture)):
+            frames = []
+            for slot in range(latent_frames):
+                lo, hi = latent_frame_pixel_range(first + slot, time_scale)
+                frames.append(source[lo:hi].mean(axis=0))
+            grids[name] = torch.from_numpy(np.stack(frames)).to(torch.float16).contiguous()
+        atomic_torch_save(grids, out)
+        written += 1
+    return written
+
+
+def _read_cropped_masks(
+    path: Path, box_xyxy: tuple[float, float, float, float], height: int, width: int
+) -> np.ndarray:
+    """``mask.mp4`` cropped to the manifest box and pooled, ONE frame resident at a time.
+
+    Streaming rather than ``VideoReader.get_batch(range(len(reader)))``: a 3000x4096 mask is
+    36 MB a frame, so reading a 150-frame clip in one call costs ~5.5 GB plus another 5.5 GB
+    for the stack -- on a box where host-RAM contention is the documented way these jobs hang
+    (and where the capture pass is already running). Cropping and pooling each frame as it is
+    decoded keeps the whole pass at the size of the output grid.
+    """
+    x0, y0, x1, y1 = (round(v) for v in box_xyxy)
+    capture = cv2.VideoCapture(str(path))
+    if not capture.isOpened():
+        raise ValueError(f"cannot open {path}")
+    pooled = []
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            cropped = frame[y0:y1, x0:x1, 0]
+            pooled.append(cv2.resize(cropped, (width, height), interpolation=cv2.INTER_AREA))
+    finally:
+        capture.release()
+    if not pooled:
+        raise ValueError(f"{path}: decoded no frames")
+    return np.stack(pooled).astype(np.float32) / 255.0
+
+
 def _fit_square_to_canvas(
     box: tuple[float, float, float, float], width: int, height: int
 ) -> tuple[float, float, float, float]:
@@ -637,6 +752,7 @@ def encode_jobs(
     *,
     gpu_id: int,
     overwrite: bool,
+    boxes: dict[str, tuple[float, float, float, float]] | None = None,
 ) -> tuple[int, int]:
     """Write each window's ``z_g`` and ``z_y`` for the paired objective.
 
@@ -655,17 +771,18 @@ def encode_jobs(
     """
     device = torch.device(f"cuda:{gpu_id}")
     time_scale = model.scale_factors.time
-    completed = skipped = 0
+    completed = 0
 
     by_pair: dict[str, list[WindowJob]] = {}
     for job in jobs:
         by_pair.setdefault(job.pair.relative_dir, []).append(job)
 
-    def window_paths(job: WindowJob) -> tuple[Path, Path, Path]:
+    def window_paths(job: WindowJob) -> tuple[Path, Path, Path, Path]:
         return (
             output_root / "target_latents" / job.relative_path,
             output_root / "init_latents" / job.relative_path,
             output_root / "carryover_masks" / job.relative_path,
+            output_root / "loss_masks" / job.relative_path,
         )
 
     def expected_shape(job: WindowJob) -> dict[str, object]:
@@ -680,21 +797,11 @@ def encode_jobs(
             "fps": job.fps,
         }
 
-    pending: list[list[WindowJob]] = []
-    for pair_jobs in by_pair.values():
-        outstanding = []
-        for job in pair_jobs:
-            target_out, init_out, mask_out = window_paths(job)
-            expected = expected_shape(job)
-            current = all(_existing_record_is_current(path, expected) for path in (target_out, init_out))
-            if not overwrite and current and mask_out.is_file():
-                skipped += 1
-            else:
-                outstanding.append(job)
-        if outstanding:
-            # The whole guide is encoded in one pass, so a pair with any outstanding window
-            # re-encodes all of it; only the outstanding windows are written.
-            pending.append(outstanding)
+    pending, mask_only, skipped = _partition_pairs(by_pair, window_paths, expected_shape, overwrite=overwrite)
+
+    for pair_jobs in mask_only:
+        # No VAE, no encode -- just the pixel->latent coverage grids this pair never got.
+        build_pair_masks(pair_jobs, boxes, expected_shape(pair_jobs[0])["shape"], time_scale, output_root, overwrite)
 
     if not pending:
         return completed, skipped
@@ -713,7 +820,7 @@ def encode_jobs(
                 master = encoder.tiled_encode(pixels, None)  # ONE encode for the whole guide
 
             for job in pair_jobs:
-                target_out, init_out, mask_out = window_paths(job)
+                target_out, init_out, mask_out, _ = window_paths(job)
                 expected = expected_shape(job)
                 first = job.start // time_scale
                 latent_frames = (job.end - job.start - 1) // time_scale + 1
@@ -738,13 +845,83 @@ def encode_jobs(
                 completed += 1
 
             del pixels, video, master
+
+            # The loss masks are pure pixel->latent work with no VAE in it, but they are built
+            # here so a window's latents and the mask that weights them are written by one
+            # pass: a half-populated pair (latents without a mask) is the shape of bug that
+            # only shows up as a KeyError deep inside a training run.
+            masks = build_pair_masks(
+                pair_jobs, boxes, expected_shape(pair_jobs[0])["shape"], time_scale, output_root, overwrite
+            )
             LOGGER.info(
-                "encoded guide source=%s windows=%d (1 VAE call), capture copied from %s",
+                "encoded guide source=%s windows=%d (1 VAE call), capture copied from %s, masks=%d",
                 pair.relative_dir,
                 len(pair_jobs),
                 Path(pair.bundle).name,
+                masks,
             )
     return completed, skipped
+
+
+def _partition_pairs(
+    by_pair: dict[str, list[WindowJob]],
+    window_paths,  # noqa: ANN001 -- a local closure over output_root
+    expected_shape,  # noqa: ANN001 -- a local closure over the model's scale factors
+    *,
+    overwrite: bool,
+) -> tuple[list[list[WindowJob]], list[list[WindowJob]], int]:
+    """Split each pair's jobs into (needs encoding, needs only masks, already done).
+
+    The loss masks are tracked SEPARATELY from the latents, and they have to be: a pair
+    encoded before the masks existed has complete, current latents, so a single "is this pair
+    done" flag would skip it forever and leave the corpus permanently half-populated --
+    latents with no mask to weight them. That is exactly what happened on 2026-09-12.
+    """
+    pending: list[list[WindowJob]] = []
+    mask_only: list[list[WindowJob]] = []
+    skipped = 0
+    for pair_jobs in by_pair.values():
+        outstanding, missing_masks = [], []
+        for job in pair_jobs:
+            target_out, init_out, mask_out, loss_out = window_paths(job)
+            expected = expected_shape(job)
+            current = all(_existing_record_is_current(path, expected) for path in (target_out, init_out))
+            if not overwrite and current and mask_out.is_file():
+                skipped += 1
+                if not loss_out.is_file():
+                    missing_masks.append(job)
+            else:
+                outstanding.append(job)
+        if outstanding:
+            # The whole guide is encoded in one pass, so a pair with any outstanding window
+            # re-encodes all of it; only the outstanding windows are written.
+            pending.append(outstanding)
+        elif missing_masks:
+            mask_only.append(missing_masks)
+    return pending, mask_only, skipped
+
+
+def build_pair_masks(
+    pair_jobs: list[WindowJob],
+    boxes: dict[str, tuple[float, float, float, float]] | None,
+    shape: tuple[int, int, int, int],
+    time_scale: int,
+    output_root: Path,
+    overwrite: bool,
+) -> int:
+    """``build_loss_masks`` for one pair's jobs, given the box table. One call site's worth of
+    plumbing, shared by the encode path and the masks-only catch-up path so the two cannot
+    build masks differently."""
+    pair = pair_jobs[0].pair
+    return build_loss_masks(
+        pair,
+        pair_jobs,
+        None if boxes is None else boxes[pair.relative_dir],
+        shape=shape,
+        time_scale=time_scale,
+        output_root=output_root,
+        overwrite=overwrite,
+    )
 
 
 def _expected_capture_shape(model: model_registry.RefinerModel, job: CaptureJob, edge: int) -> dict[str, object]:
@@ -886,6 +1063,11 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
     parser.add_argument("--pad-factor", type=float, default=1.20, help="BBox padding factor for --capture-only.")
     parser.add_argument("--visualize-qa", type=int, help="Write this many view previews under qa/ and exit.")
     parser.add_argument("--limit", type=int, help="Encode at most this many windows after deterministic ordering.")
+    parser.add_argument(
+        "--no-loss-masks",
+        action="store_true",
+        help="Skip the latent-resolution subject-coverage grids (SS4.3 row 1). Paired mode only.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--overwrite", action="store_true", help="Re-encode every selected window.")
     parser.add_argument(
@@ -1010,7 +1192,14 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
         )
         return 0
     atomic_json_save(frozen_manifest, manifest_path)
-    completed, skipped = encode_jobs(model, jobs, args.output_root, gpu_id=args.gpu_id, overwrite=args.overwrite)
+    completed, skipped = encode_jobs(
+        model,
+        jobs,
+        args.output_root,
+        gpu_id=args.gpu_id,
+        overwrite=args.overwrite,
+        boxes=None if args.no_loss_masks else manifest_boxes(args.corpus_root),
+    )
     print(  # noqa: T201 -- CLI completion summary.
         f"VAE precompute complete: encoded={completed}, skipped={skipped}, manifest={manifest_path}"
     )

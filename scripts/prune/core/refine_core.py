@@ -224,12 +224,26 @@ def make_window_state(
     seed: int,
     device: torch.device,
     dtype: torch.dtype | None = None,
+    extra_conditionings: tuple = (),
 ) -> LatentState:
     """Noise ``l_init`` to ``sigma``, freezing ``carry_latent`` at index 1.
 
     ``l_init`` is the window's FULL VAE encode, context slots included -- the
     conditioning overwrites those slots afterwards, so passing the encode
     (rather than a spliced tensor) is what keeps the index-0 keyframe genuine.
+
+    ``extra_conditionings`` are applied after the carryover and before the noiser.
+    Strictly additive: the default ``()`` reproduces the deployed rollout bit for bit, so
+    ``checks/method_parity.py`` is unaffected. It exists because a conditioning item MUST be
+    applied before noising -- ``create_noised_state`` conditions, then noises, and it is the
+    noiser's ``lerp(clean_latent, latent, denoise_mask)`` that actually writes a clean
+    conditioned token into the latent the model reads. Applying one afterwards leaves those
+    slots as zeros. The alternative was a second "build a window state" implementation in a
+    caller, which is exactly the drift this module exists to prevent
+    (scripts/prune/CLAUDE.md rule 1).
+
+    Used by ``scripts/onestep_avatar/train.py`` for the plan's D2 arm: the guide prepended as
+    clean reference tokens at timestep 0, alongside the guided init.
     """
     conditionings = []
     if carry_latent is not None:
@@ -242,6 +256,7 @@ def make_window_state(
         conditionings = [
             VideoConditionByLatentIndex(latent=carry_latent, strength=1.0, latent_idx=CARRYOVER_LATENT_IDX)
         ]
+    conditionings = [*conditionings, *extra_conditionings]
     return ltx_adapter.build_state(
         ModalitySpec(
             context=None,  # ltx_adapter.build_state ignores spec.context; the denoiser carries it

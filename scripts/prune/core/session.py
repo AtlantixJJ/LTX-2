@@ -8,6 +8,7 @@ from pathlib import Path
 
 import torch
 
+from ltx_core.loader.primitives import LoraPathStrengthAndSDOps
 from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
 from ltx_pipelines.utils.blocks import DiffusionStage
 from ltx_pipelines.utils.denoisers import SimpleDenoiser
@@ -63,11 +64,26 @@ class Session:
         )
 
     @contextmanager
-    def transformer(self, transformer_path: Path | None = None, *, video_tools=None):
+    def transformer(
+        self,
+        transformer_path: Path | None = None,
+        *,
+        video_tools=None,
+        loras: tuple[LoraPathStrengthAndSDOps, ...] = (),
+    ):
+        """The resident transformer, optionally with ``loras`` fused into its weights.
+
+        LoRAs fuse at load (``loader/fuse_loras.py``), so the built transformer is an ordinary
+        one -- there is no adapter left at inference and nothing downstream needs to know. An
+        empty tuple is the default and takes the exact code path the checkpoint always took,
+        which is why ``checks/method_parity.py`` still passing is this change's acceptance
+        test rather than a separate gate (plan 2026-09-10 SS7.3).
+        """
         stage = DiffusionStage.from_checkpoint(
             str(transformer_path or self.model.paths.transformer()),
             DTYPE,
             self.device,
+            loras=tuple(loras),
             model_configurator=LTXVideoOnlyModelConfigurator,
             scale_factors=self.model.scale_factors,
         )
