@@ -247,10 +247,17 @@ def one_window_forward(
     layout.
 
     The state is built by ``refine_core.make_window_state`` -- the deployed call -- with
-    ``l_init`` set to the *guide*. ``GaussianNoiser`` then computes
-    ``lerp(z_g, eps, sigma_0) = (1 - sigma_0) z_g + sigma_0 eps`` and restores the
-    conditioned slots from ``clean_latent``, which is where ``carry`` has been written. So
-    the init is SS3's ``x_sigma0`` and the carryover is ours, not the ground truth.
+    ``l_init`` set per ``guide_mode``. ``GaussianNoiser`` then computes
+    ``lerp(l_init, eps, sigma_0) = (1 - sigma_0) l_init + sigma_0 eps`` and restores the
+    conditioned slots from ``clean_latent``, which is where ``carry`` has been written.
+
+    ``guide_mode="d0"`` is a training-only sanity check, not a deployable arm:
+    ``onestep_core.guide_conditionings`` refuses it, because there is no ``z_y`` at inference
+    to noise. It sets ``l_init = z_y`` instead of ``z_g``, so the init IS the loss target run
+    through SS3 identity 1 -- the ordinary flow-matching objective on real capture video,
+    decoupled from the render entirely. It answers "can this architecture + LoRA reconstruct
+    real video from sigma_0 noise around itself at all", a capacity ceiling to compare the
+    measured `r` (SS0.3) against, not a correction model.
     """
     _, _, height, width = window.z_g.shape
     tools = refine_core.tools_for_window(
@@ -261,8 +268,12 @@ def one_window_forward(
         latent_channels=latent_channels,
     )
     z_g = window.z_g.unsqueeze(0).to(device=device, dtype=DTYPE)
+    z_y = window.z_y.unsqueeze(0).to(device=device, dtype=DTYPE)
     extra = ()
-    if guide_mode == "d2":
+    if guide_mode == "d0":
+        l_init = z_y
+    elif guide_mode == "d2":
+        l_init = z_g
         # SS4.1's hybrid: the SAME guide, a second time, as clean tokens appended at
         # timestep 0. At scale factor 1 they land on the target's own RoPE positions, so the
         # model gets a pixel-aligned copy of the guide that sigma_0's noise has NOT degraded --
@@ -273,8 +284,12 @@ def one_window_forward(
                 latent=z_g, downscale_factor=1, temporal_scale_factor=1, strength=1.0
             ),
         )
+    elif guide_mode == "d1":
+        l_init = z_g
+    else:
+        raise ValueError(f"unknown guide mode {guide_mode!r}; expected 'd0', 'd1' or 'd2'")
     state = refine_core.make_window_state(
-        z_g, carry, sigma0, tools, seed, device, DTYPE, extra_conditionings=extra
+        l_init, carry, sigma0, tools, seed, device, DTYPE, extra_conditionings=extra
     )
 
     sigma = torch.tensor(sigma0, device=device, dtype=DTYPE)
@@ -285,7 +300,6 @@ def one_window_forward(
     # with the capture latent. At fixed sigma_0, velocity MSE == x0 MSE / sigma_0**2 (SS3).
     z0_tokens = to_denoised(state.latent, velocity, modality.timesteps)
 
-    z_y = window.z_y.unsqueeze(0).to(device=device, dtype=DTYPE)
     target_tokens = tools.patchifier.patchify(z_y)
 
     # The frozen carryover and the causal keyframe carry denoise_mask 0; they are conditioning,
@@ -484,13 +498,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--loss-mask", choices=("none", "render", "capture", "union", "intersection"), default="none")
     p.add_argument(
         "--guide-mode",
-        choices=("d1", "d2"),
+        choices=("d0", "d1", "d2"),
         default="d1",
-        help="SS4.1. d1: the guide reaches the model only as the noised init -- cheapest, and "
-        "what refine_core deploys today. d2: ALSO as clean reference tokens at timestep 0, "
-        "~2.3x attention. The measured subject-interior r of 0.89-0.93 against a 0.6 threshold "
-        "(SS0.3) says d2 is the arm to lead with; the default stays d1 so the arm is always "
-        "explicit in the command line and in the checkpoint metadata.",
+        help="SS4.1. d0: SANITY ONLY, not deployable -- noises the capture z_y instead of the "
+        "guide, reducing to ordinary flow-matching on real video (SS3 identity 1), decoupled "
+        "from the render. Measures the architecture's capacity ceiling at sigma_0, to compare "
+        "against the measured r; onestep_core.guide_conditionings refuses this mode because "
+        "there is no z_y at inference. d1: the guide reaches the model only as the noised "
+        "init -- cheapest, and what refine_core deploys today. d2: ALSO as clean reference "
+        "tokens at timestep 0, ~2.3x attention. The measured subject-interior r of 0.89-0.93 "
+        "against a 0.6 threshold (SS0.3) says d2 is the arm to lead with; the default stays d1 "
+        "so the arm is always explicit in the command line and in the checkpoint metadata.",
     )
     p.add_argument("--anchor-weight", type=float, default=0.0, help="SS4.3 row 2; needs base_denoised/")
     p.add_argument("--save-every", type=int, default=100)
@@ -506,6 +524,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     args = parse_args(argv)
     if args.lora_alpha is None:
         args.lora_alpha = args.lora_rank
+    if args.guide_mode == "d0" and args.anchor_weight > 0.0:
+        # base_denoised/ (SS4.3 row 2) is Phi(lerp(z_g, eps, sigma_0)) -- the frozen model's
+        # output on the GUIDE-noised input. d0 noises z_y instead, so the anchor would be
+        # pulling this run toward an output computed on an input it never sees.
+        raise SystemExit("--guide-mode d0 is noised from z_y; its anchor target would be off-input. Drop --anchor-weight.")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     subset = json.loads(args.subset.read_text())

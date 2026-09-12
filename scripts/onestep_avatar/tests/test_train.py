@@ -273,6 +273,49 @@ def test_chain_seed_carryover_is_the_gt_at_the_destination_slot() -> None:
     assert not torch.allclose(seen[0].float(), refine_core.carry_from(window.z_y.unsqueeze(0), GEOMETRY).float())
 
 
+def test_d0_noises_the_capture_not_the_guide() -> None:
+    """SS4.1 D0: a training-only sanity check, not a deployable arm.
+
+    It sets ``l_init = z_y`` instead of ``z_g`` -- the noisy branch is built from the LOSS
+    TARGET, so optimal denoising is exactly SS3 identity 1's ordinary flow-matching target,
+    decoupled from the render entirely. This measures the architecture's capacity ceiling at
+    sigma_0 (compare against the measured `r`, SS0.3), not a render-correction model -- there
+    is no `z_y` at inference, so `onestep_core.guide_conditionings` refuses this mode.
+    """
+    window = _window()  # same=False: z_g and z_y are genuinely different draws
+    model = StubTransformer()
+    z0_tokens, target_tokens, weights, state, tools = train.one_window_forward(
+        model, torch.zeros(1, 1, 8), window, None, GEOMETRY,
+        sigma0=SIGMA0, seed=7, device=DEVICE, latent_channels=CHANNELS, guide_mode="d0",
+    )
+
+    z_g_tokens = tools.patchifier.patchify(window.z_g.unsqueeze(0)).float()
+    z_y_tokens = tools.patchifier.patchify(window.z_y.unsqueeze(0)).float()
+    eps = (state.latent.float() - (1 - SIGMA0) * z_y_tokens) / SIGMA0
+
+    # The noisy state is built from z_y, NOT z_g -- the one thing d0 changes.
+    assert eps.std().item() > 0.5  # a real N(0, 1) draw, not a copy of either latent
+    recovered_from_capture = (1 - SIGMA0) * z_y_tokens + SIGMA0 * eps
+    assert torch.allclose(state.latent.float(), recovered_from_capture, atol=8e-3)
+    not_from_guide = (1 - SIGMA0) * z_g_tokens + SIGMA0 * eps
+    assert not torch.allclose(state.latent.float(), not_from_guide, atol=0.1)
+
+    # No D2-style reference tokens: d0 is plain flow-matching, the sequence does not double.
+    assert state.latent.shape[1] == target_tokens.shape[1]
+    assert z0_tokens.shape[1] == target_tokens.shape[1] == weights.shape[1]
+
+
+def test_d0_rejects_the_anchor_term() -> None:
+    """base_denoised/ is Phi(lerp(z_g, eps, sigma_0)) -- off-input for a z_y-noised run."""
+    with pytest.raises(SystemExit, match="off-input"):
+        train.main(
+            [
+                "--subset", "/nonexistent.json", "--precomputed", "/nonexistent",
+                "--output", "/nonexistent", "--guide-mode", "d0", "--anchor-weight", "0.1",
+            ]
+        )
+
+
 def test_d2_appends_a_clean_pixel_aligned_copy_of_the_guide() -> None:
     """§4.1's D2: the guide a SECOND time, clean, at timestep 0, on the target's own positions.
 
@@ -400,6 +443,10 @@ def test_guide_conditionings_match_the_training_arms() -> None:
     assert len(onestep_core.guide_conditionings(z_g, "d2")) == 1
     with pytest.raises(ValueError, match="unknown guide mode"):
         onestep_core.guide_conditionings(z_g, "d3")
+    # d0 is training-only: there is no z_y at inference to noise, so it has no deployment
+    # counterpart and must be refused here exactly like any other unknown mode.
+    with pytest.raises(ValueError, match="unknown guide mode"):
+        onestep_core.guide_conditionings(z_g, "d0")
 
 
 class _StubDenoiser:
