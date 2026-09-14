@@ -113,6 +113,64 @@ def _smooth(values: np.ndarray, window: int) -> np.ndarray:
     return np.concatenate([np.full(window - 1, smoothed[0]), smoothed])
 
 
+def _per_position_values(run: RunData, field: str) -> dict[int, dict[int, list[float]]]:
+    """``{chain_position: {step: [values across chains/ranks at that step]}}``.
+
+    Reads the ``per_window`` breakdown ``train.py`` started writing 09-12 (SS7.4a); a run
+    logged before that change has no ``per_window`` key and yields an empty dict here, not an
+    error -- ``plot_window_position`` treats that as "nothing to plot" rather than crashing on
+    an older run passed alongside a newer one via ``--run``.
+    """
+    per_position: dict[int, dict[int, list[float]]] = {}
+    for records in run.by_rank.values():
+        for r in records:
+            for w in r.get("per_window") or []:
+                per_position.setdefault(w["chain_position"], {}).setdefault(r["step"], []).append(w[field])
+    return per_position
+
+
+def plot_window_position(runs: list[RunData], smooth: int, output: Path) -> Path | None:
+    """SS7.4(c) ``window_position.png``: mean mse by position in the AR chain, over training.
+
+    **Rising with position = error compounding** -- the carryover the model receives at
+    position ``i > 0`` is its own earlier output, so a climbing line means later positions in
+    the chain are training on progressively worse starts, the drift SS4.4's AR training exists
+    to fix. **Flat from step 1 = `K > 1` is buying nothing** at `K`'s extra per-chain cost, and
+    the cheapest fix is dropping to `K = 1` (SS6.2's A2 sweep already plans this arm).
+
+    Returns ``None`` (plots nothing) if no run in ``runs`` has ``per_window`` data -- an older
+    run predating SS7.4(a)'s logging change, not an error.
+    """
+    figure, axis = plt.subplots(figsize=(9, 4.5))
+    linestyles = ("-", "--", ":", "-.")
+    any_data = False
+    for run, color in zip(runs, COLORS * (len(runs) // len(COLORS) + 1), strict=False):
+        per_position = _per_position_values(run, "mse")
+        for position in sorted(per_position):
+            per_step = per_position[position]
+            steps = sorted(per_step)
+            means = np.array([sum(per_step[s]) / len(per_step[s]) for s in steps])
+            if means.size == 0:
+                continue
+            any_data = True
+            label = f"{run.label} pos {position}" if len(runs) > 1 else f"chain position {position}"
+            axis.plot(
+                steps, _smooth(means, smooth), color=color,
+                linestyle=linestyles[position % len(linestyles)], linewidth=1.6, label=label,
+            )
+    if not any_data:
+        plt.close(figure)
+        return None
+    axis.set(xlabel="step", ylabel="mse", title="Loss by position in the AR chain")
+    axis.grid(alpha=0.25)
+    axis.legend(fontsize=8)
+    figure.tight_layout()
+    path = output / "window_position.png"
+    figure.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(figure)
+    return path
+
+
 def _default_smooth_window(runs: list[RunData]) -> int:
     total_steps = max((max(r["step"] for records in run.by_rank.values() for r in records) for run in runs), default=1)
     return max(1, total_steps // 40)
@@ -253,8 +311,6 @@ def render(runs: list[RunData], output: Path, smooth: int | None) -> list[Path]:
         plot_lr_grad_norm(runs, output),
         plot_throughput(runs, output),
     ]
-    summary = {"runs": {run.label: _run_summary(run) for run in runs}, "smooth_window": window}
-    atomic_json_save(summary, output / "training_summary.json")
     lines = [
         "# onestep_avatar training figures",
         "",
@@ -262,6 +318,17 @@ def render(runs: list[RunData], output: Path, smooth: int | None) -> list[Path]:
         "single-run plots also show each rank's own chain-local loss.",
         "- `lr_grad_norm.png`: LR schedule and post-clip gradient norm vs step.",
         "- `throughput.png`: smoothed seconds/step and cumulative wall clock vs step.",
+    ]
+    position_figure = plot_window_position(runs, window, output)
+    if position_figure is not None:
+        figures.append(position_figure)
+        lines.append(
+            "- `window_position.png`: mean mse by position in the AR chain, over training "
+            "(SS7.4c) -- rising = error compounding, flat from step 1 = `K > 1` buys nothing."
+        )
+    summary = {"runs": {run.label: _run_summary(run) for run in runs}, "smooth_window": window}
+    atomic_json_save(summary, output / "training_summary.json")
+    lines += [
         "- `training_summary.json`: the numbers above, plus the last-10%-of-run loss, the best "
         "step, and each run's config.",
         "",

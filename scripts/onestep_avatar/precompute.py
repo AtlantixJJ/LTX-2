@@ -68,6 +68,13 @@ DEFAULT_OUTPUT_ROOT = model_registry.WORKSPACE_ROOT / "expr" / "onestep_avatar" 
 DEFAULT_CROP_WORKERS = 6
 # Written by --capture-only at the corpus root; the crop box of record for every view.
 CAPTURE_MANIFEST_NAME = "capture_latent_manifest.json"
+# Written by --capture-only at the corpus root; caches plan_source's per-source output so a
+# restart does not re-open and frame-0-decode all 3360 sources before touching a single bundle
+# (plan §1.3: ~1.5 h with no bundle written and no log line, on 3 crop workers). Keyed off the
+# same rgb_fingerprint (size;mtime_ns) discover_capture_sources already computes, plus the
+# geometry/pad-factor that plan_source's output actually depends on -- so a changed source file
+# or a changed --pad-factor/--window-frames/--overlap-frames invalidates only that entry.
+PLAN_CACHE_NAME = ".capture_plan_cache.json"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -463,20 +470,87 @@ def plan_source(source: CaptureSource, geometry: WindowGeometry, pad_factor: flo
     return [CaptureJob(source, index, start, end, fps, box) for index, (start, end) in enumerate(geometry.plan(len(reader)))]
 
 
+def _plan_cache_key(pad_factor: float, geometry: WindowGeometry) -> str:
+    return f"{geometry.window_frames}:{geometry.overlap_frames}:{pad_factor}"
+
+
+def _load_plan_cache(path: Path) -> dict[str, dict]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload.get("entries", {}) if payload.get("schema_version") == SCHEMA_VERSION else {}
+
+
+def _jobs_from_cache_entry(source: CaptureSource, entry: dict) -> list[CaptureJob]:
+    return [
+        CaptureJob(
+            source, int(record["index"]), int(record["start"]), int(record["end"]), float(record["fps"]),
+            tuple(float(v) for v in record["box_xyxy"]),
+        )
+        for record in entry["jobs"]
+    ]
+
+
+def _cache_entry_from_jobs(source: CaptureSource, jobs: list[CaptureJob], key: str) -> dict:
+    return {
+        "fingerprint": source.rgb_fingerprint,
+        "key": key,
+        "jobs": [
+            {"index": job.index, "start": job.start, "end": job.end, "fps": job.fps, "box_xyxy": list(job.box_xyxy)}
+            for job in jobs
+        ],
+    }
+
+
 def enumerate_capture_jobs(
-    sources: list[CaptureSource], geometry: WindowGeometry, pad_factor: float, *, max_workers: int | None = None
+    sources: list[CaptureSource],
+    geometry: WindowGeometry,
+    pad_factor: float,
+    *,
+    max_workers: int | None = None,
+    cache_path: Path | None = None,
 ) -> list[CaptureJob]:
-    """Plan target windows for every source, in parallel.
+    """Plan target windows for every source, in parallel, reusing a fresh on-disk plan cache.
 
     Each source only needs one frame decoded to plan its windows, but there can be
     hundreds of sources; running them one at a time serializes hundreds of small
     ``cv2.VideoCapture`` opens for no reason, since sources are independent.
+
+    ``cache_path``, when given, is read for entries whose ``fingerprint`` (the source's own
+    ``size;mtime_ns``, from ``discover_capture_sources``) and ``key`` (pad factor + window
+    geometry -- everything ``plan_source`` actually depends on) still match, and only the
+    remaining sources are opened and planned. This is what makes a restart of a killed
+    ``--capture-only`` run cheap: without it, every restart re-opens and frame-0-decodes all
+    selected sources before a single (already-complete) bundle is skipped.
     """
+    key = _plan_cache_key(pad_factor, geometry)
+    entries = _load_plan_cache(cache_path) if cache_path is not None else {}
+
+    by_source: dict[str, list[CaptureJob]] = {}
+    to_plan: list[CaptureSource] = []
+    for source in sources:
+        entry = entries.get(source.relative_dir)
+        if entry is not None and entry.get("fingerprint") == source.rgb_fingerprint and entry.get("key") == key:
+            by_source[source.relative_dir] = _jobs_from_cache_entry(source, entry)
+        else:
+            to_plan.append(source)
+
+    if to_plan:
+        context = multiprocessing.get_context("spawn")
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers, mp_context=context) as pool:
+            planned = pool.map(plan_source, to_plan, itertools.repeat(geometry), itertools.repeat(pad_factor))
+            for source, source_jobs in zip(to_plan, planned, strict=True):
+                by_source[source.relative_dir] = source_jobs
+                entries[source.relative_dir] = _cache_entry_from_jobs(source, source_jobs, key)
+        if cache_path is not None:
+            atomic_json_save({"schema_version": SCHEMA_VERSION, "entries": entries}, cache_path)
+
     jobs: list[CaptureJob] = []
-    context = multiprocessing.get_context("spawn")
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers, mp_context=context) as pool:
-        for source_jobs in pool.map(plan_source, sources, itertools.repeat(geometry), itertools.repeat(pad_factor)):
-            jobs.extend(source_jobs)
+    for source in sources:
+        jobs.extend(by_source[source.relative_dir])
     return jobs
 
 
@@ -946,7 +1020,7 @@ def encode_capture_jobs(
     overwrite: bool,
     max_crop_workers: int | None = None,
     keep_capture_video: bool = False,
-) -> tuple[int, int]:
+) -> tuple[int, int, list[str]]:
     """Write ``z_y`` from ONE continuous per-source VAE encode, sliced per window.
 
     Revised 2026-09-11 (plan §4.4): a genuine causal keyframe only ever exists at
@@ -985,9 +1059,24 @@ def encode_capture_jobs(
             continue
         pending.append((source, source_jobs))
 
+    failed: list[str] = []
     if not pending:
-        return completed, skipped
+        return completed, skipped, failed
 
+    # Bounded, not "submit all ~3000 up front": `concurrent.futures.as_completed(fs)` makes
+    # its OWN internal `set(fs)` and holds it for the generator's entire lifetime (CPython's
+    # `_base.as_completed`, see `_yield_finished_futures(..., ref_collect=(fs, ...))`) -- so
+    # even after this loop drops ITS OWN reference to a finished `Future`, `as_completed`'s
+    # internal set keeps it (and the ~0.5-0.7 GB raw-frame array `Future.result()` cached on
+    # it) alive until every future passed to that ONE call has been yielded. Calling
+    # `as_completed` once for thousands of sources therefore retains every source's frame
+    # buffer for the whole run regardless of any `.pop()` on a caller-side dict -- confirmed
+    # 09-12 by measurement: host RSS climbed ~50-90 MB/s (slower than the ORIGINAL bug, which
+    # additionally kept the same futures reachable via a never-shrinking dict, but still
+    # unbounded) even after adding `.pop()` alone. Chunking is the actual fix: each chunk gets
+    # its own `as_completed` call, which is fully exhausted (and therefore fully collectible,
+    # `fs` included) before the next chunk's futures are even submitted.
+    chunk_size = max(1, (max_crop_workers or DEFAULT_CROP_WORKERS) * 4)
     context = multiprocessing.get_context("spawn")
     with (
         # max_tasks_per_child=1: recycle the worker after every source. Each source's
@@ -997,52 +1086,66 @@ def encode_capture_jobs(
         concurrent.futures.ProcessPoolExecutor(max_workers=max_crop_workers, mp_context=context, max_tasks_per_child=1) as pool,
         ltx_adapter.video_encoder(model.paths.video_vae(), DTYPE, device) as encoder,
     ):
-        futures = {
-            pool.submit(crop_source, source, max(job.end for job in source_jobs), source_jobs[0].box_xyxy, edge): (
-                source,
-                source_jobs,
-            )
-            for source, source_jobs in pending
-        }
-        for future in concurrent.futures.as_completed(futures):
-            source, source_jobs = futures[future]
-            frames = future.result()  # (last_needed, edge, edge, 3), one array for the whole source
-            if keep_capture_video:
-                write_cropped_capture_video(source, source_jobs, frames, source_jobs[0].fps)
+        for chunk_start in range(0, len(pending), chunk_size):
+            chunk = pending[chunk_start : chunk_start + chunk_size]
+            futures = {
+                pool.submit(
+                    crop_source, source, max(job.end for job in source_jobs), source_jobs[0].box_xyxy, edge
+                ): (source, source_jobs)
+                for source, source_jobs in chunk
+            }
+            for future in concurrent.futures.as_completed(futures):
+                source, source_jobs = futures.pop(future)
+                # A single bad source (corrupt video, a degenerate crop box) must not sink a
+                # run over 3360 sources that takes days -- and without this, the
+                # `run_b2a.sh` supervisor's "restarting in 15s" would loop forever on the
+                # exact same source, burning restart cycles while never making progress past
+                # it. One producer of failure handling here, not a try/except at every call
+                # site below.
+                try:
+                    frames = future.result()  # (last_needed, edge, edge, 3), whole source
+                    if keep_capture_video:
+                        write_cropped_capture_video(source, source_jobs, frames, source_jobs[0].fps)
 
-            video = torch.from_numpy(frames).permute(3, 0, 1, 2).unsqueeze(0).to(device=device, dtype=DTYPE)
-            pixels = video / 127.5 - 1.0
-            with torch.no_grad():
-                master = encoder.tiled_encode(pixels, None)  # ONE encode for the whole source
+                    video = torch.from_numpy(frames).permute(3, 0, 1, 2).unsqueeze(0).to(device=device, dtype=DTYPE)
+                    pixels = video / 127.5 - 1.0
+                    with torch.no_grad():
+                        master = encoder.tiled_encode(pixels, None)  # ONE encode for the whole source
 
-            windows: dict[int, dict[str, object]] = {}
-            for job in source_jobs:
-                first = job.start // time_scale
-                latent_frames = (job.end - job.start - 1) // time_scale + 1
-                z_y = master[:, :, first : first + latent_frames]
-                expected = _expected_capture_shape(model, job, edge)
-                if tuple(z_y.shape[1:]) != expected["shape"]:
-                    raise RuntimeError(
-                        f"{job.relative_path}: sliced latent {tuple(z_y.shape)} does not match expected {expected['shape']}"
+                    windows: dict[int, dict[str, object]] = {}
+                    for job in source_jobs:
+                        first = job.start // time_scale
+                        latent_frames = (job.end - job.start - 1) // time_scale + 1
+                        z_y = master[:, :, first : first + latent_frames]
+                        expected = _expected_capture_shape(model, job, edge)
+                        if tuple(z_y.shape[1:]) != expected["shape"]:
+                            raise RuntimeError(
+                                f"{job.relative_path}: sliced latent {tuple(z_y.shape)} does not match "
+                                f"expected {expected['shape']}"
+                            )
+                        record = latent_record(z_y, fps=job.fps)
+                        record["start"] = job.start
+                        record["end"] = job.end
+                        windows[job.index] = record
+                    del pixels, master
+                    # One atomic save per source: the bundle is all-or-nothing, never partial.
+                    atomic_torch_save(
+                        {"schema_version": SCHEMA_VERSION, "source": source.relative_dir, "windows": windows},
+                        bundle_path(source),
                     )
-                record = latent_record(z_y, fps=job.fps)
-                record["start"] = job.start
-                record["end"] = job.end
-                windows[job.index] = record
-                completed += 1
-            del pixels, master
-            # One atomic save per source: the bundle is all-or-nothing, never a partial file.
-            atomic_torch_save(
-                {"schema_version": SCHEMA_VERSION, "source": source.relative_dir, "windows": windows},
-                bundle_path(source),
-            )
-            LOGGER.info(
-                "encoded capture target source=%s windows=%d (1 VAE call) -> %s",
-                source.relative_dir,
-                len(source_jobs),
-                bundle_path(source),
-            )
-    return completed, skipped
+                    completed += len(source_jobs)
+                    LOGGER.info(
+                        "encoded capture target source=%s windows=%d (1 VAE call) -> %s",
+                        source.relative_dir,
+                        len(source_jobs),
+                        bundle_path(source),
+                    )
+                except Exception:
+                    LOGGER.exception(
+                        "FAILED capture target source=%s -- skipping, not aborting the run", source.relative_dir
+                    )
+                    failed.append(source.relative_dir)
+    return completed, skipped, failed
 
 
 def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share parser/provenance.
@@ -1100,7 +1203,10 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
         sources = discover_capture_sources(args.corpus_root, set(args.views))
         if not sources:
             raise SystemExit(f"No selected raw rgb.mp4 + bbox.npy views under {args.corpus_root}")
-        all_jobs = enumerate_capture_jobs(sources, geometry, args.pad_factor, max_workers=args.crop_workers)
+        all_jobs = enumerate_capture_jobs(
+            sources, geometry, args.pad_factor, max_workers=args.crop_workers,
+            cache_path=args.corpus_root / PLAN_CACHE_NAME,
+        )
         if args.visualize_qa is not None:
             by_source = {job.source.relative_dir: job for job in all_jobs if job.index == 0}
             selected: list[CaptureSource] = []
@@ -1145,7 +1251,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
             print(json.dumps({"sources": len(sources), "windows": len(jobs), "manifest": str(manifest_path)}, indent=2))  # noqa: T201
             return 0
         atomic_json_save(capture_manifest, manifest_path)
-        completed, skipped = encode_capture_jobs(
+        completed, skipped, failed = encode_capture_jobs(
             model,
             jobs,
             gpu_id=args.gpu_id,
@@ -1155,8 +1261,16 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
             keep_capture_video=args.keep_capture_video,
         )
         print(  # noqa: T201 -- CLI completion summary.
-            f"Capture target VAE precompute complete: encoded={completed}, skipped={skipped}, manifest={manifest_path}"
+            f"Capture target VAE precompute complete: encoded={completed}, skipped={skipped}, "
+            f"failed={len(failed)}, manifest={manifest_path}"
         )
+        if failed:
+            # A nonzero exit here WOULD make run_b2a.sh's supervisor restart -- and it would
+            # hit these exact sources again, forever, since retrying does not fix a corrupt
+            # video or a degenerate crop. Exit 0: failures are already logged per-source above
+            # (LOGGER.exception) and summarized here; a human decides whether to exclude or fix
+            # them, not an automatic retry loop.
+            print("failed sources: " + ", ".join(failed[:20]) + (" ..." if len(failed) > 20 else ""))  # noqa: T201
         return 0
     pairs = discover_pairs(args.corpus_root)
     if not pairs:

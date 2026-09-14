@@ -12,9 +12,11 @@ from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar.precompute import (
     CAPTURE_MANIFEST_NAME,
     SCHEMA_VERSION,
+    CaptureSource,
     VideoReader,
     carryover_mask,
     discover_pairs,
+    enumerate_capture_jobs,
     enumerate_jobs,
     latent_record,
 )
@@ -159,3 +161,64 @@ def test_job_enumeration_rejects_a_bundle_covering_different_frames(tmp_path: Pa
     pair = discover_pairs(tmp_path)[0]
     with pytest.raises(ValueError, match="guide plans pixels"):
         enumerate_jobs([pair], WindowGeometry(25, 9, SpatioTemporalScaleFactors.default()))
+
+
+def _write_capture_source(view: Path, *, frames: int = 25, fps: float = 30.0) -> CaptureSource:
+    """A raw rgb.mp4 + bbox.npy pair, real enough for plan_source to open and decode."""
+    view.mkdir(parents=True, exist_ok=True)
+    rgb = view / "rgb.mp4"
+    writer = cv2.VideoWriter(str(rgb), cv2.VideoWriter_fourcc(*"mp4v"), fps, (64, 48))
+    assert writer.isOpened()
+    for _ in range(frames):
+        writer.write(np.full((48, 64, 3), (0, 255, 0), dtype=np.uint8))
+    writer.release()
+    bbox = view / "bbox.npy"
+    np.save(
+        bbox,
+        {"xyxy": np.tile(np.array([10.0, 5.0, 40.0, 35.0]), (frames, 1)), "valid": np.ones(frames, dtype=bool)},
+    )
+    stat = rgb.stat()
+    return CaptureSource(
+        relative_dir=str(view.name), rgb=str(rgb), bbox=str(bbox),
+        rgb_fingerprint=f"size={stat.st_size};mtime_ns={stat.st_mtime_ns}",
+    )
+
+
+_GEOMETRY = WindowGeometry(25, 9, SpatioTemporalScaleFactors.default())
+
+
+def test_enumerate_capture_jobs_reuses_a_fresh_plan_cache(tmp_path: Path) -> None:
+    """A restart must not re-open and frame-0-decode a source whose plan is already cached
+    and still valid -- that reopening, across thousands of sources, is the ~1.5 h §1.3
+    documents as looking like a hang with nothing logged and no bundle written."""
+    source = _write_capture_source(tmp_path / "view00")
+    cache_path = tmp_path / "plan_cache.json"
+
+    first = enumerate_capture_jobs([source], _GEOMETRY, 1.2, max_workers=1, cache_path=cache_path)
+    assert cache_path.is_file()
+
+    # A source no longer openable would fail plan_source; reuse must not touch the file.
+    Path(source.rgb).unlink()
+    second = enumerate_capture_jobs([source], _GEOMETRY, 1.2, max_workers=1, cache_path=cache_path)
+    assert [(job.index, job.start, job.end, job.box_xyxy) for job in second] == [
+        (job.index, job.start, job.end, job.box_xyxy) for job in first
+    ]
+
+
+def test_enumerate_capture_jobs_replans_a_changed_source(tmp_path: Path) -> None:
+    """A stale fingerprint (the source file changed) or a changed pad factor must invalidate
+    the cache entry rather than silently reusing a plan for different pixels."""
+    view = tmp_path / "view00"
+    source = _write_capture_source(view)
+    cache_path = tmp_path / "plan_cache.json"
+    enumerate_capture_jobs([source], _GEOMETRY, 1.2, max_workers=1, cache_path=cache_path)
+
+    changed = _write_capture_source(view, frames=41)  # rewrites rgb.mp4 -> new fingerprint, a 2nd window
+    assert changed.rgb_fingerprint != source.rgb_fingerprint
+    jobs = enumerate_capture_jobs([changed], _GEOMETRY, 1.2, max_workers=1, cache_path=cache_path)
+    # A cache hit on the stale (25-frame) entry would yield exactly 1 window, not 2.
+    assert [(job.start, job.end) for job in jobs] == [(0, 25), (16, 41)]
+
+    # A pad-factor change must also miss the cache even with the same source file.
+    repadded = enumerate_capture_jobs([changed], _GEOMETRY, 1.5, max_workers=1, cache_path=cache_path)
+    assert repadded[0].box_xyxy != jobs[0].box_xyxy

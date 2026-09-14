@@ -359,6 +359,14 @@ def train_chain(
         carry = gt[:, :, idx : idx + n].contiguous()
 
     totals = {"loss": 0.0, "mse": 0.0, "anchor": 0.0}
+    # SS7.4(a): "today [train.py] writes one row per chain... which cannot answer the question
+    # the AR loop exists to ask" -- windows 1..K-1 see the model's own error and window 0 does
+    # not, so a chain-mean scalar hides exactly the effect K > 1 exists to create or expose.
+    # `window_position` in the per-window record is the position along a POTENTIALLY LONGER
+    # rollout (`window.index`, the corpus-relative window number), not the position within this
+    # chain -- `plot_training.py`'s owed figure needs position-within-chain (0..K-1), which the
+    # caller (holding `chain`) can derive by zipping this list against `enumerate(chain.windows)`.
+    per_window: list[dict[str, float]] = []
     k = len(chain.windows)
     for i, window in enumerate(chain.windows):
         z0_tokens, target_tokens, weights, state, tools = one_window_forward(
@@ -390,11 +398,15 @@ def train_chain(
         totals["loss"] += float(loss.detach()) / k
         totals["mse"] += float(mse.detach()) / k
         totals["anchor"] += float(anchor.detach()) / k
+        per_window.append(
+            {"window_index": window.index, "mse": float(mse.detach()), "anchor": float(anchor.detach())}
+        )
 
         if i + 1 < k:
             z0_latent = refine_core.finalize(replace(state, latent=z0_tokens), tools)
             carry = refine_core.carry_from(z0_latent, geometry).detach()
         del z0_tokens, target_tokens, weights, state, tools, loss, mse, anchor
+    totals["per_window"] = per_window
     return totals
 
 
@@ -439,8 +451,12 @@ def checkpoint_metadata(
     a checkpoint whose sigma disagrees or a multi-step run, both of which would otherwise fail
     silently -- extra steps are extrapolation for a map that was distilled to a fixed grid.
     """
+    sigma_levels = training_sigmas(args)
     return {
-        "onestep_avatar_sigma0": repr(args.sigma0),
+        # ``mixed`` deliberately prevents a fixed-sigma deployment loader from accepting a
+        # multi-level adapter as though it were calibrated for just one noise level.
+        "onestep_avatar_sigma0": repr(args.sigma0) if args.sigma_levels is None else "mixed",
+        "onestep_avatar_sigma_levels": ",".join(repr(sigma) for sigma in sigma_levels),
         "onestep_avatar_chain_length": str(subset["chain_length"]),
         "onestep_avatar_schedule": "ONE_STEP",
         "onestep_avatar_subset_sha256": hashlib.sha256(
@@ -455,6 +471,64 @@ def checkpoint_metadata(
         "lora_target": args.lora_target,
         "step": str(step),
     }
+
+
+def training_sigmas(args: argparse.Namespace) -> tuple[float, ...]:
+    """Resolve the fixed or per-rank noise schedule once, with strict bounds.
+
+    ``sigma=0.0`` is refused: it noises nothing, so the "denoised" target IS the input
+    (identity) and the loss/gradient are both exactly zero (measured: the multilevel D0 run's
+    sigma=0.0 quarter sat at 0.0 mse for all 200 steps). A rank assigned that level would train
+    on nothing for the whole run, which is a training bug, not a sanity arm -- the ceiling
+    measurement that wants sigma=0.0 is ``visualize_d0.py``'s fixed evaluation-time probe grid,
+    not something this loop should ever spend a rank optimizing.
+    """
+    values = (args.sigma0,) if args.sigma_levels is None else tuple(args.sigma_levels)
+    if not values or any(not 0.0 < sigma <= 1.0 for sigma in values):
+        raise SystemExit(
+            "--sigma-levels must contain one or more values in (0, 1] -- sigma=0.0 adds no "
+            "noise, so its loss/gradient are identically zero and it must not be trained"
+        )
+    if len(set(values)) != len(values):
+        raise SystemExit("--sigma-levels must not repeat a noise level")
+    return values
+
+
+def sigma_for_rank(sigmas: tuple[float, ...], rank: int) -> float:
+    """One fixed noise level per rank for the run, rotating when ranks don't divide the levels.
+
+    Replaces the old per-step cycle (every rank sharing one level, changing each step), which
+    aliased into a sawtooth loss curve at the step's own period since a step's mean-across-ranks
+    loss was always a single-level loss rather than a genuine batch average. Assigning ranks
+    instead of steps means every optimizer step already mixes whatever levels are present among
+    the ranks, so the aggregate loss is stable step to step -- the same modulo pattern as the
+    cycle it replaces, just keyed by rank rather than step.
+    """
+    return sigmas[rank % len(sigmas)]
+
+
+def init_wandb(args: argparse.Namespace, *, config: dict) -> object | None:
+    """Create one online W&B run on rank 0; all ranks still participate in metric gathers."""
+    if args.wandb_project is None:
+        return None
+    try:
+        import wandb
+    except ImportError as exc:  # pragma: no cover - environment/setup error
+        raise SystemExit("--wandb-project requires the wandb package in the active environment") from exc
+    return wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_run_name or args.output.name,
+        mode=args.wandb_mode,
+        config=config,
+    )
+
+
+def rank_mean(accelerator: Accelerator, values: list[float]) -> list[float]:
+    """All-rank mean for W&B, keeping one chart point per optimiser step."""
+    local = torch.tensor(values, device=accelerator.device, dtype=torch.float32)
+    gathered = accelerator.gather(local).reshape(accelerator.num_processes, -1)
+    return gathered.mean(dim=0).cpu().tolist()
 
 
 def save_lora(
@@ -487,6 +561,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--model", choices=model_registry.SUPPORTED_MODELS, default="2.5")
     p.add_argument("--sigma0", type=float, default=DEFAULT_SIGMA0)
+    p.add_argument(
+        "--sigma-levels", type=float, nargs="+", default=None,
+        help="Assign one fixed level per rank for the whole run (rank % len(levels), rotating "
+        "if world_size != len(levels)). Overrides --sigma0; useful for a multilevel distilled "
+        "adapter. sigma=0.0 is refused -- it trains on nothing (see training_sigmas).",
+    )
     p.add_argument("--split", choices=("train", "held_out"), default="train")
     p.add_argument("--lora-rank", type=int, default=8, help="2-3 GPU preliminary runs drop this, never K")
     p.add_argument("--lora-alpha", type=int, default=None, help="default: equal to --lora-rank")
@@ -504,16 +584,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "guide, reducing to ordinary flow-matching on real video (SS3 identity 1), decoupled "
         "from the render. Measures the architecture's capacity ceiling at sigma_0, to compare "
         "against the measured r; onestep_core.guide_conditionings refuses this mode because "
-        "there is no z_y at inference. d1: the guide reaches the model only as the noised "
-        "init -- cheapest, and what refine_core deploys today. d2: ALSO as clean reference "
-        "tokens at timestep 0, ~2.3x attention. The measured subject-interior r of 0.89-0.93 "
-        "against a 0.6 threshold (SS0.3) says d2 is the arm to lead with; the default stays d1 "
-        "so the arm is always explicit in the command line and in the checkpoint metadata.",
+        "there is no z_y at inference. d1: the plan's D1a -- the guide reaches the model only "
+        "as the noised init. Cheapest, what refine_core deploys today, and the control every "
+        "other arm has to beat. d2: ALSO as clean reference tokens at timestep 0, at 2T tokens "
+        "-- DROPPED as a live arm 2026-09-13, because it was measured at 1.05x k2's wall clock "
+        "(bench_forward.py), i.e. slower than the baseline it was meant to replace, so it "
+        "fails the compute claim regardless of quality. Kept runnable only as that benchmark. "
+        "The plan's D1b (first-frame latent blend) and D1c (additive guide embedding on pure "
+        "noise, the T-token way to get d2's guide fidelity) have no flag here yet.",
     )
     p.add_argument("--anchor-weight", type=float, default=0.0, help="SS4.3 row 2; needs base_denoised/")
     p.add_argument("--save-every", type=int, default=100)
     p.add_argument("--log-every", type=int, default=1)
     p.add_argument("--max-grad-norm", type=float, default=1.0)
+    p.add_argument("--wandb-project", default=None, help="Enable online W&B logging to this project.")
+    p.add_argument("--wandb-entity", default=None)
+    p.add_argument("--wandb-run-name", default=None)
+    p.add_argument("--wandb-mode", choices=("online", "offline", "disabled"), default="online")
     p.add_argument("--no-gradient-checkpointing", action="store_true")
     p.add_argument("--init-device", default="cuda", help="'cuda' (default, avoids host-RAM staging) or 'cpu'")
     p.add_argument("--dry-run", action="store_true", help="report the plan and the data shapes, load no model")
@@ -524,6 +611,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     args = parse_args(argv)
     if args.lora_alpha is None:
         args.lora_alpha = args.lora_rank
+    sigmas = training_sigmas(args)
     if args.guide_mode == "d0" and args.anchor_weight > 0.0:
         # base_denoised/ (SS4.3 row 2) is Phi(lerp(z_g, eps, sigma_0)) -- the frozen model's
         # output on the GUIDE-noised input. d0 noises z_y instead, so the anchor would be
@@ -558,6 +646,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                         "fps": chain.windows[0].fps,
                     },
                     "sigma0": args.sigma0,
+                    "sigma_levels": list(sigmas),
                     "lora": {"rank": args.lora_rank, "alpha": args.lora_alpha, "target": args.lora_target},
                 },
                 indent=2,
@@ -606,9 +695,16 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     args.output.mkdir(parents=True, exist_ok=True)
     if accelerator.is_main_process:
         (args.output / "config.json").write_text(json.dumps({**vars(args), "world_size": world}, indent=2, default=str))
+    wandb_run = init_wandb(
+        args,
+        config={**vars(args), "world_size": world, "sigma_levels": list(sigmas)},
+    ) if accelerator.is_main_process else None
     log_path = args.output / f"metrics_rank{rank}.jsonl"
     log_file = log_path.open("a")
 
+    # Fixed for the whole run, not resampled per step: this rank always trains this level (SS7.1
+    # revision -- see sigma_for_rank).
+    sigma0 = sigma_for_rank(sigmas, rank)
     generator = torch.Generator().manual_seed(args.seed)
     step = 0
     started = time.time()
@@ -629,7 +725,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                 chain,
                 geometry,
                 accelerator,
-                sigma0=args.sigma0,
+                sigma0=sigma0,
                 # Seeded per (run, window) so eps is reproducible and the same window always
                 # gets the same noise -- which is also what makes a cached frozen-base output
                 # (the anchor term) correspond to this exact input.
@@ -644,17 +740,46 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
             step += 1
 
             if step % args.log_every == 0:
+                per_window = totals.pop("per_window")
                 record = {
                     "step": step,
                     "rank": rank,
                     "lr": lr,
+                    "sigma0": sigma0,
                     "grad_norm": float(grad_norm) if grad_norm is not None else None,
                     "elapsed_s": round(time.time() - started, 1),
                     "source": chain.source,
                     **{k: round(v, 6) for k, v in totals.items()},
+                    # SS7.4(a): one entry per window IN THIS CHAIN, in order, so a reader can
+                    # plot loss against position without re-deriving it from the chain-mean.
+                    "per_window": [
+                        {"chain_position": i, **{k: round(v, 6) for k, v in w.items()}}
+                        for i, w in enumerate(per_window)
+                    ],
                 }
                 log_file.write(json.dumps(record) + "\n")
                 log_file.flush()
+                if args.wandb_project is not None:
+                    mean_loss, mean_mse, mean_anchor, mean_grad_norm = rank_mean(
+                        accelerator,
+                        [totals["loss"], totals["mse"], totals["anchor"], float(grad_norm)],
+                    )
+                    window_mse = rank_mean(accelerator, [window_metrics["mse"] for window_metrics in per_window])
+                    if accelerator.is_main_process:
+                        wandb_run.log(
+                            {
+                                "train/loss": mean_loss,
+                                "train/mse": mean_mse,
+                                "train/anchor": mean_anchor,
+                                "train/grad_norm": mean_grad_norm,
+                                "train/lr": lr,
+                                "train/sigma0": sigma0,
+                                "train/elapsed_s": record["elapsed_s"],
+                                "train/steps_per_s": step / max(record["elapsed_s"], 1e-8),
+                                **{f"train/window_{i}_mse": value for i, value in enumerate(window_mse)},
+                            },
+                            step=step,
+                        )
                 if accelerator.is_main_process:
                     LOGGER.info(
                         "step %d/%d loss %.5f mse %.5f anchor %.5f lr %.2e %.1fs",
@@ -672,6 +797,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     log_file.close()
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
+        if wandb_run is not None:
+            wandb_run.finish()
         LOGGER.info("done: %d steps in %.1f min", step, (time.time() - started) / 60)
     return 0
 

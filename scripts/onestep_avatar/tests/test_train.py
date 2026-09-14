@@ -12,6 +12,8 @@ otherwise look like a quality problem in C1 (SS9 risk 12):
 
 from __future__ import annotations
 
+import argparse
+
 import pytest
 import torch
 
@@ -198,6 +200,29 @@ def test_k1_chain_matches_a_single_non_ar_step() -> None:
     assert torch.allclose(chain_grad, model_plain.scale.grad, rtol=1e-4, atol=1e-8)
     assert abs(totals["mse"] - float(loss.detach())) < 1e-5
     assert totals["anchor"] == 0.0
+    assert [w["window_index"] for w in totals["per_window"]] == [window.index]
+    assert abs(totals["per_window"][0]["mse"] - float(loss.detach())) < 1e-5
+
+
+def test_train_chain_records_one_per_window_entry_in_chain_order() -> None:
+    """SS7.4(a): "today it writes one row per chain... that effect is unobservable" -- the fix
+    is a per-window breakdown alongside the existing chain-mean, in chain order, one entry per
+    window actually run (not per corpus window)."""
+    window0, window1, window2 = _window(0), _window(1), _window(2)
+    chain = train.Chain(
+        source="stub/view00", split="train", actor="stub", seed_is_clip_start=True,
+        windows=[window0, window1, window2],
+    )
+    model = StubTransformer()
+    totals = train.train_chain(
+        model, torch.zeros(1, 1, 8), chain, GEOMETRY, _StubAccelerator(),
+        sigma0=SIGMA0, seed=0, anchor_weight=0.0, latent_channels=CHANNELS,
+    )
+
+    assert [w["window_index"] for w in totals["per_window"]] == [0, 1, 2]
+    # The chain-mean is exactly the average of the per-window entries it was built from --
+    # otherwise the two views of the same chain would disagree with each other.
+    assert abs(totals["mse"] - sum(w["mse"] for w in totals["per_window"]) / 3) < 1e-6
 
 
 class _StubAccelerator:
@@ -314,6 +339,24 @@ def test_d0_rejects_the_anchor_term() -> None:
                 "--output", "/nonexistent", "--guide-mode", "d0", "--anchor-weight", "0.1",
             ]
         )
+
+
+def test_multilevel_sigma_schedule_assigns_one_fixed_level_per_rank() -> None:
+    """Each rank trains one level for the whole run; extra ranks rotate back through the list."""
+    levels = (0.909375, 0.725, 0.421875)
+    args = argparse.Namespace(sigma0=0.725, sigma_levels=list(levels))
+    assert train.training_sigmas(args) == levels
+    # 4 ranks, 3 levels: rank 3 rotates back to rank 0's level rather than needing a 4th value.
+    assert [train.sigma_for_rank(levels, rank) for rank in range(4)] == [
+        0.909375, 0.725, 0.421875, 0.909375,
+    ]
+
+
+def test_sigma_zero_is_refused() -> None:
+    """sigma=0.0 adds no noise, so its loss and gradient are identically zero -- never trained."""
+    args = argparse.Namespace(sigma0=0.725, sigma_levels=[0.909375, 0.725, 0.421875, 0.0])
+    with pytest.raises(SystemExit, match="sigma=0.0"):
+        train.training_sigmas(args)
 
 
 def test_d2_appends_a_clean_pixel_aligned_copy_of_the_guide() -> None:
