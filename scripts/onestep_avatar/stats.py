@@ -24,11 +24,11 @@ plan is currently guessing at:
 
 **Lives in the LTX-2 tree, not beside the other analysis modules** (plan SS7.2 lists it under
 ``scripts/onestep_avatar/``): (a) and (b) need the VAE *and* the 42 GB transformer, which only
-exist in the ``ltx`` env. (r) and (c) are pure tensor arithmetic over precomputed latents and
+exist in the ``ltx`` env. (r) and (c) are pure tensor arithmetic over the corpus master latents and
 need no GPU at all -- ``--no-gpu`` runs exactly those.
 
     conda run -n ltx python -m scripts.onestep_avatar.stats \\
-      --renders ../../ARG-Avatar/expr --pairs ../expr/onestep_avatar/precomputed \\
+      --renders ../../ARG-Avatar/expr --pairs ../data/AnimatableHuman/DNARenderingVideo \\
       --out ../expr/onestep_avatar/analysis_summary.json --gpu-id 2
 """
 
@@ -41,7 +41,13 @@ from pathlib import Path
 
 import torch
 
-from scripts.onestep_avatar.precompute import VideoReader, atomic_json_save
+from scripts.onestep_avatar import dataset
+from scripts.onestep_avatar.precompute import (
+    BUNDLE_SCHEMA_VERSION,
+    LOSS_MASK_GRIDS_NAME,
+    VideoReader,
+    atomic_json_save,
+)
 from scripts.prune.core import ltx_adapter, model_registry, refine_core, refine_task
 from scripts.prune.core.session import DTYPE
 from scripts.prune.data import prompt_cache
@@ -97,37 +103,67 @@ def _summary(values: list[float]) -> dict[str, float]:
     }
 
 
-def measure_pairs(precomputed: Path, limit: int | None = None, mask_kind: str = "union") -> dict:
-    """(r) and (c) from precomputed pairs -- CPU only, no model of any kind.
+def _master(path: Path) -> torch.Tensor:
+    """One view's master latent, refusing a pre-SS4.4 per-window bundle by name."""
+    bundle = torch.load(path, map_location="cpu", weights_only=True)
+    if bundle.get("schema_version") != BUNDLE_SCHEMA_VERSION or "master" not in bundle:
+        raise SystemExit(
+            f"{path}: not a v{BUNDLE_SCHEMA_VERSION} master bundle. Run "
+            f"`python -m scripts.onestep_avatar.precompute --consolidate` over this corpus"
+        )
+    return bundle["master"]
 
-    Both halves are read from the same window file pair, so a mismatch in window indexing
-    cannot make ``r`` look better than it is.
+
+def measure_pairs(
+    corpus_root: Path,
+    limit: int | None = None,
+    mask_kind: str = "union",
+    objective: str = dataset.DEFAULT_OBJECTIVE,
+) -> dict:
+    """(r) and (c) from the corpus's paired master latents -- CPU only, no model of any kind.
+
+    Reads the same three per-view files ``train.py`` reads (SS4.4, 2026-09-14): the capture
+    master, the guide master, and the clip's loss-mask grids. Both halves of every comparison
+    come out of the same view directory at the same frame index, so a mismatch in indexing
+    cannot make ``r`` look better than it is -- and it is now measured over whole clips
+    rather than over windows that overlapped, which double-counted every second latent frame.
 
     **Two ``r``s, and only one of them answers SS4.2.** ``r_full`` is over the whole crop and
     ``r_subject`` is weighted by the subject coverage ``precompute.py`` stores. They are very
     different numbers here and the difference is not subtle: the render composites the avatar
     on WHITE and the capture is a dark capture dome, while the subject covers ~12 % of the
-    frame. So ``r_full`` measures a background convention and ``r_subject`` measures the task.
+    frame. Under ``bg`` therefore ``r_full`` largely measures a background convention while
+    ``r_subject`` measures the task; under ``white`` both sides agree on the background by
+    construction and the two converge. Quote ``r_subject`` either way.
     Take the D1-vs-D2 decision on ``r_subject``; report ``r_full`` next to it, because the
     background flip is real and is the reason SS4.3 row 1's masked loss is mandatory rather
     than a refinement.
     """
-    inits = sorted((precomputed / "init_latents").rglob("window_*.pt"))
+    guide_name = dataset.guide_bundle_name(objective)
+    capture_name = dataset.capture_bundle_name(objective)
+    guides = sorted(corpus_root.rglob(guide_name))
     if limit is not None:
-        inits = inits[:limit]
-    if not inits:
-        raise SystemExit(f"no init_latents under {precomputed}; run precompute.py's paired mode first")
+        guides = guides[:limit]
+    if not guides:
+        raise SystemExit(
+            f"no {guide_name} under {corpus_root}; run precompute.py's paired mode "
+            f"with --objective {objective} first"
+        )
 
     gaps, masked_gaps, coverage, guide_stats, capture_stats, per_source = [], [], [], [], [], {}
-    for init_path in inits:
-        relative = init_path.relative_to(precomputed / "init_latents")
-        target_path = precomputed / "target_latents" / relative
-        z_g = torch.load(init_path, map_location="cpu", weights_only=True)["latents"]
-        z_y = torch.load(target_path, map_location="cpu", weights_only=True)["latents"]
+    first_pair = None
+    for guide_path in guides:
+        relative = guide_path.parent.relative_to(corpus_root)
+        z_g = _master(guide_path)
+        z_y = _master(guide_path.with_name(capture_name))
+        frames = min(z_g.shape[1], z_y.shape[1])
+        z_g, z_y = z_g[:, :frames], z_y[:, :frames]
+        if first_pair is None:
+            first_pair = (z_g, z_y)
         gap = rms_gap(z_y, z_g)
         gaps.append(gap)
 
-        mask_path = precomputed / "loss_masks" / relative
+        mask_path = guide_path.with_name(LOSS_MASK_GRIDS_NAME)
         if mask_path.is_file():
             record = torch.load(mask_path, map_location="cpu", weights_only=True)
             render, capture_mask = record["render_alpha"].float(), record["capture_mask"].float()
@@ -137,10 +173,10 @@ def measure_pairs(precomputed: Path, limit: int | None = None, mask_kind: str = 
                 "union": torch.maximum(render, capture_mask),
                 "intersection": torch.minimum(render, capture_mask),
             }[mask_kind]
-            masked_gaps.append(rms_gap(z_y, z_g, weights))
-            coverage.append(float(weights.mean()))
+            masked_gaps.append(rms_gap(z_y, z_g, weights[:frames]))
+            coverage.append(float(weights[:frames].mean()))
 
-        per_source.setdefault(str(relative.parent), []).append(gap)
+        per_source.setdefault(str(relative), []).append(gap)
         guide_stats.append(torch.stack([z_g.float().mean(), z_g.float().std()]))
         capture_stats.append(torch.stack([z_y.float().mean(), z_y.float().std()]))
 
@@ -164,15 +200,11 @@ def measure_pairs(precomputed: Path, limit: int | None = None, mask_kind: str = 
             # The reference SS4.2 warns about: Var(x_sigma) = (1-s)^2 + s^2 by design, NOT 1.
             "expected_var_at_sigma0": (1 - DEFAULT_SIGMA0) ** 2 + DEFAULT_SIGMA0**2,
         },
+        # SS4.2 caveat, still live: these are ONE clip's channel moments, not the corpus's.
+        # Widen the sample before relying on the tail.
         "channel_moments": {
-            "guide": channel_moments(torch.load(inits[0], map_location="cpu", weights_only=True)["latents"]),
-            "capture": channel_moments(
-                torch.load(
-                    precomputed / "target_latents" / inits[0].relative_to(precomputed / "init_latents"),
-                    map_location="cpu",
-                    weights_only=True,
-                )["latents"]
-            ),
+            "guide": channel_moments(first_pair[0]),
+            "capture": channel_moments(first_pair[1]),
         },
     }
 
@@ -282,7 +314,18 @@ def main() -> int:
         "measure on the REAL corpus guides at the deployed 1024**2 geometry rather than on "
         "smoke renders at some other size -- `a` is only comparable with `r` at the same token count",
     )
-    p.add_argument("--pairs", type=Path, default=None, help="precompute.py --output-root, for r and the moments")
+    p.add_argument(
+        "--pairs", type=Path, default=None,
+        help="Corpus root holding the per-view master latents, for r and the moments",
+    )
+    p.add_argument(
+        "--objective",
+        choices=dataset.OBJECTIVES,
+        default=dataset.DEFAULT_OBJECTIVE,
+        help="SS1.2. Which objective's (z_g, z_y) pair r and the moments are measured over. "
+        "The two give genuinely different numbers -- under 'white' both sides agree on the "
+        "background by construction, so r_full stops measuring a background convention.",
+    )
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--sigma0", type=float, default=DEFAULT_SIGMA0)
     p.add_argument("--eps-samples", type=int, default=DEFAULT_EPS_SAMPLES)
@@ -303,7 +346,9 @@ def main() -> int:
     model = model_registry.resolve(args.model)
     report: dict[str, object] = {"model": model.key, "sigma0": args.sigma0}
     if args.pairs is not None:
-        report["pairs"] = measure_pairs(args.pairs, args.max_windows, args.subject_mask)
+        report["pairs"] = measure_pairs(
+            args.pairs, args.max_windows, args.subject_mask, args.objective
+        )
     if args.renders is not None and not args.no_gpu:
         videos = sorted(args.renders.rglob(args.render_glob))[: args.max_videos]
         if not videos:

@@ -38,6 +38,16 @@ class Modality:
             attention. ``None`` means unrestricted (full) attention between
             all tokens. Built incrementally by conditioning items; see
             :class:`~ltx_core.conditioning.types.attention_strength_wrapper.ConditioningItemAttentionStrengthWrapper`.
+        kv_caches: Optional per-layer self-attention K/V caches, one
+            :class:`~ltx_core.model.transformer.kv_cache.LayerKVCache` per transformer block,
+            for causal autoregressive decoding. ``None`` (the default) is the full-sequence
+            path and changes nothing. When set, ``latent`` holds only the *current* block's
+            tokens and ``kv_start`` says where they sit in the cached stream; see
+            ``kv_cache.py`` for the read/backward/write ordering the caller owes.
+        kv_start: Token offset of ``latent`` within the cached stream. Ignored without
+            ``kv_caches``.
+        kv_write: Whether this forward stores its K/V into ``kv_caches``. The clean pass that
+            finalises a block sets it; the denoising pass does not.
         keyframes_mask: Optional per-token marker, shape ``(B, T, 1)`` -- the same layout as
             ``timesteps`` -- non-zero for tokens whose latent encodes a *single standalone pixel
             frame* rather than the usual multi-frame span. That is the target's first latent frame
@@ -61,6 +71,9 @@ class Modality:
     context_mask: torch.Tensor | None = None
     attention_mask: torch.Tensor | None = None
     keyframes_mask: torch.Tensor | None = None  # Shape: (B, T, 1), non-zero on single-pixel-frame latents
+    kv_caches: list | None = None  # One LayerKVCache per transformer block, or None for full-sequence
+    kv_start: int = 0
+    kv_write: bool = False
 
     def split(self, sizes: list[int]) -> list[Modality]:
         """Split along the batch dimension into chunks of the given sizes."""
@@ -70,7 +83,13 @@ class Modality:
             value = getattr(self, f.name)
             if isinstance(value, torch.Tensor):
                 split_fields[f.name] = list(value.split(sizes, dim=0))
-            elif value is None or isinstance(value, bool):
+            elif value is None or isinstance(value, (bool, int, list)):
+                # The K/V cache buffers are allocated for one whole batch and are shared, not
+                # split: a split here would hand every chunk the same cache, which is only
+                # correct because a cached forward is single-sample by construction (a chain
+                # is one clip). Guard rather than silently alias.
+                if isinstance(value, list) and n > 1:
+                    raise TypeError(f"Cannot split field {f.name!r}: a K/V cache is not batch-splittable")
                 split_fields[f.name] = [value] * n
             else:
                 raise TypeError(f"Cannot split field {f.name!r}: unsupported type {type(value)}")

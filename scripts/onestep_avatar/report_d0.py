@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import subprocess
-
+from pathlib import Path
 
 # This run's own training schedule (trained before sigma=0.0 was disallowed -- see
 # train.py's training_sigmas). Kept distinct from PROBE_SIGMAS: the two need not agree, and
@@ -134,7 +133,12 @@ def main(argv: list[str] | None = None) -> int:
         "",
         "## Fixed D0 visual probe",
         "",
-        f"Probe source: `{manifest['source']}`, windows {manifest['windows']}, seed {manifest['seed']}, {manifest['fps']} fps.",
+        # `blocks` since SS4.4 (2026-09-14); `windows` for probe manifests written before it,
+        # so an older run's handoff record still renders instead of raising a KeyError.
+        f"Probe source: `{manifest['source']}`, "
+        f"{'blocks' if 'blocks' in manifest else 'windows'} "
+        f"{manifest.get('blocks', manifest.get('windows'))}, "
+        f"seed {manifest['seed']}, {manifest['fps']} fps.",
         "Each optimized MP4 is frame-aligned `ground-truth capture | frozen base | step-200 D0`.",
         "The base copies are the before-optimization reference; the step-200 copies are after optimization.",
         f"All {2 * len(PROBE_SIGMAS)} MP4s were FFprobe-validated for a readable video stream, nonzero duration, and positive dimensions.",

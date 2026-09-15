@@ -116,15 +116,18 @@ def _smooth(values: np.ndarray, window: int) -> np.ndarray:
 def _per_position_values(run: RunData, field: str) -> dict[int, dict[int, list[float]]]:
     """``{chain_position: {step: [values across chains/ranks at that step]}}``.
 
-    Reads the ``per_window`` breakdown ``train.py`` started writing 09-12 (SS7.4a); a run
-    logged before that change has no ``per_window`` key and yields an empty dict here, not an
-    error -- ``plot_window_position`` treats that as "nothing to plot" rather than crashing on
-    an older run passed alongside a newer one via ``--run``.
+    Reads the per-position breakdown ``train.py`` started writing 09-12 (SS7.4a). Two key
+    names, on purpose: ``per_block`` is what the causal AR loop writes (09-14, SS4.4), and
+    ``per_window`` is what the sliding-window loop that preceded it wrote. Both are the same
+    quantity -- loss at position ``i`` of the chain -- so the runs on disk stay plottable and
+    comparable instead of being stranded by a rename. A run older than SS7.4(a) has neither
+    key and yields an empty dict here, not an error: ``plot_window_position`` treats that as
+    "nothing to plot" rather than crashing on an older run passed alongside a newer one.
     """
     per_position: dict[int, dict[int, list[float]]] = {}
     for records in run.by_rank.values():
         for r in records:
-            for w in r.get("per_window") or []:
+            for w in r.get("per_block") or r.get("per_window") or []:
                 per_position.setdefault(w["chain_position"], {}).setdefault(r["step"], []).append(w[field])
     return per_position
 
@@ -132,13 +135,13 @@ def _per_position_values(run: RunData, field: str) -> dict[int, dict[int, list[f
 def plot_window_position(runs: list[RunData], smooth: int, output: Path) -> Path | None:
     """SS7.4(c) ``window_position.png``: mean mse by position in the AR chain, over training.
 
-    **Rising with position = error compounding** -- the carryover the model receives at
+    **Rising with position = error compounding** -- the cached context the model reads at
     position ``i > 0`` is its own earlier output, so a climbing line means later positions in
     the chain are training on progressively worse starts, the drift SS4.4's AR training exists
     to fix. **Flat from step 1 = `K > 1` is buying nothing** at `K`'s extra per-chain cost, and
     the cheapest fix is dropping to `K = 1` (SS6.2's A2 sweep already plans this arm).
 
-    Returns ``None`` (plots nothing) if no run in ``runs`` has ``per_window`` data -- an older
+    Returns ``None`` (plots nothing) if no run in ``runs`` has per-position data -- an older
     run predating SS7.4(a)'s logging change, not an error.
     """
     figure, axis = plt.subplots(figsize=(9, 4.5))

@@ -288,6 +288,9 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 mask=video.self_attention_mask,
                 perturbation_mask=video.self_attn_perturbation_mask,
                 all_perturbed=video.self_attn_all_perturbed,
+                kv_cache=video.self_attn_kv_cache,
+                kv_start=video.kv_start,
+                kv_write=video.kv_write,
             )
             vx, vx_normed = self.post_sa_function(vx, vx_msa_out, None, self.norm_eps, vgate_msa)
             del vgate_msa, norm_vx, vx_msa_out
@@ -444,7 +447,7 @@ def apply_cross_attention_adaln(
     # K/V modulation. With the prompt-side AdaLN MLP disabled (use_prompt_adaln_single=False),
     # prompt_timestep is None and only the static per-block table applies, so K/V are
     # timestep-independent and cacheable across denoising/AR steps. Otherwise the timestep-
-    # conditioned MLP output is added on top. 
+    # conditioned MLP output is added on top.
     kv_modulation = prompt_scale_shift_table[None, None].to(device=x_normed.device, dtype=x_normed.dtype)
     if prompt_timestep is not None:
         kv_modulation = kv_modulation + prompt_timestep.reshape(batch_size, prompt_timestep.shape[1], 2, -1)

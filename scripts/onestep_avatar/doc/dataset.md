@@ -1,0 +1,63 @@
+# `dataset.py` — corpus layout and the objective → filename map
+
+## Objective
+
+Two jobs, both "one constant, not a convention repeated at call sites":
+
+1. **Where the corpus is and how a clip is laid out.** `DEFAULT_CORPUS_ROOT`, `ClipRef` and
+   its per-view path accessors. T4's scale-out to the full `Processed/` tree is a `root=`
+   argument, not a second code path.
+2. **Which filename each objective's artifacts use** (SS1.2). Every module reads it from
+   here. It was transcribed into a second module (`corpus_names.py`) while the package was
+   split across two trees; consolidating removed both the copy and the test that pinned it.
+
+## Data flow
+
+Pure path/metadata resolution — reads `meta.json`, opens no video, writes nothing.
+
+```
+corpus root ─▶ ClipRef ─▶ rgb_path / mask_path / bbox_path / pose3d_path / view_dir
+                       └▶ actor_id / fps / n_frames / is_done   (from meta.json)
+
+objective ─▶ render_name / render_metadata_name
+             guide_bundle_name / capture_bundle_name
+```
+
+`CaptureManifest` reads the **crop box of record** written by the LTX half. It is a reader
+only: nothing here computes a box.
+
+## Organization logic
+
+The objective mapping lives here, next to the corpus layout, because that is what it is —
+a fact about where things sit on disk, not a training decision. Putting it in
+`build_guidance.py` would make the renderer its owner, and `windows.py` would then import
+a renderer to learn a filename.
+
+**Three rules encoded in the mapping:**
+
+- **`bg` is the unsuffixed name.** The 2,034 capture bundles and 19 guide renders already on
+  disk were written before the objective existed, and they are `bg` artifacts. Mapping `bg`
+  to the names they already have means adding `white` invalidates none of them.
+- **Only two artifacts are suffixed** — the guide render and the two latent bundles. The
+  render's alpha, the cropped capture matte and the loss-mask grids are
+  objective-**independent** (same render, same matte; only what sits behind the subject
+  differs), so suffixing them would manufacture two copies of one thing.
+- **Both persisted masks are `.mp4`, and the constants carry a `_STEM` as well as a `_NAME`.**
+  The stem is what `mask_video.read_mask` takes, so a legacy `.npy` is still found. See
+  [mask_video.md](mask_video.md).
+- **An unknown objective raises**, rather than falling back to a default. A typo that
+  silently resolves to `bg` would train the wrong pair with no error anywhere.
+
+## Invariants
+
+- `actor_id()` returns the **bare** actor id, never `(part, id)`. Actor ids are not globally
+  unique across `Part_*`, and the conservative reading is what makes the held-out split
+  leak-proof under either interpretation.
+- `fps()` is never defaulted — fps scales the temporal RoPE axis.
+- `CaptureManifest` is the single source of the crop box. Recomputing one "the same way"
+  is exactly the desync this file exists to prevent.
+
+## Tests
+
+`tests/test_geometry.py` (golden crop-box values) and `tests/test_mask_video.py` (the mask
+codec). The name mapping no longer needs a test of its own: there is one copy of it.

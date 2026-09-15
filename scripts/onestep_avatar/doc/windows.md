@@ -1,0 +1,67 @@
+# `windows.py` — freeze the training subset
+
+## Objective
+
+Turn "every view the capture pass has encoded" into "the exact blocks this run trains on",
+and **pin it**. Its output JSON (`kind: one_step_argavatar_block_chains`) is the only thing
+`LTX-2/…/train.py` reads from this tree.
+
+## Data flow
+
+```
+corpus + capture_latent_manifest.json
+   │  survey_source: has a planned box? a capture bundle? a guide render? not clipped?
+   ▼
+per-source records (n_blocks, actor, relative_dir)
+   │  actor-disjoint split by a hash of the BARE actor id
+   ▼
+K-block chains, never straddling a source
+   │  sha256 each rgb.mp4 and guide render INDIVIDUALLY
+   ▼
+subset JSON → train.py
+```
+
+## Organization logic
+
+Four jobs the plan says must not be left to the training loop:
+
+1. **Chain blocks.** A training sample is `K` *consecutive* causal blocks of one source at
+   the deployed stride, so the cached context the model reads forward is what deployment
+   would give it. Block bounds come from `causal_core.CausalGeometry.plan` — **called**, not
+   transcribed, since 2026-09-15. It used to be a copy pinned by a test, because this module
+   ran in the corpus tree and `causal_core` (torch, `ltx_core`) in the model tree. The cost of
+   calling it is that freezing a subset is now an `ltx`-env operation: importing `causal_core`
+   pulls in torch, a few seconds against a pass that hashes hundreds of MB of video.
+2. **The split**, by bare actor id, so a held-out actor cannot leak in by a path convention.
+3. **The content pin**, so a subset keeps describing what is on disk.
+4. **Exclusions** (`clipped_subject`), recorded rather than silently dropped.
+
+The subset also records its **objective**, and `train.py` refuses a mismatch: a subset is
+surveyed and hashed against one objective's artifacts, so training the other against it would
+read bundles the freeze never saw.
+
+## Invariants
+
+- **Hash the source files individually, never a directory digest** — B2 writes renders into
+  the same tree, so a directory hash would change for reasons unrelated to the pinned inputs.
+- Never re-sync a subset mid-sweep. `--verify` re-hashes and reports; it does not repair.
+- A pre-causal window-chain subset is **refused** by `train.py`, not reinterpreted: a window
+  index and a block index are different numbers over the same clip.
+
+## Gotchas
+
+- **`--min-holdout-actors` defaults to 12** — the right floor for a full-scale run and wrong
+  for a small tier by construction, since the split takes
+  `max(round(n × fraction), min(min_holdout, n − 1))`. At 8 actors the default holds out
+  **7**, leaving 1 for training, silently defeating the tier's purpose. Pass it explicitly
+  (e.g. `--min-holdout-actors 2`) for any small freeze. This was hit for real.
+- Hashing is the expensive part (a 4096×3000 h264 source is hundreds of MB); it runs over the
+  *selected* subset only, after actor selection has shrunk it.
+
+## Tests
+
+`tests/test_windows.py` — the split, the chaining, the content pin, and a **golden** test on
+exact block bounds for every clip length the corpus has. Golden rather than a comparison
+against `causal_core`, which would now be tautological: a frozen subset indexes blocks that
+`train.py` slices out of a master latent, so shifting the plan would silently re-point every
+chain in every subset already on disk.

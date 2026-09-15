@@ -7,6 +7,7 @@ from typing import Protocol
 import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from ltx_core.model.transformer.kv_cache import LayerKVCache
 from ltx_core.model.transformer.ops import (
     GatedAttentionCallable,
     PreAttentionCallable,
@@ -526,6 +527,9 @@ class Attention(torch.nn.Module):
         k_pe: torch.Tensor | None = None,
         perturbation_mask: torch.Tensor | None = None,
         all_perturbed: bool = False,
+        kv_cache: LayerKVCache | None = None,
+        kv_start: int = 0,
+        kv_write: bool = False,
     ) -> torch.Tensor:
         """Multi-head attention with optional RoPE, perturbation masking, and per-head gating.
         When ``perturbation_mask`` is all zeros, the expensive query/key path
@@ -550,6 +554,17 @@ class Attention(torch.nn.Module):
                 *None* or all-ones means standard attention; all-zeros skips
                 the query/key path entirely for efficiency.
             all_perturbed: Whether all perturbations are active for this block.
+            kv_cache: Optional per-layer :class:`~ltx_core.model.transformer.kv_cache.LayerKVCache`
+                holding earlier blocks' keys/values for causal autoregressive decoding.
+                When given, ``x``'s queries attend over ``[cache[:kv_start] | this call's
+                own K/V]``. With history present no ``mask`` is accepted -- causality holds
+                because later tokens are simply not in the cache yet; with an empty history
+                (a priming call) a ``(B, T, T)`` mask is accepted and applied as usual.
+            kv_start: Token offset of ``x`` within the cached stream. Entries at or past it
+                are this call's own; entries before it are the history to attend over.
+            kv_write: Store this call's K/V into the cache at ``kv_start`` before attending.
+                Reserved for the *clean* pass that finalises a block; the denoising pass
+                leaves the cache untouched so it stays recomputation-safe.
         Returns:
             Output tensor of shape ``(B, T, query_dim)``.
         """
@@ -560,6 +575,35 @@ class Attention(torch.nn.Module):
 
         if not use_attention:
             out = v
+        elif kv_cache is not None:
+            q = self.to_q(x)
+            k = self.to_k(context)
+            q, k = self.preattention_function(q, k, self, mask, pe, k_pe)
+            if kv_write:
+                kv_cache.write(k, v, kv_start)
+            history_k, history_v = kv_cache.read(kv_start)
+            if history_k is None:
+                # No history yet, so keys and queries are the same tokens in the same order
+                # and a ``(B, T, T)`` mask still describes them -- this is the priming call
+                # that seeds a cache from several blocks at once, and it needs the mask to
+                # keep those blocks causal with respect to each other.
+                out = (
+                    self.attention_function(q, k, v, self.heads)
+                    if mask is None
+                    else self.masked_attention_function(q, k, v, self.heads, mask)
+                )
+            else:
+                if mask is not None:
+                    raise ValueError(
+                        "a mask cannot accompany a non-empty kv_cache: it is sized for the query "
+                        "tokens, and the keys here are [history | current block]. Causality over "
+                        "the history is already enforced by what has been written"
+                    )
+                # cat's output -- not the cache view -- is what autograd saves, which is why a
+                # later in-place write into the same buffer cannot corrupt this graph.
+                k = torch.cat([history_k, k], dim=1)
+                v = torch.cat([history_v, v], dim=1)
+                out = self.attention_function(q, k, v, self.heads)
         else:
             q = self.to_q(x)
             k = self.to_k(context)

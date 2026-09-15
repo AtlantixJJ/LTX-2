@@ -1,20 +1,27 @@
-"""The one-step AR rollout -- ``refine_core.run_schedule``'s counterpart at ``[sigma_0, 0]``.
+"""The one-step causal AR rollout -- the deployment counterpart of ``train.py``'s loop.
 
-Built **on** ``refine_core``, never a copy of it (plan 2026-09-10 §7.2, and
-``scripts/prune/CLAUDE.md`` rule 1: one implementation of "refine one sliding window"). The
-window state, the carryover index, the geometry and the step are all that module's; what is
-different here is only the schedule -- one forward instead of ``k2``'s two -- and the guide,
-which enters as the init rather than the window being re-encoded from its own pixels.
+Built **on** ``causal_core``, never a copy of it (plan 2026-09-10 §7.2, and
+``scripts/prune/CLAUDE.md`` rule 1: one implementation of the rollout). What is different
+here is only the schedule -- one forward instead of `k2`'s two -- and the guide, which enters
+as the init rather than the block being re-encoded from its own pixels.
 
-**The one thing this must NOT inherit from `K_STEP`'s rollout** (§4.4's 2026-09-11 revision):
-``refine_core``'s own inference windowing re-encodes every window from pixels, which gives
-each one a fresh causal keyframe at its local frame 0. That is fine for `k2`, which was
-measured that way, and wrong here: `precompute.py` builds the training targets by encoding
-each source **once, continuously** and slicing, so a window past the clip's first has a
-regular multi-frame block in slot 0, not a re-keyed one. A rollout that re-keyed per window
-would be evaluating a model on inputs it was never trained on -- a train/deploy mismatch that
-shows up as a quality number, not an error. So :func:`rollout` takes the clip's **master**
-latent and slices, exactly as training does.
+**Revised 2026-09-14 (§4.4).** The sliding window with a frozen carryover at latent index 1 is
+gone, and with it ``refine_core.make_window_state``/``run_schedule`` on this path. Deployment
+is now block-causal attention plus a clean-latent K/V cache, exactly as training is:
+
+* a block's queries attend over ``[cached clean context | this block]`` and nothing later;
+* after a block is denoised, one clean no-grad ``refresh`` forward puts its keys and values in
+  the cache, so no later block ever forwards that content again;
+* the pinned frame-0 sink -- the causal keyframe, which under §2.0 is the product's *given*
+  real first frame -- stays in the cache for the whole rollout.
+
+`k2` is untouched: it still runs ``refine_core``'s window step, which is what every frozen
+number under ``expr/refiner_prune/2.5/`` was measured with. The two schemes coexist rather
+than one replacing the other in place, because the baseline has to stay reproducible.
+
+:func:`rollout` takes the clip's **master** latent and slices, so it does not inherit
+``K_STEP``'s per-window re-encode -- the §4.4 rule, and the one thing here that would
+silently mismatch training.
 
 The LoRA is fused at load rather than applied as an adapter: pass
 ``session.transformer(loras=...)``. There is no adapter left at inference, which is why
@@ -27,79 +34,68 @@ from dataclasses import dataclass
 
 import torch
 
-from ltx_core.conditioning.types.reference_video_cond import VideoConditionByReferenceLatent
-from ltx_core.tools import VideoLatentTools
-from scripts.prune.core import refine_core, refine_task
-from scripts.prune.core.refine_core import WindowGeometry
+from scripts.onestep_avatar import causal_core
+from scripts.onestep_avatar.causal_core import BlockCache, CausalGeometry, ClipGrid
+from scripts.prune.core import refine_task
 
 
-def guide_conditionings(z_g: torch.Tensor, guide_mode: str) -> tuple:
-    """The extra conditioning D2 adds, or ``()`` for D1 -- the SAME construction `train.py` uses.
+def guide_conditionings(z_g: torch.Tensor, guide_mode: str) -> tuple:  # noqa: ARG001
+    """The extra conditioning a guide arm adds -- ``()`` for D1, the only deployable arm.
 
-    Shared rather than re-derived because the arm has to match between training and
-    deployment exactly: a checkpoint trained with clean reference tokens and run without them
-    is being asked to work from half its input, and nothing would raise.
+    Kept as a function, and kept shared with ``train.py``, because the arm has to match
+    between training and deployment exactly: a checkpoint trained with extra guide tokens and
+    run without them is being asked to work from half its input, and nothing would raise.
+
+    The old ``d2`` hybrid (the guide again, as clean reference tokens at timestep 0) is gone
+    twice over: it was dropped as a live arm 2026-09-13 for costing 1.05x `k2`, and under
+    block-causal attention it is no longer even expressible -- reference tokens appended after
+    the target are, by construction, future context.
     """
     if guide_mode == "d1":
         return ()
-    if guide_mode != "d2":
-        raise ValueError(f"unknown guide mode {guide_mode!r}; expected 'd1' or 'd2'")
-    return (
-        VideoConditionByReferenceLatent(latent=z_g, downscale_factor=1, temporal_scale_factor=1, strength=1.0),
-    )
-
-
-def one_step_window(
-    transformer,  # noqa: ANN001 -- the X0Model the session yields
-    denoiser,  # noqa: ANN001 -- SimpleDenoiser; the distilled path needs no guider
-    z_g: torch.Tensor,
-    carry: torch.Tensor | None,
-    sigmas: torch.Tensor,
-    tools: VideoLatentTools,
-    seed: int,
-    device: torch.device,
-    dtype: torch.dtype | None = None,
-    guide_mode: str = "d1",
-) -> torch.Tensor:
-    """One window, one forward: noise the guide to ``sigmas[0]``, denoise, unpatchify.
-
-    ``refine_core.refine_window`` with a two-point schedule would be the same thing; this
-    exists to carry ``guide_mode`` through and to make the call site say "one step" rather
-    than leaving the reader to count a sigma list.
-    """
-    if len(sigmas) != 2:
+    if guide_mode == "d0":
         raise ValueError(
-            f"one_step_window needs a 2-point schedule (one forward), got {len(sigmas)} sigmas. "
-            f"Use refine_task.one_step_schedule()"
+            "guide_mode 'd0' is a training-only sanity arm: it noises the capture z_y, which "
+            "does not exist at inference"
         )
-    state = refine_core.make_window_state(
-        z_g,
-        carry,
-        float(sigmas[0].item()),
-        tools,
-        seed,
-        device,
-        dtype,
-        extra_conditionings=guide_conditionings(z_g, guide_mode),
-    )
-    return refine_core.finalize(refine_core.run_schedule(transformer, denoiser, state, sigmas), tools)
+    raise ValueError(f"unknown guide mode {guide_mode!r}; expected 'd1'")
 
 
 @dataclass(frozen=True)
 class RolloutResult:
-    """The rolled-out latent plus what it cost, in the units §6 reports."""
+    """The rolled-out latent plus what it cost, in the units §6 reports.
 
-    latents: list[torch.Tensor]
+    ``forwards`` counts **both** passes per block -- the denoise and the cache refresh -- so
+    it is directly comparable with `k2`'s two forwards per window. Reporting only the denoise
+    pass would flatter the compute claim by exactly the factor the refresh costs.
+    """
+
+    latent: torch.Tensor
     forwards: int
-    windows: int
+    blocks: int
+    denoise_forwards: int
+    refresh_forwards: int
+
+
+def one_step_sigma(model_sigmas: list[float], sigma0: float = refine_task.ONE_STEP_SIGMA0) -> float:
+    """``refine_task.one_step_schedule``'s single non-zero sigma, with its on-grid check.
+
+    The schedule is still built and checked through ``refine_task`` -- the causal loop has no
+    stepper, so it consumes the sigma rather than the pair, but the guard that rejects an
+    off-grid sigma0 or a multi-step schedule must not be bypassed.
+    """
+    schedule = refine_task.one_step_schedule(model_sigmas, sigma0)
+    if len(schedule) != 2 or schedule[-1] != 0.0:
+        raise ValueError(f"one_step_schedule returned {schedule}, expected [sigma0, 0.0]")
+    return float(schedule[0])
 
 
 def rollout(  # noqa: PLR0913 -- a rollout is defined by its geometry, schedule, arm and device
-    transformer,  # noqa: ANN001
-    denoiser,  # noqa: ANN001
+    transformer,  # noqa: ANN001 -- the X0Model the session yields
+    context: torch.Tensor,
     master: torch.Tensor,
-    geometry: WindowGeometry,
-    sigmas: torch.Tensor,
+    geometry: CausalGeometry,
+    sigma0: float,
     fps: float,
     *,
     device: torch.device,
@@ -107,44 +103,65 @@ def rollout(  # noqa: PLR0913 -- a rollout is defined by its geometry, schedule,
     latent_channels: int = 128,
     guide_mode: str = "d1",
     dtype: torch.dtype | None = None,
+    num_layers: int | None = None,
+    inner_dim: int | None = None,
 ) -> RolloutResult:
-    """Slide over a clip's ONE continuous guide encode, carrying the model's own output.
+    """Roll a clip forward block by block over its ONE continuous guide encode.
 
     ``master`` is ``[1, C, F_latent, H, W]`` -- the whole guide render encoded in a single
-    pass, the same tensor `precompute.py` slices the training inits out of. Windows are
-    sliced from it; nothing is re-encoded. Past window 0 there is no fresh keyframe, which is
-    what the deployed rollout actually has and what the model was trained against.
+    pass, the same tensor training slices its inits out of. Blocks are token ranges of it;
+    nothing is re-encoded and nothing is re-forwarded that the cache already holds.
 
-    The carryover is the model's own previous output at ``CARRYOVER_LATENT_IDX``, seeded with
-    nothing at the clip's first window -- deployment has no predecessor there either.
+    ``context`` is passed in rather than defaulted because the refiner runs on ONE constant
+    prompt (``refine_task.REFINE_PROMPT``): a rollout that silently conditioned on something
+    else would change every number in §8 without changing a call site. Build it with
+    ``scripts.prune.data.prompt_cache.get_or_build``, the same call ``train.py`` makes.
     """
-    latent_frames = geometry.latent_frames
-    time_scale = geometry.scale_factors.time
-    height = master.shape[-2] * geometry.scale_factors.height
-    width = master.shape[-1] * geometry.scale_factors.width
-
-    total_pixel_frames = (master.shape[2] - 1) * time_scale + 1
-    plan = geometry.plan(total_pixel_frames)
-    tools = refine_core.tools_for_window(geometry, height, width, fps, latent_channels=latent_channels)
-
-    outputs: list[torch.Tensor] = []
-    carry: torch.Tensor | None = None
-    for index, (start, _end) in enumerate(plan):
-        first = start // time_scale
-        z_g = master[:, :, first : first + latent_frames]
-        if z_g.shape[2] != latent_frames:
-            break  # the master ran out; a partial window is not a window
-        refined = one_step_window(
-            transformer, denoiser, z_g, carry, sigmas, tools, seed + index, device, dtype, guide_mode
+    guide_conditionings(master, guide_mode)  # validates the arm; D1 adds nothing
+    dtype = dtype if dtype is not None else master.dtype
+    latent_frames = master.shape[2]
+    grid = ClipGrid.build(
+        latent_frames,
+        master.shape[-2] * geometry.scale_factors.height,
+        master.shape[-1] * geometry.scale_factors.width,
+        fps,
+        geometry,
+        device=device,
+        dtype=dtype,
+        latent_channels=latent_channels,
+    )
+    base = transformer
+    while not hasattr(base, "transformer_blocks") and hasattr(base, "velocity_model"):
+        base = base.velocity_model
+    cache = BlockCache.allocate(
+        grid,
+        geometry,
+        num_layers=num_layers if num_layers is not None else len(base.transformer_blocks),
+        inner_dim=inner_dim if inner_dim is not None else base.inner_dim,
+        device=device,
+        dtype=dtype,
+    )
+    guide_tokens = grid.patchify(master.to(device=device, dtype=dtype))
+    denoise_fn = causal_core.denoised_from_x0_model(transformer)
+    plan = geometry.plan(latent_frames)
+    with torch.no_grad():
+        tokens, forwards = causal_core.rollout(
+            denoise_fn,
+            grid,
+            geometry,
+            cache,
+            guide_tokens,
+            context,
+            sigma0,
+            seed=seed,
+            blocks=plan,
         )
-        outputs.append(refined)
-        carry = refine_core.carry_from(refined, geometry).detach()
-
-    return RolloutResult(latents=outputs, forwards=len(outputs) * (len(sigmas) - 1), windows=len(outputs))
-
-
-def schedule(model_sigmas: list[float], sigma0: float = refine_task.ONE_STEP_SIGMA0, *, device=None) -> torch.Tensor:  # noqa: ANN001
-    """``refine_task.one_step_schedule`` as a tensor, with its on-grid check."""
-    return torch.tensor(
-        refine_task.one_step_schedule(model_sigmas, sigma0), dtype=torch.float32, device=device
+    covered = plan[-1][1] if plan else 0
+    latent = grid.unpatchify_block(tokens[:, : covered * grid.tokens_per_latent_frame], covered)
+    return RolloutResult(
+        latent=latent,
+        forwards=forwards,
+        blocks=len(plan),
+        denoise_forwards=len(plan),
+        refresh_forwards=len(plan),
     )

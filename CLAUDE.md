@@ -13,6 +13,11 @@ LTX-2 is a DiT-based audio-video foundation model. This repo is a `uv` monorepo 
 
 There is also a top-level `scripts/` directory of standalone analysis/research scripts (e.g. VAE latent visualization). These are not part of any package -- they `sys.path.append` into `packages/*/src` directly rather than importing an installed package, and each is a self-contained probe rather than a shared library.
 
+Two directories under `scripts/` are real packages with their own rules, and each has a `CLAUDE.md` to read **before** editing inside it:
+
+* **`scripts/prune/`** -- the training-free head/FFN pruning harness for the `k2` refiner. See `scripts/prune/CLAUDE.md` (its binding rule: any change that can move a tensor is not done until `checks.method_parity` passes again).
+* **`scripts/onestep_avatar/`** -- the one-step LTX-2.5 avatar renderer: corpus tooling *and* model training, consolidated into one package on 2026-09-15 (its corpus half previously lived at the workspace root). See `scripts/onestep_avatar/CLAUDE.md` and its `doc/` folder. Two things to know before editing: it runs in **two conda envs** (`argavatar` for `build_guidance.py` alone, `ltx` for everything else), and **it carries a documentation contract** -- every module has a design doc at `doc/<module>.md` covering objective, data flow, organization logic and invariants, and updating that doc is part of any change to those things, not a write-up afterwards. Much of it is workspace-specific corpus plumbing rather than anything upstream would want, so corpus-side changes move this submodule's pin.
+
 For a deep technical reference covering the data-flow spine, model class hierarchy, tensor
 shapes, config loading chain, training internals, and a common-pitfalls list mined from
 `assert`/`no_grad`/`detach`/`strict=False` across the whole repo, see

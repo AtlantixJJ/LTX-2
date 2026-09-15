@@ -10,32 +10,67 @@ import torch
 
 from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar.precompute import (
+    BUNDLE_SCHEMA_VERSION,
     CAPTURE_MANIFEST_NAME,
-    SCHEMA_VERSION,
     CaptureSource,
     VideoReader,
-    carryover_mask,
+    check_pair_alignment,
     discover_pairs,
     enumerate_capture_jobs,
-    enumerate_jobs,
-    latent_record,
+    master_from_windows,
+    master_record,
 )
 from scripts.prune.core.refine_core import WindowGeometry
 
 
-def test_carryover_mask_freezes_only_regular_frame_one() -> None:
-    mask = carryover_mask(4, 2, 3)
-    assert mask.shape == (4, 2, 3)
-    assert torch.count_nonzero(mask[0]) == 0
-    assert torch.equal(mask[1], torch.ones(2, 3))
-    assert torch.count_nonzero(mask[2:]) == 0
+def test_master_record_stores_the_whole_clip_not_a_window() -> None:
+    record = master_record(
+        torch.zeros(1, 128, 18, 32, 32), source="v", fps=30.0, pixel_frames=137, box_xyxy=None, edge=1024
+    )
+    assert record["master"].shape == (128, 18, 32, 32)
+    assert record["master"].dtype == torch.bfloat16
+    assert (record["schema_version"], record["fps"], record["pixel_frames"]) == (BUNDLE_SCHEMA_VERSION, 30.0, 137)
 
 
-def test_latent_record_uses_trainer_non_patchified_format() -> None:
-    record = latent_record(torch.zeros(1, 128, 4, 32, 32), fps=30.0)
-    assert record["latents"].shape == (128, 4, 32, 32)
-    assert record["latents"].dtype == torch.bfloat16
-    assert (record["num_frames"], record["height"], record["width"], record["fps"]) == (4, 32, 32, 30.0)
+def test_master_from_windows_reassembles_a_v1_bundle_losslessly() -> None:
+    """The migration that makes SS4.4's master-latent rule a reader change, not days of re-encoding.
+
+    Every v1 window was itself sliced from one continuous encode, so the tiling is exact and
+    the master reassembles bit-for-bit -- which is what this asserts by slicing every window
+    back out of the result.
+    """
+    # The deployed 25-frame / 16-frame-stride tiling: 4 latent frames per window, overlapping
+    # by 2, so two windows span 41 pixel frames and 6 latent frames.
+    master = torch.randn(1, 8, 6, 2, 2, dtype=torch.bfloat16)
+    windows = {
+        index: {
+            "latents": master[0][:, start // 8 : start // 8 + 4],
+            "fps": 30.0,
+            "start": start,
+            "end": start + 25,
+        }
+        for index, start in enumerate((0, 16))
+    }
+    rebuilt, fps, pixel_frames = master_from_windows({"windows": windows}, 8)
+    assert (fps, pixel_frames) == (30.0, 41)
+    assert torch.equal(rebuilt, master)
+    for record in windows.values():
+        first = record["start"] // 8
+        assert torch.equal(rebuilt[0][:, first : first + 4], record["latents"])
+
+
+def test_master_from_windows_refuses_independently_encoded_windows() -> None:
+    """Disagreeing overlaps mean the bundle predates the continuous-encode revision.
+
+    Stitching those would splice together windows that each carry their own fabricated causal
+    keyframe -- exactly the data SS4.4 removed. Re-encoding is the only fix, so this raises.
+    """
+    windows = {
+        0: {"latents": torch.zeros(8, 4, 2, 2), "fps": 30.0, "start": 0, "end": 25},
+        1: {"latents": torch.ones(8, 4, 2, 2), "fps": 30.0, "start": 16, "end": 41},
+    }
+    with pytest.raises(ValueError, match="continuous encode"):
+        master_from_windows({"windows": windows}, 8)
 
 
 BOX = [0.0, 100.0, 900.0, 1000.0]
@@ -75,25 +110,18 @@ def _write_manifest(root: Path, views: list[Path], *, box: list[float] | None = 
     )
 
 
-def _write_bundle(view: Path, windows: dict[int, tuple[int, int]], *, fps: float = 30.0) -> None:
-    """A minimal capture bundle in ``--capture-only``'s own format."""
+def _write_bundle(view: Path, *, pixel_frames: int = 25, fps: float = 30.0) -> None:
+    """A minimal v2 capture bundle in ``--capture-only``'s own format."""
+    latent_frames = (pixel_frames - 1) // 8 + 1
     torch.save(
-        {
-            "schema_version": SCHEMA_VERSION,
-            "source": str(view),
-            "windows": {
-                index: {
-                    "latents": torch.zeros(128, 4, 1, 1, dtype=torch.bfloat16),
-                    "num_frames": 4,
-                    "height": 1,
-                    "width": 1,
-                    "fps": fps,
-                    "start": start,
-                    "end": end,
-                }
-                for index, (start, end) in windows.items()
-            },
-        },
+        master_record(
+            torch.zeros(1, 128, latent_frames, 1, 1),
+            source=str(view),
+            fps=fps,
+            pixel_frames=pixel_frames,
+            box_xyxy=BOX,
+            edge=32,
+        ),
         view / "ltx_vae_latent.pt",
     )
 
@@ -134,33 +162,33 @@ def test_discover_pairs_rejects_a_render_built_at_a_different_box(tmp_path: Path
         discover_pairs(tmp_path)
 
 
-def test_video_reader_and_job_enumeration_use_complete_causal_windows(tmp_path: Path) -> None:
+def test_video_reader_and_pair_alignment_agree_on_the_frame_range(tmp_path: Path) -> None:
     view = tmp_path / "Part_1" / "0008_01" / "views" / "view00"
     view.mkdir(parents=True)
     _write_render(view)
-    _write_bundle(view, {0: (0, 25)})
+    _write_bundle(view, pixel_frames=25)
     _write_manifest(tmp_path, [view])
 
     pair = discover_pairs(tmp_path)[0]
     reader = VideoReader(pair.guide)
     assert len(reader) == 25
     assert reader.get_batch(range(2)).shape == (2, 32, 32, 3)
-    jobs = enumerate_jobs([pair], WindowGeometry(25, 9, SpatioTemporalScaleFactors.default()))
-    assert [(job.index, job.start, job.end) for job in jobs] == [(0, 0, 25)]
+    info = check_pair_alignment(pair, WindowGeometry(25, 9, SpatioTemporalScaleFactors.default()))
+    assert (info["pixel_frames"], info["latent_frames"], info["fps"]) == (25, 4, 30.0)
 
 
-def test_job_enumeration_rejects_a_bundle_covering_different_frames(tmp_path: Path) -> None:
-    """The guide and the capture must describe the same moments; a window plan that does not
-    line up is caught before any encode, not discovered as a quality problem later."""
+def test_pair_alignment_rejects_a_guide_shorter_than_its_capture(tmp_path: Path) -> None:
+    """The guide and the capture must describe the same moments; a render that lost frames
+    against its capture is caught before any encode, not discovered as a quality problem."""
     view = tmp_path / "Part_1" / "0008_01" / "views" / "view00"
     view.mkdir(parents=True)
-    _write_render(view)
-    _write_bundle(view, {0: (4, 29)})  # same window count, shifted by 4 pixel frames
+    _write_render(view, frames=17)
+    _write_bundle(view, pixel_frames=25)
     _write_manifest(tmp_path, [view])
 
     pair = discover_pairs(tmp_path)[0]
-    with pytest.raises(ValueError, match="guide plans pixels"):
-        enumerate_jobs([pair], WindowGeometry(25, 9, SpatioTemporalScaleFactors.default()))
+    with pytest.raises(ValueError, match="different frame ranges"):
+        check_pair_alignment(pair, WindowGeometry(25, 9, SpatioTemporalScaleFactors.default()))
 
 
 def _write_capture_source(view: Path, *, frames: int = 25, fps: float = 30.0) -> CaptureSource:

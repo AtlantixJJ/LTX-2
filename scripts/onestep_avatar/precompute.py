@@ -1,38 +1,35 @@
-"""VAE-encode ARGAvatar/capture training windows.
+"""VAE-encode the ARGAvatar guide and the capture target, one continuous encode per view.
 
-The output root is directly consumable by ``FlexibleStrategy`` once its guided-init
-configuration is enabled:
+Every product this writes lives **beside the source video**, one per view, and the training
+loop reads them directly -- there is no experiment-side latent tree any more:
 
-* ``target_latents/`` contains the capture latents (the loss target);
-* ``init_latents/`` contains the ARGAvatar-render latents (the noising source);
-* ``carryover_masks/`` contains a binary latent-grid mask with only latent frame 1
-  enabled.  This is the frozen AR carryover condition.
+* ``ltx_vae_latent.pt``            -- the capture master latent ``z_y`` (``--capture-only``);
+* ``argavatar_ltx_vae_latent.pt``  -- the guide master latent ``z_g`` (the paired pass);
+* ``loss_mask_grids.pt``           -- the render alpha and the capture mask, pooled to the
+  latent grid over the whole clip, stored separately so combining them stays a training
+  choice (plan SS4.3 row 1).
 
-**Every path uses one continuous VAE encode per source, sliced per window.** Revised
-2026-09-11 (plan §4.4): a genuine causal
-keyframe only ever exists at latent frame 0 of a truly continuous encode, and nothing
-re-keys mid-rollout past a clip's first window -- so independently re-encoding every
-window was manufacturing an artificial fresh keyframe the deployed AR rollout never
-actually has. ``encode_capture_jobs`` VAE-encodes each source ONCE, continuously
-(``crop_source`` decodes the whole needed pixel range in one pass), and slices every
-window's latent directly out of that one encode. Window 0 gets a genuine keyframe for
-free (the master's own frame 0); every later window gets the same multi-frame slot 0 a
-true continuous rollout already has. Verified empirically: window 0 sliced vs.
-independently encoded differs by ~0.1% (bf16 noise floor); a mid-clip window differs by
-~24% from the old independent-encode approach, confirming the old construction was
-wrong, not just redundant.
+**One continuous VAE encode per source, and the master is what is stored.** Revised
+2026-09-11 (plan SS4.4): a genuine causal keyframe only ever exists at latent frame 0 of a
+truly continuous encode, and nothing re-keys mid-rollout past a clip's first window -- so
+independently re-encoding every window was manufacturing an artificial fresh keyframe the
+deployed AR rollout never has. Verified empirically: window 0 sliced vs. independently
+encoded differs by ~0.1 % (bf16 noise floor); a mid-clip window differs by ~24 %.
 
-The paired path (``encode_jobs``, no ``--capture-only``) applies the same rule to the guide
-render, and does not re-encode the capture at all: ``z_y`` is copied out of the bundle
-``--capture-only`` already wrote for that view. One producer per tensor -- the crop box and
-the target latents both come from the capture pass, and nothing downstream re-derives them.
+Revised again 2026-09-14: the per-window **slices are not stored either**. Under SS4.4's
+causal block scheme a window is not a unit of anything, so the bundle IS the master and
+``train.py`` slices the blocks it wants out of it. That drops the overlap duplication (every
+latent frame was written twice, once per overlapping window) and lets the block geometry
+change without re-encoding a single source. ``--consolidate`` migrates a v1 per-window bundle
+to a v2 master bundle in place, with no VAE and no GPU -- which is what makes this a reader
+change rather than days of re-encoding for the 2034 sources already on disk.
 
-``--capture-only`` writes one consolidated ``ltx_vae_latent.pt`` per source view
-(``views/<view>/ltx_vae_latent.pt``, a ``{"windows": {index: record}}`` dict) instead
-of one file per window -- a single atomic save per source, never per-window files.
+``z_y`` has exactly one producer (``--capture-only``) and the paired pass does not re-encode
+or copy it: the trainer reads that bundle directly.
 
 Run from ``LTX-2`` using the ``ltx`` conda environment, for example::
 
+    conda run -n ltx python -m scripts.onestep_avatar.precompute --consolidate
     conda run -n ltx python -m scripts.onestep_avatar.precompute --model 2.5 --gpu-id 0
 """
 
@@ -53,13 +50,35 @@ import cv2
 import numpy as np
 import torch
 
+# Aliased: `geometry` is already the parameter name this module uses throughout for a
+# WindowGeometry instance -- a different thing entirely (the k2 window plan, not the crop
+# box). Importing it bare would shadow that on every function that takes one.
+from scripts.onestep_avatar import dataset, mask_video
+from scripts.onestep_avatar import geometry as crop_geometry
 from scripts.prune.core import ltx_adapter, model_registry, refine_task
 from scripts.prune.core.refine_core import WindowGeometry
 from scripts.prune.core.session import DTYPE
 
 SCHEMA_VERSION = 1
+
+# Bundle payload version, separate from the manifest's SCHEMA_VERSION because they changed at
+# different times. v1 held one record per deployment window; v2 (2026-09-14, plan SS4.4) holds
+# the source's ONE continuous encode -- the master -- and nothing else. Under the causal block
+# scheme a "window" is not a unit of anything, and the per-window slices stored every latent
+# frame twice over (consecutive windows overlapped by two frames) to describe a tiling the
+# trainer now derives itself. ``--consolidate`` rebuilds a v2 bundle from a v1 one with no VAE.
+BUNDLE_SCHEMA_VERSION = 2
+
+# The three per-view products the trainer reads, all beside the source video. There is no
+# experiment-output tree any more: ``expr/onestep_avatar/precomputed/`` existed only to hold
+# per-window slices, and SS4.4's master latents make it redundant.
+# ``dataset`` owns the objective -> filename mapping (SS1.2). The two
+# objective-independent names are re-exported here because this module is their producer.
+LOSS_MASK_GRIDS_NAME = dataset.LOSS_MASK_GRIDS_NAME
 DEFAULT_CORPUS_ROOT = model_registry.WORKSPACE_ROOT / "data" / "AnimatableHuman" / "DNARenderingVideo"
-DEFAULT_OUTPUT_ROOT = model_registry.WORKSPACE_ROOT / "expr" / "onestep_avatar" / "precomputed"
+# Provenance only. `expr/onestep_avatar/precomputed/` held the per-window latent tree until
+# SS4.4 (2026-09-14); nothing writes latents there any more, and `train.py` does not read it.
+DEFAULT_MANIFEST_ROOT = model_registry.WORKSPACE_ROOT / "expr" / "onestep_avatar" / "paired"
 # Each worker holds one source's raw-frame batch (~3000x4096 px, ~1-2 GB) plus its
 # accumulated resized crops until the whole source returns. `os.cpu_count()` (e.g. 48
 # on this workstation) workers at that footprint can spike host RAM by 50-100+ GB on
@@ -95,21 +114,6 @@ class Pair:
 
 
 @dataclass(frozen=True)
-class WindowJob:
-    pair: Pair
-    index: int
-    start: int
-    end: int
-    fps: float
-    height: int
-    width: int
-
-    @property
-    def relative_path(self) -> Path:
-        return Path(self.pair.relative_dir) / f"window_{self.index:04d}.pt"
-
-
-@dataclass(frozen=True)
 class CaptureSource:
     """A raw DNARendering RGB view whose target latents can be prepared alone."""
 
@@ -134,13 +138,15 @@ class CaptureJob:
         return f"{self.source.relative_dir}#window_{self.index:04d}"
 
 
-def bundle_path(source: CaptureSource) -> Path:
-    """The single consolidated latent file for one view -- every window, one file.
+def bundle_path(source: CaptureSource, objective: str = dataset.DEFAULT_OBJECTIVE) -> Path:
+    """The single consolidated latent file for one view -- the whole clip, one file.
 
-    Persisted beside the source view, not in an experiment-output tree, and written
-    once per source (whole-source atomic save), never incrementally per window.
+    Persisted beside the source view, not in an experiment-output tree, and written once per
+    source (whole-source atomic save). The two objectives (SS1.2) differ in the pixels that
+    were encoded -- unmatted capture vs. capture matted to white -- so they are two files,
+    never one file reinterpreted.
     """
-    return Path(source.rgb).parent / "ltx_vae_latent.pt"
+    return Path(source.rgb).parent / dataset.capture_bundle_name(objective)
 
 
 class VideoReader:
@@ -227,7 +233,7 @@ def manifest_boxes(corpus_root: Path) -> dict[str, tuple[float, float, float, fl
     return boxes
 
 
-def discover_pairs(corpus_root: Path) -> list[Pair]:
+def discover_pairs(corpus_root: Path, objective: str = dataset.DEFAULT_OBJECTIVE) -> list[Pair]:
     """Find views with a guide render, a capture bundle, and a render built at the right box.
 
     Two rejections, and the difference between them matters:
@@ -241,18 +247,20 @@ def discover_pairs(corpus_root: Path) -> list[Pair]:
       make the pair quietly disappear from the corpus instead.
     """
     boxes = manifest_boxes(corpus_root)
-    guides = sorted(corpus_root.glob("Part_*/*/views/*/argavatar_render.mp4"))
+    render_name = dataset.render_name(objective)
+    metadata_name = dataset.render_metadata_name(objective)
+    guides = sorted(corpus_root.glob(f"Part_*/*/views/*/{render_name}"))
     pairs: list[Pair] = []
     stale: list[str] = []
     for guide in guides:
-        bundle = guide.with_name("ltx_vae_latent.pt")
+        bundle = guide.with_name(dataset.capture_bundle_name(objective))
         if not bundle.is_file():
             continue
         directory = str(guide.parent.relative_to(corpus_root))
 
-        sidecar = guide.with_name("argavatar_render.json")
+        sidecar = guide.with_name(metadata_name)
         if not sidecar.is_file():
-            stale.append(f"{directory} (no argavatar_render.json)")
+            stale.append(f"{directory} (no {metadata_name})")
             continue
         rendered_box = tuple(float(v) for v in json.loads(sidecar.read_text())["crop_box_xyxy"])
         recorded_box = boxes.get(directory)
@@ -284,7 +292,10 @@ def discover_pairs(corpus_root: Path) -> list[Pair]:
     return pairs
 
 
-ALPHA_NAME = "argavatar_alpha.npy"
+ALPHA_NAME = dataset.ALPHA_NAME
+# The stored-mask resolution, matching what build_guidance.py harvests the render's alpha at.
+# Both persisted masks live on this grid so they can be compared without a resample.
+ALPHA_GRID = 256
 
 
 def latent_frame_pixel_range(master_index: int, time_scale: int) -> tuple[int, int]:
@@ -309,19 +320,19 @@ def _pool_to(grid: np.ndarray, height: int, width: int) -> np.ndarray:
     )
 
 
-def build_loss_masks(
+def build_loss_mask_grids(
     pair: Pair,
-    jobs: list[WindowJob],
     box_xyxy: tuple[float, float, float, float] | None,
     *,
-    shape: tuple[int, int, int, int],
+    latent_frames: int,
+    latent_height: int,
+    latent_width: int,
     time_scale: int,
-    output_root: Path,
     overwrite: bool,
-) -> int:
-    """Write each window's latent-resolution subject coverage (plan SS4.3 row 1).
+) -> Path | None:
+    """Write the view's latent-resolution subject coverage over the WHOLE clip (plan SS4.3 row 1).
 
-    TWO grids per window, deliberately not pre-combined:
+    TWO grids per view, deliberately not pre-combined:
 
     * ``render_alpha``  -- the ARGAvatar render's own alpha, harvested by
       ``build_guidance.py`` at 256**2 and pooled here. Where the model is asked to paint.
@@ -331,48 +342,68 @@ def build_loss_masks(
     They disagree by exactly the SSB1 IoU gap (0.78-0.86), and which disagreement region the
     loss should cover is a training decision, not a precompute one -- so both are stored and
     ``train.py --loss-mask`` picks. Pre-combining here would bake one answer into the corpus.
+
+    Per-clip rather than per-window since SS4.4: the trainer slices the block it needs out of
+    the master grid, exactly as it slices the latent, so the mask and the latent it weights
+    can no longer be indexed differently.
     """
     if box_xyxy is None:
-        return 0
-    _, latent_frames, latent_height, latent_width = shape
-    alpha_path = Path(pair.guide).with_name(ALPHA_NAME)
-    if not alpha_path.is_file():
+        return None
+    out = Path(pair.guide).with_name(LOSS_MASK_GRIDS_NAME)
+    if out.is_file() and not overwrite:
+        return None
+    alpha_stem = Path(pair.guide).with_name(dataset.ALPHA_STEM)
+    if not mask_video.mask_exists(alpha_stem):
         raise SystemExit(
             f"{pair.relative_dir}: {ALPHA_NAME} is missing. Re-run build_guidance.py --force "
             f"for this view; the render's alpha only exists inside its own temp frames."
         )
-    alpha = np.load(alpha_path).astype(np.float32) / 255.0
+    alpha = mask_video.read_mask(alpha_stem).astype(np.float32) / 255.0
     alpha = _pool_to(alpha, latent_height, latent_width)
 
-    mask_path = Path(pair.guide).with_name("mask.mp4")
-    capture = _read_cropped_masks(mask_path, box_xyxy, latent_height, latent_width)
+    # The capture matte, cropped to the SAME box and persisted at the same 256**2 grid as the
+    # render's alpha. Stored (losslessly, ~42x smaller than raw) because the alternative is
+    # re-decoding a 4096x3000 mask.mp4 at 36 MB a frame every time these grids are rebuilt --
+    # the single most expensive read in this pass. Written from the same decode that feeds
+    # the grids, so there is still exactly one producer.
+    crop_stem = Path(pair.guide).with_name(dataset.CAPTURE_MASK_CROP_STEM)
+    mask_path = Path(pair.guide).with_name(dataset.CAPTURE_MASK_NAME)
+    if mask_video.mask_exists(crop_stem) and not overwrite:
+        cropped = mask_video.read_mask(crop_stem)
+    else:
+        cropped = _read_cropped_masks(mask_path, box_xyxy, ALPHA_GRID, ALPHA_GRID)
+        mask_video.write_mask_video(cropped, crop_stem.with_suffix(".mp4"))
+    # Both masks now reach the latent grid by the SAME route -- full res -> 256 -> latent.
+    # The capture matte used to be pooled straight to latent resolution while the render's
+    # alpha went via 256, so the band the loss weights by (their difference) carried a small
+    # resampling mismatch that had nothing to do with alignment. Measured cost of the extra
+    # hop: mean 6e-5, max 2e-3 of a cell's coverage -- far below the mismatch it removes.
+    capture = _pool_to(cropped.astype(np.float32) / 255.0, latent_height, latent_width)
     if len(capture) < len(alpha):
         raise SystemExit(
             f"{pair.relative_dir}: mask.mp4 has {len(capture)} frames but the render has {len(alpha)}"
         )
 
-    written = 0
-    for job in jobs:
-        out = output_root / "loss_masks" / job.relative_path
-        if out.is_file() and not overwrite:
-            continue
-        first = job.start // time_scale
-        grids = {}
-        for name, source in (("render_alpha", alpha), ("capture_mask", capture)):
-            frames = []
-            for slot in range(latent_frames):
-                lo, hi = latent_frame_pixel_range(first + slot, time_scale)
-                frames.append(source[lo:hi].mean(axis=0))
-            grids[name] = torch.from_numpy(np.stack(frames)).to(torch.float16).contiguous()
-        atomic_torch_save(grids, out)
-        written += 1
-    return written
+    grids: dict[str, object] = {"schema_version": BUNDLE_SCHEMA_VERSION, "source": pair.relative_dir}
+    for name, source in (("render_alpha", alpha), ("capture_mask", capture)):
+        frames = []
+        for slot in range(latent_frames):
+            lo, hi = latent_frame_pixel_range(slot, time_scale)
+            if lo >= len(source):
+                raise SystemExit(
+                    f"{pair.relative_dir}: {name} has {len(source)} pixel frames, too few for "
+                    f"latent frame {slot} of {latent_frames}"
+                )
+            frames.append(source[lo : min(hi, len(source))].mean(axis=0))
+        grids[name] = torch.from_numpy(np.stack(frames)).to(torch.float16).contiguous()
+    atomic_torch_save(grids, out)
+    return out
 
 
 def _read_cropped_masks(
     path: Path, box_xyxy: tuple[float, float, float, float], height: int, width: int
 ) -> np.ndarray:
-    """``mask.mp4`` cropped to the manifest box and pooled, ONE frame resident at a time.
+    """``mask.mp4`` cropped to the manifest box and pooled to uint8, ONE frame at a time.
 
     Streaming rather than ``VideoReader.get_batch(range(len(reader)))``: a 3000x4096 mask is
     36 MB a frame, so reading a 150-frame clip in one call costs ~5.5 GB plus another 5.5 GB
@@ -396,26 +427,7 @@ def _read_cropped_masks(
         capture.release()
     if not pooled:
         raise ValueError(f"{path}: decoded no frames")
-    return np.stack(pooled).astype(np.float32) / 255.0
-
-
-def _fit_square_to_canvas(
-    box: tuple[float, float, float, float], width: int, height: int
-) -> tuple[float, float, float, float]:
-    """Keep the padded bbox square entirely in the original camera canvas.
-
-    The requested bbox padding is retained where possible by shifting the square;
-    when it is wider than the canvas it is capped.  No white/constant border is
-    ever invented for the capture target.
-    """
-    x0, y0, x1, y1 = box
-    side = min(round(max(x1 - x0, y1 - y0)), width, height)
-    if side <= 0:
-        raise ValueError(f"invalid square crop {box}")
-    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    left = min(max(round(cx - side / 2), 0), width - side)
-    top = min(max(round(cy - side / 2), 0), height - side)
-    return float(left), float(top), float(left + side), float(top + side)
+    return np.stack(pooled)
 
 
 def discover_capture_sources(corpus_root: Path, views: set[int]) -> list[CaptureSource]:
@@ -442,17 +454,21 @@ def discover_capture_sources(corpus_root: Path, views: set[int]) -> list[Capture
 
 
 def _capture_box(source: CaptureSource, height: int, width: int, pad_factor: float) -> tuple[float, float, float, float]:
+    """This pass is the SINGLE PRODUCER of the crop box (SS1.7), and it computes it with
+    ``geometry``'s rule rather than a copy of it.
+
+    Until 2026-09-15 the arithmetic was transcribed here, because ``crop_geometry`` lived in the
+    other tree and the two conda envs could not import each other; a test pinned the two
+    spellings together. Consolidating the package removed the seam -- and the two were
+    verified identical over all 3360 corpus views x 3 canvas shapes before the copy was
+    deleted, so no recorded box moves.
+    """
     bbox = np.load(source.bbox, allow_pickle=True).item()
     xyxy = np.asarray(bbox["xyxy"], dtype=np.float64)
-    valid = np.asarray(bbox["valid"], dtype=bool) & ~np.isnan(xyxy).any(axis=1)
-    if not valid.any():
-        raise ValueError(f"{source.relative_dir}: no valid finite bbox")
-    union = xyxy[valid]
-    x0, y0 = union[:, 0].min(), union[:, 1].min()
-    x1, y1 = union[:, 2].max(), union[:, 3].max()
-    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    half = max(x1 - x0, y1 - y0) * pad_factor / 2
-    return _fit_square_to_canvas((cx - half, cy - half, cx + half, cy + half), width, height)
+    try:
+        return crop_geometry.canonical_crop_box(xyxy, np.asarray(bbox["valid"]), width, height, pad_factor)
+    except ValueError as exc:
+        raise ValueError(f"{source.relative_dir}: {exc}") from exc
 
 
 def plan_source(source: CaptureSource, geometry: WindowGeometry, pad_factor: float) -> list[CaptureJob]:
@@ -554,15 +570,24 @@ def enumerate_capture_jobs(
     return jobs
 
 
-def crop_source(source: CaptureSource, last_needed: int, box_xyxy: tuple[float, float, float, float], edge: int) -> np.ndarray:
+def crop_source(
+    source: CaptureSource, last_needed: int, box_xyxy: tuple[float, float, float, float], edge: int,
+    objectives: tuple[str, ...] = (dataset.DEFAULT_OBJECTIVE,),
+) -> dict[str, np.ndarray]:
     """Decode, crop, and resize a source's needed pixel range in one sequential pass.
 
-    Returns ONE array ``(last_needed, edge, edge, 3)`` uint8 -- every frame decoded,
-    cropped, and resized exactly once, never duplicated across windows. This is what
-    makes the single-encode construction in ``encode_capture_jobs`` possible (revised
-    2026-09-11, see the module docstring and plan §4.4): the whole array is VAE-encoded
-    once, and every window's latent is *sliced* from that one encode rather than
+    Returns ONE array ``(last_needed, edge, edge, 3)`` uint8 **per requested objective** --
+    every frame decoded, cropped, and resized exactly once, never duplicated across windows.
+    This is what makes the single-encode construction in ``encode_capture_jobs`` possible
+    (revised 2026-09-11, see the module docstring and plan SS1.6): the whole array is
+    VAE-encoded once, and every block's latent is *sliced* from that one encode rather than
     re-derived from a re-cropped, re-encoded pixel range.
+
+    Asking for both objectives costs ONE decode of ``rgb.mp4`` (plus one of ``mask.mp4``),
+    not two: the expensive part is the sequential h264 decode of a 4096x3000 source, and the
+    matte is a per-frame blend over pixels that are already in hand. What it does cost is a
+    second uint8 array of the same size resident in this worker (~0.5 GB at 150 frames), so
+    ``--crop-workers`` is the knob if host RAM is tight.
 
     One sequential decode pass, not one ``cv2.VideoCapture.set(CAP_PROP_POS_FRAMES, ...)``
     seek per window. These sources are h264 with extremely sparse keyframes (often a
@@ -573,15 +598,33 @@ def crop_source(source: CaptureSource, last_needed: int, box_xyxy: tuple[float, 
     off-by-a-few-frames errors in OpenCV; true sequential ``.read()`` decode has no such
     ambiguity.
 
+    For the ``white`` objective (SS1.2) the capture is **matted to white** here, in the same
+    pass and the same crop: ``frame * a + 255 * (1 - a)``, with ``a`` the view's own
+    ``mask.mp4``, decoded in lockstep and cropped identically. It is done at full resolution,
+    before the resize, so the matte and the pixels are resampled together -- the same reason
+    the guide's composite is built while the full-resolution alpha is still live.
+    The matte is used CONTINUOUS, not re-thresholded: the stored mask is already a threshold
+    off lossy video (risk 8), and hardening it a second time would quantise the silhouette
+    edge that this objective makes the whole task.
+
     Runs in a worker process: pure CPU/numpy, no torch device involved, so many
     sources can be cropped concurrently while the GPU VAE encoder works through
     whichever source finished cropping first.
     """
+    unknown = set(objectives) - set(dataset.OBJECTIVES)
+    if unknown:
+        raise ValueError(f"unknown objectives {sorted(unknown)}")
     x0, y0, x1, y1 = (round(value) for value in box_xyxy)
     capture = cv2.VideoCapture(source.rgb)
     if not capture.isOpened():
         raise ValueError(f"cannot open video {source.rgb}")
-    resized_frames: list[np.ndarray] = []
+    matte = None
+    if "white" in objectives:
+        mask_path = Path(source.rgb).with_name(dataset.CAPTURE_MASK_NAME)
+        matte = cv2.VideoCapture(str(mask_path))
+        if not matte.isOpened():
+            raise ValueError(f"cannot open matte {mask_path} (needed by objective 'white')")
+    out: dict[str, list[np.ndarray]] = {objective: [] for objective in objectives}
     try:
         for index in range(last_needed):
             ok, frame = capture.read()
@@ -590,11 +633,22 @@ def crop_source(source: CaptureSource, last_needed: int, box_xyxy: tuple[float, 
             cropped = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)[y0:y1, x0:x1]
             if cropped.shape[:2] != (y1 - y0, x1 - x0):
                 raise RuntimeError(f"{source.relative_dir} frame {index}: crop escaped source canvas")
-            resized_frames.append(cv2.resize(cropped, (edge, edge), interpolation=cv2.INTER_AREA))
+            if "bg" in out:
+                out["bg"].append(cv2.resize(cropped, (edge, edge), interpolation=cv2.INTER_AREA))
+            if matte is not None:
+                ok_mask, mask_frame = matte.read()
+                if not ok_mask:
+                    raise ValueError(f"{source.relative_dir}: mask.mp4 ended at frame {index}")
+                alpha = (mask_frame[y0:y1, x0:x1, 0].astype(np.float32) / 255.0)[..., None]
+                matted = (cropped.astype(np.float32) * alpha + 255.0 * (1.0 - alpha)).round()
+                matted = matted.clip(0, 255).astype(np.uint8)
+                out["white"].append(cv2.resize(matted, (edge, edge), interpolation=cv2.INTER_AREA))
     finally:
         capture.release()
+        if matte is not None:
+            matte.release()
 
-    return np.stack(resized_frames)
+    return {objective: np.stack(frames) for objective, frames in out.items()}
 
 
 def write_cropped_capture_video(source: CaptureSource, jobs: list[CaptureJob], frames: np.ndarray, fps: float) -> None:
@@ -660,96 +714,173 @@ def _video_info(path: Path) -> tuple[int, float, int, int]:
     return len(reader), float(reader.get_avg_fps()), int(height), int(width)
 
 
-def load_capture_bundle(pair: Pair) -> dict[int, dict[str, object]]:
-    """The capture bundle's per-window records, keyed by window index."""
-    bundle = torch.load(pair.bundle, map_location="cpu", weights_only=True)
-    if not isinstance(bundle, dict) or not isinstance(bundle.get("windows"), dict):
-        raise ValueError(f"{pair.relative_dir}: {pair.bundle} is not a capture latent bundle")
-    if bundle.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError(
-            f"{pair.relative_dir}: bundle schema_version={bundle.get('schema_version')}, "
-            f"expected {SCHEMA_VERSION}; re-run --capture-only for this view"
-        )
-    return bundle["windows"]
 
+def load_capture_master(pair: Pair) -> dict:
+    """The capture bundle's master latent record, with a pointed error on a v1 bundle.
 
-def enumerate_jobs(pairs: list[Pair], geometry: WindowGeometry) -> list[WindowJob]:
-    """Enumerate windows from the guide, and check each against the capture bundle's own plan.
-
-    The window plan is a pure function of frame count, so the guide and the capture agree as
-    long as they cover the same frames. Checking the bundle's recorded ``start``/``end`` here
-    is what turns "they should agree" into "they do": a render that lost or gained frames
-    against its capture is caught before anything is encoded, rather than producing a pair
-    whose ``z_g`` and ``z_y`` describe different moments in the clip.
+    v1 held per-window slices; ``--consolidate`` rebuilds a v2 master from them without
+    touching the VAE. Reconstructing here instead would make this a second producer of the
+    tensor the trainer learns from, which is the failure shape SS7.3 names.
     """
-    jobs: list[WindowJob] = []
-    for pair in pairs:
-        frames, fps, height, width = _video_info(Path(pair.guide))
-        if height % geometry.scale_factors.height or width % geometry.scale_factors.width:
-            raise ValueError(
-                f"{pair.relative_dir}: {width}x{height} is not divisible by the VAE spatial factors "
-                f"{geometry.scale_factors.width}x{geometry.scale_factors.height}; rebuild guidance at a valid edge"
-            )
-        windows = load_capture_bundle(pair)
-        plan = list(enumerate(geometry.plan(frames)))
-        if len(plan) != len(windows):
-            raise ValueError(
-                f"unaligned pair {pair.relative_dir}: the guide's {frames} frames plan "
-                f"{len(plan)} windows but the capture bundle holds {len(windows)}; the render "
-                f"and the capture cover different frame ranges"
-            )
-        for index, (start, end) in plan:
-            record = windows.get(index)
-            if record is None:
-                raise ValueError(f"{pair.relative_dir}: capture bundle has no window {index}")
-            if (record.get("start"), record.get("end")) != (start, end):
-                raise ValueError(
-                    f"{pair.relative_dir} window {index}: guide plans pixels "
-                    f"[{start}:{end}) but the capture bundle records "
-                    f"[{record.get('start')}:{record.get('end')})"
-                )
-            if record.get("fps") != fps:
-                raise ValueError(
-                    f"{pair.relative_dir} window {index}: guide fps {fps} disagrees with the "
-                    f"capture bundle's {record.get('fps')}"
-                )
-            jobs.append(WindowJob(pair, index, start, end, fps, height, width))
-    return jobs
+    bundle = torch.load(pair.bundle, map_location="cpu", weights_only=True)
+    if not isinstance(bundle, dict):
+        raise ValueError(f"{pair.relative_dir}: {pair.bundle} is not a capture latent bundle")
+    if bundle.get("schema_version") != BUNDLE_SCHEMA_VERSION or "master" not in bundle:
+        raise ValueError(
+            f"{pair.relative_dir}: bundle schema_version={bundle.get('schema_version')}, expected "
+            f"{BUNDLE_SCHEMA_VERSION} with a master latent. Run `--consolidate` over this corpus "
+            f"(no VAE needed) or re-run --capture-only for this view"
+        )
+    return bundle
 
 
-def carryover_mask(latent_frames: int, latent_height: int, latent_width: int) -> torch.Tensor:
-    """Return the trainer mask that freezes exactly regular latent frame index 1."""
-    if latent_frames < 2:
-        raise ValueError("a carryover mask requires a keyframe plus latent frame 1")
-    mask = torch.zeros((latent_frames, latent_height, latent_width), dtype=torch.float32)
-    mask[1].fill_(1.0)
-    return mask
+def master_record(
+    master: torch.Tensor,
+    *,
+    source: str,
+    fps: float,
+    pixel_frames: int,
+    box_xyxy: tuple[float, float, float, float] | None,
+    edge: int | None,
+    objective: str = dataset.DEFAULT_OBJECTIVE,
+) -> dict[str, object]:
+    """Serialize one source's ONE continuous encode -- the whole bundle, not a window of it.
 
-
-def latent_record(latent: torch.Tensor, *, fps: float) -> dict[str, object]:
-    """Serialize one non-patchified latent in the trainer's canonical format."""
-    if latent.ndim != 5 or latent.shape[0] != 1:
-        raise ValueError(f"expected VAE latent [1, C, F, H, W], got {tuple(latent.shape)}")
-    _, _channels, frames, height, width = latent.shape
+    ``objective`` is recorded inside the bundle as well as in its filename (SS1.2), so a
+    bundle that has been moved or renamed still says which pixels it encodes.
+    """
+    if master.ndim != 5 or master.shape[0] != 1:
+        raise ValueError(f"expected VAE latent [1, C, F, H, W], got {tuple(master.shape)}")
     return {
-        "latents": latent.squeeze(0).detach().to(device="cpu", dtype=torch.bfloat16).contiguous(),
-        "num_frames": int(frames),
-        "height": int(height),
-        "width": int(width),
+        "schema_version": BUNDLE_SCHEMA_VERSION,
+        "source": source,
+        "objective": objective,
+        "master": master.squeeze(0).detach().to(device="cpu", dtype=torch.bfloat16).contiguous(),
         "fps": float(fps),
+        "pixel_frames": int(pixel_frames),
+        "box_xyxy": None if box_xyxy is None else [float(v) for v in box_xyxy],
+        "edge": edge,
     }
 
 
-def mask_record(mask: torch.Tensor) -> dict[str, torch.Tensor]:
-    return {"mask": mask.contiguous()}
+def master_from_windows(bundle: dict, time_scale: int) -> tuple[torch.Tensor, float, int]:
+    """Rebuild a v1 bundle's master latent from its per-window slices. No VAE, no decode.
+
+    Every v1 window was itself sliced out of one continuous encode -- ``master[start //
+    time_scale : ...]`` -- so the windows tile the master with an exact overlap and
+    reassembling is lossless rather than approximate. The overlapping frames are bit-identical
+    by construction, and this asserts that rather than assuming it: a mismatch would mean the
+    bundle predates the 2026-09-11 continuous-encode revision and holds independently encoded
+    windows, which must be re-encoded, not stitched.
+    """
+    windows = bundle.get("windows")
+    if not isinstance(windows, dict) or not windows:
+        raise ValueError("bundle has no windows to rebuild a master from")
+    records = [windows[index] for index in sorted(windows)]
+    channels = records[0]["latents"].shape[0]
+    height, width = records[0]["latents"].shape[-2:]
+    fps = float(records[0]["fps"])
+    pixel_frames = max(int(record["end"]) for record in records)
+    latent_frames = (pixel_frames - 1) // time_scale + 1
+    master = torch.zeros(channels, latent_frames, height, width, dtype=records[0]["latents"].dtype)
+    written = torch.zeros(latent_frames, dtype=torch.bool)
+    for record in records:
+        first = int(record["start"]) // time_scale
+        latents = record["latents"]
+        span = slice(first, first + latents.shape[1])
+        overlap = written[span]
+        if overlap.any():
+            existing = master[:, span][:, overlap]
+            incoming = latents[:, overlap]
+            if not torch.equal(existing, incoming):
+                raise ValueError(
+                    "overlapping windows disagree, so this bundle was NOT produced by one "
+                    "continuous encode; re-run --capture-only for this view instead"
+                )
+        master[:, span] = latents
+        written[span] = True
+    if not written.all():
+        raise ValueError(f"windows cover {int(written.sum())} of {latent_frames} latent frames")
+    return master.unsqueeze(0), fps, pixel_frames
+
+
+def consolidate_bundles(
+    corpus_root: Path, time_scale: int, *, overwrite: bool, dry_run: bool,
+    objective: str = dataset.DEFAULT_OBJECTIVE,
+) -> dict[str, int]:
+    """Migrate every v1 capture bundle under ``corpus_root`` to a v2 master bundle.
+
+    The B2a capture pass is days of GPU time and 2034 sources of it are already on disk; this
+    is what makes SS4.4's master-latent rule a rewrite of the reader rather than a re-encode.
+    """
+    counts = {"converted": 0, "already_v2": 0, "failed": 0}
+    for path in sorted(corpus_root.glob("Part_*/*/views/*/" + dataset.capture_bundle_name(objective))):
+        try:
+            bundle = torch.load(path, map_location="cpu", weights_only=True)
+            if bundle.get("schema_version") == BUNDLE_SCHEMA_VERSION and not overwrite:
+                counts["already_v2"] += 1
+                continue
+            master, fps, pixel_frames = master_from_windows(bundle, time_scale)
+            record = master_record(
+                master,
+                source=str(bundle.get("source", path.parent.relative_to(corpus_root))),
+                fps=fps,
+                pixel_frames=pixel_frames,
+                box_xyxy=None,
+                edge=int(master.shape[-1]) * 32,
+                objective=objective,
+            )
+            if not dry_run:
+                atomic_torch_save(record, path)
+            counts["converted"] += 1
+        except Exception:
+            LOGGER.exception("FAILED to consolidate %s -- skipping", path)
+            counts["failed"] += 1
+    return counts
+
+
+def check_pair_alignment(pair: Pair, geometry: WindowGeometry) -> dict[str, object]:
+    """Check that a guide render and its capture master cover the same frames, and say how many.
+
+    The window-by-window plan comparison this replaces existed to catch a render that had
+    lost or gained frames against its capture. That check survives -- it is now a direct
+    comparison of the two frame counts, which is the thing the old one was proving.
+    """
+    frames, fps, height, width = _video_info(Path(pair.guide))
+    if height % geometry.scale_factors.height or width % geometry.scale_factors.width:
+        raise ValueError(
+            f"{pair.relative_dir}: {width}x{height} is not divisible by the VAE spatial factors "
+            f"{geometry.scale_factors.width}x{geometry.scale_factors.height}; rebuild guidance at a valid edge"
+        )
+    capture = load_capture_master(pair)
+    capture_frames = int(capture["pixel_frames"])
+    if frames < capture_frames:
+        raise ValueError(
+            f"unaligned pair {pair.relative_dir}: the guide has {frames} frames but the capture "
+            f"master was encoded from {capture_frames}; the render and the capture cover "
+            f"different frame ranges"
+        )
+    if capture["fps"] != fps:
+        raise ValueError(
+            f"{pair.relative_dir}: guide fps {fps} disagrees with the capture bundle's {capture['fps']}"
+        )
+    return {
+        "pixel_frames": capture_frames,
+        "fps": fps,
+        "height": height,
+        "width": width,
+        "latent_frames": int(capture["master"].shape[1]),
+        "box_xyxy": capture.get("box_xyxy"),
+    }
 
 
 def manifest(
-    model: model_registry.RefinerModel, geometry: WindowGeometry, pairs: list[Pair], jobs: list[WindowJob]
+    model: model_registry.RefinerModel, geometry: WindowGeometry, pairs: list[Pair]
 ) -> dict[str, object]:
     return {
         "schema_version": SCHEMA_VERSION,
-        "kind": "one_step_argavatar_vae_windows",
+        "kind": "one_step_argavatar_master_latents",
+        "bundle_schema_version": BUNDLE_SCHEMA_VERSION,
         "model": {
             "key": model.key,
             "video_vae": model.paths.video_vae(),
@@ -758,257 +889,129 @@ def manifest(
             "scale_factors_source": model.scale_factors_source,
         },
         "geometry": geometry.as_dict(),
-        "outputs": {
-            "target_latents": "capture loss target z_y, copied verbatim from each view's ltx_vae_latent.pt",
-            "init_latents": "ARGAvatar guide noising source z_g, sliced from one continuous encode per render",
-            "carryover_masks": "latent frame 1 is clean and excluded from loss",
-        },
         "pairs": [asdict(pair) for pair in pairs],
-        "windows": [
-            {
-                "path": str(job.relative_path),
-                "start": job.start,
-                "end": job.end,
-                "fps": job.fps,
-                "height": job.height,
-                "width": job.width,
-            }
-            for job in jobs
-        ],
     }
 
 
-def _existing_record_is_current(path: Path, expected: dict[str, object]) -> bool:
-    if not path.is_file():
-        return False
-    try:
-        record = torch.load(path, map_location="cpu", weights_only=True)
-    except Exception:
-        return False
-    return (
-        isinstance(record, dict)
-        and tuple(record.get("latents", torch.empty(0)).shape) == expected["shape"]
-        and record.get("fps") == expected["fps"]
-    )
-
-
-def _bundle_is_current(path: Path, source_jobs: list[CaptureJob], model: model_registry.RefinerModel, edge: int) -> bool:
-    """Whole-source check: the bundle is current only if every window in it matches.
-
-    There is no partial resume within a source -- the bundle is one atomic save, so a
-    source is either fully current or fully redone.
-    """
+def _master_bundle_is_current(
+    path: Path, *, latent_frames: int, channels: int, edge: int, fps: float, scale: int
+) -> bool:
     if not path.is_file():
         return False
     try:
         bundle = torch.load(path, map_location="cpu", weights_only=True)
     except Exception:
         return False
-    if not isinstance(bundle, dict) or not isinstance(bundle.get("windows"), dict):
-        return False
-    windows = bundle["windows"]
-    for job in source_jobs:
-        record = windows.get(job.index)
-        expected = _expected_capture_shape(model, job, edge)
-        if not (
-            isinstance(record, dict)
-            and tuple(record.get("latents", torch.empty(0)).shape) == expected["shape"]
-            and record.get("fps") == expected["fps"]
-        ):
-            return False
-    return True
-
-
-def encode_jobs(
-    model: model_registry.RefinerModel,
-    jobs: list[WindowJob],
-    output_root: Path,
-    *,
-    gpu_id: int,
-    overwrite: bool,
-    boxes: dict[str, tuple[float, float, float, float]] | None = None,
-) -> tuple[int, int]:
-    """Write each window's ``z_g`` and ``z_y`` for the paired objective.
-
-    Two rules, both of them the 2026-09-11 revision of plan SS4.4 applied here:
-
-    * ``z_g`` comes from ONE continuous VAE encode of the whole guide render, sliced per
-      window -- never an independent per-window encode. Re-encoding each window separately
-      manufactures a fresh causal keyframe at every window's local frame 0, which the
-      deployed AR rollout never produces past a clip's first window (measured: ~24 % off on a
-      mid-clip window). The guide is a continuous video like any other, so it gets the same
-      construction ``encode_capture_jobs`` gives the capture.
-    * ``z_y`` is COPIED from the capture bundle ``--capture-only`` already wrote. Re-encoding
-      the capture here would be a second producer of the same tensor, free to disagree with
-      the bundle the rest of the pipeline reads; ``enumerate_jobs`` has already checked that
-      the two cover the same frames.
-    """
-    device = torch.device(f"cuda:{gpu_id}")
-    time_scale = model.scale_factors.time
-    completed = 0
-
-    by_pair: dict[str, list[WindowJob]] = {}
-    for job in jobs:
-        by_pair.setdefault(job.pair.relative_dir, []).append(job)
-
-    def window_paths(job: WindowJob) -> tuple[Path, Path, Path, Path]:
-        return (
-            output_root / "target_latents" / job.relative_path,
-            output_root / "init_latents" / job.relative_path,
-            output_root / "carryover_masks" / job.relative_path,
-            output_root / "loss_masks" / job.relative_path,
-        )
-
-    def expected_shape(job: WindowJob) -> dict[str, object]:
-        latent_frames = (job.end - job.start - 1) // time_scale + 1
-        return {
-            "shape": (
-                model.caps.latent_channels,
-                latent_frames,
-                job.height // model.scale_factors.height,
-                job.width // model.scale_factors.width,
-            ),
-            "fps": job.fps,
-        }
-
-    pending, mask_only, skipped = _partition_pairs(by_pair, window_paths, expected_shape, overwrite=overwrite)
-
-    for pair_jobs in mask_only:
-        # No VAE, no encode -- just the pixel->latent coverage grids this pair never got.
-        build_pair_masks(pair_jobs, boxes, expected_shape(pair_jobs[0])["shape"], time_scale, output_root, overwrite)
-
-    if not pending:
-        return completed, skipped
-
-    with ltx_adapter.video_encoder(model.paths.video_vae(), DTYPE, device) as encoder:
-        for pair_jobs in pending:
-            pair = pair_jobs[0].pair
-            capture_windows = load_capture_bundle(pair)
-            last_needed = max(job.end for job in pair_jobs)
-
-            reader = VideoReader(pair.guide)
-            frames = reader.get_batch(range(last_needed))  # [F, H, W, C] uint8
-            video = frames.permute(3, 0, 1, 2).unsqueeze(0).to(device=device, dtype=DTYPE)
-            pixels = video / 127.5 - 1.0
-            with torch.no_grad():
-                master = encoder.tiled_encode(pixels, None)  # ONE encode for the whole guide
-
-            for job in pair_jobs:
-                target_out, init_out, mask_out, _ = window_paths(job)
-                expected = expected_shape(job)
-                first = job.start // time_scale
-                latent_frames = (job.end - job.start - 1) // time_scale + 1
-                z_g = master[:, :, first : first + latent_frames]
-                if tuple(z_g.shape[1:]) != expected["shape"]:
-                    raise RuntimeError(
-                        f"{job.relative_path}: sliced guide latent {tuple(z_g.shape)} does not "
-                        f"match expected {expected['shape']}"
-                    )
-                target_record = capture_windows[job.index]
-                if tuple(target_record["latents"].shape) != expected["shape"]:
-                    raise RuntimeError(
-                        f"{job.relative_path}: capture bundle latent "
-                        f"{tuple(target_record['latents'].shape)} does not match the guide's "
-                        f"{expected['shape']}"
-                    )
-                atomic_torch_save(dict(target_record), target_out)
-                atomic_torch_save(latent_record(z_g, fps=job.fps), init_out)
-                atomic_torch_save(
-                    mask_record(carryover_mask(*expected["shape"][1:])), mask_out
-                )
-                completed += 1
-
-            del pixels, video, master
-
-            # The loss masks are pure pixel->latent work with no VAE in it, but they are built
-            # here so a window's latents and the mask that weights them are written by one
-            # pass: a half-populated pair (latents without a mask) is the shape of bug that
-            # only shows up as a KeyError deep inside a training run.
-            masks = build_pair_masks(
-                pair_jobs, boxes, expected_shape(pair_jobs[0])["shape"], time_scale, output_root, overwrite
-            )
-            LOGGER.info(
-                "encoded guide source=%s windows=%d (1 VAE call), capture copied from %s, masks=%d",
-                pair.relative_dir,
-                len(pair_jobs),
-                Path(pair.bundle).name,
-                masks,
-            )
-    return completed, skipped
-
-
-def _partition_pairs(
-    by_pair: dict[str, list[WindowJob]],
-    window_paths,  # noqa: ANN001 -- a local closure over output_root
-    expected_shape,  # noqa: ANN001 -- a local closure over the model's scale factors
-    *,
-    overwrite: bool,
-) -> tuple[list[list[WindowJob]], list[list[WindowJob]], int]:
-    """Split each pair's jobs into (needs encoding, needs only masks, already done).
-
-    The loss masks are tracked SEPARATELY from the latents, and they have to be: a pair
-    encoded before the masks existed has complete, current latents, so a single "is this pair
-    done" flag would skip it forever and leave the corpus permanently half-populated --
-    latents with no mask to weight them. That is exactly what happened on 2026-09-12.
-    """
-    pending: list[list[WindowJob]] = []
-    mask_only: list[list[WindowJob]] = []
-    skipped = 0
-    for pair_jobs in by_pair.values():
-        outstanding, missing_masks = [], []
-        for job in pair_jobs:
-            target_out, init_out, mask_out, loss_out = window_paths(job)
-            expected = expected_shape(job)
-            current = all(_existing_record_is_current(path, expected) for path in (target_out, init_out))
-            if not overwrite and current and mask_out.is_file():
-                skipped += 1
-                if not loss_out.is_file():
-                    missing_masks.append(job)
-            else:
-                outstanding.append(job)
-        if outstanding:
-            # The whole guide is encoded in one pass, so a pair with any outstanding window
-            # re-encodes all of it; only the outstanding windows are written.
-            pending.append(outstanding)
-        elif missing_masks:
-            mask_only.append(missing_masks)
-    return pending, mask_only, skipped
-
-
-def build_pair_masks(
-    pair_jobs: list[WindowJob],
-    boxes: dict[str, tuple[float, float, float, float]] | None,
-    shape: tuple[int, int, int, int],
-    time_scale: int,
-    output_root: Path,
-    overwrite: bool,
-) -> int:
-    """``build_loss_masks`` for one pair's jobs, given the box table. One call site's worth of
-    plumbing, shared by the encode path and the masks-only catch-up path so the two cannot
-    build masks differently."""
-    pair = pair_jobs[0].pair
-    return build_loss_masks(
-        pair,
-        pair_jobs,
-        None if boxes is None else boxes[pair.relative_dir],
-        shape=shape,
-        time_scale=time_scale,
-        output_root=output_root,
-        overwrite=overwrite,
+    master = bundle.get("master") if isinstance(bundle, dict) else None
+    return (
+        bundle.get("schema_version") == BUNDLE_SCHEMA_VERSION
+        and isinstance(master, torch.Tensor)
+        and tuple(master.shape) == (channels, latent_frames, edge // scale, edge // scale)
+        and bundle.get("fps") == fps
     )
 
 
-def _expected_capture_shape(model: model_registry.RefinerModel, job: CaptureJob, edge: int) -> dict[str, object]:
-    latent_frames = (job.end - job.start - 1) // model.scale_factors.time + 1
-    return {
-        "shape": (
-            model.caps.latent_channels,
-            latent_frames,
-            edge // model.scale_factors.height,
-            edge // model.scale_factors.width,
-        ),
-        "fps": job.fps,
-    }
+def encode_pairs(
+    model: model_registry.RefinerModel,
+    pairs: list[Pair],
+    *,
+    gpu_id: int,
+    overwrite: bool,
+    geometry: WindowGeometry,
+    boxes: dict[str, tuple[float, float, float, float]] | None = None,
+    objective: str = dataset.DEFAULT_OBJECTIVE,
+) -> tuple[int, int, list[str]]:
+    """Write each view's guide master latent and its loss-mask grids, beside the render.
+
+    Two rules, both SS4.4's continuous-encode rule applied here:
+
+    * ``z_g`` comes from ONE continuous VAE encode of the whole guide render -- never a
+      per-window encode. Re-encoding each window separately manufactures a fresh causal
+      keyframe at every window's local frame 0, which the deployed AR rollout never produces
+      past a clip's first window (measured: ~24 % off on a mid-clip window).
+    * ``z_y`` is not touched at all. The capture pass is its only producer and the trainer
+      reads that bundle directly; copying it into a second tree is what the old
+      ``target_latents/`` did, and a copy is free to disagree with its original.
+    """
+    device = torch.device(f"cuda:{gpu_id}")
+    completed = skipped = 0
+    failed: list[str] = []
+
+    pending: list[tuple[Pair, dict[str, object]]] = []
+    for pair in pairs:
+        info = check_pair_alignment(pair, geometry)
+        guide_bundle = Path(pair.guide).with_name(dataset.guide_bundle_name(objective))
+        current = _master_bundle_is_current(
+            guide_bundle,
+            latent_frames=info["latent_frames"],
+            channels=model.caps.latent_channels,
+            edge=int(info["width"]),
+            fps=info["fps"],
+            scale=model.scale_factors.width,
+        )
+        masks_current = Path(pair.guide).with_name(LOSS_MASK_GRIDS_NAME).is_file() or boxes is None
+        if current and masks_current and not overwrite:
+            skipped += 1
+            continue
+        pending.append((pair, info))
+
+    if not pending:
+        return completed, skipped, failed
+
+    with ltx_adapter.video_encoder(model.paths.video_vae(), DTYPE, device) as encoder:
+        for pair, info in pending:
+            try:
+                reader = VideoReader(pair.guide)
+                frames = reader.get_batch(range(int(info["pixel_frames"])))  # [F, H, W, C] uint8
+                video = frames.permute(3, 0, 1, 2).unsqueeze(0).to(device=device, dtype=DTYPE)
+                pixels = video / 127.5 - 1.0
+                with torch.no_grad():
+                    master = encoder.tiled_encode(pixels, None)  # ONE encode for the whole guide
+                if master.shape[2] != info["latent_frames"]:
+                    raise RuntimeError(
+                        f"{pair.relative_dir}: guide encoded to {master.shape[2]} latent frames, "
+                        f"the capture master has {info['latent_frames']}"
+                    )
+                atomic_torch_save(
+                    master_record(
+                        master,
+                        source=pair.relative_dir,
+                        fps=float(info["fps"]),
+                        pixel_frames=int(info["pixel_frames"]),
+                        box_xyxy=info["box_xyxy"],
+                        edge=int(info["width"]),
+                        objective=objective,
+                    ),
+                    guide_bundle,
+                )
+                del pixels, video, master
+
+                # The loss masks are pure pixel->latent work with no VAE in it, but they are
+                # built here so a view's latents and the mask that weights them are written by
+                # one pass: a half-populated view (latents without a mask) is the shape of bug
+                # that only shows up as a KeyError deep inside a training run.
+                mask_path = None
+                if boxes is not None:
+                    mask_path = build_loss_mask_grids(
+                        pair,
+                        boxes[pair.relative_dir],
+                        latent_frames=int(info["latent_frames"]),
+                        latent_height=int(info["height"]) // model.scale_factors.height,
+                        latent_width=int(info["width"]) // model.scale_factors.width,
+                        time_scale=model.scale_factors.time,
+                        overwrite=overwrite,
+                    )
+                completed += 1
+                LOGGER.info(
+                    "encoded guide master source=%s latent_frames=%d (1 VAE call), masks=%s",
+                    pair.relative_dir,
+                    int(info["latent_frames"]),
+                    "written" if mask_path else "current",
+                )
+            except Exception:
+                LOGGER.exception("FAILED guide source=%s -- skipping, not aborting the run", pair.relative_dir)
+                failed.append(pair.relative_dir)
+    return completed, skipped, failed
 
 
 def encode_capture_jobs(
@@ -1020,26 +1023,36 @@ def encode_capture_jobs(
     overwrite: bool,
     max_crop_workers: int | None = None,
     keep_capture_video: bool = False,
+    objectives: tuple[str, ...] = (dataset.DEFAULT_OBJECTIVE,),
 ) -> tuple[int, int, list[str]]:
-    """Write ``z_y`` from ONE continuous per-source VAE encode, sliced per window.
+    """Write each source's ``z_y`` as ONE continuous per-source VAE encode -- the master.
 
-    Revised 2026-09-11 (plan §4.4): a genuine causal keyframe only ever exists at
-    latent frame 0 of a truly continuous encode. Window 0 of a source gets one for
-    free by construction (the master's own frame 0); every later window's slot 0 is
-    naturally a regular multi-frame block, matching what the deployed AR rollout
-    already has past its first window -- there is no independent per-window
-    re-encode, and therefore no artificial re-keyed frame 0 to manufacture. Verified
-    empirically: window 0 sliced vs. independently encoded differs by ~0.1% (bf16
-    noise floor); a mid-clip window differs by ~24% from its old independent-encode
-    counterpart, confirming the old per-window encoding was fabricating data the
-    deployed rollout never produces.
+    Revised 2026-09-11 (plan SS4.4): a genuine causal keyframe only ever exists at latent
+    frame 0 of a truly continuous encode, and nothing re-keys mid-rollout, so encoding each
+    window independently was manufacturing data the deployed AR rollout never produces
+    (measured: a mid-clip window differed ~24 % from its sliced counterpart). Revised again
+    2026-09-14: the slices are not stored either. The bundle IS the master, and the trainer
+    slices the blocks it wants out of it -- which is also what lets the block geometry change
+    without re-encoding a single source.
 
-    Cropping (decode + crop + resize, pure CPU/numpy) runs for many sources
-    concurrently in a worker pool, each returning ONE array for its whole source
-    (never duplicated per window). The single GPU VAE encoder in this process
-    encodes that whole array once, slices every window's latent out of the result,
-    and moves to the next completed source. The pool is entered before the VAE
-    encoder so worker processes never fork after this process has touched CUDA.
+    ``jobs`` still carries the window plan because that is what says how many pixel frames a
+    source needs decoded and which crop box it uses; it no longer says anything about how the
+    latents are stored.
+
+    Cropping (decode + crop + resize, pure CPU/numpy) runs for many sources concurrently in a
+    worker pool, each returning ONE array per requested objective for its whole source. The
+    single GPU VAE encoder in this process encodes each of those arrays once. The pool is
+    entered before the VAE encoder so worker processes never fork after this process has
+    touched CUDA.
+
+    **Both objectives in one pass, and resumable per objective** (SS1.6). ``objectives`` is a
+    set, not a choice: asking for both pays ONE sequential h264 decode of the source and
+    writes two bundles beside it. Currency is then checked **per (source, objective)** and a
+    source is only decoded for the objectives it is actually missing -- so re-running after
+    adding ``white`` to a corpus already encoded as ``bg`` re-encodes only ``white``, and a
+    run killed halfway resumes at whole-bundle granularity with no partial state to repair
+    (every bundle is written by one atomic save). Nothing here is objective-ordered: the two
+    are independent artifacts of the same decode.
     """
     device = torch.device(f"cuda:{gpu_id}")
     time_scale = model.scale_factors.time
@@ -1049,15 +1062,32 @@ def encode_capture_jobs(
     for job in jobs:
         by_source_dir.setdefault(job.source.relative_dir, []).append(job)
 
-    pending: list[tuple[CaptureSource, list[CaptureJob]]] = []
+    pending: list[tuple[CaptureSource, list[CaptureJob], tuple[str, ...]]] = []
     for source_jobs in by_source_dir.values():
         source = source_jobs[0].source
         if any(job.box_xyxy != source_jobs[0].box_xyxy for job in source_jobs):
-            raise ValueError(f"{source.relative_dir}: windows of one source must share one fixed crop box")
-        if not overwrite and _bundle_is_current(bundle_path(source), source_jobs, model, edge):
-            skipped += len(source_jobs)
-            continue
-        pending.append((source, source_jobs))
+            raise ValueError(f"{source.relative_dir}: blocks of one source must share one fixed crop box")
+        last_needed = max(job.end for job in source_jobs)
+        # Per-objective currency: this is the whole resume story, and it is deliberately a
+        # property of what is on disk rather than of a progress file. A bundle is written by
+        # one atomic save, so it is either current or absent -- there is no half-done state a
+        # restart could inherit.
+        needed = tuple(
+            objective
+            for objective in objectives
+            if overwrite
+            or not _master_bundle_is_current(
+                bundle_path(source, objective),
+                latent_frames=(last_needed - 1) // time_scale + 1,
+                channels=model.caps.latent_channels,
+                edge=edge,
+                fps=source_jobs[0].fps,
+                scale=model.scale_factors.width,
+            )
+        )
+        skipped += len(source_jobs) * (len(objectives) - len(needed))
+        if needed:
+            pending.append((source, source_jobs, needed))
 
     failed: list[str] = []
     if not pending:
@@ -1065,24 +1095,17 @@ def encode_capture_jobs(
 
     # Bounded, not "submit all ~3000 up front": `concurrent.futures.as_completed(fs)` makes
     # its OWN internal `set(fs)` and holds it for the generator's entire lifetime (CPython's
-    # `_base.as_completed`, see `_yield_finished_futures(..., ref_collect=(fs, ...))`) -- so
-    # even after this loop drops ITS OWN reference to a finished `Future`, `as_completed`'s
-    # internal set keeps it (and the ~0.5-0.7 GB raw-frame array `Future.result()` cached on
-    # it) alive until every future passed to that ONE call has been yielded. Calling
-    # `as_completed` once for thousands of sources therefore retains every source's frame
-    # buffer for the whole run regardless of any `.pop()` on a caller-side dict -- confirmed
-    # 09-12 by measurement: host RSS climbed ~50-90 MB/s (slower than the ORIGINAL bug, which
-    # additionally kept the same futures reachable via a never-shrinking dict, but still
-    # unbounded) even after adding `.pop()` alone. Chunking is the actual fix: each chunk gets
-    # its own `as_completed` call, which is fully exhausted (and therefore fully collectible,
-    # `fs` included) before the next chunk's futures are even submitted.
+    # `_base.as_completed`), so even after this loop drops ITS OWN reference to a finished
+    # `Future`, `as_completed`'s internal set keeps it (and the ~0.5-0.7 GB raw-frame array
+    # cached on it) alive until every future passed to that ONE call has been yielded.
+    # Chunking is the actual fix: each chunk gets its own `as_completed` call, fully exhausted
+    # (and therefore fully collectible) before the next chunk's futures are submitted.
     chunk_size = max(1, (max_crop_workers or DEFAULT_CROP_WORKERS) * 4)
     context = multiprocessing.get_context("spawn")
     with (
         # max_tasks_per_child=1: recycle the worker after every source. Each source's
         # raw-frame batch (~1-2 GB) is bounded per task, but numpy/cv2 do not reliably
-        # return freed heap to the OS between tasks in a long-lived worker -- recycling
-        # forces the OS to actually reclaim it rather than letting RSS creep.
+        # return freed heap to the OS between tasks in a long-lived worker.
         concurrent.futures.ProcessPoolExecutor(max_workers=max_crop_workers, mp_context=context, max_tasks_per_child=1) as pool,
         ltx_adapter.video_encoder(model.paths.video_vae(), DTYPE, device) as encoder,
     ):
@@ -1090,56 +1113,60 @@ def encode_capture_jobs(
             chunk = pending[chunk_start : chunk_start + chunk_size]
             futures = {
                 pool.submit(
-                    crop_source, source, max(job.end for job in source_jobs), source_jobs[0].box_xyxy, edge
-                ): (source, source_jobs)
-                for source, source_jobs in chunk
+                    crop_source, source, max(job.end for job in source_jobs),
+                    source_jobs[0].box_xyxy, edge, needed
+                ): (source, source_jobs, needed)
+                for source, source_jobs, needed in chunk
             }
             for future in concurrent.futures.as_completed(futures):
-                source, source_jobs = futures.pop(future)
+                source, source_jobs, needed = futures.pop(future)
                 # A single bad source (corrupt video, a degenerate crop box) must not sink a
                 # run over 3360 sources that takes days -- and without this, the
                 # `run_b2a.sh` supervisor's "restarting in 15s" would loop forever on the
-                # exact same source, burning restart cycles while never making progress past
-                # it. One producer of failure handling here, not a try/except at every call
-                # site below.
+                # exact same source, burning restart cycles while never making progress.
                 try:
-                    frames = future.result()  # (last_needed, edge, edge, 3), whole source
+                    last_needed = max(job.end for job in source_jobs)
+                    # One dict entry per objective this source still owes, from ONE decode.
+                    by_objective = future.result()  # objective -> (last_needed, edge, edge, 3)
                     if keep_capture_video:
-                        write_cropped_capture_video(source, source_jobs, frames, source_jobs[0].fps)
+                        write_cropped_capture_video(
+                            source, source_jobs, by_objective[needed[0]], source_jobs[0].fps
+                        )
 
-                    video = torch.from_numpy(frames).permute(3, 0, 1, 2).unsqueeze(0).to(device=device, dtype=DTYPE)
-                    pixels = video / 127.5 - 1.0
-                    with torch.no_grad():
-                        master = encoder.tiled_encode(pixels, None)  # ONE encode for the whole source
-
-                    windows: dict[int, dict[str, object]] = {}
-                    for job in source_jobs:
-                        first = job.start // time_scale
-                        latent_frames = (job.end - job.start - 1) // time_scale + 1
-                        z_y = master[:, :, first : first + latent_frames]
-                        expected = _expected_capture_shape(model, job, edge)
-                        if tuple(z_y.shape[1:]) != expected["shape"]:
+                    for objective in needed:
+                        frames = by_objective[objective]
+                        video = torch.from_numpy(frames).permute(3, 0, 1, 2).unsqueeze(0).to(device=device, dtype=DTYPE)
+                        pixels = video / 127.5 - 1.0
+                        with torch.no_grad():
+                            master = encoder.tiled_encode(pixels, None)  # ONE encode per objective
+                        expected_frames = (last_needed - 1) // time_scale + 1
+                        if master.shape[2] != expected_frames:
                             raise RuntimeError(
-                                f"{job.relative_path}: sliced latent {tuple(z_y.shape)} does not match "
-                                f"expected {expected['shape']}"
+                                f"{source.relative_dir}: encoded {master.shape[2]} latent frames, "
+                                f"expected {expected_frames} from {last_needed} pixel frames"
                             )
-                        record = latent_record(z_y, fps=job.fps)
-                        record["start"] = job.start
-                        record["end"] = job.end
-                        windows[job.index] = record
-                    del pixels, master
-                    # One atomic save per source: the bundle is all-or-nothing, never partial.
-                    atomic_torch_save(
-                        {"schema_version": SCHEMA_VERSION, "source": source.relative_dir, "windows": windows},
-                        bundle_path(source),
-                    )
-                    completed += len(source_jobs)
-                    LOGGER.info(
-                        "encoded capture target source=%s windows=%d (1 VAE call) -> %s",
-                        source.relative_dir,
-                        len(source_jobs),
-                        bundle_path(source),
-                    )
+                        record = master_record(
+                            master,
+                            source=source.relative_dir,
+                            fps=source_jobs[0].fps,
+                            pixel_frames=last_needed,
+                            box_xyxy=source_jobs[0].box_xyxy,
+                            edge=edge,
+                            objective=objective,
+                        )
+                        del pixels, video, master
+                        # One atomic save per (source, objective): a bundle is all-or-nothing,
+                        # which is what makes the currency check above a complete resume rule.
+                        atomic_torch_save(record, bundle_path(source, objective))
+                        completed += len(source_jobs)
+                        LOGGER.info(
+                            "encoded capture master source=%s objective=%s latent_frames=%d -> %s",
+                            source.relative_dir,
+                            objective,
+                            (last_needed - 1) // time_scale + 1,
+                            bundle_path(source, objective),
+                        )
+                    del by_objective
                 except Exception:
                     LOGGER.exception(
                         "FAILED capture target source=%s -- skipping, not aborting the run", source.relative_dir
@@ -1153,7 +1180,33 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
     parser.add_argument("--model", choices=model_registry.SUPPORTED_MODELS, default="2.5")
     parser.add_argument("--gpu-id", type=int, default=0)
     parser.add_argument("--corpus-root", type=Path, default=DEFAULT_CORPUS_ROOT)
-    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument(
+        "--manifest-root",
+        type=Path,
+        default=DEFAULT_MANIFEST_ROOT,
+        help="Where the paired-run provenance manifest is written. NOT a latent tree any more: "
+        "since SS4.4 every latent and mask lives beside its source video, and "
+        "expr/onestep_avatar/precomputed/ is no longer produced or read by anything.",
+    )
+    parser.add_argument(
+        "--objective",
+        nargs="+",
+        choices=dataset.OBJECTIVES,
+        default=[dataset.DEFAULT_OBJECTIVE],
+        help="SS1.2, and a SET rather than a choice -- pass both to build both in one pass. "
+        "bg (default): the product -- z_y is the unmatted capture, z_g the composite guide; "
+        "the UNSUFFIXED bundle names every artifact on disk already uses. white: z_y is the "
+        "capture matted to white and z_g the render on white, in *_white.pt bundles beside "
+        "them. `--objective bg white` pays ONE decode per source and writes both; currency "
+        "is tracked per (source, objective), so re-running only encodes what is missing and "
+        "adding an objective later never re-encodes the one already on disk.",
+    )
+    parser.add_argument(
+        "--consolidate",
+        action="store_true",
+        help="Migrate v1 per-window capture bundles to v2 master bundles, in place, with no "
+        "VAE and no GPU. Run this once over a corpus encoded before 2026-09-14.",
+    )
     parser.add_argument("--window-frames", type=int, default=refine_task.WINDOW_FRAMES)
     parser.add_argument("--overlap-frames", type=int, default=refine_task.OVERLAP_FRAMES)
     parser.add_argument(
@@ -1165,7 +1218,12 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
     parser.add_argument("--edge", type=int, default=1024, help="Square raw-capture crop edge for --capture-only.")
     parser.add_argument("--pad-factor", type=float, default=1.20, help="BBox padding factor for --capture-only.")
     parser.add_argument("--visualize-qa", type=int, help="Write this many view previews under qa/ and exit.")
-    parser.add_argument("--limit", type=int, help="Encode at most this many windows after deterministic ordering.")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Encode at most this many items after deterministic ordering -- windows under "
+        "--capture-only, views in the paired pass.",
+    )
     parser.add_argument(
         "--no-loss-masks",
         action="store_true",
@@ -1186,6 +1244,9 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
         help="Also write each window's cropped capture preview under capture_crop/ (--capture-only). QA only.",
     )
     args = parser.parse_args()
+    # Deduplicated and put in a fixed order so a run's provenance does not depend on the
+    # order the flags were typed in.
+    objectives = tuple(o for o in dataset.OBJECTIVES if o in set(args.objective))
     if args.limit is not None and args.limit <= 0:
         parser.error("--limit must be positive")
     if args.edge <= 0 or args.edge % 32:
@@ -1199,6 +1260,16 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
 
     model = model_registry.resolve(args.model)
     geometry = WindowGeometry(args.window_frames, args.overlap_frames, model.scale_factors)
+    if args.consolidate:
+        counts = {
+            objective: consolidate_bundles(
+                args.corpus_root, model.scale_factors.time, overwrite=args.overwrite,
+                dry_run=args.dry_run, objective=objective,
+            )
+            for objective in objectives
+        }
+        print(json.dumps({**counts, "dry_run": args.dry_run}, indent=2))  # noqa: T201
+        return 0
     if args.capture_only:
         sources = discover_capture_sources(args.corpus_root, set(args.views))
         if not sources:
@@ -1237,7 +1308,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
             "sources": [asdict(source) for source in sources],
             "windows": [
                 {
-                    "bundle": str(Path(job.source.relative_dir) / "ltx_vae_latent.pt"),
+                    "bundle": str(Path(job.source.relative_dir) / dataset.capture_bundle_name(objectives[0])),
                     "index": job.index,
                     "start": job.start,
                     "end": job.end,
@@ -1259,6 +1330,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
             overwrite=args.overwrite,
             max_crop_workers=args.crop_workers,
             keep_capture_video=args.keep_capture_video,
+            objectives=objectives,
         )
         print(  # noqa: T201 -- CLI completion summary.
             f"Capture target VAE precompute complete: encoded={completed}, skipped={skipped}, "
@@ -1272,51 +1344,65 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
             # them, not an automatic retry loop.
             print("failed sources: " + ", ".join(failed[:20]) + (" ..." if len(failed) > 20 else ""))  # noqa: T201
         return 0
-    pairs = discover_pairs(args.corpus_root)
-    if not pairs:
-        raise SystemExit(
-            f"No views with both argavatar_render.mp4 and ltx_vae_latent.pt under {args.corpus_root}. "
-            "Run --capture-only first, then build_guidance.py and its visual review gate."
-        )
-    all_jobs = enumerate_jobs(pairs, geometry)
-    jobs = all_jobs
-    if args.limit is not None:
-        jobs = jobs[: args.limit]
-    if not jobs:
-        raise SystemExit("Pairs exist but none has a full deployment window.")
-    # The freeze covers the complete corpus even when this invocation encodes just
-    # a review shard.  A later larger --limit can then safely resume the same root.
-    frozen_manifest = manifest(model, geometry, pairs, all_jobs)
-    manifest_path = args.output_root / "manifest.json"
-    if manifest_path.exists() and not args.overwrite:
-        current = json.loads(manifest_path.read_text())
-        if current != frozen_manifest:
-            raise SystemExit(f"{manifest_path} differs from this input set; use a new --output-root or --overwrite.")
-    if args.dry_run:
-        print(  # noqa: T201 -- CLI's requested machine-readable plan.
-            json.dumps(
-                {
-                    "pairs": len(pairs),
-                    "windows": len(jobs),
-                    "total_windows": len(all_jobs),
-                    "manifest": str(manifest_path),
-                },
-                indent=2,
+    # The paired pass runs once per objective, over that objective's own (guide, capture)
+    # views. It is a loop and not a mode: a guide render on white and a composite guide are
+    # different videos beside the same view, so there is nothing to share but the code.
+    # Per-objective resume comes from encode_pairs' own bundle currency check, exactly as it
+    # does for the capture pass.
+    totals = {"completed": 0, "skipped": 0}
+    failed: list[str] = []
+    for objective in objectives:
+        pairs = discover_pairs(args.corpus_root, objective)
+        if not pairs:
+            raise SystemExit(
+                f"No views with both {dataset.render_name(objective)} and "
+                f"{dataset.capture_bundle_name(objective)} under {args.corpus_root}. Run "
+                f"--capture-only --objective {objective} first, then build_guidance.py "
+                f"--objective {objective} and its visual review gate."
             )
+        if args.limit is not None:
+            pairs = pairs[: args.limit]
+        # The freeze covers the complete corpus even when this invocation encodes just a
+        # review shard. A later larger --limit can then safely resume the same root.
+        frozen_manifest = manifest(model, geometry, discover_pairs(args.corpus_root, objective))
+        suffix = "" if objective == dataset.DEFAULT_OBJECTIVE else f".{objective}"
+        manifest_path = args.manifest_root / f"manifest{suffix}.json"
+        if manifest_path.exists() and not args.overwrite:
+            current = json.loads(manifest_path.read_text())
+            if current != frozen_manifest:
+                raise SystemExit(
+                    f"{manifest_path} differs from this input set; use a new --manifest-root or --overwrite."
+                )
+        if args.dry_run:
+            print(  # noqa: T201 -- CLI's requested machine-readable plan.
+                json.dumps(
+                    {"objective": objective, "pairs": len(pairs), "manifest": str(manifest_path)}, indent=2
+                )
+            )
+            continue
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_save(frozen_manifest, manifest_path)
+        completed, skipped, view_failures = encode_pairs(
+            model,
+            pairs,
+            gpu_id=args.gpu_id,
+            overwrite=args.overwrite,
+            geometry=geometry,
+            boxes=None if args.no_loss_masks else manifest_boxes(args.corpus_root),
+            objective=objective,
         )
+        totals["completed"] += completed
+        totals["skipped"] += skipped
+        failed.extend(f"{objective}:{view}" for view in view_failures)
+    if args.dry_run:
         return 0
-    atomic_json_save(frozen_manifest, manifest_path)
-    completed, skipped = encode_jobs(
-        model,
-        jobs,
-        args.output_root,
-        gpu_id=args.gpu_id,
-        overwrite=args.overwrite,
-        boxes=None if args.no_loss_masks else manifest_boxes(args.corpus_root),
-    )
+    completed, skipped = totals["completed"], totals["skipped"]
     print(  # noqa: T201 -- CLI completion summary.
-        f"VAE precompute complete: encoded={completed}, skipped={skipped}, manifest={manifest_path}"
+        f"Guide master VAE precompute complete: encoded={completed}, skipped={skipped}, "
+        f"failed={len(failed)}, objectives={','.join(objectives)}"
     )
+    if failed:
+        print("failed views: " + ", ".join(failed[:20]) + (" ..." if len(failed) > 20 else ""))  # noqa: T201
     return 0
 
 

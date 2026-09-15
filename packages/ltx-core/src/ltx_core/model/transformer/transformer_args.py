@@ -68,6 +68,15 @@ class TransformerArgs:
     self_attn_all_perturbed: bool = False
     cross_attn_perturbation_mask: torch.Tensor | None = None
     cross_attn_skip_all: bool = False
+    # Causal autoregressive K/V caching (see `kv_cache.py`). `kv_caches` is the whole
+    # per-layer list as it arrives from the Modality; `self_attn_kv_cache` is the ONE entry
+    # this block's forward uses, attached per block by `LTXModel._process_transformer_blocks`
+    # -- the same "precomputed per block so the block forward needs no block identity"
+    # discipline the perturbation fields above follow.
+    kv_caches: list | None = None
+    self_attn_kv_cache: object | None = None
+    kv_start: int = 0
+    kv_write: bool = False
 
 
 class BlockPerturbationsProcessor:
@@ -300,6 +309,9 @@ class TransformerArgsPreprocessor:
             enabled=modality.enabled,
             prompt_timestep=prompt_timestep,
             self_attention_mask=self_attention_mask,
+            kv_caches=modality.kv_caches,
+            kv_start=modality.kv_start,
+            kv_write=modality.kv_write,
         )
 
 

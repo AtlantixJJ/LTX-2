@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 from enum import Enum
 
@@ -25,6 +26,22 @@ from ltx_core.model.transformer.transformer_args import (
 from ltx_core.utils import to_denoised
 
 logger = logging.getLogger(__name__)
+
+
+def _with_layer_kv_cache(args: TransformerArgs | None, block_idx: int) -> TransformerArgs | None:
+    """Attach block ``block_idx``'s cache entry, or return ``args`` untouched.
+
+    Untouched is the default path: ``kv_caches`` is ``None`` unless a caller opted into
+    causal autoregressive decoding, and then this is a ``dataclasses.replace`` of one field.
+    """
+    if args is None or args.kv_caches is None:
+        return args
+    if block_idx >= len(args.kv_caches):
+        raise ValueError(
+            f"kv_caches holds {len(args.kv_caches)} entries but this model has more blocks "
+            f"(reached index {block_idx}); allocate one cache per transformer block"
+        )
+    return dataclasses.replace(args, self_attn_kv_cache=args.kv_caches[block_idx])
 
 
 class LTXModelType(Enum):
@@ -476,7 +493,17 @@ class LTXModel(torch.nn.Module, Disposable):
                     cross_attn_type=PerturbationType.SKIP_V2A_CROSS_ATTN,
                 )
 
-            if self._enable_gradient_checkpointing and self.training:
+            # Attach THIS block's K/V cache entry. Per-block state is resolved here, out of
+            # the block forward, exactly as the perturbation masks above are -- a block never
+            # needs to know its own index.
+            video = _with_layer_kv_cache(video, block_idx)
+            audio = _with_layer_kv_cache(audio, block_idx)
+
+            # A cache-writing forward mutates the cache in place, so replaying the block
+            # under recomputation would write twice. Nothing is lost: the writing pass is the
+            # clean one, which runs under `no_grad` and stores no activations anyway.
+            writes_cache = (video is not None and video.kv_write) or (audio is not None and audio.kv_write)
+            if self._enable_gradient_checkpointing and self.training and not writes_cache:
                 video, audio = torch.utils.checkpoint.checkpoint(
                     block,
                     video,
@@ -520,6 +547,11 @@ class LTXModel(torch.nn.Module, Disposable):
             raise ValueError("Video is not enabled for this model")
         if not self.model_type.is_audio_enabled() and audio is not None:
             raise ValueError("Audio is not enabled for this model")
+        if audio is not None and audio.kv_caches is not None:
+            # Deliberately not wired: an audio stream's block boundaries are a different
+            # length from the video's (the AV rate ratio), so "one cache, one kv_start"
+            # does not describe it. Refusing beats caching the wrong span silently.
+            raise NotImplementedError("K/V caching is implemented for the video stream only")
 
         video_args = self.video_args_preprocessor.prepare(video, audio) if video is not None else None
         audio_args = self.audio_args_preprocessor.prepare(audio, video) if audio is not None else None

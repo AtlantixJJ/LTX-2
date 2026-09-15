@@ -2,9 +2,24 @@
 
 ``plans/2026-09-10-ltx25-one-step-argavatar-lora.md`` SS7.1 explains why this is not a
 ``ltx-trainer`` strategy: ``Trainer._training_step`` runs exactly one transformer forward
-per step and the strategy interface does not own the forward, so a ``K``-window AR chain
+per step and the strategy interface does not own the forward, so a ``K``-block AR chain
 cannot be expressed as one. Only the *step* is ours -- model loading, LoRA injection,
 FSDP preparation and checkpoint plumbing are all reused from ``ltx_trainer``.
+
+**Revised 2026-09-14 (SS4.4).** The sliding window with a frozen carryover latent frame is
+gone. The scheme is now block-causal attention plus a clean-latent K/V cache, over latents
+sliced from the clip's ONE continuous VAE encode:
+
+1. **Causal.** A token attends to its own block and every earlier block, never a later one.
+2. **Cached.** Because of (1) a finished block's keys and values are final, so they are
+   computed once -- by a clean, no-grad ``refresh`` forward -- and every later block reads
+   them out of the cache instead of re-forwarding that content inside its own window.
+3. **Master latents.** ``z_g``/``z_y`` are the whole clip's continuous encodes, read straight
+   from the corpus; blocks are token slices of them. There is no per-window precompute tree
+   and no per-window re-keyed frame 0 to manufacture.
+
+``causal_core.py`` owns all three -- it is the single implementation the deployment rollout
+(``onestep_core.rollout``) uses too, so training and deployment cannot drift.
 
 Three things this loop does that the shared trainer cannot:
 
@@ -13,20 +28,20 @@ Three things this loop does that the shared trainer cannot:
    ``z_g == z_y`` the target reduces exactly to ``eps - z_y``, the ordinary flow-matching
    target -- ``tests/test_train.py`` pins that, so this is a strict generalisation of what
    the trainer already does rather than a parallel objective.
-2. **The carryover is the model's own previous output**, not the ground truth. The
-   trainer's ``_apply_intrinsic_condition`` substitutes ``clean_latents``, which is exactly
-   the teacher forcing SS4.4 removes: the deployed rollout feeds the model its own error, so
-   training that never sees it drifts (measured on ``k2`` at -48.98 dB / 100 chunks).
-3. **The window state is the deployed one.** Every forward goes through
-   ``refine_core.make_window_state``, the same call the deployed refiner makes -- so RoPE
-   positions, the index-0 causal keyframe, the frozen carryover at index 1 and the
-   denoise mask are identical to inference by construction, not by two implementations
-   agreeing.
+2. **The context a block is conditioned on is the model's own previous output**, not the
+   ground truth, by default. ``--teacher-forcing`` swaps exactly one tensor -- what is handed
+   to the ``refresh`` forward -- for the GT capture, as an ablation arm to isolate how much of
+   the measured drift (-48.98 dB / 100 chunks on `k2`) is exposure bias versus everything else
+   the AR loop changes. It is not expected to be the production setting.
+3. **The rollout is the deployed one.** Every forward goes through ``causal_core``, the same
+   calls ``onestep_core.rollout`` makes, so RoPE positions, the frame-0 keyframe, the cached
+   context and the eviction policy are identical to inference by construction.
 
 sigma_0 is fixed (SS4.2, default 0.725): the distilled checkpoint is a deterministic map on a
-9-point grid, not a continuum, so there is no sampler in this loop at all. sigma_0, ``K`` and
-the subset hash go into the checkpoint metadata, because a fixed-sigma adapter loaded at
-another sigma or run multi-step fails silently (SS9 risk 13).
+9-point grid, not a continuum, so there is no sampler in this loop at all. sigma_0, ``K``, the
+causal geometry and the subset hash go into the checkpoint metadata, because a fixed-sigma
+adapter loaded at another sigma, run multi-step, or deployed at a different cache depth fails
+silently (SS9 risk 13).
 
 Run from ``LTX-2`` in the ``ltx`` env. Two or three GPUs is a preliminary-scale run -- drop
 the rank rather than the chain length, since ``K`` is what the loop exists to exercise::
@@ -34,7 +49,6 @@ the rank rather than the chain length, since ``K`` is what the loop exists to ex
     accelerate launch --config_file scripts/onestep_avatar/configs/fsdp_2gpu.yaml \\
       -m scripts.onestep_avatar.train \\
       --subset ../expr/onestep_avatar/windows/t2.json \\
-      --precomputed ../expr/onestep_avatar/precomputed \\
       --output ../expr/onestep_avatar/runs/prelim --lora-rank 8 --steps 200
 """
 
@@ -46,7 +60,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -56,12 +70,11 @@ from peft import LoraConfig, get_peft_model, get_peft_model_state_dict
 from peft.utils.other import fsdp_auto_wrap_policy
 from safetensors.torch import save_file
 
-from ltx_core.conditioning.types.reference_video_cond import VideoConditionByReferenceLatent
 from ltx_core.tools import VideoLatentTools
-from ltx_core.utils import to_denoised
-from ltx_pipelines.utils.helpers import modality_from_latent_state
 from ltx_trainer.model_loader import load_transformer
-from scripts.prune.core import model_registry, refine_core, refine_task
+from scripts.onestep_avatar import causal_core, dataset
+from scripts.onestep_avatar.causal_core import BlockCache, CausalGeometry, ClipGrid
+from scripts.prune.core import model_registry, refine_task
 from scripts.prune.data import prompt_cache
 
 LOGGER = logging.getLogger("onestep_avatar.train")
@@ -71,6 +84,11 @@ DTYPE = torch.bfloat16
 # grid admits only {0.421875, 0.725, 0.909375}, and 0.725 is the one where the base model
 # already moves texture by about the right amount (28.59 dB output-vs-input on 2.3).
 DEFAULT_SIGMA0 = 0.725
+
+# The corpus's per-view products live beside the source video, and `dataset` owns the
+# objective -> filename mapping for every reader and writer of them (SS1.2). A path literal
+# at a call site is how the two halves of this pipeline have desynced before.
+LOSS_MASK_GRIDS = dataset.LOSS_MASK_GRIDS_NAME
 
 # Two named target sets. "attn" is the trainer's own default projection set; "attn_ffn" adds
 # the feed-forward projections, which is the A2 sweep's second axis (SS A2 "attn-only vs
@@ -83,55 +101,78 @@ LORA_TARGETS = {
 
 
 @dataclass(frozen=True)
-class Window:
-    """One precomputed training window: the guide init, the capture target, and provenance."""
-
-    z_g: torch.Tensor  # [C, F, H, W] -- the noising source (ARGAvatar render)
-    z_y: torch.Tensor  # [C, F, H, W] -- the loss target (real capture)
-    fps: float
-    index: int
-    source: str
-    loss_mask: torch.Tensor | None  # [F, H, W] latent-resolution subject coverage, or None
-    z0_base: torch.Tensor | None  # [C, F, H, W] frozen-base one-step output, for the anchor
-
-
-@dataclass(frozen=True)
 class Chain:
-    """``K`` consecutive windows of one source -- SS4.4's training sample."""
+    """``K`` consecutive causal blocks of one clip -- SS4.4's training sample.
+
+    The latents here are the clip's **master** encodes, not per-block slices: the blocks are
+    token ranges of them, and the cache needs the clip's whole token grid anyway to keep RoPE
+    positions global. A clip is ~5 MB of bf16 latents at the 1024**2 geometry, so holding the
+    master costs less than the per-window tree it replaces (which stored every frame twice,
+    once per overlapping window).
+    """
 
     source: str
     split: str
     actor: str
     seed_is_clip_start: bool
-    windows: list[Window]
+    blocks: list[int]
+    z_g: torch.Tensor | None  # [C, F, H, W] master guide (ARGAvatar composite render); None when not loaded (d0)
+    z_y: torch.Tensor  # [C, F, H, W] master capture (the loss target)
+    fps: float
+    loss_weights: torch.Tensor | None  # [F, h, w] per-cell loss weights over the whole clip
+    z0_base: torch.Tensor | None  # [C, F, H, W] frozen-base one-step output, for the anchor
 
 
 def _load_record(path: Path) -> dict:
     return torch.load(path, map_location="cpu", weights_only=True)
 
 
-class ChainStore:
-    """Reads ``windows.py``'s frozen subset against ``precompute.py``'s output tree.
+def _master(bundle: dict, path: Path) -> torch.Tensor:
+    """The clip's continuous encode out of a schema-2 bundle, with a pointed error on v1.
 
-    Lazy per chain: a chain is ~3 x 3 x 1.05 MB of bf16 latents, and a T3 subset is tens of
-    thousands of windows, so nothing is held resident. The subset JSON is the only thing
-    parsed up front -- it is also the only place the split lives, so a held-out actor cannot
-    leak into training by a path convention.
+    A schema-1 bundle holds per-window slices and no master. Reassembling one is a real
+    operation but it is ``precompute.py --consolidate``'s job, not a silent fallback here:
+    a reader that quietly reconstructs is a second producer of the tensor the trainer learns
+    from, which is the exact failure shape SS7.3 names.
+    """
+    version = bundle.get("schema_version")
+    if version != 2 or "master" not in bundle:
+        raise SystemExit(
+            f"{path}: schema_version={version} holds per-window slices, not the clip's master "
+            f"latent. Run `python -m scripts.onestep_avatar.precompute --consolidate` over the "
+            f"corpus first -- it rebuilds the master from the slices without touching the VAE"
+        )
+    return bundle["master"]
+
+
+class ChainStore:
+    """Reads ``windows.py``'s frozen subset against the corpus's own per-view bundles.
+
+    Lazy per chain, and the unit of laziness is now the **clip**: a clip's master latents are
+    ~5 MB of bf16 each, and a T3 subset is thousands of clips, so nothing is held resident.
+    The subset JSON is the only thing parsed up front -- it is also the only place the split
+    lives, so a held-out actor cannot leak into training by a path convention.
     """
 
     def __init__(
         self,
         subset: dict,
-        precomputed: Path,
+        corpus_root: Path,
         *,
         split: str,
-        loss_mask_kind: str,
+        objective: str,
+        band_weight: float,
         with_anchor: bool,
+        with_guide: bool,
     ) -> None:
         self.subset = subset
-        self.root = precomputed
-        self.loss_mask_kind = loss_mask_kind
+        self.root = corpus_root
+        self.objective = objective
+        self.band_weight = band_weight
+        self.capture_bundle = dataset.capture_bundle_name(objective)
+        self.guide_bundle = dataset.guide_bundle_name(objective)
         self.with_anchor = with_anchor
+        self.with_guide = with_guide
         self.chains = [chain for chain in subset["chains"] if chain["split"] == split]
         if not self.chains:
             raise SystemExit(f"subset has no chains in split {split!r}")
@@ -140,69 +181,82 @@ class ChainStore:
     def __len__(self) -> int:
         return len(self.chains)
 
-    def _window(self, source: str, index: int) -> Window:
-        rel = Path(source) / f"window_{index:04d}.pt"
-        init = _load_record(self.root / "init_latents" / rel)
-        target = _load_record(self.root / "target_latents" / rel)
-        if init["latents"].shape != target["latents"].shape:
-            raise ValueError(f"{rel}: guide {tuple(init['latents'].shape)} != capture {tuple(target['latents'].shape)}")
-        if init["fps"] != target["fps"]:
-            raise ValueError(f"{rel}: guide fps {init['fps']} != capture fps {target['fps']}")
+    def __getitem__(self, i: int) -> Chain:
+        chain = self.chains[i]
+        view = self.root / chain["source"]
+        capture = _load_record(view / self.capture_bundle)
+        z_y = _master(capture, view / self.capture_bundle)
+        # Guide-mode d0 never reads z_g (train_chain uses z_y as both source and target), so
+        # skip requiring the guide bundle to exist for callers that only run d0 -- e.g. the
+        # D0 sanity probe, which must work against capture-only precompute output.
+        z_g = None
+        if self.with_guide:
+            guide = _load_record(view / self.guide_bundle)
+            z_g = _master(guide, view / self.guide_bundle)
+            if z_g.shape != z_y.shape:
+                raise ValueError(f"{chain['source']}: guide {tuple(z_g.shape)} != capture {tuple(z_y.shape)}")
+            if capture["fps"] != guide["fps"]:
+                raise ValueError(f"{chain['source']}: guide fps {guide['fps']} != capture fps {capture['fps']}")
 
-        loss_mask = None
-        if self.loss_mask_kind != "none":
-            record = _load_record(self.root / "loss_masks" / rel)
-            loss_mask = _combine_masks(record, self.loss_mask_kind)
+        # band_weight == 1.0 IS the plain full-frame loss, so the grids are not even read:
+        # the weights would be all ones by construction (SS1.5).
+        loss_weights = None
+        if self.band_weight < 1.0:
+            loss_weights = disagreement_weights(_load_record(view / LOSS_MASK_GRIDS), self.band_weight)
+            if loss_weights.shape[0] != z_y.shape[1]:
+                raise ValueError(
+                    f"{chain['source']}: loss-mask grid has {loss_weights.shape[0]} latent frames, "
+                    f"the master latent has {z_y.shape[1]}"
+                )
 
         z0_base = None
         if self.with_anchor:
-            z0_base = _load_record(self.root / "base_denoised" / rel)["latents"]
+            z0_base = _master(_load_record(view / "base_denoised.pt"), view / "base_denoised.pt")
 
-        return Window(
-            z_g=init["latents"],
-            z_y=target["latents"],
-            fps=float(init["fps"]),
-            index=index,
-            source=source,
-            loss_mask=loss_mask,
-            z0_base=z0_base,
-        )
-
-    def __getitem__(self, i: int) -> Chain:
-        chain = self.chains[i]
         return Chain(
             source=chain["source"],
             split=chain["split"],
             actor=chain["actor"],
             seed_is_clip_start=bool(chain["seed_is_clip_start"]),
-            windows=[self._window(chain["source"], index) for index in chain["windows"]],
+            blocks=list(chain["blocks"]),
+            z_g=z_g,
+            z_y=z_y,
+            fps=float(capture["fps"]),
+            loss_weights=loss_weights,
+            z0_base=z0_base,
         )
 
 
-def _combine_masks(record: dict, kind: str) -> torch.Tensor:
-    """Turn the two stored coverage grids into the one mask the loss weights by.
+def disagreement_weights(record: dict, band_weight: float) -> torch.Tensor:
+    """SS1.5's masking rule: full frame, down-weighted on the silhouette disagreement band.
 
-    Both are kept separately on disk on purpose (SS4.3 row 1 names the render's alpha, but the
-    *target* is the capture, and the two disagree by exactly the SSB1 IoU gap). Which
-    disagreement region the loss should cover is a training decision, so it is made here:
+    The corpus stores two coverage grids per view, deliberately uncombined -- ``render_alpha``
+    (where the model is asked to paint) and ``capture_mask`` (where the target is meaningful).
+    They disagree by exactly the SSB1 IoU gap, and that disagreement is the ONE region a loss
+    should not trust: at IoU 0.77 an unweighted loss trains the model to reproduce the
+    *render's* silhouette against a photograph.
 
-    * ``render``      -- where the model is asked to paint something.
-    * ``capture``     -- where the target is meaningful. Excludes the render's spurious limbs.
-    * ``union``       -- both, so the model is also taught to *remove* what is not there.
-    * ``intersection``-- neither disputed region: the conservative reading of "silhouette
-      mismatch would otherwise be learned as signal", at the cost of never learning the
-      silhouette itself.
+    Everything else stays in the loss at full weight, and that is the whole point of the rule.
+    The five subject masks this replaced (``render``/``capture``/``union``/``intersection``,
+    and ``none``) were all pre-product: each gave weight zero everywhere outside the subject
+    at time ``t``, which is exactly where the ghost band (``mask_0`` minus ``mask_t``)
+    lives (SS1.2).
+    A subject-masked loss therefore cannot teach the model to repair the ghost -- the region
+    SS1.2 calls the learning signal -- however it is combined, so there was nothing to keep.
+
+    The band is the SOFT symmetric difference ``|render_alpha - capture_mask|``: both grids
+    are area fractions at latent resolution, so a boundary cell that is half-covered in one
+    and fully covered in the other is half-disputed, not wholly. ``band_weight`` is what a
+    fully disputed cell is worth -- 0.0 excludes the band outright (the default), 1.0 is a
+    plain unweighted full-frame loss.
+
+    Both objectives use this one rule and this one code path. Under ``white`` the background
+    is white on both sides and there is no ghost band, so the loss is dominated by the
+    subject; the rule does not change, only what dominates it (SS1.5).
     """
     render, capture = record["render_alpha"].float(), record["capture_mask"].float()
-    if kind == "render":
-        return render
-    if kind == "capture":
-        return capture
-    if kind == "union":
-        return torch.maximum(render, capture)
-    if kind == "intersection":
-        return torch.minimum(render, capture)
-    raise ValueError(f"unknown loss mask kind {kind!r}")
+    band = (render - capture).abs()
+    return 1.0 - (1.0 - band_weight) * band
 
 
 def _as_token_weights(mask_5d: torch.Tensor, tools: VideoLatentTools) -> torch.Tensor:
@@ -226,105 +280,48 @@ def masked_mse(pred: torch.Tensor, target: torch.Tensor, weights: torch.Tensor) 
     return weighted.sum() / weights.expand_as(error).sum().clamp(min=1e-8)
 
 
-def one_window_forward(
-    transformer: torch.nn.Module,
-    context: torch.Tensor,
-    window: Window,
-    carry: torch.Tensor | None,
-    geometry: refine_core.WindowGeometry,
-    *,
-    sigma0: float,
-    seed: int,
-    device: torch.device,
-    latent_channels: int,
-    guide_mode: str = "d1",
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, object, object]:
-    """One guided-init forward -> ``(z0_tokens, target_tokens, token_weights, state, tools)``.
-
-    ``state`` and ``tools`` come back because the caller needs them after the loss: the
-    carryover is unpatchified through the same tools, and the anchor term patchifies its
-    cached target with them. Rebuilding either would be a second producer of the token
-    layout.
-
-    The state is built by ``refine_core.make_window_state`` -- the deployed call -- with
-    ``l_init`` set per ``guide_mode``. ``GaussianNoiser`` then computes
-    ``lerp(l_init, eps, sigma_0) = (1 - sigma_0) l_init + sigma_0 eps`` and restores the
-    conditioned slots from ``clean_latent``, which is where ``carry`` has been written.
-
-    ``guide_mode="d0"`` is a training-only sanity check, not a deployable arm:
-    ``onestep_core.guide_conditionings`` refuses it, because there is no ``z_y`` at inference
-    to noise. It sets ``l_init = z_y`` instead of ``z_g``, so the init IS the loss target run
-    through SS3 identity 1 -- the ordinary flow-matching objective on real capture video,
-    decoupled from the render entirely. It answers "can this architecture + LoRA reconstruct
-    real video from sigma_0 noise around itself at all", a capacity ceiling to compare the
-    measured `r` (SS0.3) against, not a correction model.
-    """
-    _, _, height, width = window.z_g.shape
-    tools = refine_core.tools_for_window(
-        geometry,
+def clip_grid_for(
+    chain: Chain, geometry: CausalGeometry, *, device: torch.device, latent_channels: int
+) -> ClipGrid:
+    """The clip's token grid -- positions, keyframe marks, tools -- built once per chain."""
+    _, latent_frames, height, width = chain.z_y.shape
+    return ClipGrid.build(
+        latent_frames,
         height * geometry.scale_factors.height,
         width * geometry.scale_factors.width,
-        window.fps,
+        chain.fps,
+        geometry,
+        device=device,
+        dtype=DTYPE,
         latent_channels=latent_channels,
     )
-    z_g = window.z_g.unsqueeze(0).to(device=device, dtype=DTYPE)
-    z_y = window.z_y.unsqueeze(0).to(device=device, dtype=DTYPE)
-    extra = ()
-    if guide_mode == "d0":
-        l_init = z_y
-    elif guide_mode == "d2":
-        l_init = z_g
-        # SS4.1's hybrid: the SAME guide, a second time, as clean tokens appended at
-        # timestep 0. At scale factor 1 they land on the target's own RoPE positions, so the
-        # model gets a pixel-aligned copy of the guide that sigma_0's noise has NOT degraded --
-        # which is the whole point, since the init's copy is degraded and therefore carries a
-        # weaker constraint. Costs ~2.3x attention (2T tokens instead of T).
-        extra = (
-            VideoConditionByReferenceLatent(
-                latent=z_g, downscale_factor=1, temporal_scale_factor=1, strength=1.0
-            ),
-        )
-    elif guide_mode == "d1":
-        l_init = z_g
-    else:
-        raise ValueError(f"unknown guide mode {guide_mode!r}; expected 'd0', 'd1' or 'd2'")
-    state = refine_core.make_window_state(
-        l_init, carry, sigma0, tools, seed, device, DTYPE, extra_conditionings=extra
-    )
-
-    sigma = torch.tensor(sigma0, device=device, dtype=DTYPE)
-    modality = modality_from_latent_state(state, context, sigma.expand(state.latent.shape[0]))
-    velocity, _ = transformer(video=modality, audio=None, perturbations=None)
-    # SS2.2: the transformer natively emits velocity and `to_denoised` is an exact algebraic
-    # identity, so predicting z0 here costs nothing and makes the loss directly comparable
-    # with the capture latent. At fixed sigma_0, velocity MSE == x0 MSE / sigma_0**2 (SS3).
-    z0_tokens = to_denoised(state.latent, velocity, modality.timesteps)
-
-    target_tokens = tools.patchifier.patchify(z_y)
-
-    # The frozen carryover and the causal keyframe carry denoise_mask 0; they are conditioning,
-    # not prediction, so they must not contribute to the loss (the trainer's own rule).
-    weights = state.denoise_mask.float()
-    if weights.dim() == 2:
-        weights = weights.unsqueeze(-1)
-    # D2 appends its reference tokens AFTER the target's, so the target is the leading T
-    # tokens -- the opposite end from `flexible._apply_reference_condition`, which prepends and
-    # therefore slices `[:, -target_len:]`. Slicing is a no-op under D1 (the counts are equal),
-    # so there is one code path rather than a branch.
-    n_target = target_tokens.shape[1]
-    z0_tokens = z0_tokens[:, :n_target]
-    weights = weights[:, :n_target]
-    if window.loss_mask is not None:
-        coverage = window.loss_mask.to(device=device, dtype=torch.float32)
-        weights = weights * _as_token_weights(coverage.unsqueeze(0).unsqueeze(0), tools)
-    return z0_tokens, target_tokens, weights, state, tools
 
 
-def train_chain(
+def block_weights(
+    grid: ClipGrid, chain: Chain, span: tuple[int, int], device: torch.device
+) -> torch.Tensor:
+    """Per-token loss weights for one block: all ones, times SS1.5's band weighting if any.
+
+    Every token in a block is predicted now. Under the old window there were conditioning
+    tokens (the frozen carryover, the keyframe) carrying ``denoise_mask`` 0 that had to be
+    excluded; the cache holds that content instead, so it is not in the sequence at all and
+    there is nothing to exclude.
+    """
+    start, end = span
+    tokens = (end - start) * grid.tokens_per_latent_frame
+    weights = torch.ones(1, tokens, 1, device=device, dtype=torch.float32)
+    if chain.loss_weights is None:
+        return weights
+    coverage = chain.loss_weights[start:end].to(device=device, dtype=torch.float32)
+    return weights * _as_token_weights(coverage.unsqueeze(0).unsqueeze(0), grid.tools)
+
+
+def train_chain(  # noqa: PLR0913 -- one AR training step is defined by all of these
     transformer: torch.nn.Module,
     context: torch.Tensor,
     chain: Chain,
-    geometry: refine_core.WindowGeometry,
+    geometry: CausalGeometry,
+    cache: BlockCache | None,
     accelerator: Accelerator,
     *,
     sigma0: float,
@@ -332,82 +329,142 @@ def train_chain(
     anchor_weight: float,
     latent_channels: int,
     guide_mode: str = "d1",
+    teacher_forcing: bool = False,
 ) -> dict[str, float]:
-    """SS4.4's chain: ``K`` forwards and ``K`` backwards, one optimizer step, detach between.
+    """SS4.4's chain: ``K`` denoise forwards, ``K`` backwards, ``K`` refreshes, one optimizer step.
 
-    Detaching the carryover is what keeps peak activation memory at a *single* window rather
-    than ``K`` of them -- the reason AR training does not raise the SS8.1 memory budget at all.
-    It also means window ``i``'s loss never backpropagates into window ``i-1``'s forward,
-    which is correct: the carryover is an input the deployed model is handed, not something
-    this step gets to optimise through.
+    Per block, in this order and for these reasons:
+
+    ``denoise`` reads the cache and writes nothing, so gradient checkpointing stays valid on
+    the only pass that stores activations. ``backward`` runs immediately, which is what keeps
+    peak activation memory at a **single** block rather than ``K`` of them. ``refresh`` then
+    forwards the block's clean latent under ``no_grad`` to put its keys and values in the
+    cache for every later block, and evicts down to the retained context.
+
+    ``teacher_forcing`` hands ``refresh`` the ground-truth capture instead of the block's own
+    ``ẑ₀``. That one tensor is the entire difference between the two regimes -- nothing else
+    in the loop, and nothing in ``causal_core``, knows which is in play.
+
+    The cache is primed from the ground truth for blocks before the chain's first (see
+    ``causal_core.prime_cache``); a chain that starts at block 0 needs no priming, which is
+    what ``seed_is_clip_start`` records.
     """
     device = accelerator.device
-    carry = None
-    if not chain.seed_is_clip_start:
-        # The chain seed takes the GT carryover (SS4.4). A clip's very first window has no
-        # predecessor at deployment either, so it takes none.
-        #
-        # It is the GT at the DESTINATION slot, not `carry_from` of this window. `carry_from`
-        # takes a window's LAST latent frame, which is right when the value comes from the
-        # previous window's output -- at a 16-frame stride, window w-1's last latent frame and
-        # window w's latent frame 1 are the same master frame (2w+1). Applied to window w's own
-        # latents it would instead pick master frame 2w+3: two latent frames into the future,
-        # a seed no rollout ever sees.
-        idx = refine_core.CARRYOVER_LATENT_IDX
-        n = geometry.context_latent_frames
-        gt = chain.windows[0].z_y.unsqueeze(0).to(device=device, dtype=DTYPE)
-        carry = gt[:, :, idx : idx + n].contiguous()
+    grid = clip_grid_for(chain, geometry, device=device, latent_channels=latent_channels)
+    plan = geometry.plan(grid.latent_frames)
+    if max(chain.blocks) >= len(plan):
+        raise ValueError(
+            f"{chain.source}: chain asks for block {max(chain.blocks)} but the clip plans "
+            f"{len(plan)} under {geometry.as_dict()}; the subset was frozen under a different geometry"
+        )
+
+    denoise_fn = causal_core.denoised_from_velocity_model(transformer)
+    z_y = chain.z_y.unsqueeze(0).to(device=device, dtype=DTYPE)
+    # SS4.1 d0 is a training-only sanity arm: it noises the CAPTURE instead of the guide, so
+    # the objective reduces to ordinary flow matching on real video (SS3 identity 1), decoupled
+    # from the render entirely. `onestep_core.guide_conditionings` refuses it because there is
+    # no z_y at inference to noise. z_g is only touched in the d1 branch -- ChainStore does not
+    # load it for d0 runs, so chain.z_g may be None here.
+    if guide_mode == "d0":
+        source = z_y
+    elif guide_mode == "d1":
+        source = chain.z_g.unsqueeze(0).to(device=device, dtype=DTYPE)
+    else:
+        raise ValueError(f"unknown guide mode {guide_mode!r}; expected 'd0' or 'd1'")
+    guide_tokens = grid.patchify(source)
+    target_tokens = grid.patchify(z_y)
+    base_tokens = (
+        grid.patchify(chain.z0_base.unsqueeze(0).to(device=device, dtype=DTYPE))
+        if chain.z0_base is not None
+        else None
+    )
+
+    if cache is None:
+        cache = BlockCache.allocate(
+            grid,
+            geometry,
+            num_layers=_num_blocks(transformer),
+            inner_dim=_inner_dim(transformer),
+            device=device,
+            dtype=DTYPE,
+        )
+    elif cache.grid.tokens_per_latent_frame != grid.tokens_per_latent_frame:
+        # The cache is allocated once for the whole run, against the fixed 1024**2 crop
+        # (SS4.5). A clip at a different spatial size would make every kv_start off by a
+        # frame's worth of tokens -- silently, since the buffer is big enough either way.
+        raise ValueError(
+            f"{chain.source}: {grid.tokens_per_latent_frame} tokens per latent frame, but the "
+            f"cache was allocated for {cache.grid.tokens_per_latent_frame}; the corpus is "
+            f"supposed to be one geometry (SS4.5)"
+        )
+    causal_core.prime_cache(
+        denoise_fn, grid, cache, target_tokens, geometry, context, upto_latent_frame=plan[chain.blocks[0]][0]
+    )
 
     totals = {"loss": 0.0, "mse": 0.0, "anchor": 0.0}
-    # SS7.4(a): "today [train.py] writes one row per chain... which cannot answer the question
-    # the AR loop exists to ask" -- windows 1..K-1 see the model's own error and window 0 does
-    # not, so a chain-mean scalar hides exactly the effect K > 1 exists to create or expose.
-    # `window_position` in the per-window record is the position along a POTENTIALLY LONGER
-    # rollout (`window.index`, the corpus-relative window number), not the position within this
-    # chain -- `plot_training.py`'s owed figure needs position-within-chain (0..K-1), which the
-    # caller (holding `chain`) can derive by zipping this list against `enumerate(chain.windows)`.
-    per_window: list[dict[str, float]] = []
-    k = len(chain.windows)
-    for i, window in enumerate(chain.windows):
-        z0_tokens, target_tokens, weights, state, tools = one_window_forward(
-            transformer,
-            context,
-            window,
-            carry,
-            geometry,
-            sigma0=sigma0,
-            seed=seed + window.index,
-            device=device,
-            latent_channels=latent_channels,
-            guide_mode=guide_mode,
-        )
-        mse = masked_mse(z0_tokens, target_tokens, weights)
+    per_block: list[dict[str, float]] = []
+    k = len(chain.blocks)
+    for block_index in chain.blocks:
+        span = plan[block_index]
+        lo, hi = grid.token_span(*span)
+        noisy = causal_core.noise_block(guide_tokens[:, lo:hi], sigma0, seed + block_index)
+        z0 = causal_core.denoise_block(denoise_fn, grid, cache, noisy, context, sigma0, span)
+
+        weights = block_weights(grid, chain, span, device)
+        mse = masked_mse(z0, target_tokens[:, lo:hi], weights)
         loss = mse
         anchor = torch.zeros((), device=device)
         if anchor_weight > 0.0:
-            if window.z0_base is None:
-                raise ValueError("--anchor-weight > 0 but the subset has no base_denoised/ products")
+            if base_tokens is None:
+                raise ValueError("--anchor-weight > 0 but this view has no base_denoised.pt")
             # SS4.3 row 2 / SS2.3(3): the risk here is ERODING sharpness Phi already has, not
             # failing to synthesise it. Pulling toward the frozen model's own output on the
             # same input is the cheapest thing that targets that directly.
-            base_tokens = tools.patchifier.patchify(window.z0_base.unsqueeze(0).to(device=device, dtype=DTYPE))
-            anchor = masked_mse(z0_tokens, base_tokens, weights)
+            anchor = masked_mse(z0, base_tokens[:, lo:hi], weights)
             loss = loss + anchor_weight * anchor
 
         accelerator.backward(loss / k)
         totals["loss"] += float(loss.detach()) / k
         totals["mse"] += float(mse.detach()) / k
         totals["anchor"] += float(anchor.detach()) / k
-        per_window.append(
-            {"window_index": window.index, "mse": float(mse.detach()), "anchor": float(anchor.detach())}
+        per_block.append(
+            {"block_index": block_index, "mse": float(mse.detach()), "anchor": float(anchor.detach())}
         )
 
-        if i + 1 < k:
-            z0_latent = refine_core.finalize(replace(state, latent=z0_tokens), tools)
-            carry = refine_core.carry_from(z0_latent, geometry).detach()
-        del z0_tokens, target_tokens, weights, state, tools, loss, mse, anchor
-    totals["per_window"] = per_window
+        clean = target_tokens[:, lo:hi] if teacher_forcing else z0.detach()
+        causal_core.refresh_block(denoise_fn, grid, cache, clean, context, span)
+        del z0, weights, loss, mse, anchor
+    totals["per_block"] = per_block
     return totals
+
+
+def _base_model(transformer: torch.nn.Module) -> torch.nn.Module:
+    """Peel FSDP/DDP and PEFT wrappers off to reach the ``LTXModel`` the cache is sized from.
+
+    The cache needs two numbers the wrappers do not expose -- the block count and the inner
+    dimension -- and asking the checkpoint config for them instead would be a second source
+    of truth for the model that is actually resident.
+    """
+    model = transformer
+    for _ in range(8):
+        if hasattr(model, "transformer_blocks"):
+            return model
+        for attribute in ("module", "base_model", "model"):
+            inner = getattr(model, attribute, None)
+            if isinstance(inner, torch.nn.Module):
+                model = inner
+                break
+        else:
+            break
+    raise TypeError(f"cannot find the LTXModel inside {type(transformer).__name__}")
+
+
+def _num_blocks(transformer: torch.nn.Module) -> int:
+    return len(_base_model(transformer).transformer_blocks)
+
+
+def _inner_dim(transformer: torch.nn.Module) -> int:
+    return _base_model(transformer).inner_dim
 
 
 def build_transformer(
@@ -442,16 +499,28 @@ def build_transformer(
     return transformer
 
 
+def causal_geometry(args: argparse.Namespace, model: model_registry.RefinerModel) -> CausalGeometry:
+    return causal_core.deployed_geometry(
+        model.scale_factors,
+        block_latent_frames=args.block_latent_frames,
+        context_latent_frames=args.context_latent_frames,
+    )
+
+
 def checkpoint_metadata(
     args: argparse.Namespace, subset: dict, model: model_registry.RefinerModel, step: int
 ) -> dict[str, str]:
     """SS7.1 / SS9 risk 13: a fixed-sigma adapter must not be loadable off-condition.
 
-    sigma_0 and ``K`` are recorded so ``refine_task``'s future ``ONE_STEP`` schedule can refuse
-    a checkpoint whose sigma disagrees or a multi-step run, both of which would otherwise fail
-    silently -- extra steps are extrapolation for a map that was distilled to a fixed grid.
+    sigma_0, ``K`` and now the **causal geometry** are recorded so ``refine_task``'s ``ONE_STEP``
+    schedule can refuse a checkpoint whose sigma disagrees, a multi-step run, or a rollout at a
+    different block/cache depth -- all of which would otherwise fail silently. The cache depth
+    belongs here for the same reason sigma does: an adapter trained with two frames of cached
+    context is a different function from one trained with six, and nothing downstream can tell
+    by looking at the weights.
     """
     sigma_levels = training_sigmas(args)
+    geometry = causal_geometry(args, model)
     return {
         # ``mixed`` deliberately prevents a fixed-sigma deployment loader from accepting a
         # multi-level adapter as though it were calibrated for just one noise level.
@@ -459,12 +528,18 @@ def checkpoint_metadata(
         "onestep_avatar_sigma_levels": ",".join(repr(sigma) for sigma in sigma_levels),
         "onestep_avatar_chain_length": str(subset["chain_length"]),
         "onestep_avatar_schedule": "ONE_STEP",
+        "onestep_avatar_attention": "block_causal",
+        "onestep_avatar_block_latent_frames": str(geometry.block_latent_frames),
+        "onestep_avatar_context_latent_frames": str(geometry.context_latent_frames),
+        "onestep_avatar_sink_latent_frames": str(geometry.sink_latent_frames),
         "onestep_avatar_subset_sha256": hashlib.sha256(
             json.dumps(subset["sources"], sort_keys=True).encode()
         ).hexdigest(),
-        "onestep_avatar_loss_mask": args.loss_mask,
+        "onestep_avatar_objective": args.objective,
+        "onestep_avatar_disagreement_weight": repr(args.disagreement_weight),
         "onestep_avatar_guide_mode": args.guide_mode,
         "onestep_avatar_anchor_weight": repr(args.anchor_weight),
+        "onestep_avatar_teacher_forcing": str(args.teacher_forcing),
         "model_key": model.key,
         "lora_rank": str(args.lora_rank),
         "lora_alpha": str(args.lora_alpha),
@@ -494,17 +569,20 @@ def training_sigmas(args: argparse.Namespace) -> tuple[float, ...]:
     return values
 
 
-def sigma_for_rank(sigmas: tuple[float, ...], rank: int) -> float:
-    """One fixed noise level per rank for the run, rotating when ranks don't divide the levels.
+def sigma_for_rank(sigmas: tuple[float, ...], rank: int, step: int) -> float:
+    """This rank's noise level at this step: ``(rank + step) % len(sigmas)``.
 
-    Replaces the old per-step cycle (every rank sharing one level, changing each step), which
-    aliased into a sawtooth loss curve at the step's own period since a step's mean-across-ranks
-    loss was always a single-level loss rather than a genuine batch average. Assigning ranks
-    instead of steps means every optimizer step already mixes whatever levels are present among
-    the ranks, so the aggregate loss is stable step to step -- the same modulo pattern as the
-    cycle it replaces, just keyed by rank rather than step.
+    Two things the old per-step cycle (every rank sharing one level, changing each step) got
+    wrong at once: it aliased into a sawtooth loss curve at the step's own period, since a
+    step's mean-across-ranks loss was always a single-level loss rather than a genuine batch
+    average; and a purely per-rank assignment (``rank % len(sigmas)``, no ``step`` term) never
+    trains the levels beyond ``world_size`` at all when ``world_size < len(sigmas)`` -- a
+    silent coverage gap, not just a variance one. Offsetting by ``rank`` keeps every single
+    step's batch mixing whatever levels are present among the ranks (fixing the first
+    problem); advancing by ``step`` walks every rank through the full level set over the run
+    (fixing the second).
     """
-    return sigmas[rank % len(sigmas)]
+    return sigmas[(rank + step) % len(sigmas)]
 
 
 def init_wandb(args: argparse.Namespace, *, config: dict) -> object | None:
@@ -557,15 +635,37 @@ def save_lora(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--subset", type=Path, required=True, help="windows.py's frozen subset JSON")
-    p.add_argument("--precomputed", type=Path, required=True, help="precompute.py --output-root")
+    p.add_argument(
+        "--corpus-root",
+        type=Path,
+        default=None,
+        help="Corpus root holding the per-view master latents. Defaults to the subset's own "
+        "`corpus_root`, which is where precompute.py wrote them -- pass this only to read a "
+        "relocated copy.",
+    )
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--model", choices=model_registry.SUPPORTED_MODELS, default="2.5")
     p.add_argument("--sigma0", type=float, default=DEFAULT_SIGMA0)
     p.add_argument(
         "--sigma-levels", type=float, nargs="+", default=None,
-        help="Assign one fixed level per rank for the whole run (rank % len(levels), rotating "
-        "if world_size != len(levels)). Overrides --sigma0; useful for a multilevel distilled "
-        "adapter. sigma=0.0 is refused -- it trains on nothing (see training_sigmas).",
+        help="Assign one rotating level per rank per step ((rank + step) %% len(levels)). "
+        "Overrides --sigma0; useful for a multilevel distilled adapter. sigma=0.0 is refused "
+        "-- it trains on nothing (see training_sigmas).",
+    )
+    p.add_argument(
+        "--block-latent-frames", type=int, default=causal_core.BLOCK_LATENT_FRAMES,
+        help="Latent frames denoised per causal block (SS4.4). The default is the deployed "
+        "16-pixel-frame stride; changing it changes what a trained adapter finalizes per step.",
+    )
+    p.add_argument(
+        "--context-latent-frames", type=int, default=causal_core.CONTEXT_LATENT_FRAMES,
+        help=f"Clean latent frames kept in the K/V cache besides the pinned frame-0 sink, up "
+        f"to {causal_core.MAX_CONTEXT_LATENT_FRAMES}. Each one costs ~0.8 GB per rank at the "
+        f"22B geometry and lengthens every block's attention, so this is the compute/quality "
+        f"knob of the scheme. Past roughly the chain's own reach the cache stops evicting and "
+        f"simply ACCUMULATES the whole rollout's history -- at the default K=3 and a 2-frame "
+        f"block that is 6 finalized frames plus the primed prefix. Recorded in the checkpoint "
+        f"metadata: an adapter trained at one depth is a different function at another.",
     )
     p.add_argument("--split", choices=("train", "held_out"), default="train")
     p.add_argument("--lora-rank", type=int, default=8, help="2-3 GPU preliminary runs drop this, never K")
@@ -575,25 +675,47 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--warmup-steps", type=int, default=20)
     p.add_argument("--steps", type=int, default=200)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--loss-mask", choices=("none", "render", "capture", "union", "intersection"), default="none")
+    p.add_argument(
+        "--objective",
+        choices=dataset.OBJECTIVES,
+        default=dataset.DEFAULT_OBJECTIVE,
+        help="SS1.2. bg (default): the product -- guide composited over the clip's real first "
+        "frame, target the unmatted capture. white: both sides on white, which isolates the "
+        "subject-texture gap from the background question. Selects which pair of bundles is "
+        "read; must match the objective the subset was frozen against.",
+    )
+    p.add_argument(
+        "--disagreement-weight",
+        type=float,
+        default=0.0,
+        help="SS1.5. Loss weight of the render-vs-capture silhouette disagreement band, the "
+        "one region a full-frame loss should not trust. 0.0 (default) excludes it; 1.0 is a "
+        "plain unweighted full-frame loss. Everything else -- subject, background, and the "
+        "ghost band SS1.2 calls the learning signal -- always stays at full weight.",
+    )
     p.add_argument(
         "--guide-mode",
-        choices=("d0", "d1", "d2"),
+        choices=("d0", "d1"),
         default="d1",
-        help="SS4.1. d0: SANITY ONLY, not deployable -- noises the capture z_y instead of the "
-        "guide, reducing to ordinary flow-matching on real video (SS3 identity 1), decoupled "
-        "from the render. Measures the architecture's capacity ceiling at sigma_0, to compare "
-        "against the measured r; onestep_core.guide_conditionings refuses this mode because "
-        "there is no z_y at inference. d1: the plan's D1a -- the guide reaches the model only "
-        "as the noised init. Cheapest, what refine_core deploys today, and the control every "
-        "other arm has to beat. d2: ALSO as clean reference tokens at timestep 0, at 2T tokens "
-        "-- DROPPED as a live arm 2026-09-13, because it was measured at 1.05x k2's wall clock "
-        "(bench_forward.py), i.e. slower than the baseline it was meant to replace, so it "
-        "fails the compute claim regardless of quality. Kept runnable only as that benchmark. "
-        "The plan's D1b (first-frame latent blend) and D1c (additive guide embedding on pure "
-        "noise, the T-token way to get d2's guide fidelity) have no flag here yet.",
+        help="SS4.1. d1: the plan's D1a -- the guide reaches the model only as the noised "
+        "init. Cheapest, what the causal rollout deploys today, and the control every other "
+        "arm has to beat. d0: SANITY ONLY, not deployable -- noises the capture z_y instead "
+        "of the guide, reducing to ordinary flow-matching on real video (SS3 identity 1). "
+        "Measures the architecture's capacity ceiling at sigma_0, to compare against the "
+        "measured r; onestep_core.guide_conditionings refuses this mode because there is no "
+        "z_y at inference. (The old `d2` extra-token hybrid is gone: it was dropped as an arm "
+        "2026-09-13 for costing 1.05x k2, and its clean reference tokens have no place in a "
+        "causal sequence -- they would be future context.)",
     )
-    p.add_argument("--anchor-weight", type=float, default=0.0, help="SS4.3 row 2; needs base_denoised/")
+    p.add_argument("--anchor-weight", type=float, default=0.0, help="SS4.3 row 2; needs base_denoised.pt")
+    p.add_argument(
+        "--teacher-forcing",
+        action="store_true",
+        help="Ablation arm: the cache refresh is fed the ground-truth capture latent instead "
+        "of this block's own generation. Isolates exposure-bias drift from everything else "
+        "the AR loop changes; NOT the production setting (deployment always carries the "
+        "model's own output).",
+    )
     p.add_argument("--save-every", type=int, default=100)
     p.add_argument("--log-every", type=int, default=1)
     p.add_argument("--max-grad-norm", type=float, default=1.0)
@@ -611,39 +733,69 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     args = parse_args(argv)
     if args.lora_alpha is None:
         args.lora_alpha = args.lora_rank
+    if not 0.0 <= args.disagreement_weight <= 1.0:
+        raise SystemExit("--disagreement-weight is a loss weight in [0, 1]")
     sigmas = training_sigmas(args)
     if args.guide_mode == "d0" and args.anchor_weight > 0.0:
-        # base_denoised/ (SS4.3 row 2) is Phi(lerp(z_g, eps, sigma_0)) -- the frozen model's
+        # base_denoised (SS4.3 row 2) is Phi(lerp(z_g, eps, sigma_0)) -- the frozen model's
         # output on the GUIDE-noised input. d0 noises z_y instead, so the anchor would be
         # pulling this run toward an output computed on an input it never sees.
-        raise SystemExit("--guide-mode d0 is noised from z_y; its anchor target would be off-input. Drop --anchor-weight.")
+        raise SystemExit(
+            "--guide-mode d0 is noised from z_y; its anchor target would be off-input. "
+            "Drop --anchor-weight."
+        )
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     subset = json.loads(args.subset.read_text())
-    if subset.get("kind") != "one_step_argavatar_window_chains":
-        raise SystemExit(f"{args.subset} is not a windows.py subset")
+    if subset.get("kind") != "one_step_argavatar_block_chains":
+        raise SystemExit(
+            f"{args.subset} is not a block-chain subset (kind={subset.get('kind')!r}). Re-freeze "
+            f"it with `python -m scripts.onestep_avatar.windows` -- the window-chain subsets "
+            f"predate SS4.4's causal scheme and index windows that no longer exist"
+        )
+    # SS1.2: a subset is surveyed and content-pinned against ONE objective's artifacts, so
+    # training the other one against it would read bundles the freeze never saw. Subsets
+    # frozen before the objective existed are `bg` by construction -- that is what was on
+    # disk -- so they are read as such rather than refused.
+    subset_objective = subset.get("objective", dataset.DEFAULT_OBJECTIVE)
+    if subset_objective != args.objective:
+        raise SystemExit(
+            f"{args.subset} was frozen against objective {subset_objective!r} but this run asks "
+            f"for {args.objective!r}. Re-freeze with `windows.py --objective {args.objective}`"
+        )
     model = model_registry.resolve(args.model)
+    geometry = causal_geometry(args, model)
+    corpus_root = args.corpus_root or Path(subset["corpus_root"])
     store = ChainStore(
         subset,
-        args.precomputed,
+        corpus_root,
         split=args.split,
-        loss_mask_kind=args.loss_mask,
+        objective=args.objective,
+        band_weight=args.disagreement_weight,
         with_anchor=args.anchor_weight > 0.0,
+        with_guide=args.guide_mode != "d0",
     )
 
     if args.dry_run:
         chain = store[0]
+        grid_frames = chain.z_y.shape[1]
         print(  # noqa: T201 -- CLI's requested plan.
             json.dumps(
                 {
                     "chains": len(store),
                     "chain_length": subset["chain_length"],
+                    "geometry": geometry.as_dict(),
+                    "deployed_stride_match": causal_core.matches_deployed_stride(
+                        geometry, refine_task.deployed_geometry(model.scale_factors)
+                    ),
                     "first_chain": {
                         "source": chain.source,
                         "actor": chain.actor,
                         "seed_is_clip_start": chain.seed_is_clip_start,
-                        "window_shape": list(chain.windows[0].z_g.shape),
-                        "fps": chain.windows[0].fps,
+                        "blocks": chain.blocks,
+                        "master_shape": list(chain.z_y.shape),
+                        "planned_blocks": len(geometry.plan(grid_frames)),
+                        "fps": chain.fps,
                     },
                     "sigma0": args.sigma0,
                     "sigma_levels": list(sigmas),
@@ -661,7 +813,6 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     device = accelerator.device
     world, rank = accelerator.num_processes, accelerator.process_index
 
-    geometry = refine_task.deployed_geometry(model.scale_factors)
     context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
 
     transformer = build_transformer(model, args, accelerator)
@@ -670,6 +821,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     # this rank's shard in place, so the same expression afterwards reports total/world_size
     # and reads like a model half the size.
     trainable_total = sum(p.numel() for p in trainable)
+    num_blocks, inner_dim = _num_blocks(transformer), _inner_dim(transformer)
     optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.0)
     transformer, optimizer = accelerator.prepare(transformer, optimizer)
     if accelerator.is_main_process:
@@ -682,6 +834,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
             args.lora_rank,
             args.lora_alpha,
         )
+        LOGGER.info("causal geometry: %s", json.dumps(geometry.as_dict()))
 
     # Chains are sharded by rank rather than by an accelerate DataLoader: a sample here is a
     # variable-length chain of tensors, not a collatable batch, and FSDP is data-parallel over
@@ -694,18 +847,24 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
 
     args.output.mkdir(parents=True, exist_ok=True)
     if accelerator.is_main_process:
-        (args.output / "config.json").write_text(json.dumps({**vars(args), "world_size": world}, indent=2, default=str))
+        (args.output / "config.json").write_text(
+            json.dumps(
+                {**vars(args), "world_size": world, "causal_geometry": geometry.as_dict()},
+                indent=2,
+                default=str,
+            )
+        )
     wandb_run = init_wandb(
         args,
-        config={**vars(args), "world_size": world, "sigma_levels": list(sigmas)},
+        config={**vars(args), "world_size": world, "sigma_levels": list(sigmas), **geometry.as_dict()},
     ) if accelerator.is_main_process else None
     log_path = args.output / f"metrics_rank{rank}.jsonl"
     log_file = log_path.open("a")
 
-    # Fixed for the whole run, not resampled per step: this rank always trains this level (SS7.1
-    # revision -- see sigma_for_rank).
-    sigma0 = sigma_for_rank(sigmas, rank)
     generator = torch.Generator().manual_seed(args.seed)
+    # One cache allocation for the whole run: capacity depends only on the geometry and the
+    # (fixed) 1024**2 crop, so reallocating per chain would just churn ~2 GB of VRAM.
+    cache: BlockCache | None = None
     step = 0
     started = time.time()
     while step < args.steps:
@@ -717,22 +876,32 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
             lr = args.lr * min(1.0, (step + 1) / max(args.warmup_steps, 1))
             for group in optimizer.param_groups:
                 group["lr"] = lr
+            sigma0 = sigma_for_rank(sigmas, rank, step)
 
             chain = store[chain_index]
+            if cache is None:
+                grid = clip_grid_for(
+                    chain, geometry, device=device, latent_channels=model.caps.latent_channels
+                )
+                cache = BlockCache.allocate(
+                    grid, geometry, num_layers=num_blocks, inner_dim=inner_dim, device=device, dtype=DTYPE
+                )
             totals = train_chain(
                 transformer,
                 context,
                 chain,
                 geometry,
+                cache,
                 accelerator,
                 sigma0=sigma0,
-                # Seeded per (run, window) so eps is reproducible and the same window always
+                # Seeded per (run, block) so eps is reproducible and the same block always
                 # gets the same noise -- which is also what makes a cached frozen-base output
                 # (the anchor term) correspond to this exact input.
                 seed=args.seed * 100003 + chain_index * 101,
                 anchor_weight=args.anchor_weight,
                 latent_channels=model.caps.latent_channels,
                 guide_mode=args.guide_mode,
+                teacher_forcing=args.teacher_forcing,
             )
             grad_norm = accelerator.clip_grad_norm_(transformer.parameters(), args.max_grad_norm)
             optimizer.step()
@@ -740,7 +909,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
             step += 1
 
             if step % args.log_every == 0:
-                per_window = totals.pop("per_window")
+                per_block = totals.pop("per_block")
                 record = {
                     "step": step,
                     "rank": rank,
@@ -750,11 +919,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                     "elapsed_s": round(time.time() - started, 1),
                     "source": chain.source,
                     **{k: round(v, 6) for k, v in totals.items()},
-                    # SS7.4(a): one entry per window IN THIS CHAIN, in order, so a reader can
+                    # SS7.4(a): one entry per block IN THIS CHAIN, in order, so a reader can
                     # plot loss against position without re-deriving it from the chain-mean.
-                    "per_window": [
+                    "per_block": [
                         {"chain_position": i, **{k: round(v, 6) for k, v in w.items()}}
-                        for i, w in enumerate(per_window)
+                        for i, w in enumerate(per_block)
                     ],
                 }
                 log_file.write(json.dumps(record) + "\n")
@@ -764,7 +933,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                         accelerator,
                         [totals["loss"], totals["mse"], totals["anchor"], float(grad_norm)],
                     )
-                    window_mse = rank_mean(accelerator, [window_metrics["mse"] for window_metrics in per_window])
+                    block_mse = rank_mean(accelerator, [block["mse"] for block in per_block])
                     if accelerator.is_main_process:
                         wandb_run.log(
                             {
@@ -776,7 +945,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                                 "train/sigma0": sigma0,
                                 "train/elapsed_s": record["elapsed_s"],
                                 "train/steps_per_s": step / max(record["elapsed_s"], 1e-8),
-                                **{f"train/window_{i}_mse": value for i, value in enumerate(window_mse)},
+                                **{f"train/window_{i}_mse": value for i, value in enumerate(block_mse)},
                             },
                             step=step,
                         )
