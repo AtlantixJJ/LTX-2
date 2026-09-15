@@ -102,6 +102,16 @@ CUDA_VISIBLE_DEVICES=2,3 accelerate launch \
 #     The corpus root comes from the subset; --context-latent-frames is the cache depth (and
 #     therefore the compute/quality knob), recorded in the checkpoint metadata.
 
+# 6a. D0 one-step initialization sanity check. The run writes both the exactly-no-op
+#     step-0 adapter and the adapter after its first optimizer update. A non-zero exported
+#     LoRA B at step 0 is a hard error, not a visual judgment call.
+CUDA_VISIBLE_DEVICES=2,3 accelerate launch \
+  --config_file scripts/onestep_avatar/configs/fsdp_2gpu.yaml --main_process_port 29517 \
+  -m scripts.onestep_avatar.train \
+  --subset ../expr/onestep_avatar/windows/t2.json \
+  --output ../expr/onestep_avatar/runs/d0-init-sanity \
+  --guide-mode d0 --save-initial --save-every 1 --steps 1
+
 # 6b. Optional: one adapter across several noise levels, one level per rank for the whole run.
 #     sigma=0.0 is refused (it trains on nothing). Stamps sigma0="mixed" in the checkpoint.
 #     ... --sigma-levels 0.909375 0.725 0.421875
@@ -112,6 +122,14 @@ conda run -n ltx python -m scripts.onestep_avatar.visualize_d0 \
   --subset ../expr/onestep_avatar/windows/prelim2.json \
   --checkpoint <run>/checkpoints/lora_weights_step_00200.safetensors \
   --output <run>/probes/step_00200 --gpu-id 2
+
+# For the initialization check, render both artifacts together. In each generated MP4,
+# step 0's third panel must equal the frozen-base middle panel; step 1 then shows the first
+# update on the same target, seed, chain, and sigma.
+conda run -n ltx python -m scripts.onestep_avatar.visualize_d0 \
+  --subset ../expr/onestep_avatar/windows/t2.json \
+  --run ../expr/onestep_avatar/runs/d0-init-sanity --steps 0 1 \
+  --output ../expr/onestep_avatar/runs/d0-init-sanity/probes/init --gpu-id 2
 
 # 8. Figures from the rank logs (4 of the plan's 7; no reference lines yet).
 conda run -n ltx python -m scripts.onestep_avatar.plot_training --run <run>

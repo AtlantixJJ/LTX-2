@@ -437,6 +437,24 @@ def test_sigma_zero_is_refused() -> None:
         train.training_sigmas(args)
 
 
+def test_step_zero_lora_export_requires_exactly_zero_b() -> None:
+    """The saved adapter, not just PEFT's in-memory module, is a provable no-op at step 0."""
+    exported = {
+        "diffusion_model.block.to_q.lora_A.weight": torch.randn(2, 4, dtype=torch.bfloat16),
+        "diffusion_model.block.to_q.lora_B.weight": torch.zeros(4, 2, dtype=torch.bfloat16),
+    }
+    train.assert_exported_lora_is_noop(exported)
+
+    exported["diffusion_model.block.to_q.lora_B.weight"][0, 0] = 1
+    with pytest.raises(RuntimeError, match="non-zero LoRA delta"):
+        train.assert_exported_lora_is_noop(exported)
+
+
+def test_step_zero_lora_export_requires_b_weights() -> None:
+    with pytest.raises(RuntimeError, match="no lora_B weights"):
+        train.assert_exported_lora_is_noop({"diffusion_model.block.to_q.lora_A.weight": torch.zeros(2, 4)})
+
+
 # --- onestep_core: the deployment counterpart of the training loop -----------------------
 
 

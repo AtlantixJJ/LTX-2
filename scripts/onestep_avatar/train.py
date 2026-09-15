@@ -199,9 +199,11 @@ class ChainStore:
                 raise ValueError(f"{chain['source']}: guide fps {guide['fps']} != capture fps {capture['fps']}")
 
         # band_weight == 1.0 IS the plain full-frame loss, so the grids are not even read:
-        # the weights would be all ones by construction (SS1.5).
+        # the weights would be all ones by construction (SS1.5). Same for d0: the band is the
+        # render/capture DISAGREEMENT, which is undefined with no render in play (`with_guide`
+        # is False) -- d0 must work against capture-only precompute, same as z_g above.
         loss_weights = None
-        if self.band_weight < 1.0:
+        if self.with_guide and self.band_weight < 1.0:
             loss_weights = disagreement_weights(_load_record(view / LOSS_MASK_GRIDS), self.band_weight)
             if loss_weights.shape[0] != z_y.shape[1]:
                 raise ValueError(
@@ -615,8 +617,17 @@ def save_lora(
     out_dir: Path,
     step: int,
     metadata: dict[str, str],
+    *,
+    verify_noop: bool = False,
 ) -> Path | None:
-    """Gather and write the adapter in the trainer's own ComfyUI-compatible layout."""
+    """Gather and write the adapter in the trainer's own ComfyUI-compatible layout.
+
+    ``verify_noop`` is only for the pre-optimizer step-0 checkpoint. PEFT's default
+    LoRA initialization makes A random and B exactly zero, so the product B @ A --
+    and therefore the adapter delta -- must be exactly zero. Verify the *exported*
+    state rather than a module attribute: that covers the actual tensors handed to
+    inference, including FSDP's gathered representation.
+    """
     accelerator.wait_for_everyone()
     state_dict = accelerator.get_state_dict(transformer)
     if not accelerator.is_main_process:
@@ -626,10 +637,30 @@ def save_lora(
     state_dict = get_peft_model_state_dict(unwrapped, state_dict=state_dict if is_fsdp else None)
     state_dict = {f"diffusion_model.{k.replace('base_model.model.', '', 1)}": v for k, v in state_dict.items()}
     state_dict = {k: v.to(torch.bfloat16).contiguous() for k, v in state_dict.items()}
+    if verify_noop:
+        assert_exported_lora_is_noop(state_dict)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"lora_weights_step_{step:05d}.safetensors"
     save_file(state_dict, path, metadata=metadata)
     return path
+
+
+def assert_exported_lora_is_noop(state_dict: dict[str, torch.Tensor]) -> None:
+    """Raise unless an exported, newly-created LoRA has an exactly-zero B projection.
+
+    A zero B is the standard LoRA no-op initialization: A may be random, but B @ A
+    is zero. Checking only B catches changed PEFT initialization without rejecting
+    the intended random A initialization.
+    """
+    b_weights = {name: value for name, value in state_dict.items() if ".lora_B" in name}
+    if not b_weights:
+        raise RuntimeError("step-0 LoRA export has no lora_B weights; cannot prove it is a no-op")
+    nonzero = [name for name, value in b_weights.items() if torch.count_nonzero(value).item()]
+    if nonzero:
+        raise RuntimeError(
+            "refusing to write a purported step-0 checkpoint with a non-zero LoRA delta: "
+            + ", ".join(nonzero[:5])
+        )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -717,6 +748,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "model's own output).",
     )
     p.add_argument("--save-every", type=int, default=100)
+    p.add_argument(
+        "--save-initial",
+        action="store_true",
+        help="Also save a step-0 checkpoint of the untrained, LoRA-injected model before the "
+        "loop starts. `init_lora_weights=True` zero-inits B, so this adapter should decode "
+        "identically to the frozen base -- the point is to make that provable rather than "
+        "assumed. Off by default: normal runs don't need the extra checkpoint write.",
+    )
     p.add_argument("--log-every", type=int, default=1)
     p.add_argument("--max-grad-norm", type=float, default=1.0)
     p.add_argument("--wandb-project", default=None, help="Enable online W&B logging to this project.")
@@ -743,6 +782,16 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
         raise SystemExit(
             "--guide-mode d0 is noised from z_y; its anchor target would be off-input. "
             "Drop --anchor-weight."
+        )
+    if args.guide_mode == "d0" and args.disagreement_weight != 0.0:
+        # SS1.5's band is render_t (-) capture_t -- undefined with no render, which is exactly
+        # d0's point (SS1.3: "reducing to ordinary flow-matching on real video"). d0 must work
+        # against capture-only precompute (ChainStore skips z_g the same way), so a non-default
+        # weight here would ask for grids d0 has no business reading.
+        raise SystemExit(
+            "--guide-mode d0 has no guide render, so there is no render/capture disagreement "
+            "band to weight. Drop --disagreement-weight (0.0, its default, already means "
+            "'no band' for d0)."
         )
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -860,6 +909,15 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     ) if accelerator.is_main_process else None
     log_path = args.output / f"metrics_rank{rank}.jsonl"
     log_file = log_path.open("a")
+
+    if args.save_initial:
+        path = save_lora(
+            transformer, accelerator, args.output / "checkpoints", 0,
+            checkpoint_metadata(args, subset, model, 0),
+            verify_noop=True,
+        )
+        if path is not None:
+            LOGGER.info("saved initial (untrained) checkpoint %s", path)
 
     generator = torch.Generator().manual_seed(args.seed)
     # One cache allocation for the whole run: capacity depends only on the geometry and the

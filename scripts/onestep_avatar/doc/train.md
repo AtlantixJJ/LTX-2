@@ -44,6 +44,13 @@ band lives — so a subject-masked loss cannot teach the model to repair the gho
 SS1.2 calls the learning signal. There was nothing to keep.
 
 `--disagreement-weight 1.0` is a plain full-frame loss, and the grids are then not even read.
+**Neither are they read under `--guide-mode d0`, at any weight** — the band is render_t ⊖
+capture_t, undefined with no render in play, which is d0's whole point (SS1.3: reduces to
+ordinary flow-matching on real video). `ChainStore` gates the read on `with_guide`, not just
+`band_weight < 1.0`, so d0 works against capture-only precompute the same way it already skips
+`z_g` — no paired-precompute artifact (`argavatar_ltx_vae_latent.pt`, `loss_mask_grids.pt`,
+`capture_mask_crop.mp4`) is needed to train d0. A non-default `--disagreement-weight` with `d0`
+is refused rather than silently ignored, same shape as the anchor-weight guard below.
 
 ## The checkpoint contract
 
@@ -55,6 +62,14 @@ weight, teacher forcing, LoRA rank/alpha/target.
 Cache depth belongs there for the same reason σ does: an adapter trained with two frames of
 cached context is a different function from one trained with sixteen, and nothing downstream
 can tell by looking at the weights.
+
+`--save-initial` writes `lora_weights_step_00000.safetensors` right after LoRA injection and
+FSDP `prepare`, before any optimizer step -- the untrained adapter. `init_lora_weights=True`
+zero-inits B, so this checkpoint's decode should be bit-identical to the frozen base. Before
+writing it, `save_lora` checks the gathered exported `lora_B` weights are exactly zero; failure
+refuses to create a misleading step-0 artifact. That is the sanity check it exists for
+(`visualize_d0.py --run <run> --steps 0 1` after a one-step run), not something a normal run
+needs. Off by default.
 
 ## Arms and knobs
 
@@ -80,6 +95,8 @@ else in the loop, and nothing in `causal_core`, knows which regime is in play.
 - **A subset frozen against the other objective is refused.**
 - `--guide-mode d0` with `--anchor-weight > 0` is refused: the anchor target is computed on
   the guide-noised input, and d0 noises `z_y`.
+- `--guide-mode d0` with `--disagreement-weight != 0.0` is refused: d0 has no render, so the
+  band the weight would apply to doesn't exist.
 - σ = 0.0 is refused as a training level — the noiser adds nothing, so loss and gradient are
   identically zero (a quarter of one run trained on nothing before this was caught).
 
