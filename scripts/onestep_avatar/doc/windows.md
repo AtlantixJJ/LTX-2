@@ -47,8 +47,25 @@ read bundles the freeze never saw.
 - Never re-sync a subset mid-sweep. `--verify` re-hashes and reports; it does not repair.
 - A pre-causal window-chain subset is **refused** by `train.py`, not reinterpreted: a window
   index and a block index are different numbers over the same clip.
+- **The block plan is sized from the stored master, never from the source video.**
+  `dataset.capture_master_latent_frames` reads the latent tensor the trainer will actually
+  plan over. Sizing from `clip.n_frames()` was wrong for every consolidated source and froze
+  chains whose last block did not exist — see the Gotchas.
 
 ## Gotchas
+
+- **A consolidated master is shorter than its video, by up to one window.** `windows.py` sized
+  its block plan with `latent_frames_for(clip.n_frames())` until 2026-09-16, but a master
+  rebuilt from v1 per-window slices stops at the last WHOLE window: a 150-frame clip stores 137
+  pixel frames (18 latent, not 19) and a 225-frame clip stores 217 (28, not 29), which
+  `WINDOW_FRAMES = 25` at stride 16 reproduces exactly. Subsets therefore claimed one latent
+  frame — one whole block — that the latents did not contain, and `train.py` (which plans from
+  the loaded tensor) refused them with *"the subset was frozen under a different geometry"*.
+  Re-freezing `t2` after the fix dropped it from 157 blocks to 144, one per source.
+  Natively-encoded v2 masters do cover the whole clip, which is why this stayed invisible until
+  the corpus was consolidated. **Note the tail frames are genuinely absent from the latents** —
+  re-freezing makes the subset honest, it does not recover them; only re-running
+  `precompute --capture-only --overwrite` would.
 
 - **`--min-holdout-actors` defaults to 12** — the right floor for a full-scale run and wrong
   for a small tier by construction, since the split takes

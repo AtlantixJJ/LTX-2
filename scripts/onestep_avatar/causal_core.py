@@ -479,10 +479,32 @@ def prime_cache(
     history. It is the same compromise §4.4's old "the chain seed takes the GT carryover" made,
     at the same place, and the escalation is the same: train whole clips (``--chain-length 0``),
     which needs no priming at all.
+
+    **This function performs exactly ONE forward, always** -- including when there is nothing
+    to prime. That is not an optimisation left on the table; it is the invariant that keeps
+    data-parallel ranks in collective lockstep. See the comment on the empty-spans branch.
     """
     cache.reset()
     spans = retained_prefix_spans(geometry.plan(grid.latent_frames), geometry, upto_latent_frame)
     if not spans:
+        # Nothing to write -- a chain starting at the clip start has no history behind it, and
+        # its block 0 must see an EMPTY cache. But returning here would make this function's
+        # FORWARD COUNT depend on the data, and under FSDP FULL_SHARD every forward is a round
+        # of all-gathers. Ranks that took this branch then issue one collective fewer than the
+        # ranks that did not; the run deadlocks at the next backward, with the short rank in an
+        # ALLREDUCE while the others sit in a _REDUCE_SCATTER_BASE of the SAME sequence number.
+        # It presents as a hang, not an error: 100 % GPU utilisation, frozen memory, and a
+        # watchdog message 8 minutes later that blames CudaEventDestroy.
+        #
+        # Measured on t2 (2026-09-16): 11 of 40 train chains start at the clip start, so
+        # P(4 ranks agree) = 0.28 and a 4-GPU run had a 72 % chance of hanging on step ONE.
+        #
+        # So forward anyway, over a single latent frame, with NO cache attached -- `cache=None`
+        # leaves `kv_caches` unset and `kv_write` False, so this cannot write what it must not.
+        # The result is discarded; only the collectives it issues matter.
+        lo, hi = grid.token_span(0, 1)
+        with torch.no_grad():
+            denoise_fn(block_modality(grid, clean_tokens[:, lo:hi], context, 0.0, token_slices=[(lo, hi)]))
         return
     token_slices = [grid.token_span(start, end) for start, end, _ in spans]
     tokens = torch.cat([clean_tokens[:, lo:hi] for lo, hi in token_slices], dim=1)

@@ -219,7 +219,13 @@ def survey_source(
     if pad < 1.0:
         return None, "clipped_subject"
 
-    latent_frames = latent_frames_for(clip.n_frames())
+    # From the BUNDLE, not from `latent_frames_for(clip.n_frames())`. A master consolidated
+    # out of v1 per-window slices stops at the last whole window, so the video's frame count
+    # overstates it by up to one window -- and a block plan sized from the video names blocks
+    # the latents do not contain. See `dataset.capture_master_latent_frames`.
+    latent_frames = dataset.capture_master_latent_frames(bundle)
+    if latent_frames is None:
+        return None, "capture_bundle_not_consolidated"
     blocks = plan_blocks(latent_frames)
     if not blocks:
         return None, "too_short_for_one_block"

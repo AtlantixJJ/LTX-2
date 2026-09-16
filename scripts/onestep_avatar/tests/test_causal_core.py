@@ -316,6 +316,56 @@ def test_prime_cache_groups_retained_frames_by_their_real_block() -> None:
     assert causal_core.retained_prefix_spans(plan, geometry, upto_latent_frame=0) == []
 
 
+def test_prime_cache_forwards_exactly_once_whether_or_not_it_has_anything_to_prime() -> None:
+    """The FSDP lockstep invariant, and the only test that would have caught the 09-16 hang.
+
+    `prime_cache` used to return early for a clip-start chain, making its forward count depend
+    on the data. Under FSDP FULL_SHARD a forward is a round of all-gathers, so ranks holding
+    clip-start chains issued one collective fewer than the rest and the job DEADLOCKED -- no
+    error, no traceback, just pinned GPUs. Nothing in this suite noticed, because a single
+    process cannot desynchronise with itself.
+
+    Counting forwards is therefore the assertion, not observing the cache: an empty prime must
+    still cost a forward, and must still leave the cache untouched.
+    """
+    model = _model()
+    geometry = CausalGeometry(scale_factors=SCALE, block_latent_frames=2, context_latent_frames=2)
+    grid = _grid(geometry)
+    context = _context()
+    tokens = torch.randn(1, grid.tokens_per_latent_frame * LATENT_FRAMES, CHANNELS)
+
+    calls = 0
+    denoise = causal_core.denoised_from_velocity_model(model)
+
+    def counting(modality):  # noqa: ANN001, ANN202
+        nonlocal calls
+        calls += 1
+        return denoise(modality)
+
+    def run(upto: int) -> int:
+        nonlocal calls
+        calls = 0
+        cache = BlockCache.allocate(
+            grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
+            device=DEVICE, dtype=torch.float32,
+        )
+        causal_core.prime_cache(
+            counting, grid, cache, tokens, geometry, context, upto_latent_frame=upto
+        )
+        return cache.start
+
+    # Nothing to prime, and something to prime: the SAME number of forwards either way.
+    empty_start = run(0)
+    assert calls == 1, "a clip-start chain must still forward once, or FSDP ranks desync"
+    primed_start = run(5)
+    assert calls == 1
+
+    # ...and the empty one still wrote nothing, which is the reason it could not simply reuse
+    # the real priming path.
+    assert empty_start == 0
+    assert primed_start > 0
+
+
 def test_rope_range_is_enforced_rather_than_extrapolated() -> None:
     """Global positions are in seconds against ``positional_embedding_max_pos[0] = 20``."""
     geometry = _geometry()

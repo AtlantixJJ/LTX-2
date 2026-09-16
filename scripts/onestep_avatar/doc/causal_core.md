@@ -31,7 +31,7 @@ CausalGeometry.plan(latent_frames) ──▶ block bounds [start, end)
    ▼
 BlockCache.allocate(grid, geometry)   capacity = min(policy need, clip length) × tokens/frame
    ▼
-prime_cache(upto)      one no-grad block-causal forward over the GT prefix   [mid-clip only]
+prime_cache(upto)      one no-grad block-causal forward over the GT prefix   [ALWAYS one forward]
    ▼
 per block i:  denoise_block  (reads cache, writes nothing)
               refresh_block  (no_grad, the ONLY cache writer)
@@ -97,8 +97,24 @@ for an 18-frame clip a 3-block chain touches half of would be gigabytes of untou
   `[history | block]` and a `(B, T, T)` mask does not describe them.
 - A short tail block is **dropped**, not shortened: a differently-sized block is a different
   condition, not a smaller one.
+- **`prime_cache` performs exactly one forward, always** — including for a clip-start chain,
+  where it has nothing to write and forwards over a single frame with no cache attached. The
+  forward count must not depend on the data: under FSDP `FULL_SHARD` a forward is a round of
+  all-gathers, so a rank that skips one desynchronises the collective stream and the job
+  **hangs** rather than failing. This was a live bug until 2026-09-16; see the Gotchas below.
 
 ## Gotchas
+
+- **A data-dependent forward is a data-parallel deadlock.** `prime_cache` returned early for
+  clip-start chains until 2026-09-16. On a 4-GPU run the ranks that drew such a chain issued
+  one all-gather fewer than the rest, and the job deadlocked at the first backward — the short
+  rank in an `ALLREDUCE`, the others in a `_REDUCE_SCATTER_BASE` of the same `SeqNum`. What it
+  looks like from outside: 100 % GPU utilisation, per-rank memory frozen at *identical* values,
+  no output, and eight minutes later a watchdog blaming `CudaEventDestroy`. On `t2`, 11 of 40
+  train chains were clip-start, so P(4 ranks agree) = 0.28 — it hung on step 1, and single-GPU
+  runs were fine throughout, because one rank cannot desynchronise with itself.
+  `test_prime_cache_forwards_exactly_once_whether_or_not_it_has_anything_to_prime` pins it, and
+  `train.py:assert_rank_lockstep` turns the next instance into an error instead of a hang.
 
 - **The temporal RoPE axis is in seconds** against `positional_embedding_max_pos[0] = 20`, so
   a rollout past 20 s leaves the trained range. `ClipGrid.build` raises rather than

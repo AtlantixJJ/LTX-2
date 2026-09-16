@@ -82,12 +82,21 @@ needs. Off by default.
 | `--sigma-levels` | one adapter across several operating points |
 | `--teacher-forcing` | ablation: the refresh is fed `z_y[i]` instead of `ẑ₀[i].detach()` |
 | `--anchor-weight` | SS1.5 row 2; needs `base_denoised.pt` |
+| `--timing` | per-step phase breakdown; see "Reading the timing lines" below |
 
 **Teacher vs self forcing differ in exactly one tensor** — what `refresh` is handed. Nothing
 else in the loop, and nothing in `causal_core`, knows which regime is in play.
 
 ## Invariants
 
+- **Every rank runs the same number of transformer forwards per step**, checked by
+  `assert_rank_lockstep` *before* the step's forwards run, while the ranks are still in step
+  from the previous optimizer update. The count is `1 prime + K denoise + K refresh`. Under
+  FSDP `FULL_SHARD` a forward is a round of all-gathers, so ranks that disagree desynchronise
+  and the job **hangs** with no error; the guard converts that into a message naming the
+  counts. Checking after the fact cannot work — the mismatched collective is already enqueued
+  and the check's own gather joins the pile-up. See `doc/causal_core.md` for the 2026-09-16
+  instance that motivated it.
 - **A v1 bundle is refused with a pointed error**, never silently reassembled. A reader that
   quietly reconstructs is a second producer of the tensor the trainer learns from.
 - **A pre-causal window-chain subset is refused**, not reinterpreted: a window index and a
@@ -100,11 +109,37 @@ else in the loop, and nothing in `causal_core`, knows which regime is in play.
 - σ = 0.0 is refused as a training level — the noiser adds nothing, so loss and gradient are
   identically zero (a quarter of one run trained on nothing before this was caught).
 
+## Reading the timing lines
+
+Every line is prefixed `timing |` and carries the `[rank N]` prefix `ltx_trainer`'s logging
+config already installs, so a straggling rank is visible without correlating timestamps.
+
+**Startup stages are always timed**, on every rank: `Accelerator()`, the prompt cache, the
+transformer load, `accelerator.prepare`, `--save-initial`, and the **first** chain load
+(which is also the one that allocates the ~2 GB block cache). That list is exactly the span
+that used to produce no output at all — the 2026-09-15 4-GPU launch log ends at "causal
+geometry" and the next thing in it is a `ChildFailedError`, with nothing to say which of six
+minutes-long phases it died in.
+
+**The per-step breakdown is behind `--timing`**, because it is per *block*: `prime_cache`,
+then denoise / backward / refresh for each of the `K` blocks, then load / chain / optimizer
+for the step. The **first** step prints it regardless of the flag — it is the step that pays
+the corpus read and the allocation, so it is the one worth having unconditionally.
+
+The per-block numbers are honest without an explicit `cuda.synchronize` only because
+`float(mse.detach())` already forces one inside the same block. Move that read and the
+phases start reporting queue time instead of compute.
+
 ## Gotchas
 
 - **A zero-byte stdout log is not a hung run.** `python -u`'s unbuffering does not survive
   `conda run`'s subprocess piping here. Check `metrics_rank<r>.jsonl`, which `train.py`
   writes and flushes directly.
+- **Never prefix a log message with `[something]`.** `ltx_trainer` installs a `RichHandler`,
+  which reads brackets as console markup and silently **drops** an unknown tag. The timing
+  lines shipped as `[timing] ...` first and simply were not in the log — not mangled, gone,
+  and no grep for them ever matched. (`ltx_trainer`'s own `[rank N]` survives because its
+  format string escapes the bracket.)
 - **`sigma_for_rank` is `(rank + step) % len(sigmas)`.** Per-*step* cycling aliased the loss
   curve into a sawtooth; per-*rank*-only never trained levels beyond `world_size`. The current
   form mixes levels within a step *and* walks every rank through every level.

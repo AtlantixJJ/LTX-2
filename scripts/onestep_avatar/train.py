@@ -55,11 +55,13 @@ the rank rather than the chain length, since ``K`` is what the loop exists to ex
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,6 +80,30 @@ from scripts.prune.core import model_registry, refine_task
 from scripts.prune.data import prompt_cache
 
 LOGGER = logging.getLogger("onestep_avatar.train")
+
+
+@contextlib.contextmanager
+def timed(label: str) -> Iterator[None]:
+    """Bracket a startup phase with a begin/end line carrying its wall duration.
+
+    Startup here is minutes of silent 42 GB checkpoint I/O followed by a collective
+    (``prepare``), and both look identical to a hang from outside. Worse, the failure mode
+    that actually happens is ONE straggling or dead rank, not a uniformly slow run -- so
+    this logs on every rank rather than the main process, and ``ltx_trainer``'s ``[rank N]``
+    prefix is the whole point of it. The lines are unconditional because they are a few per
+    run; the per-step breakdown, which is per-block, is behind ``--timing``.
+
+    **The prefix is ``timing |``, not ``[timing]``, on purpose.** ``ltx_trainer`` installs a
+    ``RichHandler``, which reads ``[...]`` as console markup and silently DROPS an unknown
+    tag -- the bracketed form vanished from the log entirely and no grep for it ever matched.
+    (``ltx_trainer``'s own ``[rank N]`` survives only because its format string escapes it.)
+    """
+    LOGGER.info("timing | %s: begin", label)
+    started = time.time()
+    yield
+    LOGGER.info("timing | %s: done in %.1fs", label, time.time() - started)
+
+
 DTYPE = torch.bfloat16
 
 # SS4.2: the deployed operating point, with a validated k2 baseline. NOT swept -- the distilled
@@ -318,7 +344,39 @@ def block_weights(
     return weights * _as_token_weights(coverage.unsqueeze(0).unsqueeze(0), grid.tools)
 
 
-def train_chain(  # noqa: PLR0913 -- one AR training step is defined by all of these
+def assert_rank_lockstep(accelerator: Accelerator, planned_forwards: int, source: str) -> None:
+    """Refuse a step whose ranks would issue different numbers of transformer forwards.
+
+    Under FSDP FULL_SHARD a forward is a round of all-gathers, so ranks that run a different
+    NUMBER of them desynchronise the collective stream and the job deadlocks -- silently, at
+    100 % GPU utilisation, until a watchdog fires minutes later blaming something unrelated.
+    That cost a long debugging session on 2026-09-16, when ``prime_cache`` skipped its forward
+    for clip-start chains (fixed there; see its empty-spans branch).
+
+    This runs BEFORE the step's forwards, while the ranks are still in step from the previous
+    optimizer update, so the gather here is itself safely matched. Checking afterwards cannot
+    work: by then the mismatched collective has already been enqueued and this gather would
+    join the pile-up rather than report it.
+
+    The count is ``1 prime + K denoise + K refresh``. What it is does not matter -- only that
+    every rank computes the same one.
+    """
+    if accelerator.num_processes == 1:
+        return
+    counts = accelerator.gather(
+        torch.tensor([planned_forwards], device=accelerator.device, dtype=torch.long)
+    ).tolist()
+    if len(set(counts)) > 1:
+        raise SystemExit(
+            f"rank forward counts disagree for this step: {counts} (this rank: "
+            f"{planned_forwards}, chain from {source}). Every rank must run the same number of "
+            f"transformer forwards per step or FSDP's collectives desynchronise and the job "
+            f"hangs instead of failing. Something made a forward conditional on the data -- "
+            f"chain length, priming, or an early return on a short clip."
+        )
+
+
+def train_chain(  # noqa: PLR0913, PLR0915 -- one AR training step is defined by all of these, timing included
     transformer: torch.nn.Module,
     context: torch.Tensor,
     chain: Chain,
@@ -332,6 +390,7 @@ def train_chain(  # noqa: PLR0913 -- one AR training step is defined by all of t
     latent_channels: int,
     guide_mode: str = "d1",
     teacher_forcing: bool = False,
+    timing: bool = False,
 ) -> dict[str, float]:
     """SS4.4's chain: ``K`` denoise forwards, ``K`` backwards, ``K`` refreshes, one optimizer step.
 
@@ -346,6 +405,11 @@ def train_chain(  # noqa: PLR0913 -- one AR training step is defined by all of t
     ``teacher_forcing`` hands ``refresh`` the ground-truth capture instead of the block's own
     ``ẑ₀``. That one tensor is the entire difference between the two regimes -- nothing else
     in the loop, and nothing in ``causal_core``, knows which is in play.
+
+    ``timing`` logs the wall time of each of those four phases per block. The numbers are
+    honest without an explicit ``cuda.synchronize`` only because ``float(mse.detach())``
+    already forces one inside the same block -- do not move that read without revisiting
+    this, or the phases will start reporting queue time instead of compute.
 
     The cache is primed from the ground truth for blocks before the chain's first (see
     ``causal_core.prime_cache``); a chain that starts at block 0 needs no priming, which is
@@ -399,9 +463,15 @@ def train_chain(  # noqa: PLR0913 -- one AR training step is defined by all of t
             f"cache was allocated for {cache.grid.tokens_per_latent_frame}; the corpus is "
             f"supposed to be one geometry (SS4.5)"
         )
+    prime_started = time.time()
     causal_core.prime_cache(
         denoise_fn, grid, cache, target_tokens, geometry, context, upto_latent_frame=plan[chain.blocks[0]][0]
     )
+    if timing:
+        LOGGER.info(
+            "timing |   prime_cache(upto=%d): %.2fs",
+            plan[chain.blocks[0]][0], time.time() - prime_started,
+        )
 
     totals = {"loss": 0.0, "mse": 0.0, "anchor": 0.0}
     per_block: list[dict[str, float]] = []
@@ -409,8 +479,10 @@ def train_chain(  # noqa: PLR0913 -- one AR training step is defined by all of t
     for block_index in chain.blocks:
         span = plan[block_index]
         lo, hi = grid.token_span(*span)
+        block_started = time.time()
         noisy = causal_core.noise_block(guide_tokens[:, lo:hi], sigma0, seed + block_index)
         z0 = causal_core.denoise_block(denoise_fn, grid, cache, noisy, context, sigma0, span)
+        denoised_at = time.time()
 
         weights = block_weights(grid, chain, span, device)
         mse = masked_mse(z0, target_tokens[:, lo:hi], weights)
@@ -426,6 +498,7 @@ def train_chain(  # noqa: PLR0913 -- one AR training step is defined by all of t
             loss = loss + anchor_weight * anchor
 
         accelerator.backward(loss / k)
+        backward_at = time.time()
         totals["loss"] += float(loss.detach()) / k
         totals["mse"] += float(mse.detach()) / k
         totals["anchor"] += float(anchor.detach()) / k
@@ -435,6 +508,15 @@ def train_chain(  # noqa: PLR0913 -- one AR training step is defined by all of t
 
         clean = target_tokens[:, lo:hi] if teacher_forcing else z0.detach()
         causal_core.refresh_block(denoise_fn, grid, cache, clean, context, span)
+        if timing:
+            LOGGER.info(
+                "timing |   block %d (span %d:%d): denoise %.2fs backward %.2fs refresh %.2fs (total %.2fs)",
+                block_index, span[0], span[1],
+                denoised_at - block_started,
+                backward_at - denoised_at,
+                time.time() - backward_at,
+                time.time() - block_started,
+            )
         del z0, weights, loss, mse, anchor
     totals["per_block"] = per_block
     return totals
@@ -757,6 +839,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "assumed. Off by default: normal runs don't need the extra checkpoint write.",
     )
     p.add_argument("--log-every", type=int, default=1)
+    p.add_argument(
+        "--timing",
+        action="store_true",
+        help="log a per-phase breakdown of every step (chain load, prime, per-block denoise/"
+             "backward/refresh, optimizer). Startup stages are always timed; this is the "
+             "per-step detail, and it is per-block, so it is off by default.",
+    )
     p.add_argument("--max-grad-norm", type=float, default=1.0)
     p.add_argument("--wandb-project", default=None, help="Enable online W&B logging to this project.")
     p.add_argument("--wandb-entity", default=None)
@@ -858,13 +947,16 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     # No explicit mixed_precision: the accelerate config decides, and the 2/3-GPU configs are
     # copies of the trainer's own, so this loop runs under the same policy the shipped trainer
     # does rather than a second one of its own.
-    accelerator = Accelerator()
+    with timed("Accelerator() / process group"):
+        accelerator = Accelerator()
     device = accelerator.device
     world, rank = accelerator.num_processes, accelerator.process_index
 
-    context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
+    with timed("prompt cache (text encoder)"):
+        context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
 
-    transformer = build_transformer(model, args, accelerator)
+    with timed("transformer load + LoRA injection"):
+        transformer = build_transformer(model, args, accelerator)
     trainable = [p for p in transformer.parameters() if p.requires_grad]
     # Counted BEFORE `prepare`: FSDP with `use_orig_params=True` reshapes each parameter to
     # this rank's shard in place, so the same expression afterwards reports total/world_size
@@ -872,7 +964,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     trainable_total = sum(p.numel() for p in trainable)
     num_blocks, inner_dim = _num_blocks(transformer), _inner_dim(transformer)
     optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.0)
-    transformer, optimizer = accelerator.prepare(transformer, optimizer)
+    with timed("accelerator.prepare (FSDP shard)"):
+        transformer, optimizer = accelerator.prepare(transformer, optimizer)
     if accelerator.is_main_process:
         LOGGER.info(
             "trainable params: %s total, %s per rank across %d (%s rank %d, alpha %d)",
@@ -911,11 +1004,12 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     log_file = log_path.open("a")
 
     if args.save_initial:
-        path = save_lora(
-            transformer, accelerator, args.output / "checkpoints", 0,
-            checkpoint_metadata(args, subset, model, 0),
-            verify_noop=True,
-        )
+        with timed("save_initial (step-0 adapter)"):
+            path = save_lora(
+                transformer, accelerator, args.output / "checkpoints", 0,
+                checkpoint_metadata(args, subset, model, 0),
+                verify_noop=True,
+            )
         if path is not None:
             LOGGER.info("saved initial (untrained) checkpoint %s", path)
 
@@ -936,14 +1030,26 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                 group["lr"] = lr
             sigma0 = sigma_for_rank(sigmas, rank, step)
 
-            chain = store[chain_index]
-            if cache is None:
-                grid = clip_grid_for(
-                    chain, geometry, device=device, latent_channels=model.caps.latent_channels
-                )
-                cache = BlockCache.allocate(
-                    grid, geometry, num_layers=num_blocks, inner_dim=inner_dim, device=device, dtype=DTYPE
-                )
+            step_started = time.time()
+            # Unconditional for the FIRST chain only: it is the one that pays the corpus read
+            # and the ~2 GB cache allocation, so "the run printed the geometry and then went
+            # quiet" -- what the 09-15 4-GPU launch log looks like -- is decided here, before
+            # any --timing opt-in could have been remembered.
+            first_chain = step == 0
+            verbose = args.timing or first_chain
+            label = "chain load (first: corpus read + cache alloc)" if first_chain else f"chain load {chain_index}"
+            with timed(label) if verbose else contextlib.nullcontext():
+                chain = store[chain_index]
+                if cache is None:
+                    grid = clip_grid_for(
+                        chain, geometry, device=device, latent_channels=model.caps.latent_channels
+                    )
+                    cache = BlockCache.allocate(
+                        grid, geometry, num_layers=num_blocks, inner_dim=inner_dim, device=device, dtype=DTYPE
+                    )
+            loaded_at = time.time()
+            # 1 prime + K denoise + K refresh. Checked here, before any of them run.
+            assert_rank_lockstep(accelerator, 1 + 2 * len(chain.blocks), chain.source)
             totals = train_chain(
                 transformer,
                 context,
@@ -960,11 +1066,21 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                 latent_channels=model.caps.latent_channels,
                 guide_mode=args.guide_mode,
                 teacher_forcing=args.teacher_forcing,
+                timing=verbose,
             )
+            chained_at = time.time()
             grad_norm = accelerator.clip_grad_norm_(transformer.parameters(), args.max_grad_norm)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             step += 1
+            if verbose:
+                # clip_grad_norm_ is a collective, so this line is also the cheapest read on
+                # whether one rank is lagging the others -- they cannot leave it separately.
+                LOGGER.info(
+                    "timing | step %d: load %.2fs chain %.2fs optimizer %.2fs (total %.2fs)",
+                    step, loaded_at - step_started, chained_at - loaded_at,
+                    time.time() - chained_at, time.time() - step_started,
+                )
 
             if step % args.log_every == 0:
                 per_block = totals.pop("per_block")

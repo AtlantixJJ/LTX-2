@@ -14,6 +14,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import torch
+
 # LTX-2/scripts/onestep_avatar/dataset.py -> parents[3] is the workspace root, one level
 # ABOVE the LTX-2 repo. It was parents[2] until the 2026-09-15 consolidation, when this module
 # moved from the workspace's own scripts/ tree into LTX-2's; the corpus, expr/ and checkpoints
@@ -84,6 +86,30 @@ def render_metadata_name(objective: str = DEFAULT_OBJECTIVE) -> str:
 def guide_bundle_name(objective: str = DEFAULT_OBJECTIVE) -> str:
     """``z_g`` -- the guide's continuous VAE encode."""
     return f"argavatar_ltx_vae_latent{_suffix(objective)}.pt"
+
+
+def capture_master_latent_frames(bundle_path: Path) -> int | None:
+    """Latent frames the STORED master actually holds, or ``None`` for a pre-v2 bundle.
+
+    **This is the one producer of that number**, and it is deliberately not
+    ``windows.py:latent_frames_for(clip.n_frames())``. A master consolidated from v1
+    per-window slices ends at the last WHOLE window, so it is short of the source video by up
+    to one window: measured 2026-09-16, a 150-frame clip stores 137 pixel frames (18 latent,
+    not 19) and a 225-frame clip stores 217 (28, not 29), matching ``WINDOW_FRAMES=25`` at
+    stride 16 exactly. Natively-encoded v2 masters do cover the whole clip, which is why the
+    disagreement stayed invisible until the corpus was consolidated.
+
+    ``windows.py`` sized its block plan from the video until then, so it froze chains whose
+    last block did not exist in the latents -- and ``train.py``, which plans from the loaded
+    tensor, refused them with "the subset was frozen under a different geometry". Both now
+    read the tensor.
+    """
+    bundle = torch.load(bundle_path, map_location="cpu", weights_only=True)
+    if bundle.get("schema_version") != 2 or "master" not in bundle:
+        return None
+    # [C, F, H, W] -- the frame axis is 1. train.py reads the same tensor via `_master`, so
+    # this is a second READER of one artifact, never a second producer of the count.
+    return int(bundle["master"].shape[1])
 
 
 def capture_bundle_name(objective: str = DEFAULT_OBJECTIVE) -> str:

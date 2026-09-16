@@ -50,6 +50,13 @@ a renderer to learn a filename.
 
 ## Invariants
 
+- **`capture_master_latent_frames` is the one producer of a source's latent-frame count.**
+  Read it from the stored master, never from the video: a master consolidated out of v1
+  per-window slices ends at the last whole window and is short of the video by up to one
+  window. `windows.py` derived the number from the video until 2026-09-16 and froze block
+  plans one block too long, which `train.py` — planning from the tensor — then refused.
+
+
 - `actor_id()` returns the **bare** actor id, never `(part, id)`. Actor ids are not globally
   unique across `Part_*`, and the conservative reading is what makes the held-out split
   leak-proof under either interpretation.
