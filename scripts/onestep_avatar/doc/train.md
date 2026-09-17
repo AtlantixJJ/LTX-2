@@ -139,7 +139,10 @@ else in the loop, and nothing in `causal_core`, knows which regime is in play.
   `windows.py` took both the count and the plan from the source video. `train_chain` keeps the
   per-chain check as the backstop for a subset whose recorded count is itself stale.
 - **A pre-causal window-chain subset is refused**, not reinterpreted: a window index and a
-  block index are different numbers over the same clip.
+  block index are different numbers over the same clip. The check lives in
+  `ChainStore.__init__` (S2 of the 2026-09-17 cleanup plan), not `train.main`, so
+  `visualize_d0.py`'s direct `ChainStore` construction gets the same pointed error instead of
+  a raw `KeyError: 'latent_time_scale'` inside geometry setup.
 - **A subset frozen against the other objective is refused.**
 - `--guide-mode d0` with `--anchor-weight > 0` is refused: the anchor target is computed on
   the guide-noised input, and d0 noises `z_y`.

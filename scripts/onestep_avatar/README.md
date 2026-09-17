@@ -121,7 +121,7 @@ CUDA_VISIBLE_DEVICES=2,3 accelerate launch \
 # 7. Look at a checkpoint. Decodes a fixed chain at a fixed seed into one MP4 per sigma,
 #    laid out `capture | frozen base | LoRA`. D0 only today; a D1 counterpart is owed.
 conda run -n ltx python -m scripts.onestep_avatar.visualize_d0 \
-  --subset ../expr/onestep_avatar/windows/prelim2.json \
+  --subset ../expr/onestep_avatar/windows/t2r2.json \
   --checkpoint <run>/checkpoints/lora_weights_step_00200.safetensors \
   --output <run>/probes/step_00200 --gpu-id 2
 

@@ -19,7 +19,7 @@ protect deployment from accepting an arm that needs the unavailable capture late
 Run from ``LTX-2`` in the ``ltx`` environment::
 
 python -m scripts.onestep_avatar.visualize_d0 \
-    --subset ../expr/onestep_avatar/windows/prelim2.json \
+    --subset ../expr/onestep_avatar/windows/t2r2.json \
     --checkpoint ../expr/onestep_avatar/runs/test/checkpoints/lora_weights_step_00100.safetensors \
     --output ../expr/onestep_avatar/runs/test/probes/step_00100 --gpu-id 5
 
@@ -28,7 +28,7 @@ and GT panel, reused across every step), pass ``--run`` with ``--steps`` instead
 each ``--checkpoint`` path::
 
 python -m scripts.onestep_avatar.visualize_d0 \
-    --subset ../expr/onestep_avatar/windows/prelim2.json \
+    --subset ../expr/onestep_avatar/windows/t2r2.json \
     --run ../expr/onestep_avatar/runs/test --steps 100 500 1000 \
     --output ../expr/onestep_avatar/runs/test/probes/multi --gpu-id 5
 
@@ -207,10 +207,9 @@ def main(argv: list[str] | None = None) -> int:
     corpus_root = args.corpus_root or Path(subset["corpus_root"])
     objective = args.objective or subset.get("objective", dataset.DEFAULT_OBJECTIVE)
     # D0-only probe: _run_d0_chain never reads chain.z_g, so don't require the guide bundle to
-    # exist on disk (see ChainStore.with_guide). band_weight=1.0 skips loading loss-mask grids
-    # too -- the probe doesn't weight its output by anything.
+    # exist on disk (see ChainStore.with_guide).
     store = ChainStore(
-        subset, corpus_root, split=args.split, objective=objective, band_weight=1.0, with_anchor=False, with_guide=False,
+        subset, corpus_root, split=args.split, objective=objective, with_anchor=False, with_guide=False,
     )
     chain = _chain(store, args.chain_index)
     checkpoints = _resolve_checkpoints(args)

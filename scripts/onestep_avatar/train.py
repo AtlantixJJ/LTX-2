@@ -167,6 +167,13 @@ class ChainStore:
         with_anchor: bool,
         with_guide: bool,
     ) -> None:
+        if subset.get("kind") != "one_step_argavatar_block_chains":
+            raise SystemExit(
+                f"not a block-chain subset (kind={subset.get('kind')!r}). Re-freeze it with "
+                f"`python -m scripts.onestep_avatar.windows` -- a window-chain subset predates "
+                f"SS4.4's causal scheme, indexes windows that no longer exist, and its chains "
+                f"carry `windows`, not `blocks` (its `geometry` also has no `latent_time_scale`)"
+            )
         self.subset = subset
         self.root = corpus_root
         self.objective = objective
@@ -872,12 +879,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     subset = json.loads(args.subset.read_text())
-    if subset.get("kind") != "one_step_argavatar_block_chains":
-        raise SystemExit(
-            f"{args.subset} is not a block-chain subset (kind={subset.get('kind')!r}). Re-freeze "
-            f"it with `python -m scripts.onestep_avatar.windows` -- the window-chain subsets "
-            f"predate SS4.4's causal scheme and index windows that no longer exist"
-        )
+    # The block-chain `kind` check lives in ChainStore.__init__ now (S2 of the 2026-09-17
+    # cleanup plan), so both readers of the subset contract -- this one and visualize_d0.py's
+    # direct ChainStore construction -- get the same refusal instead of one of them raising a
+    # raw KeyError deep inside geometry setup.
+    #
     # SS1.2: a subset is surveyed and content-pinned against ONE objective's artifacts, so
     # training the other one against it would read bundles the freeze never saw. Subsets
     # frozen before the objective existed are `bg` by construction -- that is what was on

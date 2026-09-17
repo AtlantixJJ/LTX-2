@@ -34,6 +34,10 @@ It is an **offline** probe: no VAE is resident while FSDP training is stepping.
 
 ## Invariants
 
+- **The subset must be a block-chain freeze.** `main` constructs `ChainStore` directly, and
+  since S2 of the 2026-09-17 cleanup plan that constructor is where a pre-causal window-chain
+  subset is refused (moved out of `train.main`, so both readers share the check) — a pointed
+  `SystemExit` instead of `KeyError: 'latent_time_scale'` deep inside geometry setup.
 - The chain is asserted `seed_is_clip_start`, so the probe never depends on GT cache priming.
 - D0 must be probed in its **own** state (capture-noised), not a guide-noised approximation —
   that is the whole reason this script exists rather than reusing a deployment renderer.

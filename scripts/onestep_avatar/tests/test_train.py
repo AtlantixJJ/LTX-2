@@ -362,7 +362,10 @@ def test_a_window_chain_subset_is_refused_rather_than_reinterpreted(tmp_path) ->
     a window index and a block index are different numbers over the same clip.
     """
     subset = tmp_path / "old.json"
-    subset.write_text('{"kind": "one_step_argavatar_window_chains", "chains": [], "sources": []}')
+    subset.write_text(
+        '{"kind": "one_step_argavatar_window_chains", "corpus_root": "/nonexistent", '
+        '"chains": [], "sources": []}'
+    )
     with pytest.raises(SystemExit, match=r"block-chain subset"):
         train.main(["--subset", str(subset), "--output", str(tmp_path / "out")])
 
@@ -400,6 +403,7 @@ def test_the_chain_store_reports_the_subsets_longest_clip(tmp_path) -> None:  # 
     -- so it costs no tensor load and cannot disagree with what ``train.py`` plans over.
     """
     subset = {
+        "kind": "one_step_argavatar_block_chains",
         "geometry": {"latent_time_scale": 8},
         "chains": [{"source": "a", "split": "train", "actor": "1", "blocks": [0], "seed_is_clip_start": True}],
         "sources": [
@@ -411,6 +415,21 @@ def test_the_chain_store_reports_the_subsets_longest_clip(tmp_path) -> None:  # 
         subset, tmp_path, split="train", objective="bg", with_anchor=False, with_guide=False,
     )
     assert store.max_latent_frames == 28
+
+
+def test_the_chain_store_refuses_a_window_chain_subset(tmp_path) -> None:  # noqa: ANN001
+    """The refusal lives in ``ChainStore.__init__`` (S2 of the 2026-09-17 cleanup plan), so
+    every reader that constructs one directly -- not just ``train.main`` -- gets the same
+    pointed error instead of ``visualize_d0``'s old ``KeyError: 'latent_time_scale'`` deep
+    inside geometry setup.
+    """
+    subset = {
+        "kind": "one_step_argavatar_window_chains",
+        "chains": [],
+        "sources": [],
+    }
+    with pytest.raises(SystemExit, match=r"block-chain subset"):
+        train.ChainStore(subset, tmp_path, split="train", objective="bg", with_anchor=False, with_guide=False)
 
 
 def test_a_subset_frozen_against_the_video_length_is_refused_at_startup() -> None:
