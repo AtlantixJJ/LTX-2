@@ -46,10 +46,11 @@ from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar import causal_core, dataset, geometry
 from scripts.onestep_avatar.dataset import ClipRef
 
-# The block plan depends on scale factors only through the pixel<->latent time ratio, which
-# `latent_frames_for` has already applied by the time `plan_blocks` runs. Spatial factors are
-# irrelevant to it, so the deployed 8/32/32 is stated once here rather than threaded through
-# a module that never touches a latent.
+# The block plan depends on scale factors only through the pixel<->latent time ratio -- the
+# latent frame count `plan_blocks` is called with already has that applied (see
+# `dataset.capture_master_latent_frames`, the one producer). Spatial factors are irrelevant to
+# it, so the deployed 8/32/32 is stated once here rather than threaded through a module that
+# never touches a latent.
 _SCALE_FACTORS = SpatioTemporalScaleFactors(time=8, height=32, width=32)
 
 SCHEMA_VERSION = 1
@@ -74,17 +75,6 @@ DEFAULT_OUTPUT_ROOT = dataset.WORKSPACE_ROOT / "expr" / "onestep_avatar" / "wind
 # split gives 25, so the floor binds only on small tiers.
 DEFAULT_HOLDOUT_FRACTION = 0.2
 MIN_HOLDOUT_ACTORS = 12
-
-
-def latent_frames_for(total_frames: int, time_scale: int = LATENT_TIME_SCALE) -> int:
-    """Latent frames a continuous encode of ``total_frames`` pixel frames produces.
-
-    The causal VAE's latent frame 0 covers ONE pixel frame and every later one covers
-    ``time_scale`` of them, which is the whole reason this is not a plain division.
-    """
-    if total_frames < 1:
-        return 0
-    return (total_frames - 1) // time_scale + 1
 
 
 def plan_blocks(latent_frames: int, block_latent_frames: int = BLOCK_LATENT_FRAMES) -> list[tuple[int, int]]:

@@ -17,22 +17,23 @@ from scripts.onestep_avatar import windows
 
 
 @pytest.mark.parametrize(
-    ("total_frames", "latent_frames", "n_blocks", "last_block"),
+    ("latent_frames", "n_blocks", "last_block"),
     [
-        (25, 4, 1, (0, 3)),        # exactly one block: the keyframe block alone
-        (26, 4, 1, (0, 3)),        # the extra pixel frame does not reach a new latent frame
-        (40, 5, 2, (3, 5)),
-        (137, 18, 8, (15, 17)),    # the corpus's short tier -- note frame 17 is dropped
-        (150, 19, 9, (17, 19)),
-        (225, 29, 14, (27, 29)),   # the corpus's long tier
-        (226, 29, 14, (27, 29)),
-        (1000, 125, 62, (123, 125)),
+        (4, 1, (0, 3)),        # exactly one block: the keyframe block alone
+        (5, 2, (3, 5)),
+        (18, 8, (15, 17)),     # the corpus's short tier -- note frame 17 is dropped
+        (19, 9, (17, 19)),
+        (29, 14, (27, 29)),    # the corpus's long tier
+        (125, 62, (123, 125)),
     ],
 )
 def test_the_block_plan_is_pinned_to_exact_bounds(
-    total_frames: int, latent_frames: int, n_blocks: int, last_block: tuple[int, int]
+    latent_frames: int, n_blocks: int, last_block: tuple[int, int]
 ) -> None:
-    """A golden test over the clip lengths the corpus actually has.
+    """A golden test over the latent-frame counts the corpus actually has (the master's own
+    stored frame count, per ``dataset.capture_master_latent_frames`` -- not a pixel-frame count
+    run through a conversion helper; there is no such helper here, see ``causal_core.
+    pixel_frames_for`` for the one directional conversion this package keeps).
 
     ``plan_blocks`` now delegates straight to ``causal_core.CausalGeometry.plan`` -- since
     2026-09-15 there is one implementation, so a test that compared two would be
@@ -40,7 +41,6 @@ def test_the_block_plan_is_pinned_to_exact_bounds(
     subset indexes blocks that ``train.py`` slices out of a master latent, and shifting the
     plan would silently re-point every chain in every subset already on disk.
     """
-    assert windows.latent_frames_for(total_frames) == latent_frames
     blocks = windows.plan_blocks(latent_frames)
     assert len(blocks) == n_blocks
     assert blocks[0] == (0, 1 + windows.BLOCK_LATENT_FRAMES)
@@ -49,20 +49,12 @@ def test_the_block_plan_is_pinned_to_exact_bounds(
     assert all(a[1] == b[0] for a, b in zip(blocks, blocks[1:]))
 
 
-def test_latent_frame_count_follows_the_causal_vae() -> None:
-    """Frame 0 covers ONE pixel frame; every later latent frame covers eight."""
-    assert windows.latent_frames_for(1) == 1
-    assert windows.latent_frames_for(9) == 2
-    assert windows.latent_frames_for(137) == 18  # the corpus's 150-frame tier, as encoded
-    assert windows.latent_frames_for(0) == 0
-
-
 def test_corpus_block_counts() -> None:
     """A block is the deployed 16-pixel-frame stride, so a clip yields about half its old
     window count plus one -- block 0 absorbs the keyframe, every later block is 2 latent
     frames, and a tail shorter than a block is dropped."""
-    assert len(windows.plan_blocks(windows.latent_frames_for(137))) == 8  # 18 latent frames -> 1 + 7
-    assert len(windows.plan_blocks(windows.latent_frames_for(225))) == 14  # 29 latent frames -> 1 + 13
+    assert len(windows.plan_blocks(18)) == 8  # the corpus's 150-frame tier -> 1 + 7
+    assert len(windows.plan_blocks(29)) == 14  # the corpus's 225-frame tier -> 1 + 13
 
 
 def test_a_clip_shorter_than_one_block_yields_nothing() -> None:

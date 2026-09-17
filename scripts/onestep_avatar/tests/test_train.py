@@ -36,6 +36,22 @@ SIGMA0 = 0.725
 DEVICE = torch.device("cpu")
 
 
+class X0Stub(torch.nn.Module):
+    """A trainable stand-in shaped like the ``X0Model`` the session yields at deploy time --
+    ``model(video, audio, perturbations) -> (denoised, aux)``, unlike ``StubTransformer``
+    below which emits velocity. ``onestep_core.rollout`` reads it through
+    ``causal_core.denoised_from_x0_model``, which treats the model's output as the denoised
+    latent directly.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scale = torch.nn.Parameter(torch.tensor(0.5))
+
+    def forward(self, video, audio, perturbations) -> tuple[torch.Tensor, None]:  # noqa: ANN001, ARG002
+        return self.scale * video.latent, None
+
+
 class StubTransformer(torch.nn.Module):
     """A trainable stand-in with the real ``(video, audio, perturbations) -> (v, a)`` shape.
 
@@ -535,3 +551,60 @@ def test_guide_conditionings_accepts_only_the_deployable_arm() -> None:
         onestep_core.guide_conditionings(z_g, "d2")
     with pytest.raises(ValueError, match="training-only"):
         onestep_core.guide_conditionings(z_g, "d0")
+
+
+def test_one_step_sigma_passes_an_on_grid_value_through_unchanged() -> None:
+    """The guard must not perturb sigma0 -- only validate it -- so wiring it into ``rollout``
+    cannot itself change a rollout's numeric output at an on-grid sigma0."""
+    grid = [1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0]
+    assert onestep_core.one_step_sigma(grid, 0.725) == pytest.approx(0.725)
+
+
+def test_one_step_sigma_refuses_an_off_grid_value() -> None:
+    grid = [1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0]
+    with pytest.raises(ValueError, match="not on the distilled sigma grid"):
+        onestep_core.one_step_sigma(grid, 0.5)
+
+
+def test_rollout_refuses_an_off_grid_sigma0() -> None:
+    """SS9 risk 13: ``onestep_core.rollout`` is the deploy path, so this is where an off-grid
+    sigma0 must be refused rather than silently produce plausible-looking output."""
+    chain = _chain()
+    with pytest.raises(ValueError, match="not on the distilled sigma grid"):
+        onestep_core.rollout(
+            X0Stub(),
+            torch.zeros(1, 1, 8),
+            chain.z_g.unsqueeze(0),
+            GEOMETRY,
+            0.5,  # off the nine-point distilled grid
+            FPS,
+            device=DEVICE,
+            latent_channels=CHANNELS,
+            num_layers=1,
+            inner_dim=4,
+        )
+
+
+def test_rollout_runs_end_to_end_at_an_on_grid_sigma0() -> None:
+    """The guard sits in front of the rollout it guards -- an on-grid sigma0 still rolls out.
+
+    ``onestep_core.rollout`` had no direct test before this stage (only ``causal_core.rollout``,
+    the shared core it calls, was covered); this is also the first positive-path coverage of it.
+    """
+    chain = _chain()
+    result = onestep_core.rollout(
+        X0Stub(),
+        torch.zeros(1, 1, 8),
+        chain.z_g.unsqueeze(0),
+        GEOMETRY,
+        SIGMA0,
+        FPS,
+        device=DEVICE,
+        seed=0,
+        latent_channels=CHANNELS,
+        num_layers=1,
+        inner_dim=4,
+    )
+    plan = GEOMETRY.plan(LATENT_FRAMES)
+    assert result.blocks == len(plan)
+    assert result.forwards == result.denoise_forwards + result.refresh_forwards == 2 * len(plan)

@@ -115,13 +115,6 @@ def capture_bundle_name(objective: str = DEFAULT_OBJECTIVE) -> str:
     return f"ltx_vae_latent{_suffix(objective)}.pt"
 
 
-# view_idx -> direction, fixed by the capture rig (8 x 45 degree azimuth bins).
-VIEW_DIRECTIONS = (
-    "front", "front-right", "right", "back-right",
-    "back", "back-left", "left", "front-left",
-)
-
-
 @dataclass(frozen=True)
 class ClipRef:
     root: Path

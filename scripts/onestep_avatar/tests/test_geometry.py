@@ -44,18 +44,6 @@ class TestSquareCropBox(unittest.TestCase):
         x0, y0, x1, y1 = box
         self.assertAlmostEqual(x1 - x0, 120.0)
 
-    def test_subject_crop_box_matches_manual_pipeline(self):
-        xyxy = np.array([[0.0, 0.0, 10.0, 10.0], [5.0, 5.0, 20.0, 30.0]])
-        valid = np.array([True, True])
-        expected = geometry.square_crop_box(geometry.union_bbox(xyxy, valid), 1.20)
-        self.assertEqual(geometry.subject_crop_box(xyxy, valid, 1.20), expected)
-
-
-class TestScaleFor(unittest.TestCase):
-    def test_matches_out_size_over_side(self):
-        s = geometry.scale_for((0.0, 0.0, 500.0, 500.0), out_size=1024)
-        self.assertAlmostEqual(s, 1024.0 / 500.0)
-
 
 class TestCropWithPadding(unittest.TestCase):
     def test_pure_interior_crop_is_a_plain_slice(self):

@@ -54,13 +54,6 @@ def square_crop_box(union_xyxy: XYXY, pad_factor: float = PADDING_FACTOR) -> XYX
     return cx - half, cy - half, cx + half, cy + half
 
 
-def subject_crop_box(
-    bbox_xyxy: np.ndarray, valid: np.ndarray, pad_factor: float = PADDING_FACTOR
-) -> XYXY:
-    """``union_bbox`` + ``square_crop_box`` in one call -- the box a (clip, view) is built with."""
-    return square_crop_box(union_bbox(bbox_xyxy, valid), pad_factor)
-
-
 def canonical_crop_box(
     bbox_xyxy: np.ndarray,
     valid: np.ndarray,
@@ -92,13 +85,6 @@ def effective_pad_factor(box_xyxy: XYXY, bbox_xyxy: np.ndarray, valid: np.ndarra
     if union_side <= 0:
         raise ValueError("degenerate subject union")
     return float(box_xyxy[2] - box_xyxy[0]) / float(union_side)
-
-
-def scale_for(box_xyxy: XYXY, out_size: int = OUT_SIZE) -> float:
-    """``s = out_size / side`` -- the scale ARGAvatar's ``render_motion_frame_window`` and the
-    capture-track resize must agree on for the pair to line up pixel-for-pixel."""
-    x0, y0, x1, y1 = box_xyxy
-    return float(out_size) / float(x1 - x0)
 
 
 def fit_square_to_canvas(box_xyxy: XYXY, width: int, height: int) -> XYXY:

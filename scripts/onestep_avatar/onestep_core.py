@@ -33,6 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+from ltx_pipelines.utils.constants import DISTILLED_SIGMA_VALUES
 
 from scripts.onestep_avatar import causal_core
 from scripts.onestep_avatar.causal_core import BlockCache, CausalGeometry, ClipGrid
@@ -82,11 +83,9 @@ def one_step_sigma(model_sigmas: list[float], sigma0: float = refine_task.ONE_ST
 
     The schedule is still built and checked through ``refine_task`` -- the causal loop has no
     stepper, so it consumes the sigma rather than the pair, but the guard that rejects an
-    off-grid sigma0 or a multi-step schedule must not be bypassed.
-
-    **Nothing calls this today.** ``rollout`` takes ``sigma0`` directly, so the guard is
-    currently unreached and an off-grid sigma0 deploys silently. Wiring it in needs the
-    model's sigma grid at the call site; see ``doc/onestep_core.md``.
+    off-grid sigma0 or a multi-step schedule must not be bypassed. Called from :func:`rollout`
+    against the distilled model's fixed 9-point grid, so an off-grid sigma0 raises there instead
+    of deploying silently.
     """
     schedule = refine_task.one_step_schedule(model_sigmas, sigma0)
     if len(schedule) != 2 or schedule[-1] != 0.0:
@@ -109,6 +108,7 @@ def rollout(  # noqa: PLR0913 -- a rollout is defined by its geometry, schedule,
     dtype: torch.dtype | None = None,
     num_layers: int | None = None,
     inner_dim: int | None = None,
+    model_sigmas: list[float] | None = None,
 ) -> RolloutResult:
     """Roll a clip forward block by block over its ONE continuous guide encode.
 
@@ -120,8 +120,13 @@ def rollout(  # noqa: PLR0913 -- a rollout is defined by its geometry, schedule,
     prompt (``refine_task.REFINE_PROMPT``): a rollout that silently conditioned on something
     else would change every number in §8 without changing a call site. Build it with
     ``scripts.prune.data.prompt_cache.get_or_build``, the same call ``train.py`` makes.
+
+    ``sigma0`` is validated against ``model_sigmas`` (default: the distilled checkpoint's fixed
+    9-point grid) through :func:`one_step_sigma` before anything is denoised -- an off-grid
+    sigma0 raises here rather than deploying a point the model was never trained at.
     """
     guide_conditionings(master, guide_mode)  # validates the arm; D1 adds nothing
+    sigma0 = one_step_sigma(model_sigmas if model_sigmas is not None else DISTILLED_SIGMA_VALUES, sigma0)
     dtype = dtype if dtype is not None else master.dtype
     latent_frames = master.shape[2]
     grid = ClipGrid.build(

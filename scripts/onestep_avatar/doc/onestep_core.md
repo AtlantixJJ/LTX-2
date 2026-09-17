@@ -40,12 +40,16 @@ implementation and the source of every frozen `k2` number.
 - A causal rollout writes one latent covering the whole chain, so there is **no per-window
   overlap to stitch** and no seam to get wrong.
 
+## Invariants (continued)
+
+- **`rollout` refuses an off-grid or multi-step σ₀.** `one_step_sigma` runs first, against
+  `model_sigmas` (default: the distilled checkpoint's fixed 9-point grid,
+  `ltx_pipelines.utils.constants.DISTILLED_SIGMA_VALUES`) — before `ClipGrid.build` or any
+  forward. A caller with a non-default grid (e.g. a different distilled checkpoint) passes its
+  own `model_sigmas`.
+
 ## Tests
 
 Covered through `tests/test_causal_core.py` (the shared rollout) and
 `tests/test_train.py::test_guide_conditionings_accepts_only_the_deployable_arm`.
-
-**`one_step_sigma` has no caller.** It is the wrapper that puts `refine_task.one_step_schedule`'s
-guards — off-grid σ₀, multi-step schedule — in front of a rollout, and `rollout` takes `sigma0`
-directly instead, so those guards are not on this path today. Wiring it in needs the model's
-sigma grid at the call site; until then an off-grid σ₀ deploys silently.
+`tests/test_train.py::test_rollout_refuses_an_off_grid_sigma0` covers the σ₀ guard.
