@@ -79,7 +79,6 @@ def _chain(
         z_g=z_g,
         z_y=z_y,
         fps=FPS,
-        loss_weights=None,
         z0_base=None,
     )
 
@@ -131,36 +130,11 @@ def test_guided_init_is_the_linear_interpolant_of_the_guide(monkeypatch: pytest.
     assert torch.allclose(noisy[0].float(), (1 - SIGMA0) * z_g_tokens + SIGMA0 * eps, atol=8e-3)
 
 
-def test_every_block_token_is_in_the_loss() -> None:
-    """Under SS4.4's causal scheme there are no conditioning tokens left to exclude.
-
-    The old window carried the frozen carryover and the keyframe at ``denoise_mask`` 0 and had
-    to weight them out -- score a model on reproducing a value it was handed and you both
-    dilute the gradient and reward copying. The cache holds that content now, so it is not in
-    the sequence at all, and the weights are plainly ones.
-    """
-    chain = _chain()
-    grid = _grid(chain)
-    span = GEOMETRY.plan(LATENT_FRAMES)[1]
-    weights = train.block_weights(grid, chain, span, DEVICE)
-    assert weights.shape == (1, (span[1] - span[0]) * grid.tokens_per_latent_frame, 1)
-    assert (weights == 1.0).all()
-
-
-def test_loss_weights_are_sliced_from_the_clips_own_master_grid() -> None:
-    """The weights are per-CLIP, and a block takes the same slice of them the latent takes.
-
-    Per-window mask files were the other half of the tree SS1.6 removed; storing one grid per
-    clip is what makes it impossible to index the weights and the latent differently.
-    """
-    chain = _chain()
-    mask = torch.zeros(LATENT_FRAMES, EDGE // SCALE.height, EDGE // SCALE.width)
-    mask[3:5] = 1.0  # exactly block 1's frames
-    chain = train.Chain(**{**chain.__dict__, "loss_weights": mask})
-    grid = _grid(chain)
-    plan = GEOMETRY.plan(LATENT_FRAMES)
-    assert (train.block_weights(grid, chain, plan[1], DEVICE) == 1.0).all()
-    assert (train.block_weights(grid, chain, plan[2], DEVICE) == 0.0).all()
+def test_full_frame_mse_averages_every_token_and_channel() -> None:
+    """The training objective has no subject, alpha, or disagreement weighting."""
+    pred = torch.zeros(1, 16, 4)
+    target = torch.ones(1, 16, 4)
+    assert train.full_frame_mse(pred, target).item() == 1.0
 
 
 def test_identical_guide_and_capture_reduce_to_flow_matching(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -303,7 +277,7 @@ def test_k1_chain_matches_a_single_non_ar_step() -> None:
         causal_core.denoised_from_velocity_model(model_plain), grid, _cache(chain), noisy,
         torch.zeros(1, 1, 8), SIGMA0, span,
     )
-    loss = train.masked_mse(z0, target[:, lo:hi], train.block_weights(grid, chain, span, DEVICE))
+    loss = train.full_frame_mse(z0, target[:, lo:hi])
     loss.backward()
 
     assert torch.allclose(chain_grad, model_plain.scale.grad, rtol=1e-4, atol=1e-8)
@@ -321,50 +295,6 @@ def test_train_chain_records_one_per_block_entry_in_chain_order() -> None:
     # The chain-mean is exactly the average of the per-block entries it was built from --
     # otherwise the two views of the same chain would disagree with each other.
     assert abs(totals["mse"] - sum(w["mse"] for w in totals["per_block"]) / 3) < 1e-6
-
-
-def test_masked_mse_is_scale_free_in_the_masked_area() -> None:
-    """A tight crop and a wide one must contribute comparably (SS4.3 row 1).
-
-    Averaging over all tokens instead would make a subject occupying a tenth of the frame
-    contribute a tenth of the gradient, which is a silent reweighting by crop tightness.
-    """
-    pred = torch.zeros(1, 16, 4)
-    target = torch.ones(1, 16, 4)
-    narrow = torch.zeros(1, 16, 1)
-    narrow[:, :2] = 1.0
-    wide = torch.ones(1, 16, 1)
-    assert torch.allclose(train.masked_mse(pred, target, narrow), train.masked_mse(pred, target, wide))
-
-
-def test_disagreement_weights_keep_the_full_frame_and_down_weight_only_the_band() -> None:
-    """SS1.5's one masking rule, in four cells.
-
-    The point of the rule is what it does NOT do: agreement -- whether both grids say subject
-    or both say background -- keeps full weight. A subject mask would have zeroed the
-    background cell, and with it the ghost band that lives there, which is why none of the
-    five subject masks this replaced could train the product objective.
-    """
-    record = {
-        # agree-subject | render-only | capture-only | agree-background
-        "render_alpha": torch.tensor([[[1.0, 1.0, 0.0, 0.0]]]),
-        "capture_mask": torch.tensor([[[1.0, 0.0, 1.0, 0.0]]]),
-    }
-    assert train.disagreement_weights(record, 0.0).tolist() == [[[1.0, 0.0, 0.0, 1.0]]]
-    # A partial weight lands proportionally, and 1.0 IS the plain full-frame loss.
-    assert train.disagreement_weights(record, 0.25).tolist() == [[[1.0, 0.25, 0.25, 1.0]]]
-    assert train.disagreement_weights(record, 1.0).tolist() == [[[1.0, 1.0, 1.0, 1.0]]]
-
-
-def test_a_half_disputed_boundary_cell_is_half_weighted() -> None:
-    """The grids are area fractions, so the band is SOFT -- a 32x latent cell straddling the
-    silhouette is partly disputed, not wholly. Thresholding it here would reintroduce exactly
-    the 32-pixel edge quantisation SS1.2 refuses to accept in the guide."""
-    record = {
-        "render_alpha": torch.tensor([[[1.0]]]),
-        "capture_mask": torch.tensor([[[0.5]]]),
-    }
-    assert train.disagreement_weights(record, 0.0).tolist() == [[[0.5]]]
 
 
 def test_d0_noises_the_capture_not_the_guide(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -430,7 +430,7 @@ def test_the_real_training_loop_runs_a_chain_against_a_real_transformer() -> Non
         seed_is_clip_start=False, blocks=[1, 2],
         z_g=torch.randn(CHANNELS, LATENT_FRAMES, 2, 2),
         z_y=torch.randn(CHANNELS, LATENT_FRAMES, 2, 2),
-        fps=FPS, loss_weights=torch.rand(LATENT_FRAMES, 2, 2), z0_base=None,
+        fps=FPS, z0_base=None,
     )
 
     class _Accelerator:
