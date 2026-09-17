@@ -763,6 +763,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "relocated copy.",
     )
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument(
+        "--resume", action="store_true",
+        help="Allow launching into a --output that already holds metrics_rank*.jsonl. There is "
+        "no actual resume here -- step restarts at 0 -- so this is an acknowledgement that the "
+        "new records will be appended after the old ones under one step numbering, not a "
+        "promise the run continues where the last one left off. See --overwrite.",
+    )
+    p.add_argument(
+        "--overwrite", action="store_true",
+        help="Delete existing metrics_rank*.jsonl under --output before launching, so this run's "
+        "records are the only ones there. Use this for a genuine relaunch; use --resume only if "
+        "you specifically want the old and new records to coexist in one file.",
+    )
     p.add_argument("--model", choices=model_registry.SUPPORTED_MODELS, default="2.5")
     p.add_argument("--sigma0", type=float, default=DEFAULT_SIGMA0)
     p.add_argument(
@@ -877,6 +890,26 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
             "Drop --anchor-weight."
         )
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    # S3b of the 2026-09-17 cleanup plan: a used --output is refused rather than silently
+    # merged. `log_file = log_path.open("a")` below has no resume behind it -- `step` restarts
+    # at 0 on every launch -- so an append there is never actually the intent; it was only ever
+    # "convenient" because appending needs no separate first-launch/relaunch branch. Every rank
+    # evaluates this identically (a filesystem glob, not a forward), so no rank sees a
+    # different answer than the others.
+    existing_logs = sorted(args.output.glob("metrics_rank*.jsonl"))
+    if existing_logs and not args.resume and not args.overwrite:
+        raise SystemExit(
+            f"{args.output} already has {len(existing_logs)} metrics_rank*.jsonl file(s) from a "
+            f"previous launch, and this run's config.json would overwrite the one that describes "
+            f"them. train.py has no resume -- step restarts at 0 every launch -- so appending "
+            f"here would silently merge two runs under one step numbering, indistinguishable to "
+            f"every reader (plot_training, report_d0). Pass --overwrite to start fresh (deletes "
+            f"the existing logs) or --resume to append anyway and accept the merge."
+        )
+    if existing_logs and args.overwrite:
+        for log in existing_logs:
+            log.unlink()
 
     subset = json.loads(args.subset.read_text())
     # The block-chain `kind` check lives in ChainStore.__init__ now (S2 of the 2026-09-17

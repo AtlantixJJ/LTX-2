@@ -109,6 +109,8 @@ exactly zero; failure refuses to create a misleading baseline artifact. This mak
 | `--anchor-weight` | SS1.5 row 2; needs `base_denoised.pt` |
 | `--timing` | per-step phase breakdown; see "Reading the timing lines" below |
 | `--skip-subset-check` | skip the startup read of each source's master; moves a stale-subset failure to step 0 |
+| `--overwrite` | delete an `--output`'s existing `metrics_rank*.jsonl` before launching |
+| `--resume` | launch into a used `--output` anyway; there is no real resume (see Invariants) |
 
 **Teacher vs self forcing differ in exactly one tensor** — what `refresh` is handed. Nothing
 else in the loop, and nothing in `causal_core`, knows which regime is in play.
@@ -148,6 +150,14 @@ else in the loop, and nothing in `causal_core`, knows which regime is in play.
   the guide-noised input, and d0 noises `z_y`.
 - σ = 0.0 is refused as a training level — the noiser adds nothing, so loss and gradient are
   identically zero (a quarter of one run trained on nothing before this was caught).
+- **A run directory describes exactly one run** (S3b of the 2026-09-17 cleanup plan).
+  `log_file = log_path.open("a")` appends `metrics_rank<r>.jsonl` on every launch, but `step`
+  restarts at 0 every launch too — there is no resume — so an unguarded append into a used
+  `--output` silently merges two runs' records under one step numbering: `plot_training`'s
+  `step_mean` and `report_d0`'s `_mean_by_step` both key on step alone and would average
+  across ranks *and* runs with no indication which is which. Refused at startup with a pointed
+  error unless `--overwrite` (deletes the existing logs) or `--resume` (appends anyway,
+  accepting the merge) is passed.
 
 ## Reading the timing lines
 

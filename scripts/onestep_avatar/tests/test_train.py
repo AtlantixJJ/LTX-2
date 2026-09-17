@@ -370,6 +370,46 @@ def test_a_window_chain_subset_is_refused_rather_than_reinterpreted(tmp_path) ->
         train.main(["--subset", str(subset), "--output", str(tmp_path / "out")])
 
 
+def _bad_subset(tmp_path):  # noqa: ANN001, ANN202
+    """A subset that fails at the very next check after the used-output guard, so these tests
+    exercise only --resume/--overwrite's effect on that guard, not the rest of the launch."""
+    subset = tmp_path / "old.json"
+    subset.write_text(
+        '{"kind": "one_step_argavatar_window_chains", "corpus_root": "/nonexistent", '
+        '"chains": [], "sources": []}'
+    )
+    return subset
+
+
+def test_a_second_launch_into_a_used_output_is_refused(tmp_path) -> None:  # noqa: ANN001
+    """S3b of the 2026-09-17 cleanup plan: train.py has no resume -- step restarts at 0 every
+    launch -- so an unguarded append silently merges two runs under one step numbering."""
+    output = tmp_path / "out"
+    output.mkdir()
+    (output / "metrics_rank0.jsonl").write_text('{"step": 0}\n')
+    with pytest.raises(SystemExit, match=r"already has 1 metrics_rank\*\.jsonl"):
+        train.main(["--subset", str(_bad_subset(tmp_path)), "--output", str(output)])
+    assert (output / "metrics_rank0.jsonl").is_file()  # refused, not touched
+
+
+def test_overwrite_deletes_the_existing_logs_before_continuing(tmp_path) -> None:  # noqa: ANN001
+    output = tmp_path / "out"
+    output.mkdir()
+    (output / "metrics_rank0.jsonl").write_text('{"step": 0}\n')
+    with pytest.raises(SystemExit, match=r"block-chain subset"):  # the NEXT check, past the guard
+        train.main(["--subset", str(_bad_subset(tmp_path)), "--output", str(output), "--overwrite"])
+    assert not (output / "metrics_rank0.jsonl").exists()
+
+
+def test_resume_launches_into_a_used_output_without_deleting_it(tmp_path) -> None:  # noqa: ANN001
+    output = tmp_path / "out"
+    output.mkdir()
+    (output / "metrics_rank0.jsonl").write_text('{"step": 0}\n')
+    with pytest.raises(SystemExit, match=r"block-chain subset"):  # the NEXT check, past the guard
+        train.main(["--subset", str(_bad_subset(tmp_path)), "--output", str(output), "--resume"])
+    assert (output / "metrics_rank0.jsonl").is_file()  # --resume does not delete it
+
+
 def test_a_cache_too_small_for_this_clip_is_refused_before_any_forward() -> None:
     """The run allocates ONE cache; a clip that does not fit must fail before the step's
     forwards, not inside one.
