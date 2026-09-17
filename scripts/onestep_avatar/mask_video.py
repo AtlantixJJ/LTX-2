@@ -42,6 +42,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import torch
 
 # Lossless, grayscale, in MP4. `-crf 0` is x264's lossless mode; `-pix_fmt gray` keeps one
 # plane rather than padding to 4:2:0 (which would also be lossless for gray input, but three
@@ -121,3 +122,69 @@ def read_mask(path_without_suffix: Path) -> np.ndarray:
 def mask_exists(path_without_suffix: Path) -> bool:
     """True if either form is present -- the resumability check's question."""
     return path_without_suffix.with_suffix(".mp4").is_file() or path_without_suffix.with_suffix(".npy").is_file()
+
+
+def _pixel_range(latent_index: int, time_scale: int) -> tuple[int, int]:
+    """Pixel frames represented by one frame of a continuous causal-VAE encode."""
+    if latent_index == 0:
+        return 0, 1
+    start = 1 + (latent_index - 1) * time_scale
+    return start, start + time_scale
+
+
+def pool_to_latent_grid(
+    mask: np.ndarray,
+    *,
+    latent_frames: int,
+    latent_height: int,
+    latent_width: int,
+    time_scale: int,
+) -> torch.Tensor:
+    """Pool a stored uint8 mask to ``[F, H, W]`` latent coverage on demand.
+
+    The MP4 remains the only persisted representation.  Training and measurement call this
+    reader when they need latent-cell coverage; persisting the derived grid duplicated the
+    same information and coupled masks to one latent geometry.
+    """
+    if mask.ndim != 3 or mask.dtype != np.uint8:
+        raise ValueError(f"expected [N, H, W] uint8 coverage, got {mask.shape} {mask.dtype}")
+    spatial = np.stack(
+        [cv2.resize(frame, (latent_width, latent_height), interpolation=cv2.INTER_AREA) for frame in mask]
+    ).astype(np.float32) / 255.0
+    pooled = []
+    for index in range(latent_frames):
+        lo, hi = _pixel_range(index, time_scale)
+        if hi > len(spatial):
+            raise ValueError(
+                f"mask has {len(spatial)} pixel frames, too few for latent frame {index} "
+                f"of {latent_frames} (needs frames [{lo}, {hi}))"
+            )
+        pooled.append(spatial[lo:hi].mean(axis=0))
+    return torch.from_numpy(np.stack(pooled)).to(torch.float16).contiguous()
+
+
+def read_latent_masks(
+    view: Path,
+    *,
+    latent_frames: int,
+    latent_height: int,
+    latent_width: int,
+    time_scale: int,
+) -> dict[str, torch.Tensor]:
+    """Read the two canonical mask MP4s and derive transient latent-grid coverage."""
+    return {
+        "render_alpha": pool_to_latent_grid(
+            read_mask(view / "argavatar_alpha"),
+            latent_frames=latent_frames,
+            latent_height=latent_height,
+            latent_width=latent_width,
+            time_scale=time_scale,
+        ),
+        "capture_mask": pool_to_latent_grid(
+            read_mask(view / "capture_mask_crop"),
+            latent_frames=latent_frames,
+            latent_height=latent_height,
+            latent_width=latent_width,
+            time_scale=time_scale,
+        ),
+    }

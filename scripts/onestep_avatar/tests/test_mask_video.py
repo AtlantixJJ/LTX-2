@@ -53,7 +53,7 @@ def test_frame_count_round_trips(tmp_path: Path) -> None:
         assert decoded.shape == grid.shape
 
 
-def test_the_encode_stays_lossless(tmp_path: Path) -> None:
+def test_the_encode_stays_lossless() -> None:
     """Pin the setting itself, not just its effect: a drift to a lossy crf would be invisible
     in every downstream number, and cheap to introduce while 'tuning storage'."""
     assert "-crf" in mask_video.MASK_ENCODE_ARGS
@@ -93,9 +93,30 @@ def test_a_missing_mask_raises_rather_than_returning_empty(tmp_path: Path) -> No
 
 
 def test_a_wrong_shaped_or_typed_grid_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="expected"):
         mask_video.write_mask_video(np.zeros((4, 8), dtype=np.uint8), tmp_path / "a.mp4")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="expected"):
         mask_video.write_mask_video(np.zeros((4, 8, 8), dtype=np.float32), tmp_path / "b.mp4")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="empty"):
         mask_video.write_mask_video(np.zeros((0, 8, 8), dtype=np.uint8), tmp_path / "c.mp4")
+
+
+def test_masks_are_pooled_to_the_causal_latent_timeline_on_read() -> None:
+    """Frame 0 stands alone; each later latent frame averages the next eight pixels."""
+    grid = np.stack([np.full((4, 4), value, dtype=np.uint8) for value in range(17)])
+    pooled = mask_video.pool_to_latent_grid(
+        grid, latent_frames=3, latent_height=1, latent_width=1, time_scale=8
+    )
+    expected = np.array([0.0, np.mean(range(1, 9)) / 255.0, np.mean(range(9, 17)) / 255.0])
+    assert np.allclose(pooled[:, 0, 0].float().numpy(), expected, atol=5e-5)
+
+
+def test_latent_pooling_refuses_a_short_mask() -> None:
+    with pytest.raises(ValueError, match="too few"):
+        mask_video.pool_to_latent_grid(
+            np.zeros((16, 4, 4), dtype=np.uint8),
+            latent_frames=3,
+            latent_height=1,
+            latent_width=1,
+            time_scale=8,
+        )

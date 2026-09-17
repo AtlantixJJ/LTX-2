@@ -48,7 +48,7 @@ SS1.2 calls the learning signal. There was nothing to keep.
 capture_t, undefined with no render in play, which is d0's whole point (SS1.3: reduces to
 ordinary flow-matching on real video). `ChainStore` gates the read on `with_guide`, not just
 `band_weight < 1.0`, so d0 works against capture-only precompute the same way it already skips
-`z_g` — no paired-precompute artifact (`argavatar_ltx_vae_latent.pt`, `loss_mask_grids.pt`,
+`z_g` — no paired-precompute artifact (`argavatar_ltx_vae_latent.pt`, `argavatar_alpha.mp4`,
 `capture_mask_crop.mp4`) is needed to train d0. A non-default `--disagreement-weight` with `d0`
 is refused rather than silently ignored, same shape as the anchor-weight guard below.
 

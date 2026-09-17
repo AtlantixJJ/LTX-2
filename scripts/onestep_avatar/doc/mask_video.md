@@ -47,7 +47,7 @@ materializing the whole clip.
 ```
 build_guidance.py   alpha_grid [N,256,256] uint8 ─▶ write_mask_video ─▶ argavatar_alpha.mp4
 precompute.py       cropped matte [N,256,256]    ─▶ write_mask_video ─▶ capture_mask_crop.mp4
-                    read_mask(stem) ─▶ pooled to latent grid ─▶ loss_mask_grids.pt
+train.py / stats.py read_mask(stem) ─▶ pool spatially + over causal frame groups in memory
 ```
 
 ## Organization logic
@@ -64,6 +64,10 @@ pinned.
 
 **Writes are atomic** (temp file, then rename), for the same reason every other artifact here
 is: a killed ffmpeg must not leave something that looks complete.
+
+**Latent grids are derived, never stored.** `pool_to_latent_grid` applies area pooling and the
+causal VAE's `1, 8, 8, ...` temporal grouping when a reader asks for coverage. This keeps the
+MP4s as the only mask artifacts and permits a geometry change without mask regeneration.
 
 ## Migration
 

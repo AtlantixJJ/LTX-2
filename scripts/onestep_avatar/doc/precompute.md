@@ -10,9 +10,13 @@ experiment-side latent tree.
 |---|---|---|
 | `ltx_vae_latent[_white].pt` | `--capture-only` | `z_y`, the capture master |
 | `argavatar_ltx_vae_latent[_white].pt` | the paired pass | `z_g`, the guide master |
-| `capture_mask_crop.mp4` | the paired pass | the capture matte cropped to the box, 256², lossless |
-| `loss_mask_grids.pt` | the paired pass | `render_alpha` + `capture_mask`, pooled to the latent grid |
+| `argavatar_alpha.mp4` | `build_guidance.py` | the rendered alpha, 256², lossless |
+| `capture_mask_crop.mp4` | the paired pass | the capture matte cropped to the same box, 256², lossless |
+| `<subject>/qa/capture_mask_crop.mp4` | `--capture-only` | review crop for view 0 of the first five subjects in each `Part_*` only |
 | `capture_latent_manifest.json` | `--capture-only` | **the crop box of record** — `build_guidance.py` renders into it |
+
+There is deliberately no `loss_mask_grids.pt`. The two MP4s are the canonical masks;
+`train.py` and `stats.py` pool them to the active latent geometry when they read them.
 
 ## Data flow
 
@@ -23,20 +27,19 @@ experiment-side latent tree.
   mask.mp4 ─┴─▶ crop_source (worker, CPU) ─▶ {bg: frames, white: matted frames}
                                             ─▶ ONE tiled_encode per objective
                                             ─▶ master_record ─▶ atomic save
+  mask.mp4 ─▶ sampled QA crop (first 5 / part, view 0; `--mask-qa-only` skips the VAE)
 
 paired:
   argavatar_render[_white].mp4 ─▶ ONE tiled_encode ─▶ z_g master
-  argavatar_alpha.mp4 ─┐
-  mask.mp4 ─▶ crop to the box at 256² ─▶ capture_mask_crop.mp4 (stored once)
-                       └─▶ both pooled to the latent grid ─▶ loss_mask_grids.pt
-
---consolidate:
-  v1 per-window bundle ─▶ reassembled master (no VAE, no GPU) ─▶ v2 bundle, in place
+  argavatar_alpha.mp4 ──────────────────────────────────────────┐
+  mask.mp4 ─▶ crop to the box at 256² ─▶ capture_mask_crop.mp4 ─┴─▶ readers pool on demand
 ```
 
 ## Organization logic
 
-**One continuous encode per source, and the master is what is stored.** A genuine causal
+**One continuous encode per source, and the master is what is stored.** “Source” here means
+the planned prefix through the last complete fixed-stride window; trailing frames that cannot
+form a complete window are not encoded. A genuine causal
 keyframe only exists at latent frame 0 of a truly continuous encode, and nothing re-keys
 mid-rollout. Encoding each window independently *manufactured* a fresh keyframe at every
 window's local frame 0 — measured: window 0 sliced vs. independently encoded differs ~0.1 %
@@ -61,12 +64,16 @@ alpha is still live. It is used **continuous**, not re-thresholded: the stored m
 a threshold off lossy video, and hardening it again would quantise the silhouette edge that
 the `white` objective makes the whole task.
 
-**The cropped capture matte is persisted, and that is a read optimisation as much as a
-storage one.** Rebuilding the loss grids used to mean re-decoding a 4096×3000 `mask.mp4` at
-36 MB a frame — the single most expensive read in this pass. It is now cropped to 256² once
-and stored as a lossless MP4 beside the render's alpha (~0.23 MB per view; see
-[mask_video.md](mask_video.md)), written from the same decode that feeds the grids, so there
-is still exactly one producer.
+**The two mask MP4s are the only stored mask representations.** The capture matte is cropped
+to 256² once and stored losslessly beside the render alpha (~0.23 MB per view; see
+[mask_video.md](mask_video.md)). Persisting a latent-grid `.pt` duplicated these masks and
+bound them to one geometry. Readers instead pool both MP4s by the same spatial and causal
+temporal rules when a latent grid is needed.
+
+**Mask visualization is deliberately sampled.** The canonical per-view MP4 remains beside
+each paired view for training. A human-review copy is written to
+`<Part_*>/<subject>/qa/capture_mask_crop.mp4` only for view 0 of the lexicographically first
+five subject directories in each `Part_*`. No QA copy is written for other subjects or views.
 
 A side effect worth knowing: **both masks now reach the latent grid by the same route** (full
 res → 256 → latent). The capture matte used to be pooled straight to latent resolution while
@@ -87,11 +94,12 @@ encoder so workers never fork after this process has touched CUDA.
 
 - `z_y` is never re-encoded by the paired pass. The capture pass is its only producer and the
   trainer reads that bundle directly; a copy is free to disagree with its original.
-- The two mask grids are stored **uncombined**. Which disagreement region the loss covers is a
-  training decision (SS1.5); pre-combining here would bake one answer into the corpus.
+- The two masks remain **uncombined MP4s**. Which disagreement region the loss covers is a
+  training decision (SS1.5); pre-combining or persisting a derived grid would bake one answer
+  and one geometry into the corpus.
 - Every source's windows share one fixed crop box.
-- `--consolidate` **refuses** disagreeing overlaps rather than stitching them: a pre-09-11
-  independently-encoded bundle is not a master in disguise.
+- Obsolete per-window latent bundles are regenerated; `precompute.py` no longer carries a
+  migration path for them.
 
 ## Gotchas
 

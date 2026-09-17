@@ -41,10 +41,10 @@ from pathlib import Path
 
 import torch
 
-from scripts.onestep_avatar import dataset
+from ltx_core.types import SpatioTemporalScaleFactors
+from scripts.onestep_avatar import dataset, mask_video
 from scripts.onestep_avatar.precompute import (
     BUNDLE_SCHEMA_VERSION,
-    LOSS_MASK_GRIDS_NAME,
     VideoReader,
     atomic_json_save,
 )
@@ -108,8 +108,8 @@ def _master(path: Path) -> torch.Tensor:
     bundle = torch.load(path, map_location="cpu", weights_only=True)
     if bundle.get("schema_version") != BUNDLE_SCHEMA_VERSION or "master" not in bundle:
         raise SystemExit(
-            f"{path}: not a v{BUNDLE_SCHEMA_VERSION} master bundle. Run "
-            f"`python -m scripts.onestep_avatar.precompute --consolidate` over this corpus"
+            f"{path}: not a v{BUNDLE_SCHEMA_VERSION} master bundle. Re-run "
+            "precompute.py --capture-only for this view"
         )
     return bundle["master"]
 
@@ -163,10 +163,17 @@ def measure_pairs(
         gap = rms_gap(z_y, z_g)
         gaps.append(gap)
 
-        mask_path = guide_path.with_name(LOSS_MASK_GRIDS_NAME)
-        if mask_path.is_file():
-            record = torch.load(mask_path, map_location="cpu", weights_only=True)
-            render, capture_mask = record["render_alpha"].float(), record["capture_mask"].float()
+        alpha = guide_path.with_name(dataset.ALPHA_NAME)
+        capture_crop = guide_path.with_name(dataset.CAPTURE_MASK_CROP_NAME)
+        if alpha.is_file() and capture_crop.is_file():
+            masks = mask_video.read_latent_masks(
+                guide_path.parent,
+                latent_frames=frames,
+                latent_height=int(z_y.shape[2]),
+                latent_width=int(z_y.shape[3]),
+                time_scale=SpatioTemporalScaleFactors.default().time,
+            )
+            render, capture_mask = masks["render_alpha"].float(), masks["capture_mask"].float()
             weights = {
                 "render": render,
                 "capture": capture_mask,

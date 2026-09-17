@@ -13,12 +13,14 @@ from scripts.onestep_avatar.precompute import (
     BUNDLE_SCHEMA_VERSION,
     CAPTURE_MANIFEST_NAME,
     CaptureSource,
+    Pair,
     VideoReader,
     check_pair_alignment,
     discover_pairs,
     enumerate_capture_jobs,
-    master_from_windows,
+    guide_bundle_path,
     master_record,
+    write_capture_mask_qa,
 )
 from scripts.prune.core.refine_core import WindowGeometry
 
@@ -32,48 +34,47 @@ def test_master_record_stores_the_whole_clip_not_a_window() -> None:
     assert (record["schema_version"], record["fps"], record["pixel_frames"]) == (BUNDLE_SCHEMA_VERSION, 30.0, 137)
 
 
-def test_master_from_windows_reassembles_a_v1_bundle_losslessly() -> None:
-    """The migration that makes SS4.4's master-latent rule a reader change, not days of re-encoding.
-
-    Every v1 window was itself sliced from one continuous encode, so the tiling is exact and
-    the master reassembles bit-for-bit -- which is what this asserts by slicing every window
-    back out of the result.
-    """
-    # The deployed 25-frame / 16-frame-stride tiling: 4 latent frames per window, overlapping
-    # by 2, so two windows span 41 pixel frames and 6 latent frames.
-    master = torch.randn(1, 8, 6, 2, 2, dtype=torch.bfloat16)
-    windows = {
-        index: {
-            "latents": master[0][:, start // 8 : start // 8 + 4],
-            "fps": 30.0,
-            "start": start,
-            "end": start + 25,
-        }
-        for index, start in enumerate((0, 16))
-    }
-    rebuilt, fps, pixel_frames = master_from_windows({"windows": windows}, 8)
-    assert (fps, pixel_frames) == (30.0, 41)
-    assert torch.equal(rebuilt, master)
-    for record in windows.values():
-        first = record["start"] // 8
-        assert torch.equal(rebuilt[0][:, first : first + 4], record["latents"])
-
-
-def test_master_from_windows_refuses_independently_encoded_windows() -> None:
-    """Disagreeing overlaps mean the bundle predates the continuous-encode revision.
-
-    Stitching those would splice together windows that each carry their own fabricated causal
-    keyframe -- exactly the data SS4.4 removed. Re-encoding is the only fix, so this raises.
-    """
-    windows = {
-        0: {"latents": torch.zeros(8, 4, 2, 2), "fps": 30.0, "start": 0, "end": 25},
-        1: {"latents": torch.ones(8, 4, 2, 2), "fps": 30.0, "start": 16, "end": 41},
-    }
-    with pytest.raises(ValueError, match="continuous encode"):
-        master_from_windows({"windows": windows}, 8)
-
-
 BOX = [0.0, 100.0, 900.0, 1000.0]
+
+
+def test_guide_bundle_path_is_bound_to_each_pair() -> None:
+    first = Pair("a", "/corpus/a/argavatar_render.mp4", "a.pt", "g", "b")
+    second = Pair("b", "/corpus/b/argavatar_render.mp4", "b.pt", "g", "b")
+    assert guide_bundle_path(first) == Path("/corpus/a/argavatar_ltx_vae_latent.pt")
+    assert guide_bundle_path(second) == Path("/corpus/b/argavatar_ltx_vae_latent.pt")
+    assert guide_bundle_path(first, "white") == Path(
+        "/corpus/a/argavatar_ltx_vae_latent_white.pt"
+    )
+
+
+def test_capture_mask_qa_is_limited_to_view0_of_each_parts_first_five_subjects(tmp_path: Path) -> None:
+    part = tmp_path / "Part_1"
+    subjects = [part / f"{index:04d}_01" for index in range(6)]
+    for subject in subjects:
+        (subject / "views" / "view00_cam51").mkdir(parents=True)
+    def source(subject: Path, view: str = "view00_cam51") -> CaptureSource:
+        view_dir = subject / "views" / view
+        mask = view_dir / "mask.mp4"
+        writer = cv2.VideoWriter(str(mask), cv2.VideoWriter_fourcc(*"mp4v"), 30, (16, 16))
+        assert writer.isOpened()
+        writer.write(np.full((16, 16, 3), 255, dtype=np.uint8))
+        writer.release()
+        return CaptureSource(
+            relative_dir=str(view_dir.relative_to(tmp_path)),
+            rgb=str(view_dir / "rgb.mp4"),
+            bbox=str(view_dir / "bbox.npy"),
+            rgb_fingerprint="fixture",
+        )
+
+    written = write_capture_mask_qa(source(subjects[0]), (0, 0, 16, 16), overwrite=False)
+    assert written == subjects[0] / "qa" / "capture_mask_crop.mp4"
+    assert written.is_file()
+    assert write_capture_mask_qa(source(subjects[5]), (0, 0, 16, 16), overwrite=False) is None
+
+    (subjects[0] / "views" / "view01_cam52").mkdir()
+    assert write_capture_mask_qa(
+        source(subjects[0], "view01_cam52"), (0, 0, 16, 16), overwrite=False
+    ) is None
 
 
 def _write_render(view: Path, frames: int = 25, *, box: list[float] | None = None, sidecar: bool = True) -> None:

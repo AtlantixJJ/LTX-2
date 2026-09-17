@@ -64,7 +64,6 @@ ALPHA_STEM = "argavatar_alpha"                     # .mp4 now; .npy still read i
 ALPHA_NAME = f"{ALPHA_STEM}.mp4"                   # the render's own alpha, 256**2
 CAPTURE_MASK_CROP_STEM = "capture_mask_crop"       # mask.mp4 cropped to the box, 256**2
 CAPTURE_MASK_CROP_NAME = f"{CAPTURE_MASK_CROP_STEM}.mp4"
-LOSS_MASK_GRIDS_NAME = "loss_mask_grids.pt"        # pooled to LATENT resolution, tiny
 CAPTURE_MASK_NAME = "mask.mp4"                     # the dataset's own, full resolution
 
 
@@ -96,8 +95,7 @@ def capture_master_latent_frames(bundle_path: Path) -> int | None:
     per-window slices ends at the last WHOLE window, so it is short of the source video by up
     to one window: measured 2026-09-16, a 150-frame clip stores 137 pixel frames (18 latent,
     not 19) and a 225-frame clip stores 217 (28, not 29), matching ``WINDOW_FRAMES=25`` at
-    stride 16 exactly. Natively-encoded v2 masters do cover the whole clip, which is why the
-    disagreement stayed invisible until the corpus was consolidated.
+    stride 16 exactly. Native v2 encoding deliberately uses that same planned prefix.
 
     ``windows.py`` sized its block plan from the video until then, so it froze chains whose
     last block did not exist in the latents -- and ``train.py``, which plans from the loaded

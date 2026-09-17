@@ -27,22 +27,17 @@ per-window latent tree and `expr/onestep_avatar/precomputed/` is no longer produ
 | `<corpus>/capture_latent_manifest.json` | `precompute.py --capture-only` | `build_guidance.py`, `windows.py`, `precompute.py` (paired) |
 | `<view>/ltx_vae_latent[_white].pt` — the capture master `z_y` | `precompute.py --capture-only` | `train.py`, `stats.py`, `precompute.py` (paired) |
 | `<view>/argavatar_ltx_vae_latent[_white].pt` — the guide master `z_g` | `precompute.py` (paired) | `train.py`, `stats.py` |
-| `<view>/argavatar_alpha.mp4` — the render's alpha, 256², lossless gray | `build_guidance.py` | `precompute.py` (paired) |
-| `<view>/capture_mask_crop.mp4` — the capture matte cropped to the box, 256², lossless gray | `precompute.py` (paired) | `precompute.py` (paired) |
-| `<view>/loss_mask_grids.pt` — render alpha + capture mask, latent grid, whole clip | `precompute.py` (paired) | `train.py`, `stats.py` |
+| `<view>/argavatar_alpha.mp4` — the render's alpha, 256², lossless gray | `build_guidance.py` | `train.py`, `stats.py` |
+| `<view>/capture_mask_crop.mp4` — the capture matte cropped to the box, 256², lossless gray | `precompute.py` (paired) | `train.py`, `stats.py` |
+| `<subject>/qa/capture_mask_crop.mp4` — sampled review crop | `precompute.py --capture-only` | human QA; first five subjects per `Part_*`, view 0 only |
 | `expr/onestep_avatar/windows/<name>.json` | `windows.py` | `train.py` |
 
 Every past bug in this pipeline has been the same shape: **two producers of something that must
 have exactly one.** If you are about to recompute a crop box, a block plan, or a target latent
 somewhere else — don't. Read it from the file above.
 
-**Bundles written before 2026-09-14 hold per-window slices and must be migrated once**, which
-costs no GPU and no VAE — every slice was already cut from one continuous encode, so the master
-reassembles exactly:
-
-```bash
-conda run -n ltx python -m scripts.onestep_avatar.precompute --consolidate
-```
+Bundles written in the obsolete per-window format are regenerated. The active precompute path
+stores only continuous schema-v2 masters and no longer carries migration-only code.
 
 ## Run order
 
@@ -57,7 +52,12 @@ disown
 # tail -f expr/onestep_avatar/logs/precompute_capture_only_gpu1.log to watch it.
 # Equivalent bare invocation, for reference (don't launch it this way for a multi-day run):
 conda run -n ltx python -m scripts.onestep_avatar.precompute \
-  --capture-only --views 0 1 2 3 4 5 6 7 --edge 1024 --pad-factor 1.2 --crop-workers 3 --gpu-id 0
+  --capture-only --objective bg white --views 0 1 2 3 4 5 6 7 \
+  --edge 1024 --pad-factor 1.2 --crop-workers 3 --gpu-id 0
+
+# Regenerate only the sampled mask QA gallery (CPU-only, no VAE):
+conda run -n ltx python -m scripts.onestep_avatar.precompute \
+  --capture-only --views 0 --mask-qa-only
 
 # 2. Render guides into the manifest's box (~20 min per view). DO --limit 8 FIRST AND LOOK.
 #    19 pairs / 12 actors exist as of 09-13; the review gate passed. No longer the binding
@@ -70,7 +70,7 @@ LTX-2/scripts/onestep_avatar/run_b2b.sh 3           # gpu, then [limit] [driving
 conda run -n ltx python -m scripts.onestep_avatar.windows \
   --name t2 --max-actors 8 --require-guide --chain-length 3 --min-holdout-actors 2
 
-# 4. Encode each guide render's master latent and build its loss-mask grids, beside the render.
+# 4. Encode each guide render's master latent and store the cropped capture-mask MP4.
 #    --objective is a SET: pass both to build them from one decode per source. Currency is
 #    tracked per (source, objective), so this resumes -- and a late-added objective re-encodes
 #    only itself.
@@ -157,7 +157,7 @@ conda run -n ltx python -m scripts.onestep_avatar.plot_training --run <run>
   rejected: it corrupts exactly the soft silhouette edge, and these mattes are already one
   generation of lossy video from the truth. Legacy `argavatar_alpha.npy` files are still read;
   `build_guidance.py --migrate-alpha [--prune-npy]` converts them (verified bit-exact, no GPU).
-- **Masks are tracked separately from latents.** A view encoded before `loss_mask_grids.pt`
+- **Masks are tracked separately from latents.** A view encoded before `capture_mask_crop.mp4`
   existed has a complete, current guide master; `encode_pairs` checks the two independently so
   such a view is re-visited for its masks rather than skipped forever.
 - **Causality and the K/V cache are one feature, not two.** A cached context token's keys and

@@ -17,7 +17,8 @@
 # 09-10). Check `nvidia-smi`/`free -h` before raising either.
 #
 # Progress: tail -f the log below, or watch `capture_latent_manifest.json`'s sibling bundle
-# count grow (`find <corpus> -name ltx_vae_latent.pt | wc -l`, target 3360). A restart looks
+# count grow (`find <corpus> -name 'ltx_vae_latent*.pt' | wc -l`, target 6720 for both
+# objectives). A restart looks
 # like a hang for a while even with the plan cache (`.capture_plan_cache.json`, corpus root)
 # now landed: only SOURCES NOT ALREADY CACHED cost a decode, but a bundle write only happens
 # once a source's VAE encode finishes, which is still one full source at a time on this GPU.
@@ -51,6 +52,7 @@ while true; do
 
   "$PY" -u -m scripts.onestep_avatar.precompute \
     --model 2.5 --gpu-id "$GPU_ID" --capture-only \
+    --objective bg white \
     --views 0 1 2 3 4 5 6 7 --edge 1024 --pad-factor 1.2 --crop-workers "$CROP_WORKERS" \
     >> "$LOG" 2>&1
   code=$?
