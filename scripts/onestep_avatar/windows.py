@@ -3,10 +3,13 @@
 
 The B2 stage of ``plans/2026-09-10-ltx25-one-step-argavatar-lora.md`` (SS7.2) that turns
 "every view the capture pass has encoded" into "the exact blocks this run trains on".
-Its output JSON is the **only** contract between the two trees: this module runs in the
-``argavatar`` env alongside the corpus, and ``LTX-2/scripts/onestep_avatar/train.py``
-(``ltx`` env) reads the JSON rather than importing anything from here -- the same
+Its output JSON is the **only** thing ``train.py`` reads from this module -- the same
 producer/consumer discipline the crop box already has.
+
+Runs in the ``ltx`` env, like everything here except ``build_guidance.py``. It did run under
+``argavatar`` until the 2026-09-15 consolidation, when the block plan stopped being
+transcribed and started being ``causal_core.CausalGeometry.plan`` itself; importing that pulls
+in torch, which is the whole cost of having one definition instead of two.
 
 Four jobs, all of them things the plan says must not be left to the training loop:
 
@@ -24,7 +27,7 @@ Four jobs, all of them things the plan says must not be left to the training loo
    module hashes the selected ``rgb.mp4`` (and each guide render) with sha256, so a
    mid-sweep re-sync of the corpus is detected rather than silently retrained on.
 
-    conda activate argavatar
+    conda activate ltx
     python -m scripts.onestep_avatar.windows --name t2 --max-actors 8 --require-guide
 """
 
@@ -51,21 +54,16 @@ _SCALE_FACTORS = SpatioTemporalScaleFactors(time=8, height=32, width=32)
 
 SCHEMA_VERSION = 1
 
-# The deployed causal block layout (LTX-2 scripts/onestep_avatar/causal_core.py). Duplicated
-# here rather than imported: that module lives in the `ltx` env's tree and this one runs under
-# `argavatar`. ``tests/test_windows.py`` pins the two together the same way ``test_geometry``
-# pins the crop box.
-#
-# Revised 2026-09-14 (SS4.4): the unit is a causal BLOCK of latent frames, not a 25-frame
+# The deployed causal block layout, re-exported from ``causal_core`` -- NOT a second spelling
+# of it. SS4.4 (2026-09-14): the unit is a causal BLOCK of latent frames, not a 25-frame
 # sliding window. A block is the deployed stride -- 2 latent frames = 16 pixel frames -- and
 # block 0 additionally absorbs latent frame 0, the causal VAE's single-pixel keyframe.
-# Single-sourced from ``causal_core`` since 2026-09-15. These used to be transcribed here,
-# with a test pinning the two spellings together, because this module ran in the corpus tree
-# and ``causal_core`` (torch, ltx_core) in the model tree and the two could not import each
-# other. Consolidating the package removed the seam: the rollout geometry now has exactly one
-# definition, and a subset can no longer be frozen against a block plan the trainer does not
-# use. The cost is that freezing a subset is an ``ltx``-env operation, since importing
-# ``causal_core`` pulls in torch -- a few seconds against a pass that hashes hundreds of MB.
+#
+# These were transcribed here until 2026-09-15, with a test pinning the two spellings
+# together, because this module ran in the corpus tree and ``causal_core`` (torch, ltx_core)
+# in the model tree and the two could not import each other. Consolidating the package removed
+# the seam: the rollout geometry now has exactly one definition, so a subset can no longer be
+# frozen against a block plan the trainer does not use.
 BLOCK_LATENT_FRAMES = causal_core.BLOCK_LATENT_FRAMES
 CONTEXT_LATENT_FRAMES = causal_core.CONTEXT_LATENT_FRAMES
 SINK_LATENT_FRAMES = causal_core.SINK_LATENT_FRAMES

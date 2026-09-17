@@ -25,7 +25,8 @@ Per (clip, driving view ``D``):
    cropping after).
 5. IoU (render alpha vs ``mask.mp4``, cropped/resized identically) is computed here as a cheap
    read-only QA number -- SSB1's decisive alignment check -- and the alpha is persisted
-   (``argavatar_alpha.npy``) for SS4.3 row 1's masked loss.
+   (``argavatar_alpha.mp4``, lossless gray; see ``mask_video.py``) for SS4.3 row 1's masked
+   loss. A legacy ``.npy`` is still read, and ``--migrate-alpha`` converts one.
 6. **The guide is composited in pixel space** (SS1.2): ``guide_t = render_t * alpha_t +
    background * (1 - alpha_t)``, using the render's own (continuous, unthresholded) alpha.
    ``--objective`` chooses the background, and that is the ONLY thing it chooses here:
@@ -94,7 +95,8 @@ ALPHA_STEM = dataset.ALPHA_STEM          # suffix-less, for the legacy-.npy fall
 # VAE's latent resolution (32x32 at this geometry), so persisting 1024**2 would be ~157 MB
 # per view to throw 99.9 % of away. 256 is a clean multiple of every plausible latent grid,
 # so `precompute.py` can average-pool it down without ever resampling to a non-integer ratio,
-# and uint8 (1/255 of a cell's area) is finer than the downsample itself. ~9.8 MB per view.
+# and uint8 (1/255 of a cell's area) is finer than the downsample itself. The grid is 9.8 MB
+# raw for a 150-frame clip; stored as lossless gray MP4 (mask_video.py) that is 0.23 MB.
 ALPHA_GRID = 256
 
 
@@ -402,8 +404,13 @@ def render_pair(
         # decode of the window for nothing.
         ious = []
         alpha_grid = np.empty((len(render_paths), ALPHA_GRID, ALPHA_GRID), dtype=np.uint8)
+        # strict=True: `alpha_grid` is np.empty, so a mask.mp4 with fewer frames than the
+        # render would leave its tail UNINITIALISED and then persist that as the view's
+        # alpha -- silently, since the MP4 would look complete. A frame-count disagreement
+        # between rgb.mp4 and mask.mp4 is a corpus defect; raising here makes it this pair's
+        # exclusion (main() catches per pair) instead of a poisoned mask.
         for i, (r_path, mask_r) in enumerate(
-            zip(render_paths, read_cropped_masks(clip, driving_view, box, out_size))
+            zip(render_paths, read_cropped_masks(clip, driving_view, box, out_size), strict=True)
         ):
             render_rgba = cv2.imread(str(r_path), cv2.IMREAD_UNCHANGED)
             alpha = render_rgba[..., 3]
@@ -509,9 +516,12 @@ def migrate_alpha(corpus_root: Path, *, prune: bool, dry_run: bool) -> dict[str,
     counts = {"converted": 0, "already_mp4": 0, "failed": 0, "removed_npy": 0}
     for legacy in sorted(corpus_root.glob(f"Part_*/*/views/*/{dataset.ALPHA_STEM}.npy")):
         video = legacy.with_suffix(".mp4")
-        if video.is_file() and not dry_run:
+        if video.is_file():
+            # Counted the same way whether or not this is a dry run: a dry run that reported
+            # an already-migrated view as a pending "conversion" would not describe the run it
+            # is previewing, which is the only thing it is for.
             counts["already_mp4"] += 1
-            if prune:
+            if prune and not dry_run:
                 legacy.unlink()
                 counts["removed_npy"] += 1
             continue

@@ -50,6 +50,8 @@ the rank rather than the chain length, since ``K`` is what the loop exists to ex
       -m scripts.onestep_avatar.train \\
       --subset ../expr/onestep_avatar/windows/t2.json \\
       --output ../expr/onestep_avatar/runs/prelim --lora-rank 8 --steps 200
+
+accelerate launch --config_file scripts/onestep_avatar/configs/fsdp_4gpu.yaml -m scripts.onestep_avatar.train --subset ../expr/onestep_avatar/windows/t2r2.json --output ../expr/onestep_avatar/runs/prelim --lora-rank 64 --steps 200
 """
 
 from __future__ import annotations
@@ -72,9 +74,8 @@ from peft import LoraConfig, get_peft_model, get_peft_model_state_dict
 from peft.utils.other import fsdp_auto_wrap_policy
 from safetensors.torch import save_file
 
-from ltx_core.tools import VideoLatentTools
 from ltx_trainer.model_loader import load_transformer
-from scripts.onestep_avatar import causal_core, dataset, mask_video
+from scripts.onestep_avatar import causal_core, dataset
 from scripts.onestep_avatar.causal_core import BlockCache, CausalGeometry, ClipGrid
 from scripts.prune.core import model_registry, refine_task
 from scripts.prune.data import prompt_cache
@@ -140,7 +141,6 @@ class Chain:
     z_g: torch.Tensor | None  # [C, F, H, W] master guide (ARGAvatar composite render); None when not loaded (d0)
     z_y: torch.Tensor  # [C, F, H, W] master capture (the loss target)
     fps: float
-    loss_weights: torch.Tensor | None  # [F, h, w] per-cell loss weights over the whole clip
     z0_base: torch.Tensor | None  # [C, F, H, W] frozen-base one-step output, for the anchor
 
 
@@ -180,23 +180,28 @@ class ChainStore:
         *,
         split: str,
         objective: str,
-        band_weight: float,
         with_anchor: bool,
         with_guide: bool,
     ) -> None:
         self.subset = subset
         self.root = corpus_root
         self.objective = objective
-        self.band_weight = band_weight
         self.capture_bundle = dataset.capture_bundle_name(objective)
         self.guide_bundle = dataset.guide_bundle_name(objective)
         self.with_anchor = with_anchor
         self.with_guide = with_guide
-        self.latent_time_scale = int(subset["geometry"]["latent_time_scale"])
         self.chains = [chain for chain in subset["chains"] if chain["split"] == split]
         if not self.chains:
             raise SystemExit(f"subset has no chains in split {split!r}")
         self.sources = {record["relative_dir"]: record for record in subset["sources"]}
+        # The longest clip any chain in this subset can land on. The K/V cache is allocated
+        # ONCE for the whole run, and its capacity is capped by the clip it is sized against
+        # (causal_core.cache_latent_frames_for) -- so sizing it from whichever chain came
+        # first would make the buffer depend on the shuffle. windows.py already records each
+        # source's latent-frame count, read from the stored master, so this costs no I/O.
+        self.max_latent_frames = max(
+            int(record["n_latent_frames"]) for record in subset["sources"]
+        )
 
     def __len__(self) -> int:
         return len(self.chains)
@@ -218,26 +223,6 @@ class ChainStore:
             if capture["fps"] != guide["fps"]:
                 raise ValueError(f"{chain['source']}: guide fps {guide['fps']} != capture fps {capture['fps']}")
 
-        # band_weight == 1.0 IS the plain full-frame loss, so the grids are not even read:
-        # the weights would be all ones by construction (SS1.5). Same for d0: the band is the
-        # render/capture DISAGREEMENT, which is undefined with no render in play (`with_guide`
-        # is False) -- d0 must work against capture-only precompute, same as z_g above.
-        loss_weights = None
-        if self.with_guide and self.band_weight < 1.0:
-            masks = mask_video.read_latent_masks(
-                view,
-                latent_frames=int(z_y.shape[1]),
-                latent_height=int(z_y.shape[2]),
-                latent_width=int(z_y.shape[3]),
-                time_scale=self.latent_time_scale,
-            )
-            loss_weights = disagreement_weights(masks, self.band_weight)
-            if loss_weights.shape[0] != z_y.shape[1]:
-                raise ValueError(
-                    f"{chain['source']}: loss-mask grid has {loss_weights.shape[0]} latent frames, "
-                    f"the master latent has {z_y.shape[1]}"
-                )
-
         z0_base = None
         if self.with_anchor:
             z0_base = _master(_load_record(view / "base_denoised.pt"), view / "base_denoised.pt")
@@ -251,62 +236,17 @@ class ChainStore:
             z_g=z_g,
             z_y=z_y,
             fps=float(capture["fps"]),
-            loss_weights=loss_weights,
             z0_base=z0_base,
         )
 
 
-def disagreement_weights(record: dict, band_weight: float) -> torch.Tensor:
-    """SS1.5's masking rule: full frame, down-weighted on the silhouette disagreement band.
+def full_frame_mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Plain mean squared error over every predicted token and channel.
 
-    The corpus stores two coverage grids per view, deliberately uncombined -- ``render_alpha``
-    (where the model is asked to paint) and ``capture_mask`` (where the target is meaningful).
-    They disagree by exactly the SSB1 IoU gap, and that disagreement is the ONE region a loss
-    should not trust: at IoU 0.77 an unweighted loss trains the model to reproduce the
-    *render's* silhouette against a photograph.
-
-    Everything else stays in the loss at full weight, and that is the whole point of the rule.
-    The five subject masks this replaced (``render``/``capture``/``union``/``intersection``,
-    and ``none``) were all pre-product: each gave weight zero everywhere outside the subject
-    at time ``t``, which is exactly where the ghost band (``mask_0`` minus ``mask_t``)
-    lives (SS1.2).
-    A subject-masked loss therefore cannot teach the model to repair the ghost -- the region
-    SS1.2 calls the learning signal -- however it is combined, so there was nothing to keep.
-
-    The band is the SOFT symmetric difference ``|render_alpha - capture_mask|``: both grids
-    are area fractions at latent resolution, so a boundary cell that is half-covered in one
-    and fully covered in the other is half-disputed, not wholly. ``band_weight`` is what a
-    fully disputed cell is worth -- 0.0 excludes the band outright (the default), 1.0 is a
-    plain unweighted full-frame loss.
-
-    Both objectives use this one rule and this one code path. Under ``white`` the background
-    is white on both sides and there is no ghost band, so the loss is dominated by the
-    subject; the rule does not change, only what dominates it (SS1.5).
+    Training deliberately has no silhouette, alpha, or disagreement weighting: every pixel
+    of the objective's continuous capture encode is part of the target.
     """
-    render, capture = record["render_alpha"].float(), record["capture_mask"].float()
-    band = (render - capture).abs()
-    return 1.0 - (1.0 - band_weight) * band
-
-
-def _as_token_weights(mask_5d: torch.Tensor, tools: VideoLatentTools) -> torch.Tensor:
-    """Latent-grid coverage ``[1, 1, F, H, W]`` -> per-token weights ``[1, seq, 1]``.
-
-    Patchified through the model's own patchifier rather than a reshape, so the mask lands on
-    the same tokens the latent does for any patch size.
-    """
-    return tools.patchifier.patchify(mask_5d).mean(dim=-1, keepdim=True)
-
-
-def masked_mse(pred: torch.Tensor, target: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-    """Weighted MSE over tokens, normalised by the weight mass.
-
-    Normalising (rather than averaging over all tokens) keeps the loss scale independent of
-    how much of the frame the subject occupies, so a wide crop and a tight one contribute
-    comparably instead of the tight one dominating.
-    """
-    error = (pred.float() - target.float()).pow(2)
-    weighted = error * weights
-    return weighted.sum() / weights.expand_as(error).sum().clamp(min=1e-8)
+    return (pred.float() - target.float()).pow(2).mean()
 
 
 def clip_grid_for(
@@ -324,25 +264,6 @@ def clip_grid_for(
         dtype=DTYPE,
         latent_channels=latent_channels,
     )
-
-
-def block_weights(
-    grid: ClipGrid, chain: Chain, span: tuple[int, int], device: torch.device
-) -> torch.Tensor:
-    """Per-token loss weights for one block: all ones, times SS1.5's band weighting if any.
-
-    Every token in a block is predicted now. Under the old window there were conditioning
-    tokens (the frozen carryover, the keyframe) carrying ``denoise_mask`` 0 that had to be
-    excluded; the cache holds that content instead, so it is not in the sequence at all and
-    there is nothing to exclude.
-    """
-    start, end = span
-    tokens = (end - start) * grid.tokens_per_latent_frame
-    weights = torch.ones(1, tokens, 1, device=device, dtype=torch.float32)
-    if chain.loss_weights is None:
-        return weights
-    coverage = chain.loss_weights[start:end].to(device=device, dtype=torch.float32)
-    return weights * _as_token_weights(coverage.unsqueeze(0).unsqueeze(0), grid.tools)
 
 
 def assert_rank_lockstep(accelerator: Accelerator, planned_forwards: int, source: str) -> None:
@@ -375,6 +296,102 @@ def assert_rank_lockstep(accelerator: Accelerator, planned_forwards: int, source
             f"hangs instead of failing. Something made a forward conditional on the data -- "
             f"chain length, priming, or an early return on a short clip."
         )
+
+
+def assert_subset_matches_geometry(
+    subset: dict,
+    geometry: CausalGeometry,
+    *,
+    corpus_root: Path | None = None,
+    objective: str = dataset.DEFAULT_OBJECTIVE,
+) -> None:
+    """Refuse an untrainable subset at STARTUP, in two checks that catch different staleness.
+
+    ``train_chain`` catches the same thing per chain, but only once the run has paid the
+    prompt cache, a 42 GB checkpoint load and ``accelerator.prepare`` -- minutes per rank, to
+    learn that the subset was never trainable. Both checks here run before any of that.
+
+    1. **Internal** (free): every chain's blocks must exist in the plan implied by its
+       source's recorded ``n_latent_frames``. Catches a ``--block-latent-frames`` that
+       disagrees with the freeze.
+
+    2. **Against the bundles** (``corpus_root`` given): each source's recorded
+       ``n_latent_frames`` must match what its master latent actually holds. This is the one
+       that matters in practice, and (1) cannot see it -- a subset frozen before 2026-09-16
+       is *internally* consistent, because ``windows.py`` sized both the count and the plan
+       from the source VIDEO's length. A master consolidated out of v1 per-window slices stops
+       at the last whole window and is short of the video by up to one window (a 150-frame clip
+       stores 137 pixel frames = 18 latent, not 19), so the subset claims one block per source
+       the latents do not contain. It is a stale artifact, not a geometry flag.
+
+    (2) reads one bundle per DISTINCT source (~6 MB each; 0.04 s for a 13-source subset warm,
+    disk-bound and minutes at full-corpus scale) -- ``--skip-subset-check`` opts out, at the
+    cost of finding out at step 0 instead.
+    """
+    planned = {
+        record["relative_dir"]: len(geometry.plan(int(record["n_latent_frames"])))
+        for record in subset["sources"]
+    }
+    stale = sorted(
+        {
+            (chain["source"], planned[chain["source"]], max(chain["blocks"]))
+            for chain in subset["chains"]
+            if max(chain["blocks"]) >= planned[chain["source"]]
+        }
+    )
+    if stale:
+        listed = "\n  ".join(
+            f"{source}: plans {blocks} blocks (0-{blocks - 1}), a chain asks for block {asked}"
+            for source, blocks, asked in stale[:5]
+        )
+        raise SystemExit(
+            f"{len(stale)} of {len(planned)} source(s) in this subset index blocks the causal "
+            f"geometry {geometry.as_dict()} does not plan:\n  {listed}"
+            + (f"\n  ... and {len(stale) - 5} more" if len(stale) > 5 else "")
+            + f"\n\n{_REFREEZE_HINT}"
+        )
+
+    if corpus_root is None:
+        return
+    bundle_name = dataset.capture_bundle_name(objective)
+    drifted: list[tuple[str, int, int | None]] = []
+    for record in subset["sources"]:
+        bundle = corpus_root / record["relative_dir"] / bundle_name
+        if not bundle.is_file():
+            raise SystemExit(
+                f"{bundle} does not exist, but the subset lists {record['relative_dir']} as a "
+                f"source. Re-run `precompute.py --capture-only --objective {objective}` for it, "
+                f"or re-freeze the subset against what is actually on disk"
+            )
+        actual = dataset.capture_master_latent_frames(bundle)
+        if actual != int(record["n_latent_frames"]):
+            drifted.append((record["relative_dir"], int(record["n_latent_frames"]), actual))
+    if drifted:
+        listed = "\n  ".join(
+            f"{source}: subset says {recorded} latent frames, the master holds "
+            f"{actual if actual is not None else 'no master (pre-v2 bundle)'} "
+            f"({len(geometry.plan(recorded))} blocks frozen vs "
+            f"{len(geometry.plan(actual)) if actual else 0} real)"
+            for source, recorded, actual in drifted[:5]
+        )
+        raise SystemExit(
+            f"{len(drifted)} of {len(planned)} source(s) have master latents that disagree with "
+            f"what this subset was frozen against:\n  {listed}"
+            + (f"\n  ... and {len(drifted) - 5} more" if len(drifted) > 5 else "")
+            + f"\n\n{_REFREEZE_HINT}"
+        )
+
+
+_REFREEZE_HINT = (
+    "If you did not change --block-latent-frames, this is a SUBSET frozen before 2026-09-16, "
+    "when windows.py sized its block plan from the source VIDEO rather than from the stored "
+    "master latent (a consolidated master ends at the last whole window, so it is short of the "
+    "video by up to one window). Re-freeze it:\n"
+    "  python -m scripts.onestep_avatar.windows --name <name> [--max-actors N] "
+    "--require-guide --chain-length K --min-holdout-actors M\n"
+    "The tail frames are genuinely absent from the latents -- re-freezing makes the subset "
+    "honest, it does not recover them."
+)
 
 
 def train_chain(  # noqa: PLR0913, PLR0915 -- one AR training step is defined by all of these, timing included
@@ -412,17 +429,24 @@ def train_chain(  # noqa: PLR0913, PLR0915 -- one AR training step is defined by
     already forces one inside the same block -- do not move that read without revisiting
     this, or the phases will start reporting queue time instead of compute.
 
-    The cache is primed from the ground truth for blocks before the chain's first (see
-    ``causal_core.prime_cache``); a chain that starts at block 0 needs no priming, which is
-    what ``seed_is_clip_start`` records.
+    ``prime_cache`` is called for EVERY chain, unconditionally. A chain that starts at block 0
+    has nothing to prime and the call writes nothing -- but it still forwards, because a
+    forward count that depends on the data desynchronises FSDP's collectives and hangs the
+    job. See ``causal_core.prime_cache``'s empty-spans branch; ``assert_rank_lockstep`` counts
+    on that call being unconditional here.
     """
     device = accelerator.device
     grid = clip_grid_for(chain, geometry, device=device, latent_channels=latent_channels)
     plan = geometry.plan(grid.latent_frames)
     if max(chain.blocks) >= len(plan):
         raise ValueError(
-            f"{chain.source}: chain asks for block {max(chain.blocks)} but the clip plans "
-            f"{len(plan)} under {geometry.as_dict()}; the subset was frozen under a different geometry"
+            f"{chain.source}: chain asks for block {max(chain.blocks)} but this clip's master "
+            f"latent ({grid.latent_frames} latent frames) plans only {len(plan)} blocks "
+            f"(0-{len(plan) - 1}) under {geometry.as_dict()}. Either --block-latent-frames "
+            f"differs from the freeze, or -- far more likely -- the subset predates 2026-09-16 "
+            f"and was frozen against the source VIDEO's length rather than the stored master's. "
+            f"Re-freeze it with windows.py (`assert_subset_matches_geometry` catches this at "
+            f"startup for a subset whose recorded n_latent_frames is itself stale)"
         )
 
     denoise_fn = causal_core.denoised_from_velocity_model(transformer)
@@ -464,6 +488,18 @@ def train_chain(  # noqa: PLR0913, PLR0915 -- one AR training step is defined by
             f"cache was allocated for {cache.grid.tokens_per_latent_frame}; the corpus is "
             f"supposed to be one geometry (SS4.5)"
         )
+    elif not cache.fits(grid.latent_frames):
+        # Checked HERE rather than left to LayerKVCache.write: an overflow raises inside one
+        # rank's forward, and a rank that leaves a forward early has issued one round of
+        # all-gathers fewer than the others -- the FSDP desynchronisation assert_rank_lockstep
+        # and prime_cache's empty-spans branch both exist to prevent. This raise happens
+        # before any forward of the step, where it is still a clean failure on every rank.
+        raise ValueError(
+            f"{chain.source}: a {grid.latent_frames}-latent-frame clip needs a "
+            f"{geometry.cache_latent_frames_for(grid.latent_frames)}-frame K/V cache but the "
+            f"run allocated {cache.caches[0].capacity // grid.tokens_per_latent_frame} frames; "
+            f"the cache must be sized from the subset's LONGEST clip, not from one chain's"
+        )
     prime_started = time.time()
     causal_core.prime_cache(
         denoise_fn, grid, cache, target_tokens, geometry, context, upto_latent_frame=plan[chain.blocks[0]][0]
@@ -485,8 +521,7 @@ def train_chain(  # noqa: PLR0913, PLR0915 -- one AR training step is defined by
         z0 = causal_core.denoise_block(denoise_fn, grid, cache, noisy, context, sigma0, span)
         denoised_at = time.time()
 
-        weights = block_weights(grid, chain, span, device)
-        mse = masked_mse(z0, target_tokens[:, lo:hi], weights)
+        mse = full_frame_mse(z0, target_tokens[:, lo:hi])
         loss = mse
         anchor = torch.zeros((), device=device)
         if anchor_weight > 0.0:
@@ -495,7 +530,7 @@ def train_chain(  # noqa: PLR0913, PLR0915 -- one AR training step is defined by
             # SS4.3 row 2 / SS2.3(3): the risk here is ERODING sharpness Phi already has, not
             # failing to synthesise it. Pulling toward the frozen model's own output on the
             # same input is the cheapest thing that targets that directly.
-            anchor = masked_mse(z0, base_tokens[:, lo:hi], weights)
+            anchor = full_frame_mse(z0, base_tokens[:, lo:hi])
             loss = loss + anchor_weight * anchor
 
         accelerator.backward(loss / k)
@@ -518,7 +553,7 @@ def train_chain(  # noqa: PLR0913, PLR0915 -- one AR training step is defined by
                 time.time() - backward_at,
                 time.time() - block_started,
             )
-        del z0, weights, loss, mse, anchor
+        del z0, loss, mse, anchor
     totals["per_block"] = per_block
     return totals
 
@@ -621,7 +656,6 @@ def checkpoint_metadata(
             json.dumps(subset["sources"], sort_keys=True).encode()
         ).hexdigest(),
         "onestep_avatar_objective": args.objective,
-        "onestep_avatar_disagreement_weight": repr(args.disagreement_weight),
         "onestep_avatar_guide_mode": args.guide_mode,
         "onestep_avatar_anchor_weight": repr(args.anchor_weight),
         "onestep_avatar_teacher_forcing": str(args.teacher_forcing),
@@ -799,15 +833,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "read; must match the objective the subset was frozen against.",
     )
     p.add_argument(
-        "--disagreement-weight",
-        type=float,
-        default=0.0,
-        help="SS1.5. Loss weight of the render-vs-capture silhouette disagreement band, the "
-        "one region a full-frame loss should not trust. 0.0 (default) excludes it; 1.0 is a "
-        "plain unweighted full-frame loss. Everything else -- subject, background, and the "
-        "ghost band SS1.2 calls the learning signal -- always stays at full weight.",
-    )
-    p.add_argument(
         "--guide-mode",
         choices=("d0", "d1"),
         default="d1",
@@ -834,10 +859,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--save-initial",
         action="store_true",
-        help="Also save a step-0 checkpoint of the untrained, LoRA-injected model before the "
-        "loop starts. `init_lora_weights=True` zero-inits B, so this adapter should decode "
-        "identically to the frozen base -- the point is to make that provable rather than "
-        "assumed. Off by default: normal runs don't need the extra checkpoint write.",
+        help="Save checkpoints at step 0 and step 1, independent of --save-every. Step 0 is "
+        "the untrained, LoRA-injected model; `init_lora_weights=True` zero-inits B, so it "
+        "must decode identically to the frozen base. Step 1 is the first optimizer update. "
+        "Off by default: normal runs do not need these extra checkpoint writes.",
     )
     p.add_argument("--log-every", type=int, default=1)
     p.add_argument(
@@ -854,6 +879,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--wandb-mode", choices=("online", "offline", "disabled"), default="online")
     p.add_argument("--no-gradient-checkpointing", action="store_true")
     p.add_argument("--init-device", default="cuda", help="'cuda' (default, avoids host-RAM staging) or 'cpu'")
+    p.add_argument(
+        "--skip-subset-check",
+        action="store_true",
+        help="Skip the startup check that each source's master latent holds the number of "
+        "frames the subset was frozen against. That check reads one ~6 MB bundle per distinct "
+        "source -- negligible for a review tier, disk-bound at full-corpus scale. Skipping it "
+        "does not make a stale subset trainable; it just moves the failure to step 0, after "
+        "the 42 GB checkpoint load.",
+    )
     p.add_argument("--dry-run", action="store_true", help="report the plan and the data shapes, load no model")
     return p.parse_args(argv)
 
@@ -862,8 +896,6 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     args = parse_args(argv)
     if args.lora_alpha is None:
         args.lora_alpha = args.lora_rank
-    if not 0.0 <= args.disagreement_weight <= 1.0:
-        raise SystemExit("--disagreement-weight is a loss weight in [0, 1]")
     sigmas = training_sigmas(args)
     if args.guide_mode == "d0" and args.anchor_weight > 0.0:
         # base_denoised (SS4.3 row 2) is Phi(lerp(z_g, eps, sigma_0)) -- the frozen model's
@@ -872,16 +904,6 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
         raise SystemExit(
             "--guide-mode d0 is noised from z_y; its anchor target would be off-input. "
             "Drop --anchor-weight."
-        )
-    if args.guide_mode == "d0" and args.disagreement_weight != 0.0:
-        # SS1.5's band is render_t (-) capture_t -- undefined with no render, which is exactly
-        # d0's point (SS1.3: "reducing to ordinary flow-matching on real video"). d0 must work
-        # against capture-only precompute (ChainStore skips z_g the same way), so a non-default
-        # weight here would ask for grids d0 has no business reading.
-        raise SystemExit(
-            "--guide-mode d0 has no guide render, so there is no render/capture disagreement "
-            "band to weight. Drop --disagreement-weight (0.0, its default, already means "
-            "'no band' for d0)."
         )
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -910,9 +932,17 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
         corpus_root,
         split=args.split,
         objective=args.objective,
-        band_weight=args.disagreement_weight,
         with_anchor=args.anchor_weight > 0.0,
         with_guide=args.guide_mode != "d0",
+    )
+
+    # Before the Accelerator, the prompt cache and the 42 GB checkpoint: a subset that cannot
+    # be trained should cost seconds to find out, not a full startup on every rank.
+    assert_subset_matches_geometry(
+        subset,
+        geometry,
+        corpus_root=None if args.skip_subset_check else corpus_root,
+        objective=args.objective,
     )
 
     if args.dry_run:
@@ -1046,7 +1076,12 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                         chain, geometry, device=device, latent_channels=model.caps.latent_channels
                     )
                     cache = BlockCache.allocate(
-                        grid, geometry, num_layers=num_blocks, inner_dim=inner_dim, device=device, dtype=DTYPE
+                        grid, geometry, num_layers=num_blocks, inner_dim=inner_dim, device=device,
+                        dtype=DTYPE,
+                        # The subset's longest clip, not this chain's: one allocation serves
+                        # every chain in the run, so a capacity capped by the first clip drawn
+                        # would overflow on a longer one at a deep --context-latent-frames.
+                        capacity_latent_frames=store.max_latent_frames,
                     )
             loaded_at = time.time()
             # 1 prime + K denoise + K refresh. Checked here, before any of them run.
@@ -1104,9 +1139,15 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                 log_file.write(json.dumps(record) + "\n")
                 log_file.flush()
                 if args.wandb_project is not None:
+                    # 0.0 rather than float(None): accelerate's clip_grad_norm_ returns None
+                    # for some distributed types, and rank_mean is a COLLECTIVE -- a TypeError
+                    # on one rank here would hang the others in the gather it never joins.
                     mean_loss, mean_mse, mean_anchor, mean_grad_norm = rank_mean(
                         accelerator,
-                        [totals["loss"], totals["mse"], totals["anchor"], float(grad_norm)],
+                        [
+                            totals["loss"], totals["mse"], totals["anchor"],
+                            float(grad_norm) if grad_norm is not None else 0.0,
+                        ],
                     )
                     block_mse = rank_mean(accelerator, [block["mse"] for block in per_block])
                     if accelerator.is_main_process:
@@ -1130,7 +1171,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                         step, args.steps, totals["loss"], totals["mse"], totals["anchor"], lr,
                         time.time() - started,
                     )
-            if step % args.save_every == 0 or step == args.steps:
+            if step % args.save_every == 0 or step == args.steps or (args.save_initial and step == 1):
                 path = save_lora(
                     transformer, accelerator, args.output / "checkpoints", step,
                     checkpoint_metadata(args, subset, model, step),

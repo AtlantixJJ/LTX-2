@@ -178,6 +178,12 @@ class VideoReader:
     The checked-in ``ltx`` environment has OpenCV but not decord, so this adapter avoids a
     hidden preprocessing-only dependency. Frames come back as ``[F, H, W, C]`` uint8 RGB; the
     ``/127.5 - 1`` normalization is the caller's, matching ``refine_core``'s.
+
+    **``get_batch`` seeks, and every caller here starts at frame 0 for that reason.** These
+    sources have extremely sparse keyframes, so ``CAP_PROP_POS_FRAMES`` to a later start
+    silently re-decodes from 0 anyway, and seeking on B-frame content is a known source of
+    off-by-a-few-frames errors -- which is why the corpus paths (``crop_source``,
+    ``_read_cropped_masks``) stream instead. Do not hand this a mid-clip range.
     """
 
     def __init__(self, path: str | Path) -> None:
@@ -255,8 +261,12 @@ def atomic_json_save(value: object, destination: Path) -> None:
 def manifest_boxes(corpus_root: Path) -> dict[str, tuple[float, float, float, float]]:
     """The crop box this run recorded per view, read back from ``--capture-only``'s manifest.
 
-    Read as plain JSON rather than through the workspace-side ``dataset.CaptureManifest``:
-    that module lives in the other tree and the other conda env, and this is four lines.
+    A SECOND reader of ``capture_latent_manifest.json`` beside ``dataset.CaptureManifest``,
+    which parses the same file the same way. It was written when the two lived in different
+    trees and different conda envs; the 2026-09-15 consolidation removed that reason and this
+    copy has outlived it. It is a reader, not a producer, so the two cannot disagree about
+    what is on disk -- but they are two spellings of one rule and the second should go. See
+    ``doc/precompute.md``.
     """
     path = corpus_root / CAPTURE_MANIFEST_NAME
     if not path.is_file():
@@ -1167,12 +1177,16 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
         )
         qa_paths: list[Path] = []
         if args.rank == 0 and not args.dry_run:
+            # `.get`, not `[...]`: a source too short to plan one whole window contributes no
+            # job, and the QA gallery is a review aid -- it must not be the thing that takes
+            # a multi-day capture run down before a single bundle is written.
             first_job = {job.source.relative_dir: job for job in all_jobs if job.index == 0}
             qa_paths = [
                 path
                 for source in sources
-                if (path := write_capture_mask_qa(
-                    source, first_job[source.relative_dir].box_xyxy, overwrite=args.overwrite
+                if (job := first_job.get(source.relative_dir)) is not None
+                and (path := write_capture_mask_qa(
+                    source, job.box_xyxy, overwrite=args.overwrite
                 )) is not None
             ]
         if args.mask_qa_only:

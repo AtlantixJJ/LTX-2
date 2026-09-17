@@ -67,6 +67,13 @@ read bundles the freeze never saw.
   re-freezing makes the subset honest, it does not recover them; only re-running
   `precompute --capture-only --overwrite` would.
 
+  **Subsets frozen before 2026-09-16 are still on disk and are still stale.** They are
+  *internally* consistent (both the count and the plan came from the video), so nothing about
+  the file looks wrong — `train.py:assert_subset_matches_geometry` is what catches them now,
+  by comparing each recorded `n_latent_frames` against the stored master, at startup. Verified
+  2026-09-17: `expr/onestep_avatar/windows/t2.json` is stale on all 13 sources (19/29 recorded
+  vs 18/28 real); `t2r2.json` is the re-frozen one and is clean.
+
 - **`--min-holdout-actors` defaults to 12** — the right floor for a full-scale run and wrong
   for a small tier by construction, since the split takes
   `max(round(n × fraction), min(min_holdout, n − 1))`. At 8 actors the default holds out

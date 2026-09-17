@@ -7,6 +7,11 @@
 # a = ||Phi(x_sigma0) - z_g|| / sqrt(d): if a is also ~0.9, the task is the size of what the
 # model already does and D1 is not overreaching; if a is ~0.3, it is.
 #
+# `--pairs` is the CORPUS ROOT, not an experiment tree: since SS4.4 (2026-09-14) every master
+# latent lives beside its source video and `expr/onestep_avatar/precomputed/` is neither
+# written nor read. Pointing --pairs there made `stats.measure_pairs` find no guide bundle and
+# exit before any measurement ran.
+#
 # Runs on the REAL corpus guides by default, not the ARGAvatar smoke renders: `a` is only
 # comparable with `r` at the same geometry, and the corpus guides are the deployed 1024**2 /
 # 4096-token window. Needs ONE free GPU for ~2 h.
@@ -37,7 +42,7 @@ exec "$PY" -u -m scripts.onestep_avatar.stats \
   --gpu-id "$GPU_ID" \
   --renders "$WORKSPACE/data/AnimatableHuman/DNARenderingVideo" \
   --render-glob "argavatar_render.mp4" \
-  --pairs "$WORKSPACE/expr/onestep_avatar/precomputed" \
+  --pairs "$WORKSPACE/data/AnimatableHuman/DNARenderingVideo" \
   --max-videos "$MAX_VIDEOS" \
   --eps-samples "$EPS_SAMPLES" \
   --out "$OUT"

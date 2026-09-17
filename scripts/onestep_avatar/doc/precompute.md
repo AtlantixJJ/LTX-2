@@ -63,6 +63,11 @@ must match `ENCODE_CONTRACT_VERSION`, source, objective, input fingerprint (RGB,
 `white`), VAE fingerprint, crop box, pixel/latent frame counts, FPS, edge, channels and spatial
 scale. A bundle missing that metadata or disagreeing on any field is atomically regenerated.
 
+**`manifest_boxes` is a second reader of the capture manifest.** `dataset.CaptureManifest`
+parses the same file the same way; this copy dates from when the two halves lived in different
+trees and conda envs. Both are readers, so they cannot disagree about what is on disk, but
+they are two spellings of one rule and the second should be retired.
+
 **Multi-GPU ownership is `items[rank::n_rank]`.** Discovery and ordering happen before the
 slice, and capture mode slices whole sources rather than windows. Therefore every window and
 both requested objectives for one source stay on exactly one rank. Paired mode applies the
@@ -137,9 +142,13 @@ encoder so workers never fork after this process has touched CUDA.
 - `--limit` is applied after rank sharding and counts whole sources/views, never windows.
 - `_read_cropped_masks` streams one frame at a time on purpose — a 3000×4096 mask is 36 MB a
   frame, so a whole-clip `get_batch` costs ~11 GB.
-- Decoding is **sequential, never seeking**. These sources have extremely sparse keyframes, so
+- The **corpus decode paths are sequential, never seeking** (`crop_source`,
+  `_read_cropped_masks`). These sources have extremely sparse keyframes, so
   `CAP_PROP_POS_FRAMES` would silently re-decode from frame 0 anyway — and seeking on B-frame
-  content is a known source of off-by-a-few-frames errors.
+  content is a known source of off-by-a-few-frames errors. `VideoReader.get_batch` *does* call
+  `CAP_PROP_POS_FRAMES`, and is safe only because every caller here starts its range at frame
+  0 (`plan_source`/`_video_info` take frame 0; `encode_pairs` takes `range(pixel_frames)`).
+  Asking it for a mid-clip range would reintroduce exactly the seek this rule forbids.
 
 ## Tests
 

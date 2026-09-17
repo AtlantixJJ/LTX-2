@@ -1,9 +1,10 @@
 """Tests for the frozen-subset builder -- block chaining, the split, and the plan invariant.
 
-The load-bearing one is :func:`test_block_plan_matches_causal_core`: ``windows.py`` decides
-which blocks exist and ``causal_core.CausalGeometry.plan`` decides which blocks the deployed
-rollout runs, and the two live in different conda envs. If they ever disagree the training
-chains describe frames the deployed rollout never visits, and nothing downstream would notice.
+The load-bearing one is :func:`test_the_block_plan_is_pinned_to_exact_bounds`. Since
+2026-09-15 ``windows.plan_blocks`` *is* ``causal_core.CausalGeometry.plan``, so comparing the
+two would be tautological; what still matters is that the bounds themselves never move. A
+frozen subset indexes blocks that ``train.py`` slices out of a master latent, so shifting the
+plan would silently re-point every chain in every subset already on disk.
 """
 
 from __future__ import annotations

@@ -77,6 +77,10 @@ a GPU-day for nothing.
 
 ## Gotchas
 
+- **The alpha/IoU loop zips the render frames against `mask.mp4` with `strict=True`.**
+  `alpha_grid` is `np.empty`, so a mask short of the render would leave its tail
+  uninitialised and persist that as the view's alpha — complete-looking and wrong. A
+  frame-count disagreement is a corpus defect, and raising makes it this pair's exclusion.
 - The composite overwrites the render PNG **in place** — the composited frame *is* the guide,
   not a second artifact. Anything that re-reads those PNGs after this loop sees composites.
 - `--visualize` writes `qa/overlay_view<D>.mp4` by cropping `rgb.mp4` on the fly; no

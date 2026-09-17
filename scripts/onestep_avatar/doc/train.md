@@ -19,9 +19,10 @@ corpus masters ───────────┴─▶ ChainStore ─▶ Chai
                                               │  lazy per CLIP (~5 MB bf16 each)
                                               ▼
                               clip_grid_for ─▶ ClipGrid   (global RoPE, one keyframe)
-                              BlockCache.allocate         (once per run)
+                              BlockCache.allocate         (once per run, sized for the
+                                                           subset's LONGEST clip)
                                               ▼
-                     prime_cache (GT, mid-clip chains only)
+            prime_cache (GT; ALWAYS called -- one forward even with nothing to prime)
                                               ▼
        per block:  noise_block ─▶ denoise_block ─▶ masked_mse + anchor ─▶ backward
                                               ─▶ refresh_block ─▶ evict
@@ -83,6 +84,7 @@ needs. Off by default.
 | `--teacher-forcing` | ablation: the refresh is fed `z_y[i]` instead of `ẑ₀[i].detach()` |
 | `--anchor-weight` | SS1.5 row 2; needs `base_denoised.pt` |
 | `--timing` | per-step phase breakdown; see "Reading the timing lines" below |
+| `--skip-subset-check` | skip the startup read of each source's master; moves a stale-subset failure to step 0 |
 
 **Teacher vs self forcing differ in exactly one tensor** — what `refresh` is handed. Nothing
 else in the loop, and nothing in `causal_core`, knows which regime is in play.
@@ -97,8 +99,21 @@ else in the loop, and nothing in `causal_core`, knows which regime is in play.
   counts. Checking after the fact cannot work — the mismatched collective is already enqueued
   and the check's own gather joins the pile-up. See `doc/causal_core.md` for the 2026-09-16
   instance that motivated it.
+- **The K/V cache is allocated once and sized from `ChainStore.max_latent_frames`**, never
+  from the first chain drawn. `BlockCache.allocate` caps capacity at the clip it is sized
+  against, so a short first clip would make every later long one overflow `LayerKVCache.write`
+  — inside a forward, on one rank, which is an FSDP desync rather than a clean failure.
+  `train_chain` re-checks `cache.fits(...)` before the step's first forward.
 - **A v1 bundle is refused with a pointed error**, never silently reassembled. A reader that
   quietly reconstructs is a second producer of the tensor the trainer learns from.
+- **A stale subset is refused at STARTUP, before the 42 GB checkpoint load.**
+  `assert_subset_matches_geometry` runs two checks: every chain's blocks must exist in the
+  plan implied by its source's recorded `n_latent_frames` (free), and that recorded count must
+  match what the stored master actually holds (one ~6 MB bundle read per distinct source;
+  `--skip-subset-check` opts out). The second is the one that fires in practice and the first
+  cannot see it — a subset frozen before 2026-09-16 is *internally* consistent, because
+  `windows.py` took both the count and the plan from the source video. `train_chain` keeps the
+  per-chain check as the backstop for a subset whose recorded count is itself stale.
 - **A pre-causal window-chain subset is refused**, not reinterpreted: a window index and a
   block index are different numbers over the same clip.
 - **A subset frozen against the other objective is refused.**

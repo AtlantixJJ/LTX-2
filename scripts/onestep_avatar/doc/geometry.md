@@ -53,4 +53,6 @@ silently re-crop a corpus whose latents are already encoded.
 
 ## Tests
 
-`tests/test_geometry.py` — including the pin against `precompute.py`'s own arithmetic.
+`tests/test_geometry.py` — golden tests on exact box values. There is no longer a pin against
+`precompute.py`'s arithmetic: `precompute._capture_box` calls `canonical_crop_box`, so the two
+cannot disagree and a test comparing them would be tautological.

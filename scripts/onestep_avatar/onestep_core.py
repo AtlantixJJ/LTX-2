@@ -83,6 +83,10 @@ def one_step_sigma(model_sigmas: list[float], sigma0: float = refine_task.ONE_ST
     The schedule is still built and checked through ``refine_task`` -- the causal loop has no
     stepper, so it consumes the sigma rather than the pair, but the guard that rejects an
     off-grid sigma0 or a multi-step schedule must not be bypassed.
+
+    **Nothing calls this today.** ``rollout`` takes ``sigma0`` directly, so the guard is
+    currently unreached and an off-grid sigma0 deploys silently. Wiring it in needs the
+    model's sigma grid at the call site; see ``doc/onestep_core.md``.
     """
     schedule = refine_task.one_step_schedule(model_sigmas, sigma0)
     if len(schedule) != 2 or schedule[-1] != 0.0:

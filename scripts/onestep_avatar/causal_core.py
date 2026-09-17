@@ -289,10 +289,25 @@ class BlockCache:
         inner_dim: int,
         device: torch.device,
         dtype: torch.dtype,
+        capacity_latent_frames: int | None = None,
     ) -> BlockCache:
-        # Sized against THIS clip, not against the policy alone: at a deep cache the clip is
-        # shorter than the policy's headroom and the difference is pure reserved memory.
-        capacity = geometry.cache_latent_frames_for(grid.latent_frames) * grid.tokens_per_latent_frame
+        # Sized against the longest clip this cache will ever hold, not against the policy
+        # alone: at a deep cache a clip can be shorter than the policy's headroom and the
+        # difference is pure reserved memory.
+        #
+        # ``capacity_latent_frames`` exists because a caller that allocates ONCE for a whole
+        # run (``train.py``) must not size the buffer from whichever clip happened to come
+        # first. With the cap taken from an 18-latent-frame clip and a 28-frame clip arriving
+        # later, the refresh that follows a full prime overflows and ``LayerKVCache.write``
+        # raises mid-forward -- on one rank only, which under FSDP is the collective
+        # desynchronisation this module works to make impossible. Pass the corpus's longest
+        # clip and the capacity stops depending on draw order.
+        capacity = (
+            geometry.cache_latent_frames_for(
+                grid.latent_frames if capacity_latent_frames is None else capacity_latent_frames
+            )
+            * grid.tokens_per_latent_frame
+        )
         return cls(
             allocate_kv_caches(
                 num_layers,
@@ -309,6 +324,17 @@ class BlockCache:
     @property
     def start(self) -> int:
         return self.caches[0].length
+
+    def fits(self, latent_frames: int) -> bool:
+        """Whether this cache can hold a rollout over a clip of ``latent_frames``.
+
+        The question a caller that allocates once and reuses the buffer across clips has to
+        ask before the forward that would overflow it -- ``LayerKVCache.write`` raises, and a
+        raise inside one rank's forward is a desynchronised collective stream, not a clean
+        failure.
+        """
+        need = self.geometry.cache_latent_frames_for(latent_frames) * self.grid.tokens_per_latent_frame
+        return self.caches[0].capacity >= need
 
     def reset(self) -> None:
         for cache in self.caches:

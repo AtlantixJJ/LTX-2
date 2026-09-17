@@ -414,6 +414,117 @@ def test_a_window_chain_subset_is_refused_rather_than_reinterpreted(tmp_path) ->
         train.main(["--subset", str(subset), "--output", str(tmp_path / "out")])
 
 
+def test_a_cache_too_small_for_this_clip_is_refused_before_any_forward() -> None:
+    """The run allocates ONE cache; a clip that does not fit must fail before the step's
+    forwards, not inside one.
+
+    ``LayerKVCache.write`` raises on overflow, and a raise inside one rank's forward leaves it
+    a round of all-gathers short of the others -- the FSDP desynchronisation that presents as
+    a hang, which ``assert_rank_lockstep`` and ``prime_cache``'s unconditional forward both
+    exist to rule out. This raise is reached before ``prime_cache`` is called, so every rank
+    fails the same way.
+    """
+    chain = _chain(blocks=[0])
+    deep = CausalGeometry(scale_factors=SCALE, block_latent_frames=2, context_latent_frames=16)
+    # Sized for a 3-latent-frame clip, then handed a 7-frame one: the "first chain sized the
+    # buffer" bug, reproduced.
+    undersized = BlockCache.allocate(
+        train.clip_grid_for(chain, deep, device=DEVICE, latent_channels=CHANNELS),
+        deep, num_layers=1, inner_dim=4, device=DEVICE, dtype=train.DTYPE,
+        capacity_latent_frames=3,
+    )
+    with pytest.raises(ValueError, match="sized from the subset's LONGEST clip"):
+        train.train_chain(
+            StubTransformer(), torch.zeros(1, 1, 8), chain, deep, undersized, _StubAccelerator(),
+            sigma0=SIGMA0, seed=0, anchor_weight=0.0, latent_channels=CHANNELS,
+        )
+
+
+def test_the_chain_store_reports_the_subsets_longest_clip(tmp_path) -> None:  # noqa: ANN001
+    """The number the run-wide cache allocation is sized from.
+
+    Read from ``windows.py``'s own ``n_latent_frames`` -- which it takes from the stored master
+    -- so it costs no tensor load and cannot disagree with what ``train.py`` plans over.
+    """
+    subset = {
+        "geometry": {"latent_time_scale": 8},
+        "chains": [{"source": "a", "split": "train", "actor": "1", "blocks": [0], "seed_is_clip_start": True}],
+        "sources": [
+            {"relative_dir": "a", "n_latent_frames": 18},
+            {"relative_dir": "b", "n_latent_frames": 28},
+        ],
+    }
+    store = train.ChainStore(
+        subset, tmp_path, split="train", objective="bg", band_weight=1.0,
+        with_anchor=False, with_guide=False,
+    )
+    assert store.max_latent_frames == 28
+
+
+def test_a_subset_frozen_against_the_video_length_is_refused_at_startup() -> None:
+    """The 2026-09-16 stale-freeze, caught before the 42 GB checkpoint load.
+
+    A subset frozen before that date sized its block plan from the source VIDEO; a master
+    consolidated from v1 per-window slices is short of the video by up to one window, so the
+    subset claims one block per source the latents do not contain. `train_chain` catches it
+    too, but only after minutes of startup on every rank -- and its old message blamed "a
+    different geometry", which sends a reader to the flags rather than to the artifact.
+    """
+    subset = {
+        # 19 latent frames is what the 150-frame video implies; the master holds 18.
+        "sources": [{"relative_dir": "a", "n_latent_frames": 19}],
+        "chains": [{"source": "a", "blocks": [6, 7, 8]}],
+    }
+    train.assert_subset_matches_geometry(subset, GEOMETRY)  # 19 frames -> 9 blocks, fine
+
+    stale = {
+        "sources": [{"relative_dir": "a", "n_latent_frames": 18}],
+        "chains": [{"source": "a", "blocks": [6, 7, 8]}],
+    }
+    with pytest.raises(SystemExit, match="2026-09-16"):
+        train.assert_subset_matches_geometry(stale, GEOMETRY)
+
+
+def test_a_subset_whose_masters_shrank_under_it_is_refused_at_startup(tmp_path) -> None:  # noqa: ANN001
+    """The staleness the internal check CANNOT see, and the one that actually happens.
+
+    A subset frozen before 2026-09-16 is internally consistent -- `windows.py` took both the
+    latent-frame count and the block plan from the source video -- so only a comparison
+    against the stored master catches it. This is the real `t2.json` failure, in miniature:
+    19 recorded, 18 on disk, a chain asking for block 8 of a clip that plans 8.
+    """
+    view = tmp_path / "Part_1" / "0001_01" / "views" / "view01_cam01"
+    view.mkdir(parents=True)
+    torch.save(
+        {"schema_version": 2, "master": torch.zeros(CHANNELS, 18, 2, 2)},
+        view / train.dataset.capture_bundle_name("bg"),
+    )
+    rel = "Part_1/0001_01/views/view01_cam01"
+    subset = {
+        "sources": [{"relative_dir": rel, "n_latent_frames": 19}],
+        "chains": [{"source": rel, "blocks": [6, 7, 8]}],
+    }
+    # Internally consistent: plan(19) has 9 blocks, so block 8 exists as far as the subset knows.
+    train.assert_subset_matches_geometry(subset, GEOMETRY)
+    with pytest.raises(SystemExit, match="subset says 19 latent frames, the master holds 18"):
+        train.assert_subset_matches_geometry(subset, GEOMETRY, corpus_root=tmp_path)
+
+    # And re-freezing against the master is what makes it trainable again.
+    subset["sources"][0]["n_latent_frames"] = 18
+    subset["chains"] = [{"source": rel, "blocks": [5, 6, 7]}]
+    train.assert_subset_matches_geometry(subset, GEOMETRY, corpus_root=tmp_path)
+
+
+def test_a_source_the_capture_pass_never_encoded_is_named(tmp_path) -> None:  # noqa: ANN001
+    """A missing bundle is its own error, not a crash inside torch.load."""
+    subset = {
+        "sources": [{"relative_dir": "Part_1/gone/views/view01_cam01", "n_latent_frames": 18}],
+        "chains": [{"source": "Part_1/gone/views/view01_cam01", "blocks": [0, 1, 2]}],
+    }
+    with pytest.raises(SystemExit, match="does not exist, but the subset lists"):
+        train.assert_subset_matches_geometry(subset, GEOMETRY, corpus_root=tmp_path)
+
+
 def test_multilevel_sigma_schedule_rotates_by_rank_and_step() -> None:
     """(rank + step) % len(levels): every step's batch mixes levels; every rank sees all levels."""
     levels = (0.909375, 0.725, 0.421875)

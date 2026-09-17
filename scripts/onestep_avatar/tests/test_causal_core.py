@@ -277,6 +277,41 @@ def test_cache_capacity_is_capped_by_the_clip_a_chain_actually_rolls_over() -> N
     assert shallow.cache_latent_frames_for(64) == shallow.cache_latent_frames
 
 
+def test_a_cache_can_be_sized_for_a_longer_clip_than_the_grid_it_is_built_from() -> None:
+    """A caller that allocates ONCE for many clips must not be sized by the first one.
+
+    ``cache_latent_frames_for`` caps capacity at the clip it is handed, which is right for a
+    single-clip rollout and wrong for a training run that reuses one buffer: a chain on an
+    18-latent-frame clip would size the buffer, and the corpus's 28-frame tier would then
+    overflow ``LayerKVCache.write`` -- inside a forward, on one rank, which under FSDP
+    desynchronises the collective stream instead of failing cleanly.
+    """
+    deep = CausalGeometry(scale_factors=SCALE, block_latent_frames=2, context_latent_frames=16)
+    short = _grid(deep, latent_frames=9)
+    tokens = short.tokens_per_latent_frame
+
+    capped = BlockCache.allocate(
+        short, deep, num_layers=1, inner_dim=4, device=DEVICE, dtype=torch.float32
+    )
+    assert capped.caches[0].capacity == 9 * tokens  # the clip it was built from
+    assert capped.fits(9)
+    assert not capped.fits(20)  # the long-clip chain that used to overflow mid-forward
+
+    sized = BlockCache.allocate(
+        short, deep, num_layers=1, inner_dim=4, device=DEVICE, dtype=torch.float32,
+        capacity_latent_frames=20,
+    )
+    assert sized.caches[0].capacity == deep.cache_latent_frames * tokens
+    assert sized.fits(9)
+    assert sized.fits(20)
+    # Still bounded by the policy, so an override longer than the policy needs reserves nothing
+    # extra -- the memory cap the cap existed for is intact.
+    assert BlockCache.allocate(
+        short, deep, num_layers=1, inner_dim=4, device=DEVICE, dtype=torch.float32,
+        capacity_latent_frames=1000,
+    ).caches[0].capacity == deep.cache_latent_frames * tokens
+
+
 def test_context_depth_past_the_supported_maximum_is_refused() -> None:
     """A ceiling, not a suggestion: the failure it prevents is an allocation that OOMs a
     training run after the model is already resident."""

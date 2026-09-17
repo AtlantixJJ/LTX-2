@@ -13,6 +13,7 @@ from scripts.onestep_avatar.build_guidance import (
     _render_is_complete,
     composite_guide_frame,
     guide_background,
+    migrate_alpha,
 )
 
 
@@ -93,3 +94,26 @@ def test_a_pre_objective_sidecar_is_read_as_bg_not_re_rendered(tmp_path: Path) -
     a field name. A sidecar with neither flag predates the composite and is still stale."""
     assert _complete(tmp_path, "bg", {"composited": True}) is True
     assert _complete(tmp_path, "bg", {}) is False
+
+
+def _legacy_view(corpus: Path) -> Path:
+    view = corpus / "Part_1" / "0001_01" / "views" / "view01_cam01"
+    view.mkdir(parents=True)
+    np.save(view / f"{dataset.ALPHA_STEM}.npy", np.zeros((3, 8, 8), dtype=np.uint8))
+    return view
+
+
+def test_migrate_alpha_dry_run_describes_the_run_it_previews(tmp_path: Path) -> None:
+    """A dry run that called an already-migrated view a pending conversion would not be a
+    preview of anything -- and 'how much is left' is the only question it is asked."""
+    view = _legacy_view(tmp_path)
+    assert migrate_alpha(tmp_path, prune=False, dry_run=True)["converted"] == 1
+
+    mask_video.write_mask_video(
+        np.zeros((3, 8, 8), dtype=np.uint8), view / f"{dataset.ALPHA_STEM}.mp4"
+    )
+    preview = migrate_alpha(tmp_path, prune=False, dry_run=True)
+    assert preview == {"converted": 0, "already_mp4": 1, "failed": 0, "removed_npy": 0}
+    # And a dry run never touches the disk, whatever --prune-npy says.
+    assert migrate_alpha(tmp_path, prune=True, dry_run=True)["removed_npy"] == 0
+    assert (view / f"{dataset.ALPHA_STEM}.npy").is_file()

@@ -17,8 +17,8 @@ ARGAvatar. Every command below runs from the **LTX-2 repo root**:
 removed four transcribed copies of shared knowledge — artifact names, the crop box, the block
 plan, the mask codec — and the tests that existed only to pin them together.)*
 
-Five files are the pipeline's internal contract, and each has exactly **one producer**. Four of
-the five live **beside the source video**, one set per view: since the causal rewrite
+Seven files are the pipeline's internal contract, and each has exactly **one producer**. Five of
+the seven live **beside the source video**, one set per view: since the causal rewrite
 (2026-09-14) a training sample is a span of one clip's continuous encode, so there is no
 per-window latent tree and `expr/onestep_avatar/precomputed/` is no longer produced or read.
 
@@ -153,8 +153,10 @@ conda run -n ltx python -m scripts.onestep_avatar.plot_training --run <run>
 - **A render built at a stale box is refused, not skipped.** `discover_pairs` compares each
   `argavatar_render.json`'s box to the manifest and names the views to re-render. That is the
   guard working — the alternative is training on a pair that is shifted by a few hundred pixels.
-- **A render without `argavatar_alpha.npy` is incomplete, not merely old.** The alpha only
+- **A render without `argavatar_alpha.mp4` is incomplete, not merely old.** The alpha only
   exists inside the render's own temp frames, so it cannot be back-filled without re-rendering.
+  (`_render_is_complete` accepts a legacy `.npy` as well, so a pre-2026-09-15 render is not
+  stale merely for predating the MP4 format.)
 - **Masks are stored as lossless grayscale MP4, not raw arrays** — ~42x smaller with a
   bit-exact round trip (9.83 MB -> 0.232 MB for a 150-frame alpha). Lossy was measured and
   rejected: it corrupts exactly the soft silhouette edge, and these mattes are already one
@@ -206,14 +208,14 @@ conda run -n ltx python -m scripts.onestep_avatar.plot_training --run <run>
 conda run -n ltx python -m pytest scripts/onestep_avatar/tests -q    # from the LTX-2 root
 ```
 
-Two of them carry invariants that span the two trees and cannot be enforced by an import,
-because the trees run in different envs. Both transcribe the other side's arithmetic and check
-it, rather than trusting matching defaults:
+Until the 2026-09-15 consolidation two of these tests existed only to pin transcribed copies
+of the crop box and the block plan across the two trees. There is one copy of each now --
+`precompute._capture_box` calls `geometry.canonical_crop_box`, `windows.plan_blocks` calls
+`causal_core.CausalGeometry.plan` -- so those comparisons would be tautological and are gone.
+What replaced them is **golden** tests on the exact values, which is the risk that survives
+consolidation: changing either rule would silently re-crop a corpus whose latents are already
+encoded, or re-point every chain in every subset already frozen.
 
-- `test_geometry` pins `geometry.canonical_crop_box` to `precompute.py`'s own box arithmetic.
-- `test_windows` pins `windows.plan_blocks` to `causal_core.CausalGeometry.plan` on every clip
-  length in the corpus.
-
-On the `ltx` side, `test_causal_core` is the one that matters most: it runs a real (2-layer)
-`LTXModel` on CPU and asserts the cached block rollout equals a full-sequence forward under a
-block-causal mask, block for block. Everything the cache buys rests on that equality.
+`test_causal_core` is the one that matters most: it runs a real (2-layer) `LTXModel` on CPU and
+asserts the cached block rollout equals a full-sequence forward under a block-causal mask,
+block for block. Everything the cache buys rests on that equality.

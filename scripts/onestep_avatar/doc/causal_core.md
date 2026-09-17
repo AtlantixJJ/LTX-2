@@ -82,6 +82,10 @@ what bounds a *long* rollout, not what a short one spends its time doing.
 
 **Capacity is capped by the clip** (`cache_latent_frames_for`): reserving 16 frames of K/V
 for an 18-frame clip a 3-block chain touches half of would be gigabytes of untouched memory.
+A caller that allocates **once** for many clips must therefore pass
+`BlockCache.allocate(capacity_latent_frames=…)` with the LONGEST clip it will see — sizing
+from whichever clip came first makes the buffer depend on the shuffle, and a longer clip then
+overflows. `BlockCache.fits(latent_frames)` is the question to ask before the forward.
 
 ## Invariants
 
@@ -123,6 +127,15 @@ for an 18-frame clip a 3-block chain touches half of would be gigabytes of untou
   cache from ground truth; in a true rollout those keys were computed when they were
   generated, against whatever history existed then. `seed_is_clip_start` marks chains that
   need no priming. The escalation is to train whole clips (~3× more forwards per step).
+- **A capacity capped by the wrong clip is a data-parallel hazard, not just an error.**
+  `LayerKVCache.write` raises on overflow, and a raise inside one rank's forward leaves that
+  rank one round of all-gathers short of the others — the same shape as the `prime_cache`
+  deadlock above. `train.py` sizes the run's one allocation from the subset's longest clip
+  (`ChainStore.max_latent_frames`, read from `windows.py`'s own `n_latent_frames`) and
+  re-checks `cache.fits(...)` per chain, before any forward of the step. Reachable in practice
+  only at deep `--context-latent-frames`, where the policy need (`sink + context + 1 + block`)
+  exceeds the corpus's short 18-latent-frame tier but not its 28-frame one.
+
 - `retained_prefix_spans` groups retained frames by their **real** block index, because
   frames denoised together attended to each other bidirectionally. A naive "sink is one
   block, the rest is another" split would forbid exactly that.

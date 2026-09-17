@@ -77,7 +77,7 @@ train.py ── per block: denoise → backward → refresh → evict   [all fou
 | [visualize_d0.md](visualize_d0.md) | `visualize_d0.py` | decoded `capture │ base │ LoRA` probe per sigma |
 | [report_d0.md](report_d0.md) | `report_d0.py` | artifact-checked handoff record for the D0 arm |
 
-`__init__.py` carries no design. `configs/fsdp_{2,3}gpu.yaml` are accelerate configs;
+`__init__.py` carries no design. `configs/fsdp_{2,3,4}gpu.yaml` are accelerate configs;
 `run_a1.sh` / `run_b2a.sh` / `run_b2b.sh` are launchers documented in [`../README.md`](../README.md).
 
 ## Keeping these docs true
