@@ -15,7 +15,7 @@ plumbing are all reused from `ltx_trainer`.
 
 ```
 subset JSON (windows.py) ─┐
-corpus masters ───────────┴─▶ ChainStore ─▶ Chain(z_g, z_y, loss_weights, z0_base)
+corpus masters ───────────┴─▶ ChainStore ─▶ Chain(z_g, z_y, z0_base)
                                               │  lazy per CLIP (~5 MB bf16 each)
                                               ▼
                               clip_grid_for ─▶ ClipGrid   (global RoPE, one keyframe)
@@ -24,53 +24,78 @@ corpus masters ───────────┴─▶ ChainStore ─▶ Chai
                                               ▼
             prime_cache (GT; ALWAYS called -- one forward even with nothing to prime)
                                               ▼
-       per block:  noise_block ─▶ denoise_block ─▶ masked_mse + anchor ─▶ backward
+       per block:  noise_block ─▶ denoise_block ─▶ full-frame MSE + anchor ─▶ backward
                                               ─▶ refresh_block ─▶ evict
                                               ▼
               metrics_rank<r>.jsonl  +  LoRA safetensors with metadata
 ```
 
-## The loss rule (SS1.5)
+## The loss rule
 
-**Full-frame loss, down-weighted on the silhouette disagreement band** — and nothing else is
-weighted at all.
+The loss is unconditional full-frame token MSE:
 
-`disagreement_weights(record, band_weight)` computes `1 − (1 − w)·|render_alpha − capture_mask|`.
-The band is the **soft** symmetric difference: both grids are area fractions at latent
-resolution, so a half-covered boundary cell is half-disputed, not wholly.
+`mean((z0_pred.float() - z_y_target.float()) ** 2)`.
 
-This replaced five *subject* masks (`render`/`capture`/`union`/`intersection`/`none`). Each
-gave weight zero everywhere outside the subject at time `t`, which is exactly where the ghost
-band lives — so a subject-masked loss cannot teach the model to repair the ghost, the region
-SS1.2 calls the learning signal. There was nothing to keep.
+There is no alpha, subject, mask, or render/capture-disagreement weighting. `ChainStore` reads
+only the continuous capture master (and the guide master for D1), so training does not consume
+`capture_mask_crop.mp4` or `argavatar_alpha.mp4`. The anchor, when enabled, is the same
+full-frame MSE between `z0_pred` and the frozen-base output on the same noised input.
 
-`--disagreement-weight 1.0` is a plain full-frame loss, and the grids are then not even read.
-**Neither are they read under `--guide-mode d0`, at any weight** — the band is render_t ⊖
-capture_t, undefined with no render in play, which is d0's whole point (SS1.3: reduces to
-ordinary flow-matching on real video). `ChainStore` gates the read on `with_guide`, not just
-`band_weight < 1.0`, so d0 works against capture-only precompute the same way it already skips
-`z_g` — no paired-precompute artifact (`argavatar_ltx_vae_latent.pt`, `argavatar_alpha.mp4`,
-`capture_mask_crop.mp4`) is needed to train d0. A non-default `--disagreement-weight` with `d0`
-is refused rather than silently ignored, same shape as the anchor-weight guard below.
+This deliberately makes every predicted token and channel contribute equally. In particular,
+the silhouette-boundary disagreement is now part of the learning signal, rather than a region
+with a special loss rule.
+
+## Core chain algorithm
+
+`train_chain` operates on one clip's master latent encodes. `geometry.plan` turns that clip
+into ordered causal block spans, and `BlockCache` holds only finalized clean-token K/V from the
+past:
+
+```text
+grid = ClipGrid.build(z_y.shape, fps, geometry)       # global RoPE positions
+guide = patchify(z_g)                                 # D1; D0 uses patchify(z_y)
+target = patchify(z_y)
+
+prime_cache(target before first selected block)       # no-grad clean GT prefix
+for block in selected consecutive blocks:
+    [lo:hi] = grid.token_span(block)
+    noisy = (1 - sigma) * guide[lo:hi] + sigma * seeded_noise(block)
+
+    z0 = denoise_block(noisy, cache)                  # reads past K/V; writes none
+    mse = mean((z0 - target[lo:hi])^2)                # every token, every channel
+    anchor = mean((z0 - base[lo:hi])^2) if enabled else 0
+    backward((mse + anchor_weight * anchor) / K)      # release this block's activations
+
+    clean = target[lo:hi] if teacher_forcing else detach(z0)
+    refresh_block(clean, cache)                       # no-grad: append this block's K/V
+    cache.evict_to_context_plus_frame0()              # sink + rolling recent context
+optimizer.step()
+```
+
+The ordering is denoise → backward → refresh → evict. The denoise pass cannot write the cache
+because it carries gradients; refresh is a separate no-grad clean-latent forward, making its
+K/V final and reusable by later blocks. Eviction retains the pinned frame-0 sink and the
+configured most-recent context. `prime_cache` is deliberately called even at block 0: its
+empty forward keeps every FSDP rank at the same `1 + K + K` transformer-forward count.
 
 ## The checkpoint contract
 
 A fixed-σ adapter must not be loadable off-condition. Stamped into the safetensors metadata:
 σ₀ (or `"mixed"`), the σ level list, `K`, the schedule, the attention kind, **block and cache
-geometry**, the subset hash, the **objective**, the disagreement weight, guide mode, anchor
-weight, teacher forcing, LoRA rank/alpha/target.
+geometry**, the subset hash, the **objective**, guide mode, anchor weight, teacher forcing,
+LoRA rank/alpha/target.
 
 Cache depth belongs there for the same reason σ does: an adapter trained with two frames of
 cached context is a different function from one trained with sixteen, and nothing downstream
 can tell by looking at the weights.
 
-`--save-initial` writes `lora_weights_step_00000.safetensors` right after LoRA injection and
-FSDP `prepare`, before any optimizer step -- the untrained adapter. `init_lora_weights=True`
-zero-inits B, so this checkpoint's decode should be bit-identical to the frozen base. Before
-writing it, `save_lora` checks the gathered exported `lora_B` weights are exactly zero; failure
-refuses to create a misleading step-0 artifact. That is the sanity check it exists for
-(`visualize_d0.py --run <run> --steps 0 1` after a one-step run), not something a normal run
-needs. Off by default.
+`--save-initial` guarantees both `lora_weights_step_00000.safetensors` and
+`lora_weights_step_00001.safetensors`, independent of `--save-every`: step 0 is written
+after LoRA injection and FSDP `prepare`, and step 1 immediately after the first optimizer
+update. `init_lora_weights=True` zero-inits B, so step 0 should decode bit-identically to the
+frozen base. Before writing it, `save_lora` checks the gathered exported `lora_B` weights are
+exactly zero; failure refuses to create a misleading baseline artifact. This makes
+`visualize_d0.py --run <run> --steps 0 1` a self-contained initialization check.
 
 ## Arms and knobs
 
@@ -78,7 +103,6 @@ needs. Off by default.
 |---|---|
 | `--objective {bg,white}` | which pair of bundles is read; must match the subset's |
 | `--guide-mode {d0,d1}` | `d1` = D1a (guide as the noised init); `d0` = the GT-renoise capacity check, not deployable |
-| `--disagreement-weight` | SS1.5's band weight, default 0.0 |
 | `--block-latent-frames` / `--context-latent-frames` | SS1.6's geometry and cache depth |
 | `--sigma-levels` | one adapter across several operating points |
 | `--teacher-forcing` | ablation: the refresh is fed `z_y[i]` instead of `ẑ₀[i].detach()` |
@@ -119,8 +143,6 @@ else in the loop, and nothing in `causal_core`, knows which regime is in play.
 - **A subset frozen against the other objective is refused.**
 - `--guide-mode d0` with `--anchor-weight > 0` is refused: the anchor target is computed on
   the guide-noised input, and d0 noises `z_y`.
-- `--guide-mode d0` with `--disagreement-weight != 0.0` is refused: d0 has no render, so the
-  band the weight would apply to doesn't exist.
 - σ = 0.0 is refused as a training level — the noiser adds nothing, so loss and gradient are
   identically zero (a quarter of one run trained on nothing before this was caught).
 
@@ -130,7 +152,7 @@ Every line is prefixed `timing |` and carries the `[rank N]` prefix `ltx_trainer
 config already installs, so a straggling rank is visible without correlating timestamps.
 
 **Startup stages are always timed**, on every rank: `Accelerator()`, the prompt cache, the
-transformer load, `accelerator.prepare`, `--save-initial`, and the **first** chain load
+transformer load, `accelerator.prepare`, step-0 `--save-initial`, and the **first** chain load
 (which is also the one that allocates the ~2 GB block cache). That list is exactly the span
 that used to produce no output at all — the 2026-09-15 4-GPU launch log ends at "causal
 geometry" and the next thing in it is a `ChildFailedError`, with nothing to say which of six

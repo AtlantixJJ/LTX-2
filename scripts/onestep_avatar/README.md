@@ -100,9 +100,8 @@ CUDA_VISIBLE_DEVICES=2,3 accelerate launch \
   -m scripts.onestep_avatar.train \
   --subset ../expr/onestep_avatar/windows/t2.json \
   --output ../expr/onestep_avatar/runs/t2-r16 --lora-rank 16 --steps 2000
-#     --objective must match the subset's. --disagreement-weight is the plan's SS1.5 rule and
-#     defaults to 0.0 (band excluded, everything else at full weight).
-#     The corpus root comes from the subset; --context-latent-frames is the cache depth (and
+#     --objective must match the subset's. Training uses full-frame loss with no mask or
+#     disagreement weighting. The corpus root comes from the subset; --context-latent-frames is the cache depth (and
 #     therefore the compute/quality knob), recorded in the checkpoint metadata.
 
 # 6a. D0 one-step initialization sanity check. The run writes both the exactly-no-op
@@ -187,16 +186,8 @@ conda run -n ltx python -m scripts.onestep_avatar.plot_training --run <run>
   `r_subject` either way.
 - **fps is RoPE, not metadata** (`VideoLatentTools` divides the temporal axis by it). Never
   default it.
-- **The loss weighting is a training choice, not a corpus one.** Both grids are stored
-  uncombined; `train.py --disagreement-weight` decides what the band between them is worth.
-  That disagreement region is exactly the §B1 IoU gap.
-- **There is ONE masking rule now: full frame, down-weight `render ⊖ capture`.** It replaced
-  five pre-product *subject* masks (`none`/`render`/`capture`/`union`/`intersection`), every one
-  of which gave weight zero outside the subject at time `t` — which is exactly where the ghost
-  band (`mask_0` minus `mask_t`) lives, so none of them could ever train the product objective.
-  `--disagreement-weight 0.0` (default) excludes the band; `1.0` is a plain full-frame loss.
-  **Runs before 2026-09-15 used `--loss-mask union` and are not comparable** on anything the
-  ghost band touches.
+- **Training uses one unweighted full-frame loss.** Alpha and capture masks remain corpus/QA
+  artifacts; `train.py` does not read them and has no loss-mask or disagreement-weight option.
 - **Two objectives, one code path.** `bg` (the product) and `white` (both sides on white)
   differ only in which pixels were encoded and which filename holds them. `bg` keeps the
   unsuffixed names, so nothing already on disk was invalidated. A subset records the objective

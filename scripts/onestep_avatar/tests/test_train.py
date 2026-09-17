@@ -385,8 +385,7 @@ def test_the_chain_store_reports_the_subsets_longest_clip(tmp_path) -> None:  # 
         ],
     }
     store = train.ChainStore(
-        subset, tmp_path, split="train", objective="bg", band_weight=1.0,
-        with_anchor=False, with_guide=False,
+        subset, tmp_path, split="train", objective="bg", with_anchor=False, with_guide=False,
     )
     assert store.max_latent_frames == 28
 
