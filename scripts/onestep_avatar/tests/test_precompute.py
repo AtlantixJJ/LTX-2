@@ -147,11 +147,18 @@ def _write_render(view: Path, frames: int = 25, *, box: list[float] | None = Non
 
 
 def _write_manifest(root: Path, views: list[Path], *, box: list[float] | None = None) -> None:
-    """A capture manifest in --capture-only's own shape, covering ``views``."""
+    """A capture manifest in --capture-only's own shape, covering ``views``.
+
+    Includes ``pad_factor``/``edge`` -- required by ``dataset.CaptureManifest.load``, the one
+    reader since S1(8) of the 2026-09-17 cleanup plan retired ``precompute.manifest_boxes``,
+    which did not need them.
+    """
     root.mkdir(parents=True, exist_ok=True)
     (root / CAPTURE_MANIFEST_NAME).write_text(
         json.dumps(
             {
+                "pad_factor": 1.20,
+                "edge": 1024,
                 "windows": [
                     {
                         "bundle": f"{view.relative_to(root)}/ltx_vae_latent.pt",

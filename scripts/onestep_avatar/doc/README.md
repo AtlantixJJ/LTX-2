@@ -57,6 +57,7 @@ train.py ── per block: denoise → backward → refresh → evict   [all fou
 |---|---|---|
 | [dataset.md](dataset.md) | `dataset.py` | corpus layout, and the **objective → filename** map every module obeys |
 | [geometry.md](geometry.md) | `geometry.py` | the one square-crop rule (SS1.7), pure and GPU-free |
+| [hashing.md](hashing.md) | `hashing.py` | the one `sha256(path)`, pure and GPU-free |
 | [motion.md](motion.md) | `motion.py` | `pose3d.npy` → ARGAvatar `sam3db`, with the three conversions |
 | [qa.md](qa.md) | `qa.py` | mask IoU at the dataset's own threshold |
 | [mask_video.md](mask_video.md) | `mask_video.py` | mask storage — lossless gray MP4, 42× smaller than raw, bit-exact |

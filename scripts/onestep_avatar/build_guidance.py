@@ -97,7 +97,7 @@ ALPHA_STEM = dataset.ALPHA_STEM          # suffix-less, for the legacy-.npy fall
 # so `precompute.py` can average-pool it down without ever resampling to a non-integer ratio,
 # and uint8 (1/255 of a cell's area) is finer than the downsample itself. The grid is 9.8 MB
 # raw for a 150-frame clip; stored as lossless gray MP4 (mask_video.py) that is 0.23 MB.
-ALPHA_GRID = 256
+ALPHA_GRID = dataset.ALPHA_GRID          # the producer and consumer of one grid, one spelling
 
 
 def read_frames(path: Path):
@@ -171,10 +171,7 @@ def build_recon_crop(clip: ClipRef, view_idx: int, out_size: int, box: geometry.
 def _atomic_write_video(frame_dir: Path, output: Path, fps: float) -> list[str]:
     """Encode into a same-directory temp file, then rename -- so a reader (``precompute.py``,
     or a re-run of this script) never observes a half-written ``argavatar_render.mp4``."""
-    temp_video = output.with_name(f".{output.stem}.tmp.{os.getpid()}{output.suffix}")
-    args = encode_frames(frame_dir, temp_video, fps)
-    temp_video.replace(output)
-    return args
+    return dataset.atomic_write(output, lambda temp: encode_frames(frame_dir, temp, fps))
 
 
 def composite_guide_frame(
@@ -215,9 +212,7 @@ def guide_background(
 
 
 def _atomic_write_json(payload: dict, output: Path) -> None:
-    temp_path = output.with_suffix(f"{output.suffix}.tmp.{os.getpid()}")
-    temp_path.write_text(json.dumps(payload, indent=2) + "\n")
-    temp_path.replace(output)
+    dataset.atomic_write(output, lambda temp: temp.write_text(json.dumps(payload, indent=2) + "\n"))
 
 
 @dataclass(frozen=True)

@@ -45,6 +45,7 @@ import numpy as np
 from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar import causal_core, dataset, geometry
 from scripts.onestep_avatar.dataset import ClipRef
+from scripts.onestep_avatar.hashing import sha256
 
 # The block plan depends on scale factors only through the pixel<->latent time ratio -- the
 # latent frame count `plan_blocks` is called with already has that applied (see
@@ -68,7 +69,6 @@ SCHEMA_VERSION = 1
 BLOCK_LATENT_FRAMES = causal_core.BLOCK_LATENT_FRAMES
 CONTEXT_LATENT_FRAMES = causal_core.CONTEXT_LATENT_FRAMES
 SINK_LATENT_FRAMES = causal_core.SINK_LATENT_FRAMES
-LATENT_TIME_SCALE = 8
 
 DEFAULT_OUTPUT_ROOT = dataset.WORKSPACE_ROOT / "expr" / "onestep_avatar" / "windows"
 # SS5.0: 12 is the floor the 09-05 plan's 3-subject holdout failed; at 126 actors a 20 %
@@ -113,14 +113,6 @@ def chain_blocks(n_blocks: int, chain_length: int, chain_stride: int | None = No
         list(range(start, start + chain_length))
         for start in range(0, n_blocks - chain_length + 1, stride)
     ]
-
-
-def sha256(path: Path, chunk: int = 1 << 20) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(chunk), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def split_actors(
@@ -324,8 +316,8 @@ def build(
             "block_latent_frames": BLOCK_LATENT_FRAMES,
             "context_latent_frames": CONTEXT_LATENT_FRAMES,
             "sink_latent_frames": SINK_LATENT_FRAMES,
-            "stride_frames": BLOCK_LATENT_FRAMES * LATENT_TIME_SCALE,
-            "latent_time_scale": LATENT_TIME_SCALE,
+            "stride_frames": BLOCK_LATENT_FRAMES * _SCALE_FACTORS.time,
+            "latent_time_scale": _SCALE_FACTORS.time,
             "edge": manifest.edge,
         },
         "chain_length": chain_length,
@@ -457,10 +449,7 @@ def main() -> int:
         print(json.dumps(summary, indent=2))  # noqa: T201
         return 0
     out = args.output_root / f"{args.name}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(subset, indent=2))
-    tmp.replace(out)
+    dataset.atomic_write(out, lambda temp: temp.write_text(json.dumps(subset, indent=2)))
     print(json.dumps(summary, indent=2))  # noqa: T201
     print(f"wrote {out}")  # noqa: T201
     return 0

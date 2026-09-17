@@ -457,3 +457,75 @@ def test_the_real_training_loop_runs_a_chain_against_a_real_transformer() -> Non
     # Steady state after eviction: the pinned sink plus `context_latent_frames`.
     kept = geometry.sink_latent_frames + geometry.context_latent_frames
     assert cache.start == kept * grid.tokens_per_latent_frame
+
+
+# --- base_model: unifies train._base_model (FSDP/PEFT) with the deploy-time X0Model walk ---
+
+
+class _FSDPPeftWrap(torch.nn.Module):
+    """The training-time shape: FSDP's ``.module`` around PEFT's ``.base_model.model``."""
+
+    def __init__(self, inner: torch.nn.Module) -> None:
+        super().__init__()
+        self.module = torch.nn.Module()
+        self.module.base_model = torch.nn.Module()
+        self.module.base_model.model = inner
+
+
+class _X0ModelWrap(torch.nn.Module):
+    """The deploy-time shape: ``X0Model(velocity_model=<LTXModel>)``, no other attribute."""
+
+    def __init__(self, inner: torch.nn.Module) -> None:
+        super().__init__()
+        self.velocity_model = inner
+
+
+def test_base_model_unwraps_bare_and_returns_it_immediately() -> None:
+    model = _model()
+    assert causal_core.base_model(model) is model
+
+
+def test_base_model_agrees_with_both_retired_walks() -> None:
+    """S1(7) of the 2026-09-17 cleanup plan unified ``train._base_model`` (the FSDP/PEFT walk)
+    with the ``while ... hasattr(base, "velocity_model")`` loop three deploy-time call sites
+    each carried a copy of. Checked directly against both original algorithms on real wrapper
+    shapes, rather than assumed, per the plan's own risk note: unifying on the more permissive
+    walk could in principle find a *different* inner module than the retired one did.
+    """
+    model = _model()
+
+    # The retired FSDP/PEFT-only walk (train._base_model, before S1(7)):
+    def old_fsdp_peft_walk(transformer: torch.nn.Module) -> torch.nn.Module:
+        node = transformer
+        for _ in range(8):
+            if hasattr(node, "transformer_blocks"):
+                return node
+            for attribute in ("module", "base_model", "model"):
+                inner = getattr(node, attribute, None)
+                if isinstance(inner, torch.nn.Module):
+                    node = inner
+                    break
+            else:
+                break
+        raise TypeError
+
+    # The retired deploy-time-only walk (onestep_core.rollout / visualize_d0 / bench_forward,
+    # before S1(7)):
+    def old_velocity_model_walk(transformer: torch.nn.Module) -> torch.nn.Module:
+        node = transformer
+        while not hasattr(node, "transformer_blocks") and hasattr(node, "velocity_model"):
+            node = node.velocity_model
+        return node
+
+    fsdp_peft = _FSDPPeftWrap(model)
+    assert causal_core.base_model(fsdp_peft) is model
+    assert old_fsdp_peft_walk(fsdp_peft) is model
+
+    x0 = _X0ModelWrap(model)
+    assert causal_core.base_model(x0) is model
+    assert old_velocity_model_walk(x0) is model
+
+
+def test_base_model_raises_when_no_known_wrapper_shape_matches() -> None:
+    with pytest.raises(TypeError, match="cannot find the LTXModel"):
+        causal_core.base_model(torch.nn.Module())

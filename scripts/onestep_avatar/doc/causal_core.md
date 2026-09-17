@@ -139,6 +139,13 @@ overflows. `BlockCache.fits(latent_frames)` is the question to ask before the fo
 - `retained_prefix_spans` groups retained frames by their **real** block index, because
   frames denoised together attended to each other bidirectionally. A naive "sink is one
   block, the rest is another" split would forbid exactly that.
+- **`base_model(module)` unwraps the ONE way, for both wrapper families this package
+  produces** — the training-time FSDP/PEFT wrap (`.module`/`.base_model`/`.model`) and the
+  deploy-time `X0Model(velocity_model=...)` wrap (`.velocity_model`). Since S1(7) of the
+  2026-09-17 cleanup plan: `train.py` had the first as `_base_model`, and
+  `onestep_core.rollout`, `visualize_d0` and `bench_forward` each hand-rolled the second as an
+  inline loop. It raises `TypeError` if no `transformer_blocks` is found within 8 levels,
+  rather than returning an unresolved object the way the retired velocity-model-only loop did.
 
 ## Tests
 

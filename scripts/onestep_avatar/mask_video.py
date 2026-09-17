@@ -36,13 +36,14 @@ setting, which would be invisible in every downstream number -- is now guarded d
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
 import cv2
 import numpy as np
 import torch
+
+from scripts.onestep_avatar import dataset
 
 # Lossless, grayscale, in MP4. `-crf 0` is x264's lossless mode; `-pix_fmt gray` keeps one
 # plane rather than padding to 4:2:0 (which would also be lossless for gray input, but three
@@ -62,20 +63,21 @@ def write_mask_video(grid: np.ndarray, output: Path, fps: int = MASK_FPS) -> Pat
     frames, height, width = grid.shape
     if frames < 1:
         raise ValueError("cannot encode an empty mask")
-    temp_path = output.with_name(f".{output.stem}.tmp.{os.getpid()}{output.suffix}")
-    process = subprocess.Popen(
-        [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-f", "rawvideo", "-pix_fmt", "gray", "-s", f"{width}x{height}", "-r", str(fps),
-            "-i", "pipe:0", *MASK_ENCODE_ARGS, str(temp_path),
-        ],
-        stdin=subprocess.PIPE,
-    )
-    process.communicate(grid.tobytes())
-    if process.returncode != 0:
-        temp_path.unlink(missing_ok=True)
-        raise RuntimeError(f"ffmpeg failed encoding {output} (exit {process.returncode})")
-    temp_path.replace(output)
+
+    def _encode(temp_path: Path) -> None:
+        process = subprocess.Popen(
+            [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-f", "rawvideo", "-pix_fmt", "gray", "-s", f"{width}x{height}", "-r", str(fps),
+                "-i", "pipe:0", *MASK_ENCODE_ARGS, str(temp_path),
+            ],
+            stdin=subprocess.PIPE,
+        )
+        process.communicate(grid.tobytes())
+        if process.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed encoding {output} (exit {process.returncode})")
+
+    dataset.atomic_write(output, _encode)
     return output
 
 

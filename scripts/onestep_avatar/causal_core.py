@@ -464,6 +464,40 @@ def block_modality(
     )
 
 
+def base_model(module: torch.nn.Module) -> torch.nn.Module:
+    """Peel a wrapper off to reach the ``LTXModel`` underneath -- whichever of the two wrapper
+    families this package actually produces.
+
+    * **Training-time**: FSDP/DDP and PEFT wrap the velocity model itself, reachable through
+      ``.module`` / ``.base_model`` / ``.model``.
+    * **Deploy-time**: the inference session hands back a bare
+      ``X0Model(velocity_model=<LTXModel>)`` -- no FSDP, no PEFT (the LoRA is fused at load,
+      not applied as an adapter) -- reachable through ``.velocity_model`` alone.
+
+    One implementation since S1(7) of the 2026-09-17 cleanup plan: ``train.py`` had this exact
+    depth-capped walk as ``_base_model``, and ``onestep_core.rollout``, ``visualize_d0`` and
+    ``bench_forward`` each carried their own copy of an unbounded
+    ``while not hasattr(base, "transformer_blocks") and hasattr(base, "velocity_model")`` loop
+    that only ever handled the second shape. The two algorithms agreed at every existing call
+    site only because each site's wrapper matches exactly one of the two families -- checked
+    directly (``tests/test_causal_core.py::test_base_model_agrees_with_both_retired_walks``)
+    rather than assumed, since a wrapper matching a *different* attribute here would silently
+    size the K/V cache from the wrong module.
+    """
+    model = module
+    for _ in range(8):
+        if hasattr(model, "transformer_blocks"):
+            return model
+        for attribute in ("module", "base_model", "model", "velocity_model"):
+            inner = getattr(model, attribute, None)
+            if isinstance(inner, torch.nn.Module):
+                model = inner
+                break
+        else:
+            break
+    raise TypeError(f"cannot find the LTXModel inside {type(module).__name__}")
+
+
 def denoised_from_velocity_model(model):  # noqa: ANN001, ANN201 -- a PEFT-wrapped LTXModel
     """Adapter for the training side, where the transformer emits velocity."""
 

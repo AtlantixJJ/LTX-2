@@ -94,9 +94,7 @@ def _run_d0_chain(transformer, context, chain: Chain, geometry, sigma: float, *,
     deployment from accepting an arm that needs the unavailable capture latent.
     """
     grid = clip_grid_for(chain, geometry, device=device, latent_channels=latent_channels)
-    base = transformer
-    while not hasattr(base, "transformer_blocks") and hasattr(base, "velocity_model"):
-        base = base.velocity_model
+    base = causal_core.base_model(transformer)
     cache = causal_core.BlockCache.allocate(
         grid, geometry, num_layers=len(base.transformer_blocks), inner_dim=base.inner_dim,
         device=device, dtype=DTYPE,

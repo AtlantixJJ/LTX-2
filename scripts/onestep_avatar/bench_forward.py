@@ -100,9 +100,7 @@ def main() -> int:  # noqa: PLR0915 -- one linear benchmark script.
 
     results: dict[str, dict[str, float]] = {}
     with session.transformer() as transformer:
-        base = transformer
-        while not hasattr(base, "transformer_blocks") and hasattr(base, "velocity_model"):
-            base = base.velocity_model
+        base = causal_core.base_model(transformer)
         denoise_fn = causal_core.denoised_from_x0_model(transformer)
 
         # --- The k2 baseline: one bidirectional forward over a whole 4-latent-frame window.

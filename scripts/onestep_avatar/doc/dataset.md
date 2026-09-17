@@ -2,18 +2,25 @@
 
 ## Objective
 
-Two jobs, both "one constant, not a convention repeated at call sites":
+Three jobs, all "one constant (or one function), not a convention repeated at call sites":
 
 1. **Where the corpus is and how a clip is laid out.** `DEFAULT_CORPUS_ROOT`, `ClipRef` and
    its per-view path accessors. T4's scale-out to the full `Processed/` tree is a `root=`
    argument, not a second code path.
-2. **Which filename each objective's artifacts use** (SS1.2). Every module reads it from
-   here. It was transcribed into a second module (`corpus_names.py`) while the package was
-   split across two trees; consolidating removed both the copy and the test that pinned it.
+2. **Which filename each objective's artifacts use, and the alpha/mask grid they share**
+   (SS1.2). Every module reads it from here. It was transcribed into a second module
+   (`corpus_names.py`) while the package was split across two trees; consolidating removed
+   both the copy and the test that pinned it.
+3. **`atomic_write`, since S1 of the 2026-09-17 cleanup plan.** Not a corpus-layout concern by
+   itself, but every writer in the package needs it and this is the one leaf module every
+   writer (`precompute.py`, `build_guidance.py`, `mask_video.py`, `windows.py`) already
+   imports without creating a cycle — `mask_video.py` cannot import `precompute.py` (which
+   imports it back), and a second new file was not worth it for three lines.
 
 ## Data flow
 
-Pure path/metadata resolution — reads `meta.json`, opens no video, writes nothing.
+Mostly pure path/metadata resolution — reads `meta.json`, opens no video. `atomic_write` is
+the one exception: it is generic file I/O, used by every producer in the package.
 
 ```
 corpus root ─▶ ClipRef ─▶ rgb_path / mask_path / bbox_path / pose3d_path / view_dir
@@ -21,6 +28,8 @@ corpus root ─▶ ClipRef ─▶ rgb_path / mask_path / bbox_path / pose3d_path
 
 objective ─▶ render_name / render_metadata_name
              guide_bundle_name / capture_bundle_name
+
+(destination, write_to) ─▶ atomic_write ─▶ write_to(temp) ─▶ temp.replace(destination)
 ```
 
 `CaptureManifest` reads the **crop box of record** written by the LTX half. It is a reader
@@ -63,8 +72,12 @@ a renderer to learn a filename.
 - `fps()` is never defaulted — fps scales the temporal RoPE axis.
 - `CaptureManifest` is the single source of the crop box. Recomputing one "the same way"
   is exactly the desync this file exists to prevent.
+- **`atomic_write`'s temp name is one convention** (`.<stem>.tmp.<pid><suffix>`) for every
+  writer in the package. Do not hand-roll a second one at a new call site.
 
 ## Tests
 
-`tests/test_geometry.py` (golden crop-box values) and `tests/test_mask_video.py` (the mask
-codec). The name mapping no longer needs a test of its own: there is one copy of it.
+`tests/test_geometry.py` (golden crop-box values), `tests/test_mask_video.py` (the mask
+codec), and `tests/test_dataset.py` (`atomic_write`'s replace-on-success /
+cleanup-on-failure contract). The name mapping no longer needs a test of its own: there is
+one copy of it.

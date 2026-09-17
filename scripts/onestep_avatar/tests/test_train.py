@@ -42,11 +42,18 @@ class X0Stub(torch.nn.Module):
     below which emits velocity. ``onestep_core.rollout`` reads it through
     ``causal_core.denoised_from_x0_model``, which treats the model's output as the denoised
     latent directly.
+
+    Carries a ``.velocity_model`` with a ``transformer_blocks`` attribute -- not read by this
+    stub's own ``forward``, but ``causal_core.base_model`` needs *some* path to
+    ``transformer_blocks`` to resolve, matching a real ``X0Model``'s shape.
     """
 
     def __init__(self) -> None:
         super().__init__()
         self.scale = torch.nn.Parameter(torch.tensor(0.5))
+        self.velocity_model = torch.nn.Module()
+        self.velocity_model.transformer_blocks = torch.nn.ModuleList([torch.nn.Identity()])
+        self.velocity_model.inner_dim = 4
 
     def forward(self, video, audio, perturbations) -> tuple[torch.Tensor, None]:  # noqa: ANN001, ARG002
         return self.scale * video.latent, None

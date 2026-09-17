@@ -63,10 +63,10 @@ must match `ENCODE_CONTRACT_VERSION`, source, objective, input fingerprint (RGB,
 `white`), VAE fingerprint, crop box, pixel/latent frame counts, FPS, edge, channels and spatial
 scale. A bundle missing that metadata or disagreeing on any field is atomically regenerated.
 
-**`manifest_boxes` is a second reader of the capture manifest.** `dataset.CaptureManifest`
-parses the same file the same way; this copy dates from when the two halves lived in different
-trees and conda envs. Both are readers, so they cannot disagree about what is on disk, but
-they are two spellings of one rule and the second should be retired.
+**Crop boxes are read through `dataset.CaptureManifest.load(root).boxes`, not a second
+parser.** `discover_pairs` and the paired-encode loop carried their own `manifest_boxes`, a
+byte-for-byte second reader of `capture_latent_manifest.json`, from when the two halves lived
+in different trees and conda envs; S1(8) of the 2026-09-17 cleanup plan retired it.
 
 **Multi-GPU ownership is `items[rank::n_rank]`.** Discovery and ordering happen before the
 slice, and capture mode slices whole sources rather than windows. Therefore every window and

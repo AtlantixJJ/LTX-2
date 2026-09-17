@@ -35,12 +35,10 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
-import hashlib
 import itertools
 import json
 import logging
 import multiprocessing
-import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TypeVar
@@ -54,6 +52,7 @@ import torch
 # box). Importing it bare would shadow that on every function that takes one.
 from scripts.onestep_avatar import dataset, mask_video
 from scripts.onestep_avatar import geometry as crop_geometry
+from scripts.onestep_avatar.hashing import sha256
 from scripts.prune.core import ltx_adapter, model_registry, refine_task
 from scripts.prune.core.refine_core import WindowGeometry
 from scripts.prune.core.session import DTYPE
@@ -68,11 +67,12 @@ BUNDLE_SCHEMA_VERSION = 2
 # rather than accepted merely because their tensor shape happens to match.
 ENCODE_CONTRACT_VERSION = 1
 
-# The three per-view products the trainer reads, all beside the source video. There is no
-# experiment-output tree any more: ``expr/onestep_avatar/precomputed/`` existed only to hold
-# per-window slices, and SS4.4's master latents make it redundant.
-# ``dataset`` owns the objective -> filename mapping (SS1.2).
-DEFAULT_CORPUS_ROOT = model_registry.WORKSPACE_ROOT / "data" / "AnimatableHuman" / "DNARenderingVideo"
+# The corpus root and the manifest filename are `dataset`'s (SS1.2); re-exported here as
+# aliases (the same shape as `ALPHA_NAME = dataset.ALPHA_NAME` below) rather than re-declared,
+# which used to derive from a different WORKSPACE_ROOT (`model_registry`'s) before the
+# 2026-09-15 consolidation put both modules in one tree.
+DEFAULT_CORPUS_ROOT = dataset.DEFAULT_CORPUS_ROOT
+CAPTURE_MANIFEST_NAME = dataset.CAPTURE_MANIFEST_NAME
 # Provenance only. `expr/onestep_avatar/precomputed/` held the per-window latent tree until
 # SS4.4 (2026-09-14); nothing writes latents there any more, and `train.py` does not read it.
 DEFAULT_MANIFEST_ROOT = model_registry.WORKSPACE_ROOT / "expr" / "onestep_avatar" / "paired"
@@ -82,8 +82,6 @@ DEFAULT_MANIFEST_ROOT = model_registry.WORKSPACE_ROOT / "expr" / "onestep_avatar
 # top of other users' jobs, which is exactly what killed the first --capture-only run
 # on 2026-09-10. Default low; raise explicitly only after checking `free -h` headroom.
 DEFAULT_CROP_WORKERS = 6
-# Written by --capture-only at the corpus root; the crop box of record for every view.
-CAPTURE_MANIFEST_NAME = "capture_latent_manifest.json"
 # Written by --capture-only at the corpus root; caches plan_source's per-source output so a
 # restart does not re-open and frame-0-decode all 3360 sources before touching a single bundle
 # (plan §1.3: ~1.5 h with no bundle written and no log line, on 3 crop workers). Keyed off the
@@ -223,14 +221,6 @@ class VideoReader:
         return torch.stack([frames[index] for index in wanted])
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for block in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def file_fingerprint(path: Path) -> str:
     """Cheap invalidation fingerprint for large local inputs/checkpoints."""
     stat = path.stat()
@@ -245,38 +235,11 @@ def capture_input_fingerprint(source: CaptureSource, objective: str) -> str:
 
 
 def atomic_torch_save(value: object, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(f"{destination.suffix}.tmp.{os.getpid()}")
-    torch.save(value, temporary)
-    temporary.replace(destination)
+    dataset.atomic_write(destination, lambda temp: torch.save(value, temp))
 
 
 def atomic_json_save(value: object, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(f"{destination.suffix}.tmp.{os.getpid()}")
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-    temporary.replace(destination)
-
-
-def manifest_boxes(corpus_root: Path) -> dict[str, tuple[float, float, float, float]]:
-    """The crop box this run recorded per view, read back from ``--capture-only``'s manifest.
-
-    A SECOND reader of ``capture_latent_manifest.json`` beside ``dataset.CaptureManifest``,
-    which parses the same file the same way. It was written when the two lived in different
-    trees and different conda envs; the 2026-09-15 consolidation removed that reason and this
-    copy has outlived it. It is a reader, not a producer, so the two cannot disagree about
-    what is on disk -- but they are two spellings of one rule and the second should go. See
-    ``doc/precompute.md``.
-    """
-    path = corpus_root / CAPTURE_MANIFEST_NAME
-    if not path.is_file():
-        raise SystemExit(f"{path} does not exist; run --capture-only over this corpus first")
-    record = json.loads(path.read_text())
-    boxes: dict[str, tuple[float, float, float, float]] = {}
-    for window in record["windows"]:
-        relative_dir = window["bundle"].rsplit("/", 1)[0]
-        boxes.setdefault(relative_dir, tuple(float(v) for v in window["box_xyxy"]))
-    return boxes
+    dataset.atomic_write(destination, lambda temp: temp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n"))
 
 
 def discover_pairs(corpus_root: Path, objective: str = dataset.DEFAULT_OBJECTIVE) -> list[Pair]:
@@ -292,7 +255,7 @@ def discover_pairs(corpus_root: Path, objective: str = dataset.DEFAULT_OBJECTIVE
       work in progress, so it raises: the fix is to re-render, and a silent skip would just
       make the pair quietly disappear from the corpus instead.
     """
-    boxes = manifest_boxes(corpus_root)
+    boxes = dataset.CaptureManifest.load(corpus_root).boxes
     render_name = dataset.render_name(objective)
     metadata_name = dataset.render_metadata_name(objective)
     guides = sorted(corpus_root.glob(f"Part_*/*/views/*/{render_name}"))
@@ -341,7 +304,7 @@ def discover_pairs(corpus_root: Path, objective: str = dataset.DEFAULT_OBJECTIVE
 ALPHA_NAME = dataset.ALPHA_NAME
 # The stored-mask resolution, matching what build_guidance.py harvests the render's alpha at.
 # Both persisted masks live on this grid so they can be compared without a resample.
-ALPHA_GRID = 256
+ALPHA_GRID = dataset.ALPHA_GRID
 
 
 def build_capture_mask_video(
@@ -664,15 +627,16 @@ def _video_info(path: Path) -> tuple[int, float, int, int]:
 
 
 def load_capture_master(pair: Pair) -> dict:
-    """Read the capture master, requiring regeneration of obsolete per-window bundles."""
+    """Read the capture master bundle, requiring regeneration of obsolete per-window bundles.
+
+    Returns the whole bundle, not just the tensor: ``check_pair_alignment`` reads its
+    ``pixel_frames``/``fps`` fields too. ``dataset.load_master`` supplies the one pointed v1
+    error and is called here for that validation, not for the tensor it returns.
+    """
     bundle = torch.load(pair.bundle, map_location="cpu", weights_only=True)
     if not isinstance(bundle, dict):
         raise ValueError(f"{pair.relative_dir}: {pair.bundle} is not a capture latent bundle")
-    if bundle.get("schema_version") != BUNDLE_SCHEMA_VERSION or "master" not in bundle:
-        raise ValueError(
-            f"{pair.relative_dir}: bundle schema_version={bundle.get('schema_version')}, expected "
-            f"{BUNDLE_SCHEMA_VERSION} with a master latent. Re-run --capture-only for this view"
-        )
+    dataset.load_master(pair.bundle, bundle=bundle)
     return bundle
 
 
@@ -1314,7 +1278,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
             gpu_id=args.gpu_id,
             overwrite=args.overwrite,
             geometry=geometry,
-            boxes=manifest_boxes(args.corpus_root),
+            boxes=dataset.CaptureManifest.load(args.corpus_root).boxes,
             objective=objective,
         )
         totals["completed"] += completed

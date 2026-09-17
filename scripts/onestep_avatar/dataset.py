@@ -11,10 +11,15 @@ second code path.
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 import torch
+
+T = TypeVar("T")
 
 # LTX-2/scripts/onestep_avatar/dataset.py -> parents[3] is the workspace root, one level
 # ABOVE the LTX-2 repo. It was parents[2] until the 2026-09-15 consolidation, when this module
@@ -56,13 +61,18 @@ CAPTURE_MANIFEST_NAME = "capture_latent_manifest.json"
 OBJECTIVES = ("bg", "white")
 DEFAULT_OBJECTIVE = "bg"
 
+# The side (pixels) both persisted coverage grids are stored/read at. One spelling for the
+# producer (precompute.py's alpha/mask crop) and the consumer (build_guidance.py's alpha
+# render) to agree on -- they used to each declare their own ``ALPHA_GRID = 256``.
+ALPHA_GRID = 256
+
 # Both persisted coverage masks are LOSSLESS grayscale MP4 (see mask_video.py): ~42x smaller
 # than the raw arrays they replaced, bit-exact, and readable by the same OpenCV path as every
 # other video here. All three are objective-independent -- the render is the same render and
 # the matte the same matte; only what sits behind the subject differs between objectives.
 ALPHA_STEM = "argavatar_alpha"                     # .mp4 now; .npy still read if present
-ALPHA_NAME = f"{ALPHA_STEM}.mp4"                   # the render's own alpha, 256**2
-CAPTURE_MASK_CROP_STEM = "capture_mask_crop"       # mask.mp4 cropped to the box, 256**2
+ALPHA_NAME = f"{ALPHA_STEM}.mp4"                   # the render's own alpha, ALPHA_GRID**2
+CAPTURE_MASK_CROP_STEM = "capture_mask_crop"       # mask.mp4 cropped to the box, ALPHA_GRID**2
 CAPTURE_MASK_CROP_NAME = f"{CAPTURE_MASK_CROP_STEM}.mp4"
 CAPTURE_MASK_NAME = "mask.mp4"                     # the dataset's own, full resolution
 
@@ -87,6 +97,29 @@ def guide_bundle_name(objective: str = DEFAULT_OBJECTIVE) -> str:
     return f"argavatar_ltx_vae_latent{_suffix(objective)}.pt"
 
 
+def load_master(path: Path, *, bundle: dict | None = None) -> torch.Tensor:
+    """The clip's continuous encode out of a schema-2 bundle, with one pointed v1 error.
+
+    Was four readers of this one contract before S1 of the 2026-09-17 cleanup plan
+    (``train._master``, ``stats._master``, ``precompute.load_capture_master``, and this
+    module's own ``capture_master_latent_frames``), in three different error wordings, two
+    spelling the version as a literal ``2`` and two as ``BUNDLE_SCHEMA_VERSION``.
+
+    ``bundle`` lets a caller that already loaded the record for other fields (fps,
+    pixel_frames, ...) skip reading the file twice; by default this loads it from ``path``.
+    """
+    if bundle is None:
+        bundle = torch.load(path, map_location="cpu", weights_only=True)
+    version = bundle.get("schema_version")
+    if version != 2 or "master" not in bundle:
+        raise SystemExit(
+            f"{path}: schema_version={version} holds per-window slices, not the clip's master "
+            "latent. Re-run precompute.py --capture-only for this view"
+        )
+    # [C, F, H, W] -- the frame axis is 1.
+    return bundle["master"]
+
+
 def capture_master_latent_frames(bundle_path: Path) -> int | None:
     """Latent frames the STORED master actually holds, or ``None`` for a pre-v2 bundle.
 
@@ -101,13 +134,15 @@ def capture_master_latent_frames(bundle_path: Path) -> int | None:
     last block did not exist in the latents -- and ``train.py``, which plans from the loaded
     tensor, refused them with "the subset was frozen under a different geometry". Both now
     read the tensor.
+
+    Returns ``None`` rather than raising ``load_master``'s error: a pre-v2 bundle is an
+    ordinary, expected state mid-migration (``windows.py``'s ``survey_source`` reports it as
+    ``capture_bundle_not_consolidated`` and moves on), not a caller mistake.
     """
     bundle = torch.load(bundle_path, map_location="cpu", weights_only=True)
     if bundle.get("schema_version") != 2 or "master" not in bundle:
         return None
-    # [C, F, H, W] -- the frame axis is 1. train.py reads the same tensor via `_master`, so
-    # this is a second READER of one artifact, never a second producer of the count.
-    return int(bundle["master"].shape[1])
+    return int(load_master(bundle_path, bundle=bundle).shape[1])
 
 
 def capture_bundle_name(objective: str = DEFAULT_OBJECTIVE) -> str:
@@ -244,3 +279,30 @@ class CaptureManifest:
     def has(self, view_dir: Path) -> bool:
         key = str(Path(view_dir).resolve().relative_to(self.root.resolve()))
         return key in self.boxes
+
+
+def atomic_write(destination: Path, write_to: Callable[[Path], T]) -> T:
+    """Write to a same-directory temp file, then atomically replace ``destination``.
+
+    The one temp-name convention every writer in this package now shares:
+    ``.<stem>.tmp.<pid><suffix>`` -- a hidden file with the real extension still at the end, so
+    a reader that globs by suffix (or a viewer double-clicking a directory) never picks up a
+    half-written file. Six call sites (``precompute.py``, ``build_guidance.py``,
+    ``mask_video.py``, ``windows.py``) hand-rolled this with two different conventions before
+    S1 of the 2026-09-17 cleanup plan.
+
+    ``write_to`` receives the temp path and must write the complete content there -- a JSON
+    dump, a ``torch.save``, an ffmpeg encode, whatever the caller needs -- and may return a
+    value, which is passed through. If it raises, the temp file is removed and ``destination``
+    is left untouched; nothing here makes ``write_to`` itself atomic, only what happens around
+    it.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp = destination.with_name(f".{destination.stem}.tmp.{os.getpid()}{destination.suffix}")
+    try:
+        result = write_to(temp)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+    temp.replace(destination)
+    return result

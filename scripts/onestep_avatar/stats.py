@@ -44,7 +44,6 @@ import torch
 from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar import dataset, mask_video
 from scripts.onestep_avatar.precompute import (
-    BUNDLE_SCHEMA_VERSION,
     VideoReader,
     atomic_json_save,
 )
@@ -103,17 +102,6 @@ def _summary(values: list[float]) -> dict[str, float]:
     }
 
 
-def _master(path: Path) -> torch.Tensor:
-    """One view's master latent, refusing a pre-SS4.4 per-window bundle by name."""
-    bundle = torch.load(path, map_location="cpu", weights_only=True)
-    if bundle.get("schema_version") != BUNDLE_SCHEMA_VERSION or "master" not in bundle:
-        raise SystemExit(
-            f"{path}: not a v{BUNDLE_SCHEMA_VERSION} master bundle. Re-run "
-            "precompute.py --capture-only for this view"
-        )
-    return bundle["master"]
-
-
 def measure_pairs(
     corpus_root: Path,
     limit: int | None = None,
@@ -154,8 +142,8 @@ def measure_pairs(
     first_pair = None
     for guide_path in guides:
         relative = guide_path.parent.relative_to(corpus_root)
-        z_g = _master(guide_path)
-        z_y = _master(guide_path.with_name(capture_name))
+        z_g = dataset.load_master(guide_path)
+        z_y = dataset.load_master(guide_path.with_name(capture_name))
         frames = min(z_g.shape[1], z_y.shape[1])
         z_g, z_y = z_g[:, :frames], z_y[:, :frames]
         if first_pair is None:

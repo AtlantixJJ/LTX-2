@@ -139,9 +139,7 @@ def rollout(  # noqa: PLR0913 -- a rollout is defined by its geometry, schedule,
         dtype=dtype,
         latent_channels=latent_channels,
     )
-    base = transformer
-    while not hasattr(base, "transformer_blocks") and hasattr(base, "velocity_model"):
-        base = base.velocity_model
+    base = causal_core.base_model(transformer)
     cache = BlockCache.allocate(
         grid,
         geometry,
