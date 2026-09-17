@@ -48,7 +48,7 @@ the rank rather than the chain length, since ``K`` is what the loop exists to ex
 
     accelerate launch --config_file scripts/onestep_avatar/configs/fsdp_2gpu.yaml \\
       -m scripts.onestep_avatar.train \\
-      --subset ../expr/onestep_avatar/windows/t2.json \\
+      --subset ../expr/onestep_avatar/windows/t2r2.json \\
       --output ../expr/onestep_avatar/runs/prelim --lora-rank 8 --steps 200
 
 accelerate launch --config_file scripts/onestep_avatar/configs/fsdp_4gpu.yaml -m scripts.onestep_avatar.train --subset ../expr/onestep_avatar/windows/t2r2.json --output ../expr/onestep_avatar/runs/prelim --lora-rank 64 --steps 200
