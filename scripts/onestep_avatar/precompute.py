@@ -951,7 +951,12 @@ def encode_capture_jobs(
                 ),
             )
         )
-        skipped += len(source_jobs) * (len(objectives) - len(needed))
+        # Per (source, objective) already current, not per window job: the bundle written is
+        # one file per source, since SS4.4 replaced the per-window latent tree, but `jobs`
+        # still carries the old per-window plan (it says how many pixel frames to decode).
+        # `len(source_jobs)` counting sources 8x-14x over was S3's `precompute.encode_
+        # capture_jobs counts sources, not len(source_jobs)` fix (2026-09-17 cleanup plan).
+        skipped += len(objectives) - len(needed)
         if needed:
             pending.append((source, source_jobs, needed))
 
@@ -1023,7 +1028,7 @@ def encode_capture_jobs(
                         # One atomic save per (source, objective): a bundle is all-or-nothing,
                         # which is what makes the currency check above a complete resume rule.
                         atomic_torch_save(record, bundle_path(source, objective))
-                        completed += len(source_jobs)
+                        completed += 1  # one (source, objective), not len(source_jobs) windows
                         LOGGER.info(
                             "encoded capture master source=%s objective=%s latent_frames=%d -> %s",
                             source.relative_dir,

@@ -187,6 +187,12 @@ phases start reporting queue time instead of compute.
   slices `[:, -target_len:]`; the inference-side item **appends**, so this loop slices
   `[:, :target_len]`. Getting it backwards computes the loss against the model's own input and
   looks like very fast convergence, not like an error.
+- **The W&B per-position metric is `train/block_{i}_mse` since 2026-09-17** (S3 of that date's
+  cleanup plan; was `train/window_{i}_mse`, a name three days stale against the causal
+  rewrite). A run's history from before that date logged the old key -- `wandb` does not
+  rename metrics retroactively, so overlaying an old and a new run shows two series for the
+  same quantity. See `doc/plot_training.md`'s matching note for the figure-name half of the
+  same rename.
 
 ## Tests
 

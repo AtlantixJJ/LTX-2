@@ -14,7 +14,7 @@ standing between a bug and a wasted GPU-week**.
 runs/<name>/metrics_rank*.jsonl  (one record per (rank, step): loss/mse/anchor, lr,
                                   grad_norm, elapsed_s, source)
         ▼
-  figures/  loss_curves · lr_grad_norm · throughput · window_position
+  figures/  loss_curves · lr_grad_norm · throughput · block_position
   training_summary.json
 ```
 
@@ -31,7 +31,17 @@ mini-batch's per-example losses.
 
 This is training **diagnostics**, deliberately not the held-out evaluation table.
 
-## Reading `window_position`
+## Reading `block_position`
+
+**Renamed from `window_position` on 2026-09-17** (S3 of that date's cleanup plan): the AR
+chain's unit has been a causal **block**, not a sliding **window**, since the 2026-09-14
+rewrite (SS4.4) -- the `plot_window_position`/`figures/window_position.png`/
+`train/window_{i}_mse` names it replaced had been describing the wrong unit for three days.
+A script or W&B chart referencing `figures/window_position.png` or the `train/window_{i}_mse`
+metric family predates this date; nothing written after it produces those names again.
+`wandb`'s per-run history is unaffected retroactively (a metric name is stamped per record,
+not renamed after the fact), so a run's chart legend that spans the split simply shows two
+metric names for the same quantity.
 
 Chain position 0 is GT-seeded; later positions carry the model's own output. In the one
 multi-actor run so far, position 0 sat consistently **below** 1 and 2 — a real, stable gap —

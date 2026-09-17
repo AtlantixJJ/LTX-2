@@ -325,7 +325,7 @@ def main() -> int:
     p.add_argument("--sigma0", type=float, default=DEFAULT_SIGMA0)
     p.add_argument("--eps-samples", type=int, default=DEFAULT_EPS_SAMPLES)
     p.add_argument("--max-videos", type=int, default=4, help="A1 needs a handful, not all 16")
-    p.add_argument("--max-windows", type=int, default=None, help="cap the pair scan")
+    p.add_argument("--max-sources", type=int, default=None, help="cap the pair scan (a source is a whole clip, since SS4.4 -- not a window)")
     p.add_argument(
         "--subject-mask",
         choices=("render", "capture", "union", "intersection"),
@@ -342,7 +342,7 @@ def main() -> int:
     report: dict[str, object] = {"model": model.key, "sigma0": args.sigma0}
     if args.pairs is not None:
         report["pairs"] = measure_pairs(
-            args.pairs, args.max_windows, args.subject_mask, args.objective
+            args.pairs, args.max_sources, args.subject_mask, args.objective
         )
     if args.renders is not None and not args.no_gpu:
         videos = sorted(args.renders.rglob(args.render_glob))[: args.max_videos]

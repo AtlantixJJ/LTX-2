@@ -1131,7 +1131,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                                 "train/sigma0": sigma0,
                                 "train/elapsed_s": record["elapsed_s"],
                                 "train/steps_per_s": step / max(record["elapsed_s"], 1e-8),
-                                **{f"train/window_{i}_mse": value for i, value in enumerate(block_mse)},
+                                **{f"train/block_{i}_mse": value for i, value in enumerate(block_mse)},
                             },
                             step=step,
                         )

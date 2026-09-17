@@ -13,7 +13,7 @@ def _write_run(run_dir: Path, records: list[dict]) -> pt.RunData:
 
 
 def test_per_position_values_groups_by_chain_position_across_steps(tmp_path: Path) -> None:
-    """SS7.4(a)'s per-window breakdown, read back the way window_position.png consumes it."""
+    """SS7.4(a)'s per-window breakdown, read back the way block_position.png consumes it."""
     run = _write_run(
         tmp_path / "run",
         [
@@ -43,7 +43,7 @@ def test_per_position_values_groups_by_chain_position_across_steps(tmp_path: Pat
     assert per_position[1] == {1: [0.6], 2: [0.35]}
 
 
-def test_plot_window_position_returns_none_for_a_run_predating_per_window_logging(tmp_path: Path) -> None:
+def test_plot_block_position_returns_none_for_a_run_predating_per_window_logging(tmp_path: Path) -> None:
     """A run logged before SS7.4(a) has no `per_window` key -- must skip cleanly, not crash,
     so passing an old and a new run to `--run` together still works."""
     run = _write_run(
@@ -52,10 +52,10 @@ def test_plot_window_position_returns_none_for_a_run_predating_per_window_loggin
           "loss": 0.5, "mse": 0.5, "anchor": 0.0}],
     )
 
-    assert pt.plot_window_position([run], smooth=1, output=tmp_path / "figs") is None
+    assert pt.plot_block_position([run], smooth=1, output=tmp_path / "figs") is None
 
 
-def test_plot_window_position_writes_a_figure_when_data_exists(tmp_path: Path) -> None:
+def test_plot_block_position_writes_a_figure_when_data_exists(tmp_path: Path) -> None:
     run = _write_run(
         tmp_path / "run",
         [
@@ -70,7 +70,7 @@ def test_plot_window_position_writes_a_figure_when_data_exists(tmp_path: Path) -
     output = tmp_path / "figs"
     output.mkdir()
 
-    path = pt.plot_window_position([run], smooth=1, output=output)
+    path = pt.plot_block_position([run], smooth=1, output=output)
 
-    assert path == output / "window_position.png"
+    assert path == output / "block_position.png"
     assert path.is_file()

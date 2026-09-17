@@ -121,7 +121,7 @@ def _per_position_values(run: RunData, field: str) -> dict[int, dict[int, list[f
     ``per_window`` is what the sliding-window loop that preceded it wrote. Both are the same
     quantity -- loss at position ``i`` of the chain -- so the runs on disk stay plottable and
     comparable instead of being stranded by a rename. A run older than SS7.4(a) has neither
-    key and yields an empty dict here, not an error: ``plot_window_position`` treats that as
+    key and yields an empty dict here, not an error: ``plot_block_position`` treats that as
     "nothing to plot" rather than crashing on an older run passed alongside a newer one.
     """
     per_position: dict[int, dict[int, list[float]]] = {}
@@ -132,8 +132,13 @@ def _per_position_values(run: RunData, field: str) -> dict[int, dict[int, list[f
     return per_position
 
 
-def plot_window_position(runs: list[RunData], smooth: int, output: Path) -> Path | None:
-    """SS7.4(c) ``window_position.png``: mean mse by position in the AR chain, over training.
+def plot_block_position(runs: list[RunData], smooth: int, output: Path) -> Path | None:
+    """SS7.4(c) ``block_position.png``: mean mse by position in the AR chain, over training.
+
+    Named ``plot_window_position`` / ``window_position.png`` before S3 of the 2026-09-17
+    cleanup plan -- a name left over from the sliding-window loop SS4.4 replaced with the
+    causal AR one on 2026-09-14. The unit plotted here has been a **block**, not a window,
+    since that rewrite; see ``doc/plot_training.md`` for the date this rename split at.
 
     **Rising with position = error compounding** -- the cached context the model reads at
     position ``i > 0`` is its own earlier output, so a climbing line means later positions in
@@ -168,7 +173,7 @@ def plot_window_position(runs: list[RunData], smooth: int, output: Path) -> Path
     axis.grid(alpha=0.25)
     axis.legend(fontsize=8)
     figure.tight_layout()
-    path = output / "window_position.png"
+    path = output / "block_position.png"
     figure.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(figure)
     return path
@@ -322,11 +327,11 @@ def render(runs: list[RunData], output: Path, smooth: int | None) -> list[Path]:
         "- `lr_grad_norm.png`: LR schedule and post-clip gradient norm vs step.",
         "- `throughput.png`: smoothed seconds/step and cumulative wall clock vs step.",
     ]
-    position_figure = plot_window_position(runs, window, output)
+    position_figure = plot_block_position(runs, window, output)
     if position_figure is not None:
         figures.append(position_figure)
         lines.append(
-            "- `window_position.png`: mean mse by position in the AR chain, over training "
+            "- `block_position.png`: mean mse by position in the AR chain, over training "
             "(SS7.4c) -- rising = error compounding, flat from step 1 = `K > 1` buys nothing."
         )
     summary = {"runs": {run.label: _run_summary(run) for run in runs}, "smooth_window": window}
