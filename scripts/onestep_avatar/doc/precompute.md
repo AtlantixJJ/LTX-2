@@ -58,6 +58,27 @@ current or absent — there is no half-done state a restart could inherit. Conse
 - adding `white` to a corpus already encoded as `bg` re-encodes only `white`;
 - a source is decoded only for the objectives it is actually missing.
 
+“Current” is an explicit provenance check, not “a tensor with the expected shape.” A bundle
+must match `ENCODE_CONTRACT_VERSION`, source, objective, input fingerprint (RGB, plus the matte for
+`white`), VAE fingerprint, crop box, pixel/latent frame counts, FPS, edge, channels and spatial
+scale. A bundle missing that metadata or disagreeing on any field is atomically regenerated.
+
+**Multi-GPU ownership is `items[rank::n_rank]`.** Discovery and ordering happen before the
+slice, and capture mode slices whole sources rather than windows. Therefore every window and
+both requested objectives for one source stay on exactly one rank. Paired mode applies the
+same rule to its sorted pair list. All ranks write the same full-corpus manifest through
+PID-unique temporary files; identical atomic replacements are safe, whereas rank-local
+manifests would omit other ranks' crop boxes. Rank 0 alone writes the sampled QA gallery.
+
+For four GPUs, launch four supervisors with unique ranks:
+
+```bash
+for rank in 0 1 2 3; do
+  setsid -f scripts/onestep_avatar/run_b2a.sh "$rank" 2 "$rank" 4 \
+    </dev/null >/dev/null 2>&1 &
+done
+```
+
 **The matte is applied at full resolution, before the resize**, so matte and pixels are
 resampled together — the same reason the guide's composite is built while the full-resolution
 alpha is still live. It is used **continuous**, not re-thresholded: the stored mask is already
@@ -98,6 +119,8 @@ encoder so workers never fork after this process has touched CUDA.
   training decision (SS1.5); pre-combining or persisting a derived grid would bake one answer
   and one geometry into the corpus.
 - Every source's windows share one fixed crop box.
+- A live multi-GPU run uses every rank in `[0, n_rank)` exactly once. Duplicate ranks would
+  duplicate work even though atomic writes prevent partial bundles.
 - Obsolete per-window latent bundles are regenerated; `precompute.py` no longer carries a
   migration path for them.
 
@@ -111,6 +134,7 @@ encoder so workers never fork after this process has touched CUDA.
   tasks in a long-lived worker).
 - Asking for both objectives puts a **second** uint8 frame array in each worker (~0.5 GB at
   150 frames). `--crop-workers` is the knob if host RAM is tight.
+- `--limit` is applied after rank sharding and counts whole sources/views, never windows.
 - `_read_cropped_masks` streams one frame at a time on purpose — a 3000×4096 mask is 36 MB a
   frame, so a whole-clip `get_batch` costs ~11 GB.
 - Decoding is **sequential, never seeking**. These sources have extremely sparse keyframes, so

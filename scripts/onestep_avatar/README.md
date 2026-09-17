@@ -47,13 +47,16 @@ stores only continuous schema-v2 masters and no longer carries migration-only co
 #    shares this shell's process group, so a signal to the shell (closed terminal, killed job)
 #    takes the retry loop down with the job it is supervising (this happened twice, see the plan
 #    plan's §1.3). setsid gives the loop its own session so it survives that.
-setsid -f LTX-2/scripts/onestep_avatar/run_b2a.sh 1 3 </dev/null >/dev/null 2>&1 &
+for rank in 0 1 2 3; do
+  setsid -f scripts/onestep_avatar/run_b2a.sh "$rank" 2 "$rank" 4 \
+    </dev/null >/dev/null 2>&1 &
+done
 disown
 # tail -f expr/onestep_avatar/logs/precompute_capture_only_gpu1.log to watch it.
 # Equivalent bare invocation, for reference (don't launch it this way for a multi-day run):
 conda run -n ltx python -m scripts.onestep_avatar.precompute \
   --capture-only --objective bg white --views 0 1 2 3 4 5 6 7 \
-  --edge 1024 --pad-factor 1.2 --crop-workers 3 --gpu-id 0
+  --edge 1024 --pad-factor 1.2 --crop-workers 2 --gpu-id 0 --rank 0 --n-rank 4
 
 # Regenerate only the sampled mask QA gallery (CPU-only, no VAE):
 conda run -n ltx python -m scripts.onestep_avatar.precompute \
@@ -160,6 +163,10 @@ conda run -n ltx python -m scripts.onestep_avatar.plot_training --run <run>
 - **Masks are tracked separately from latents.** A view encoded before `capture_mask_crop.mp4`
   existed has a complete, current guide master; `encode_pairs` checks the two independently so
   such a view is re-visited for its masks rather than skipped forever.
+- **Multi-GPU capture preprocessing shards whole sources.** Every process discovers the same
+  sorted corpus, then owns `sources[rank::n_rank]`; windows and both objectives never split
+  across ranks. Rank 0 alone writes QA. Shared bundle writes are atomic, and resume accepts a
+  bundle only when its encode-contract/input/VAE/crop provenance is current.
 - **Causality and the K/V cache are one feature, not two.** A cached context token's keys and
   values are only reusable because nothing later can change them, which is exactly what
   block-causal attention guarantees. Turning the mask off and keeping the cache would silently

@@ -12,14 +12,18 @@ from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar.precompute import (
     BUNDLE_SCHEMA_VERSION,
     CAPTURE_MANIFEST_NAME,
+    ENCODE_CONTRACT_VERSION,
+    BundleExpectation,
     CaptureSource,
     Pair,
     VideoReader,
+    _master_bundle_is_current,
     check_pair_alignment,
     discover_pairs,
     enumerate_capture_jobs,
     guide_bundle_path,
     master_record,
+    rank_slice,
     write_capture_mask_qa,
 )
 from scripts.prune.core.refine_core import WindowGeometry
@@ -32,6 +36,56 @@ def test_master_record_stores_the_whole_clip_not_a_window() -> None:
     assert record["master"].shape == (128, 18, 32, 32)
     assert record["master"].dtype == torch.bfloat16
     assert (record["schema_version"], record["fps"], record["pixel_frames"]) == (BUNDLE_SCHEMA_VERSION, 30.0, 137)
+    assert record["encode_contract_version"] == ENCODE_CONTRACT_VERSION
+
+
+def test_rank_slice_is_disjoint_and_covers_the_sorted_input() -> None:
+    items = list(range(17))
+    shards = [rank_slice(items, rank, 4) for rank in range(4)]
+    assert [item for shard in shards for item in shard] != items  # round-robin, not contiguous
+    assert sorted(item for shard in shards for item in shard) == items
+    assert all(set(shards[a]).isdisjoint(shards[b]) for a in range(4) for b in range(a + 1, 4))
+
+
+def test_bundle_currency_requires_the_current_contract_and_provenance(tmp_path: Path) -> None:
+    path = tmp_path / "ltx_vae_latent.pt"
+    record = master_record(
+        torch.zeros(1, 128, 4, 2, 2),
+        source="view",
+        fps=30.0,
+        pixel_frames=25,
+        box_xyxy=(1.0, 2.0, 65.0, 66.0),
+        edge=64,
+        objective="white",
+        input_fingerprint="rgb+mask-v1",
+        vae_fingerprint="vae-v1",
+    )
+    torch.save(record, path)
+    expected = BundleExpectation(
+        source="view",
+        latent_frames=4,
+        pixel_frames=25,
+        channels=128,
+        edge=64,
+        fps=30.0,
+        scale=32,
+        objective="white",
+        box_xyxy=(1.0, 2.0, 65.0, 66.0),
+        input_fingerprint="rgb+mask-v1",
+        vae_fingerprint="vae-v1",
+    )
+    assert _master_bundle_is_current(path, expected)
+
+    record["encode_contract_version"] = ENCODE_CONTRACT_VERSION - 1
+    torch.save(record, path)
+    assert not _master_bundle_is_current(path, expected)
+
+    record["encode_contract_version"] = ENCODE_CONTRACT_VERSION
+    torch.save(record, path)
+    assert not _master_bundle_is_current(
+        path,
+        BundleExpectation(**{**expected.__dict__, "input_fingerprint": "changed"}),
+    )
 
 
 BOX = [0.0, 100.0, 900.0, 1000.0]

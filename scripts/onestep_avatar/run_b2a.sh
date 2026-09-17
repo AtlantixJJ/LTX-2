@@ -9,12 +9,14 @@
 # session, immune to a signal delivered to the launching shell's process group or a SIGHUP
 # from a closed terminal.
 #
-#   setsid -f scripts/onestep_avatar/run_b2a.sh 1 3 </dev/null >/dev/null 2>&1 &
+#   for rank in 0 1 2 3; do
+#     setsid -f scripts/onestep_avatar/run_b2a.sh "$rank" 2 "$rank" 4 </dev/null >/dev/null 2>&1 &
+#   done
 #   disown
 #
 # `1` = GPU id (use one of 0-3), `3` = --crop-workers (load-bearing, see the README: the
 # default os.cpu_count() fan-out is what caused the very first, pre-supervisor OOM on
-# 09-10). Check `nvidia-smi`/`free -h` before raising either.
+# 09-10), followed by optional rank/n_rank. Check `nvidia-smi`/`free -h` before raising either.
 #
 # Progress: tail -f the log below, or watch `capture_latent_manifest.json`'s sibling bundle
 # count grow (`find <corpus> -name 'ltx_vae_latent*.pt' | wc -l`, target 6720 for both
@@ -24,8 +26,10 @@
 # once a source's VAE encode finishes, which is still one full source at a time on this GPU.
 set -uo pipefail
 
-GPU_ID="${1:?usage: run_b2a.sh <gpu-id 0-3> [crop-workers]}"
+GPU_ID="${1:?usage: run_b2a.sh <gpu-id 0-3> [crop-workers] [rank] [n-rank]}"
 CROP_WORKERS="${2:-3}"
+RANK="${3:-0}"
+N_RANK="${4:-1}"
 
 # Since the 2026-09-15 consolidation this script lives in LTX-2/scripts/onestep_avatar/, so
 # `../..` is the LTX-2 repo -- the directory `python -m scripts.onestep_avatar.*` must run
@@ -47,11 +51,12 @@ echo $$ > "$PIDFILE"
 while true; do
   free_before=$(free -m | awk '/^Mem:/{print $7}')
   {
-    echo "=== $(date -Iseconds) launching precompute --capture-only (gpu=$GPU_ID crop-workers=$CROP_WORKERS free_mem=${free_before}MiB) ==="
+    echo "=== $(date -Iseconds) launching precompute --capture-only (gpu=$GPU_ID rank=$RANK/$N_RANK crop-workers=$CROP_WORKERS free_mem=${free_before}MiB) ==="
   } >> "$LOG"
 
   "$PY" -u -m scripts.onestep_avatar.precompute \
     --model 2.5 --gpu-id "$GPU_ID" --capture-only \
+    --rank "$RANK" --n-rank "$N_RANK" \
     --objective bg white \
     --views 0 1 2 3 4 5 6 7 --edge 1024 --pad-factor 1.2 --crop-workers "$CROP_WORKERS" \
     >> "$LOG" 2>&1

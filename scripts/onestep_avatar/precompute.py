@@ -43,6 +43,7 @@ import multiprocessing
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TypeVar
 
 import cv2
 import numpy as np
@@ -62,6 +63,10 @@ SCHEMA_VERSION = 1
 # Bundle payload version. v2 holds the source's one continuous encode -- the master -- and
 # nothing else. Obsolete per-window bundles must be regenerated rather than supported here.
 BUNDLE_SCHEMA_VERSION = 2
+# Bump whenever the pixels-to-latent contract changes while the bundle's structural schema
+# remains compatible. Currency checks require this exact value, so old outputs are regenerated
+# rather than accepted merely because their tensor shape happens to match.
+ENCODE_CONTRACT_VERSION = 1
 
 # The three per-view products the trainer reads, all beside the source video. There is no
 # experiment-output tree any more: ``expr/onestep_avatar/precomputed/`` existed only to hold
@@ -87,6 +92,12 @@ CAPTURE_MANIFEST_NAME = "capture_latent_manifest.json"
 # or a changed --pad-factor/--window-frames/--overlap-frames invalidates only that entry.
 PLAN_CACHE_NAME = ".capture_plan_cache.json"
 LOGGER = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+def rank_slice(items: list[T], rank: int, n_rank: int) -> list[T]:
+    """Deterministic disjoint ownership used by both capture and paired passes."""
+    return items[rank::n_rank]
 
 
 @dataclass(frozen=True)
@@ -128,6 +139,21 @@ class CaptureJob:
     def relative_path(self) -> str:
         """A human-readable window label for logs/errors, not a real output path."""
         return f"{self.source.relative_dir}#window_{self.index:04d}"
+
+
+@dataclass(frozen=True)
+class BundleExpectation:
+    source: str
+    latent_frames: int
+    pixel_frames: int
+    channels: int
+    edge: int
+    fps: float
+    scale: int
+    objective: str
+    box_xyxy: tuple[float, float, float, float]
+    input_fingerprint: str
+    vae_fingerprint: str
 
 
 def bundle_path(source: CaptureSource, objective: str = dataset.DEFAULT_OBJECTIVE) -> Path:
@@ -197,6 +223,19 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: file.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def file_fingerprint(path: Path) -> str:
+    """Cheap invalidation fingerprint for large local inputs/checkpoints."""
+    stat = path.stat()
+    return f"{path.resolve()}:size={stat.st_size}:mtime_ns={stat.st_mtime_ns}"
+
+
+def capture_input_fingerprint(source: CaptureSource, objective: str) -> str:
+    fingerprint = source.rgb_fingerprint
+    if objective == "white":
+        fingerprint += ";mask=" + file_fingerprint(Path(source.rgb).with_name(dataset.CAPTURE_MASK_NAME))
+    return fingerprint
 
 
 def atomic_torch_save(value: object, destination: Path) -> None:
@@ -636,6 +675,8 @@ def master_record(
     box_xyxy: tuple[float, float, float, float] | None,
     edge: int | None,
     objective: str = dataset.DEFAULT_OBJECTIVE,
+    input_fingerprint: str | None = None,
+    vae_fingerprint: str | None = None,
 ) -> dict[str, object]:
     """Serialize one source's ONE continuous encode -- the whole bundle, not a window of it.
 
@@ -646,8 +687,11 @@ def master_record(
         raise ValueError(f"expected VAE latent [1, C, F, H, W], got {tuple(master.shape)}")
     return {
         "schema_version": BUNDLE_SCHEMA_VERSION,
+        "encode_contract_version": ENCODE_CONTRACT_VERSION,
         "source": source,
         "objective": objective,
+        "input_fingerprint": input_fingerprint,
+        "vae_fingerprint": vae_fingerprint,
         "master": master.squeeze(0).detach().to(device="cpu", dtype=torch.bfloat16).contiguous(),
         "fps": float(fps),
         "pixel_frames": int(pixel_frames),
@@ -711,7 +755,8 @@ def manifest(
 
 
 def _master_bundle_is_current(
-    path: Path, *, latent_frames: int, channels: int, edge: int, fps: float, scale: int
+    path: Path,
+    expected: BundleExpectation,
 ) -> bool:
     if not path.is_file():
         return False
@@ -719,12 +764,34 @@ def _master_bundle_is_current(
         bundle = torch.load(path, map_location="cpu", weights_only=True)
     except Exception:
         return False
-    master = bundle.get("master") if isinstance(bundle, dict) else None
+    if not isinstance(bundle, dict):
+        return False
+    master = bundle.get("master")
+    stored_box = bundle.get("box_xyxy")
     return (
         bundle.get("schema_version") == BUNDLE_SCHEMA_VERSION
+        and bundle.get("encode_contract_version") == ENCODE_CONTRACT_VERSION
+        and bundle.get("source") == expected.source
+        and bundle.get("objective") == expected.objective
+        and bundle.get("pixel_frames") == expected.pixel_frames
+        and bundle.get("edge") == expected.edge
+        and bundle.get("input_fingerprint") == expected.input_fingerprint
+        and bundle.get("vae_fingerprint") == expected.vae_fingerprint
+        and isinstance(stored_box, list)
+        and len(stored_box) == 4
+        and all(
+            abs(float(a) - float(b)) <= 1e-3
+            for a, b in zip(stored_box, expected.box_xyxy, strict=True)
+        )
         and isinstance(master, torch.Tensor)
-        and tuple(master.shape) == (channels, latent_frames, edge // scale, edge // scale)
-        and bundle.get("fps") == fps
+        and tuple(master.shape)
+        == (
+            expected.channels,
+            expected.latent_frames,
+            expected.edge // expected.scale,
+            expected.edge // expected.scale,
+        )
+        and bundle.get("fps") == expected.fps
     )
 
 
@@ -755,16 +822,25 @@ def encode_pairs(
     failed: list[str] = []
 
     pending: list[tuple[Pair, dict[str, object]]] = []
+    vae_fingerprint = file_fingerprint(Path(model.paths.video_vae()))
     for pair in pairs:
         info = check_pair_alignment(pair, geometry)
         guide_bundle = guide_bundle_path(pair, objective)
         current = _master_bundle_is_current(
             guide_bundle,
-            latent_frames=info["latent_frames"],
-            channels=model.caps.latent_channels,
-            edge=int(info["width"]),
-            fps=info["fps"],
-            scale=model.scale_factors.width,
+            BundleExpectation(
+                source=pair.relative_dir,
+                latent_frames=int(info["latent_frames"]),
+                pixel_frames=int(info["pixel_frames"]),
+                channels=model.caps.latent_channels,
+                edge=int(info["width"]),
+                fps=float(info["fps"]),
+                scale=model.scale_factors.width,
+                objective=objective,
+                box_xyxy=boxes[pair.relative_dir],
+                input_fingerprint=pair.guide_sha256,
+                vae_fingerprint=vae_fingerprint,
+            ),
         )
         masks_current = mask_video.mask_exists(Path(pair.guide).with_name(dataset.CAPTURE_MASK_CROP_STEM))
         if current and masks_current and not overwrite:
@@ -796,9 +872,11 @@ def encode_pairs(
                         source=pair.relative_dir,
                         fps=float(info["fps"]),
                         pixel_frames=int(info["pixel_frames"]),
-                        box_xyxy=info["box_xyxy"],
+                        box_xyxy=boxes[pair.relative_dir],
                         edge=int(info["width"]),
                         objective=objective,
+                        input_fingerprint=pair.guide_sha256,
+                        vae_fingerprint=vae_fingerprint,
                     ),
                     guide_bundle,
                 )
@@ -861,6 +939,7 @@ def encode_capture_jobs(
     """
     device = torch.device(f"cuda:{gpu_id}")
     time_scale = model.scale_factors.time
+    vae_fingerprint = file_fingerprint(Path(model.paths.video_vae()))
     completed = skipped = 0
 
     by_source_dir: dict[str, list[CaptureJob]] = {}
@@ -883,11 +962,19 @@ def encode_capture_jobs(
             if overwrite
             or not _master_bundle_is_current(
                 bundle_path(source, objective),
-                latent_frames=(last_needed - 1) // time_scale + 1,
-                channels=model.caps.latent_channels,
-                edge=edge,
-                fps=source_jobs[0].fps,
-                scale=model.scale_factors.width,
+                BundleExpectation(
+                    source=source.relative_dir,
+                    latent_frames=(last_needed - 1) // time_scale + 1,
+                    pixel_frames=last_needed,
+                    channels=model.caps.latent_channels,
+                    edge=edge,
+                    fps=source_jobs[0].fps,
+                    scale=model.scale_factors.width,
+                    objective=objective,
+                    box_xyxy=source_jobs[0].box_xyxy,
+                    input_fingerprint=capture_input_fingerprint(source, objective),
+                    vae_fingerprint=vae_fingerprint,
+                ),
             )
         )
         skipped += len(source_jobs) * (len(objectives) - len(needed))
@@ -955,6 +1042,8 @@ def encode_capture_jobs(
                             box_xyxy=source_jobs[0].box_xyxy,
                             edge=edge,
                             objective=objective,
+                            input_fingerprint=capture_input_fingerprint(source, objective),
+                            vae_fingerprint=vae_fingerprint,
                         )
                         del pixels, video, master
                         # One atomic save per (source, objective): a bundle is all-or-nothing,
@@ -981,6 +1070,20 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=model_registry.SUPPORTED_MODELS, default="2.5")
     parser.add_argument("--gpu-id", type=int, default=0)
+    parser.add_argument(
+        "--rank",
+        type=int,
+        default=0,
+        help="Zero-based worker rank. Sources/pairs are assigned by items[rank::n_rank].",
+    )
+    parser.add_argument(
+        "--n-rank",
+        "--n_rank",
+        dest="n_rank",
+        type=int,
+        default=1,
+        help="Number of independent GPU workers sharing this corpus (default: 1).",
+    )
     parser.add_argument("--corpus-root", type=Path, default=DEFAULT_CORPUS_ROOT)
     parser.add_argument(
         "--manifest-root",
@@ -1022,8 +1125,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
     parser.add_argument(
         "--limit",
         type=int,
-        help="Encode at most this many items after deterministic ordering -- windows under "
-        "--capture-only, views in the paired pass.",
+        help="Encode at most this many whole sources/views after rank sharding. Intended for smoke tests.",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--overwrite", action="store_true", help="Re-encode every selected window.")
@@ -1040,6 +1142,10 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
     objectives = tuple(o for o in dataset.OBJECTIVES if o in set(args.objective))
     if args.limit is not None and args.limit <= 0:
         parser.error("--limit must be positive")
+    if args.n_rank <= 0:
+        parser.error("--n-rank must be positive")
+    if args.rank < 0 or args.rank >= args.n_rank:
+        parser.error("--rank must satisfy 0 <= rank < n_rank")
     if args.edge <= 0 or args.edge % 32:
         parser.error("--edge must be a positive multiple of 32")
     if args.pad_factor < 1:
@@ -1060,7 +1166,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
             cache_path=args.corpus_root / PLAN_CACHE_NAME,
         )
         qa_paths: list[Path] = []
-        if not args.dry_run:
+        if args.rank == 0 and not args.dry_run:
             first_job = {job.source.relative_dir: job for job in all_jobs if job.index == 0}
             qa_paths = [
                 path
@@ -1077,7 +1183,13 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
                 )
             )
             return 0
-        jobs = all_jobs if args.limit is None else all_jobs[: args.limit]
+        # Shard SOURCES, not windows: every window and requested objective for one source must
+        # stay on one rank so two GPUs can never target the same atomic bundle.
+        rank_sources = rank_slice(sources, args.rank, args.n_rank)
+        if args.limit is not None:
+            rank_sources = rank_sources[: args.limit]
+        rank_dirs = {source.relative_dir for source in rank_sources}
+        jobs = [job for job in all_jobs if job.source.relative_dir in rank_dirs]
         capture_manifest = {
             "schema_version": SCHEMA_VERSION,
             "kind": "one_step_raw_capture_target_latents",
@@ -1104,8 +1216,23 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
         }
         manifest_path = args.corpus_root / CAPTURE_MANIFEST_NAME
         if args.dry_run:
-            print(json.dumps({"sources": len(sources), "windows": len(jobs), "manifest": str(manifest_path)}, indent=2))  # noqa: T201
+            print(  # noqa: T201
+                json.dumps(
+                    {
+                        "rank": args.rank,
+                        "n_rank": args.n_rank,
+                        "total_sources": len(sources),
+                        "rank_sources": len(rank_sources),
+                        "rank_windows": len(jobs),
+                        "manifest": str(manifest_path),
+                    },
+                    indent=2,
+                )
+            )
             return 0
+        # Every rank writes the same full-corpus manifest through a PID-unique temp file.
+        # Identical atomic replaces are safe, while a rank-local manifest would lose the boxes
+        # owned by every other GPU and make downstream rendering incomplete.
         atomic_json_save(capture_manifest, manifest_path)
         completed, skipped, failed = encode_capture_jobs(
             model,
@@ -1117,8 +1244,8 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
             objectives=objectives,
         )
         print(  # noqa: T201 -- CLI completion summary.
-            f"Capture target VAE precompute complete: encoded={completed}, skipped={skipped}, "
-            f"failed={len(failed)}, manifest={manifest_path}"
+            f"Capture target VAE precompute complete: rank={args.rank}/{args.n_rank}, "
+            f"encoded={completed}, skipped={skipped}, failed={len(failed)}, manifest={manifest_path}"
         )
         if failed:
             # A nonzero exit here WOULD make run_b2a.sh's supervisor restart -- and it would
@@ -1136,19 +1263,20 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
     totals = {"completed": 0, "skipped": 0}
     failed: list[str] = []
     for objective in objectives:
-        pairs = discover_pairs(args.corpus_root, objective)
-        if not pairs:
+        all_pairs = discover_pairs(args.corpus_root, objective)
+        if not all_pairs:
             raise SystemExit(
                 f"No views with both {dataset.render_name(objective)} and "
                 f"{dataset.capture_bundle_name(objective)} under {args.corpus_root}. Run "
                 f"--capture-only --objective {objective} first, then build_guidance.py "
                 f"--objective {objective} and its visual review gate."
             )
+        pairs = rank_slice(all_pairs, args.rank, args.n_rank)
         if args.limit is not None:
             pairs = pairs[: args.limit]
         # The freeze covers the complete corpus even when this invocation encodes just a
         # review shard. A later larger --limit can then safely resume the same root.
-        frozen_manifest = manifest(model, geometry, discover_pairs(args.corpus_root, objective))
+        frozen_manifest = manifest(model, geometry, all_pairs)
         suffix = "" if objective == dataset.DEFAULT_OBJECTIVE else f".{objective}"
         manifest_path = args.manifest_root / f"manifest{suffix}.json"
         if manifest_path.exists() and not args.overwrite:
@@ -1183,7 +1311,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
     completed, skipped = totals["completed"], totals["skipped"]
     print(  # noqa: T201 -- CLI completion summary.
         f"Guide master VAE precompute complete: encoded={completed}, skipped={skipped}, "
-        f"failed={len(failed)}, objectives={','.join(objectives)}"
+        f"failed={len(failed)}, objectives={','.join(objectives)}, rank={args.rank}/{args.n_rank}"
     )
     if failed:
         print("failed views: " + ", ".join(failed[:20]) + (" ..." if len(failed) > 20 else ""))  # noqa: T201
