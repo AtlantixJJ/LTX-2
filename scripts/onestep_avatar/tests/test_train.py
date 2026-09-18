@@ -17,6 +17,8 @@ tensor the loop hands to which call, and a stub makes that visible.
 from __future__ import annotations
 
 import argparse
+import json
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -25,6 +27,7 @@ from ltx_core.types import SpatioTemporalScaleFactors
 from ltx_core.utils import to_velocity
 from scripts.onestep_avatar import causal_core, onestep_core, train
 from scripts.onestep_avatar.causal_core import BlockCache, CausalGeometry
+from scripts.prune.core import model_registry
 
 SCALE = SpatioTemporalScaleFactors(time=8, height=32, width=32)
 GEOMETRY = CausalGeometry(scale_factors=SCALE, block_latent_frames=2, context_latent_frames=2)
@@ -344,14 +347,22 @@ def test_d0_noises_the_capture_not_the_guide(monkeypatch: pytest.MonkeyPatch) ->
     assert not torch.allclose(noisy[0].float(), (1 - SIGMA0) * z_g_tokens + SIGMA0 * eps, atol=0.1)
 
 
-def test_d0_rejects_the_anchor_term() -> None:
-    """base_denoised is Phi(lerp(z_g, eps, sigma_0)) -- off-input for a z_y-noised run."""
-    with pytest.raises(SystemExit, match="off-input"):
+@pytest.mark.parametrize("weight", ["0.1", "-0.1", "nan", "inf"])
+def test_anchor_weight_is_disabled(weight: str) -> None:
+    """2026-09-18 audit F8: no ``base_denoised.pt`` producer exists, and a fixed per-view tensor
+    cannot represent the anchor for every chain/sigma/history combination that would read it --
+    so any nonzero ``--anchor-weight`` is refused before the subset or model is even touched,
+    regardless of guide mode."""
+    with pytest.raises(SystemExit, match="anchor-weight is disabled"):
         train.main(
             [
                 "--subset", "/nonexistent.json", "--output", "/nonexistent",
-                "--guide-mode", "d0", "--anchor-weight", "0.1",
+                "--guide-mode", "d0", "--anchor-weight", weight,
             ]
+        )
+    with pytest.raises(SystemExit, match="anchor-weight is disabled"):
+        train.main(
+            ["--subset", "/nonexistent.json", "--output", "/nonexistent", "--anchor-weight", weight]
         )
 
 
@@ -372,7 +383,7 @@ def test_a_window_chain_subset_is_refused_rather_than_reinterpreted(tmp_path) ->
 
 def _bad_subset(tmp_path):  # noqa: ANN001, ANN202
     """A subset that fails at the very next check after the used-output guard, so these tests
-    exercise only --resume/--overwrite's effect on that guard, not the rest of the launch."""
+    exercise only --overwrite's effect on that guard, not the rest of the launch."""
     subset = tmp_path / "old.json"
     subset.write_text(
         '{"kind": "one_step_argavatar_window_chains", "corpus_root": "/nonexistent", '
@@ -383,31 +394,72 @@ def _bad_subset(tmp_path):  # noqa: ANN001, ANN202
 
 def test_a_second_launch_into_a_used_output_is_refused(tmp_path) -> None:  # noqa: ANN001
     """S3b of the 2026-09-17 cleanup plan: train.py has no resume -- step restarts at 0 every
-    launch -- so an unguarded append silently merges two runs under one step numbering."""
+    launch -- so an unguarded write would silently merge two runs under one step numbering."""
     output = tmp_path / "out"
     output.mkdir()
     (output / "metrics_rank0.jsonl").write_text('{"step": 0}\n')
-    with pytest.raises(SystemExit, match=r"already has 1 metrics_rank\*\.jsonl"):
+    with pytest.raises(SystemExit, match=r"already has 1 entr"):
         train.main(["--subset", str(_bad_subset(tmp_path)), "--output", str(output)])
     assert (output / "metrics_rank0.jsonl").is_file()  # refused, not touched
 
 
-def test_overwrite_deletes_the_existing_logs_before_continuing(tmp_path) -> None:  # noqa: ANN001
+def test_overwrite_does_not_touch_the_output_when_validation_fails_first(tmp_path) -> None:  # noqa: ANN001
+    """2026-09-18 audit F6: validation and (would-be) archiving must be side-effect free until
+    the run is actually going to happen. The old code unlinked ``metrics_rank*.jsonl`` here
+    unconditionally, before this subset-kind check ran -- so ``--overwrite`` on an otherwise
+    invalid launch was destructive for no benefit. Archiving now happens only after
+    ``Accelerator()``/model setup, far past where this failure is raised, so nothing here should
+    ever be touched by a launch that never gets that far."""
     output = tmp_path / "out"
     output.mkdir()
     (output / "metrics_rank0.jsonl").write_text('{"step": 0}\n')
     with pytest.raises(SystemExit, match=r"block-chain subset"):  # the NEXT check, past the guard
         train.main(["--subset", str(_bad_subset(tmp_path)), "--output", str(output), "--overwrite"])
-    assert not (output / "metrics_rank0.jsonl").exists()
+    assert (output / "metrics_rank0.jsonl").is_file()  # not archived, not deleted
 
 
-def test_resume_launches_into_a_used_output_without_deleting_it(tmp_path) -> None:  # noqa: ANN001
+def test_dry_run_flag_does_not_reach_the_archive_step(tmp_path) -> None:  # noqa: ANN001
+    """The archive step (F6) sits textually after ``Accelerator()``/model setup, and
+    ``--dry-run`` returns well before either is created -- so a dry run can never archive or
+    delete an existing --output, for any subset. This exercises that with the same early-failing
+    subset the other guard tests use; a subset that reached the actual dry-run branch would
+    return 0 even earlier, before ``needs_archive`` is ever consumed."""
     output = tmp_path / "out"
     output.mkdir()
     (output / "metrics_rank0.jsonl").write_text('{"step": 0}\n')
-    with pytest.raises(SystemExit, match=r"block-chain subset"):  # the NEXT check, past the guard
-        train.main(["--subset", str(_bad_subset(tmp_path)), "--output", str(output), "--resume"])
-    assert (output / "metrics_rank0.jsonl").is_file()  # --resume does not delete it
+    with pytest.raises(SystemExit, match=r"block-chain subset"):
+        train.main(
+            ["--subset", str(_bad_subset(tmp_path)), "--output", str(output), "--overwrite", "--dry-run"]
+        )
+    assert (output / "metrics_rank0.jsonl").is_file()
+
+
+def test_archive_existing_run_moves_prior_contents_aside(tmp_path) -> None:  # noqa: ANN001
+    """F6's replacement for deleting ``metrics_rank*.jsonl``: the whole directory moves into one
+    timestamped subdirectory, so a relaunch's fresh checkpoints/config never land beside a prior
+    run's under the same names -- and the prior run stays recoverable instead of discarded."""
+    output = tmp_path / "out"
+    output.mkdir()
+    (output / "metrics_rank0.jsonl").write_text('{"step": 0}\n')
+    (output / "checkpoints").mkdir()
+    (output / "checkpoints" / "lora_weights_step_00100.safetensors").write_bytes(b"")
+
+    archived = train.archive_existing_run(output)
+
+    assert archived is not None
+    assert archived.parent == output
+    assert archived.name.startswith("archived_")
+    assert (archived / "metrics_rank0.jsonl").is_file()
+    assert (archived / "checkpoints" / "lora_weights_step_00100.safetensors").is_file()
+    # The directory itself is reusable immediately: nothing but the archive is left in it.
+    assert [p.name for p in output.iterdir()] == [archived.name]
+
+
+def test_archive_existing_run_is_a_noop_on_an_empty_directory(tmp_path) -> None:  # noqa: ANN001
+    output = tmp_path / "out"
+    output.mkdir()
+    assert train.archive_existing_run(output) is None
+    assert list(output.iterdir()) == []
 
 
 def test_a_cache_too_small_for_this_clip_is_refused_before_any_forward() -> None:
@@ -507,7 +559,7 @@ def test_a_subset_whose_masters_shrank_under_it_is_refused_at_startup(tmp_path) 
     view = tmp_path / "Part_1" / "0001_01" / "views" / "view01_cam01"
     view.mkdir(parents=True)
     torch.save(
-        {"schema_version": 2, "master": torch.zeros(CHANNELS, 18, 2, 2)},
+        {"schema_version": 2, "master": torch.zeros(CHANNELS, 18, 2, 2), "fps": 30.0},
         view / train.dataset.capture_bundle_name("bg"),
     )
     rel = "Part_1/0001_01/views/view01_cam01"
@@ -534,6 +586,115 @@ def test_a_source_the_capture_pass_never_encoded_is_named(tmp_path) -> None:  # 
     }
     with pytest.raises(SystemExit, match="does not exist, but the subset lists"):
         train.assert_subset_matches_geometry(subset, GEOMETRY, corpus_root=tmp_path)
+
+
+def _write_capture_and_guide(view, *, n_latent_frames: int, fps: float = 30.0, with_guide: bool = True) -> None:  # noqa: ANN001
+    view.mkdir(parents=True)
+    torch.save(
+        {"schema_version": 2, "master": torch.zeros(CHANNELS, n_latent_frames, 2, 2), "fps": fps},
+        view / train.dataset.capture_bundle_name("bg"),
+    )
+    if with_guide:
+        torch.save(
+            {"schema_version": 2, "master": torch.zeros(CHANNELS, n_latent_frames, 2, 2), "fps": fps},
+            view / train.dataset.guide_bundle_name("bg"),
+        )
+
+
+def test_a_missing_guide_master_is_caught_before_the_second_source_is_ever_drawn(tmp_path) -> None:  # noqa: ANN001
+    """2026-09-18 audit, Stage A gap 1: ``--dry-run`` only ever draws ``store[0]``, and the old
+    startup check validated only capture bundles -- so a subset whose FIRST source is complete
+    but whose SECOND is missing its guide master passed both a dry run and normal startup, and
+    only failed with a raw ``FileNotFoundError`` once a rank happened to draw that source's
+    chain, which can be well after the 42 GB checkpoint load. This reproduces exactly that shape
+    and checks it is now refused for every source, up front, by name.
+    """
+    ok = tmp_path / "Part_1" / "0001_01" / "views" / "view01_cam01"
+    missing_guide = tmp_path / "Part_1" / "0002_01" / "views" / "view01_cam01"
+    _write_capture_and_guide(ok, n_latent_frames=18)
+    _write_capture_and_guide(missing_guide, n_latent_frames=18, with_guide=False)
+
+    subset = {
+        "sources": [
+            {"relative_dir": "Part_1/0001_01/views/view01_cam01", "n_latent_frames": 18},
+            {"relative_dir": "Part_1/0002_01/views/view01_cam01", "n_latent_frames": 18},
+        ],
+        "chains": [
+            {"source": "Part_1/0001_01/views/view01_cam01", "blocks": [0]},
+            {"source": "Part_1/0002_01/views/view01_cam01", "blocks": [0]},
+        ],
+    }
+    with pytest.raises(SystemExit, match=r"0002_01.*does not exist"):
+        train.assert_subset_matches_geometry(subset, GEOMETRY, corpus_root=tmp_path, with_guide=True)
+
+    # d0 never reads the guide master, so the same subset is fine without --guide-mode d1.
+    train.assert_subset_matches_geometry(subset, GEOMETRY, corpus_root=tmp_path, with_guide=False)
+
+
+def test_a_guide_master_that_disagrees_with_its_capture_master_is_refused_at_startup(tmp_path) -> None:  # noqa: ANN001
+    """The frame-count and fps agreement ``ChainStore.__getitem__`` otherwise only checks the
+    first time a rank draws this particular source's chain (a ``ValueError`` deep inside a
+    30-minute-old distributed run), moved to the same up-front check as F4's other bundle
+    validation."""
+    frame_drift = tmp_path / "Part_1" / "0003_01" / "views" / "view01_cam01"
+    frame_drift.mkdir(parents=True)
+    torch.save(
+        {"schema_version": 2, "master": torch.zeros(CHANNELS, 18, 2, 2), "fps": 30.0},
+        frame_drift / train.dataset.capture_bundle_name("bg"),
+    )
+    torch.save(
+        {"schema_version": 2, "master": torch.zeros(CHANNELS, 17, 2, 2), "fps": 30.0},
+        frame_drift / train.dataset.guide_bundle_name("bg"),
+    )
+    subset = {
+        "sources": [{"relative_dir": "Part_1/0003_01/views/view01_cam01", "n_latent_frames": 18}],
+        "chains": [{"source": "Part_1/0003_01/views/view01_cam01", "blocks": [0]}],
+    }
+    with pytest.raises(SystemExit, match=r"guide master .* shape .* != capture master .* shape"):
+        train.assert_subset_matches_geometry(subset, GEOMETRY, corpus_root=tmp_path, with_guide=True)
+
+    fps_drift = tmp_path / "Part_1" / "0004_01" / "views" / "view01_cam01"
+    fps_drift.mkdir(parents=True)
+    torch.save(
+        {"schema_version": 2, "master": torch.zeros(CHANNELS, 18, 2, 2), "fps": 30.0},
+        fps_drift / train.dataset.capture_bundle_name("bg"),
+    )
+    torch.save(
+        {"schema_version": 2, "master": torch.zeros(CHANNELS, 18, 2, 2), "fps": 25.0},
+        fps_drift / train.dataset.guide_bundle_name("bg"),
+    )
+    subset = {
+        "sources": [{"relative_dir": "Part_1/0004_01/views/view01_cam01", "n_latent_frames": 18}],
+        "chains": [{"source": "Part_1/0004_01/views/view01_cam01", "blocks": [0]}],
+    }
+    with pytest.raises(SystemExit, match=r"guide fps 25\.0 != capture fps 30\.0"):
+        train.assert_subset_matches_geometry(subset, GEOMETRY, corpus_root=tmp_path, with_guide=True)
+
+
+def test_a_guide_master_with_matching_frame_count_but_a_different_spatial_size_is_refused(  # noqa: ANN001
+    tmp_path,
+) -> None:
+    """2026-09-18 audit, Stage A gap 4: the preflight guide check compared latent-FRAME count
+    only, so a guide re-encoded at a different crop box -- same 18 latent frames, spatial
+    (16, 32) instead of the capture's (32, 32) -- passed both a dry run and normal startup and
+    was only caught deep inside `ChainStore.__getitem__`'s `z_g.shape != z_y.shape` check, after
+    `Accelerator()`/model setup. The check now compares the full `[C, F, H, W]` shape."""
+    view = tmp_path / "Part_1" / "0005_01" / "views" / "view01_cam01"
+    view.mkdir(parents=True)
+    torch.save(
+        {"schema_version": 2, "master": torch.zeros(CHANNELS, 18, 32, 32), "fps": 30.0},
+        view / train.dataset.capture_bundle_name("bg"),
+    )
+    torch.save(
+        {"schema_version": 2, "master": torch.zeros(CHANNELS, 18, 16, 32), "fps": 30.0},
+        view / train.dataset.guide_bundle_name("bg"),
+    )
+    subset = {
+        "sources": [{"relative_dir": "Part_1/0005_01/views/view01_cam01", "n_latent_frames": 18}],
+        "chains": [{"source": "Part_1/0005_01/views/view01_cam01", "blocks": [0]}],
+    }
+    with pytest.raises(SystemExit, match=r"guide master .* shape .* != capture master .* shape"):
+        train.assert_subset_matches_geometry(subset, GEOMETRY, corpus_root=tmp_path, with_guide=True)
 
 
 def test_multilevel_sigma_schedule_rotates_by_rank_and_step() -> None:
@@ -575,6 +736,145 @@ def test_step_zero_lora_export_requires_exactly_zero_b() -> None:
 def test_step_zero_lora_export_requires_b_weights() -> None:
     with pytest.raises(RuntimeError, match="no lora_B weights"):
         train.assert_exported_lora_is_noop({"diffusion_model.block.to_q.lora_A.weight": torch.zeros(2, 4)})
+
+
+def _fake_model() -> model_registry.RefinerModel:
+    """A ``RefinerModel`` with no checkpoint behind it -- ``checkpoint_metadata`` only reads
+    ``.scale_factors`` and ``.key``, so the rest can be placeholders rather than real paths."""
+    return model_registry.RefinerModel(
+        key="test", version=(0,), paths=None, sigmas=[], stepper_kind="euler", caps=None,
+        scale_factors=SCALE, scale_factors_source="test",
+    )
+
+
+@pytest.fixture
+def cli_subset(tmp_path, monkeypatch):  # noqa: ANN001, ANN201
+    """Two independent sources: a valid first chain cannot hide a bad second chain."""
+    for source in ("a", "b"):
+        _write_capture_and_guide(tmp_path / source, n_latent_frames=18)
+    subset = {
+        "kind": "one_step_argavatar_block_chains", "corpus_root": str(tmp_path),
+        "objective": "bg", "chain_length": 1,
+        "sources": [{"relative_dir": name, "n_latent_frames": 18} for name in ("a", "b")],
+        "chains": [
+            {"source": name, "split": "train", "actor": name, "blocks": [0], "seed_is_clip_start": True}
+            for name in ("a", "b")
+        ],
+    }
+    path = tmp_path / "subset.json"
+    path.write_text(json.dumps(subset))
+    monkeypatch.setattr(model_registry, "resolve", lambda _: _fake_model())
+    return path
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("defect", [
+    "missing_guide", "guide_shape", "guide_fps", "missing_fps", "zero_fps",
+    "nan_fps", "bad_tensor", "capture_geometry",
+])
+def test_cli_preflight_rejects_bad_second_source_without_touching_run(  # noqa: ANN001
+    tmp_path, monkeypatch, cli_subset, dry_run, defect,
+) -> None:
+    guide_mode = "d1" if "guide" in defect else "d0"
+    path = tmp_path / "b" / (
+        train.dataset.guide_bundle_name("bg") if guide_mode == "d1" else train.dataset.capture_bundle_name("bg")
+    )
+    record = train._load_record(path)
+    if defect == "missing_guide":
+        path.unlink()
+        error = "does not exist"
+    else:
+        if defect == "guide_shape":
+            record["master"] = record["master"][:, :, :1, :]
+            error = "guide master .* shape"
+        elif defect == "guide_fps":
+            record["fps"] = 25.0
+            error = "guide fps"
+        elif defect == "bad_tensor":
+            record["master"] = record["master"][0]
+            error = "nonempty floating"
+        elif defect == "capture_geometry":
+            record["master"] = record["master"][:, :, :1, :]
+            error = "all sources must share"
+        else:
+            record.pop("fps")
+            if defect != "missing_fps":
+                record["fps"] = 0.0 if defect == "zero_fps" else float("nan")
+            error = "fps must be a finite positive"
+        torch.save(record, path)
+    monkeypatch.setattr(train, "Accelerator", lambda: pytest.fail("preflight reached Accelerator"))
+    output = tmp_path / "run"
+    output.mkdir()
+    old_log = output / "metrics_rank0.jsonl"
+    old_log.write_bytes(b"old run\n")
+    args = ["--subset", str(cli_subset), "--output", str(output), "--overwrite", "--guide-mode", guide_mode]
+    with pytest.raises(SystemExit, match=error):
+        train.main(args + (["--dry-run"] if dry_run else []))
+    assert old_log.read_bytes() == b"old run\n"
+    assert list(output.iterdir()) == [old_log]
+
+
+def test_successful_overwrite_dry_run_preserves_the_whole_run(tmp_path, monkeypatch, cli_subset) -> None:  # noqa: ANN001
+    monkeypatch.setattr(train, "Accelerator", lambda: pytest.fail("dry-run reached Accelerator"))
+    output = tmp_path / "run"
+    output.mkdir()
+    (output / "checkpoints").mkdir()
+    files = [output / "config.json", output / "metrics_rank0.jsonl", output / "checkpoints" / "old.safetensors"]
+    for path in files:
+        path.write_bytes(b"prior contents")
+    assert train.main(["--subset", str(cli_subset), "--output", str(output), "--overwrite", "--dry-run"]) == 0
+    assert set(output.rglob("*")) == {*files, output / "checkpoints"}
+    assert all(path.read_bytes() == b"prior contents" for path in files)
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+def test_only_main_rank_archives_after_setup(tmp_path, monkeypatch, cli_subset, rank) -> None:  # noqa: ANN001
+    """Exercise the actual CLI mutation boundary with CPU stand-ins for distributed setup."""
+    events = []
+    accelerator = SimpleNamespace(
+        device=torch.device("cpu"), num_processes=2, process_index=rank, is_main_process=rank == 0,
+        wait_for_everyone=lambda: events.append("barrier"),
+        prepare=lambda *args: (events.append("prepare") or args),
+    )
+    monkeypatch.setattr(train, "Accelerator", lambda: accelerator)
+    monkeypatch.setattr(train.prompt_cache, "get_or_build", lambda *args: None)
+    monkeypatch.setattr(train, "build_transformer", lambda *args: torch.nn.Linear(2, 2))
+    monkeypatch.setattr(train, "_num_blocks", lambda _: 1)
+    monkeypatch.setattr(train, "_inner_dim", lambda _: 2)
+    monkeypatch.setattr(train, "init_wandb", lambda *args, **kwargs: None)
+    archive = train.archive_existing_run
+
+    def record_archive(path):
+        events.append("archive")
+        return archive(path)
+
+    monkeypatch.setattr(train, "archive_existing_run", record_archive)
+    output = tmp_path / "run"
+    output.mkdir()
+    (output / "config.json").write_text("prior config")
+    assert train.main(["--subset", str(cli_subset), "--output", str(output), "--overwrite", "--steps", "0"]) == 0
+    if rank == 0:
+        assert events == ["prepare", "barrier", "archive", "barrier", "barrier"]
+        assert json.loads((output / "config.json").read_text())["loss"] == "full_frame_x0_mse"
+        archived = next(output.glob("archived_*"))
+        assert (archived / "config.json").read_text() == "prior config"
+    else:
+        assert "archive" not in events
+        assert (output / "config.json").read_text() == "prior config"
+
+
+def test_checkpoint_metadata_stamps_the_loss_identifier() -> None:
+    """2026-09-18 audit gap 2: the loss arithmetic has been unweighted full-frame MSE since
+    before this field existed, but nothing on a saved checkpoint said so -- a reader (or a
+    future loss change) had no field to check against. ``onestep_avatar_loss`` closes that."""
+    args = argparse.Namespace(
+        sigma0=SIGMA0, sigma_levels=None, block_latent_frames=2, context_latent_frames=2,
+        objective="bg", guide_mode="d1", anchor_weight=0.0, teacher_forcing=False,
+        lora_rank=8, lora_alpha=8, lora_target="attn",
+    )
+    subset = {"chain_length": 3, "sources": []}
+    metadata = train.checkpoint_metadata(args, subset, _fake_model(), step=0)
+    assert metadata["onestep_avatar_loss"] == train.FULL_FRAME_X0_MSE == "full_frame_x0_mse"
 
 
 # --- onestep_core: the deployment counterpart of the training loop -----------------------

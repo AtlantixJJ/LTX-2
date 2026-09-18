@@ -33,9 +33,13 @@ A metric that gates a corpus should be trivially testable and trivially auditabl
 
 ## Reading the number
 
-Corpus-wide: IoU p50 mostly 0.89–0.93. The band 0.6–0.85 is "proceed, masked loss mandatory";
-below 0.6 the pair is not usable. One clip (`0047_01`) sits low (p0 0.573, p50 0.675) and is
-worth a second look before it enters a training set.
+Corpus-wide: IoU p50 mostly 0.89–0.93. This is a QA/alignment diagnostic, not a training
+gate: `train.py`'s loss is unconditional full-frame MSE with no mask or disagreement
+weighting (2026-09-18 audit, binding decision), so there is no "masked loss mandatory" band
+to route a pair into and a missing/low-IoU mask QA artifact is not by itself a reason to
+exclude an otherwise valid full-frame D1 pair. A low IoU is still worth a second look for
+render/pose misalignment — one clip (`0047_01`) sits low (p0 0.573, p50 0.675) — but the
+action it motivates is investigation, not automatic rejection.
 
 ## Tests
 

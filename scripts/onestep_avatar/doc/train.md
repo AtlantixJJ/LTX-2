@@ -24,7 +24,7 @@ corpus masters ───────────┴─▶ ChainStore ─▶ Chai
                                               ▼
             prime_cache (GT; ALWAYS called -- one forward even with nothing to prime)
                                               ▼
-       per block:  noise_block ─▶ denoise_block ─▶ full-frame MSE + anchor ─▶ backward
+       per block:  noise_block ─▶ denoise_block ─▶ full-frame MSE ─▶ backward
                                               ─▶ refresh_block ─▶ evict
                                               ▼
               metrics_rank<r>.jsonl  +  LoRA safetensors with metadata
@@ -38,8 +38,8 @@ The loss is unconditional full-frame token MSE:
 
 There is no alpha, subject, mask, or render/capture-disagreement weighting. `ChainStore` reads
 only the continuous capture master (and the guide master for D1), so training does not consume
-`capture_mask_crop.mp4` or `argavatar_alpha.mp4`. The anchor, when enabled, is the same
-full-frame MSE between `z0_pred` and the frozen-base output on the same noised input.
+`capture_mask_crop.mp4` or `argavatar_alpha.mp4`. The anchor is unsupported; the CLI rejects
+every nonzero or nonfinite anchor weight before reading the subset.
 
 This deliberately makes every predicted token and channel contribute equally. In particular,
 the silhouette-boundary disagreement is now part of the learning signal, rather than a region
@@ -63,8 +63,7 @@ for block in selected consecutive blocks:
 
     z0 = denoise_block(noisy, cache)                  # reads past K/V; writes none
     mse = mean((z0 - target[lo:hi])^2)                # every token, every channel
-    anchor = mean((z0 - base[lo:hi])^2) if enabled else 0
-    backward((mse + anchor_weight * anchor) / K)      # release this block's activations
+    backward(mse / K)                               # release this block's activations
 
     clean = target[lo:hi] if teacher_forcing else detach(z0)
     refresh_block(clean, cache)                       # no-grad: append this block's K/V
@@ -81,9 +80,12 @@ empty forward keeps every FSDP rank at the same `1 + K + K` transformer-forward 
 ## The checkpoint contract
 
 A fixed-σ adapter must not be loadable off-condition. Stamped into the safetensors metadata:
-σ₀ (or `"mixed"`), the σ level list, `K`, the schedule, the attention kind, **block and cache
-geometry**, the subset hash, the **objective**, guide mode, anchor weight, teacher forcing,
-LoRA rank/alpha/target.
+the **loss identifier** (`onestep_avatar_loss`, always `full_frame_x0_mse` — `train.FULL_FRAME_X0_MSE`,
+2026-09-18 audit gap 2, so a saved artifact names its own loss convention instead of leaving it
+implicit in the date it was trained), σ₀ (or `"mixed"`), the σ level list, `K`, the schedule, the
+attention kind, **block and cache geometry**, the subset hash, the **objective**, guide mode,
+anchor weight, teacher forcing, LoRA rank/alpha/target. `--output/config.json` and the W&B run
+config carry the same `loss` field.
 
 Cache depth belongs there for the same reason σ does: an adapter trained with two frames of
 cached context is a different function from one trained with sixteen, and nothing downstream
@@ -106,11 +108,10 @@ exactly zero; failure refuses to create a misleading baseline artifact. This mak
 | `--block-latent-frames` / `--context-latent-frames` | SS1.6's geometry and cache depth |
 | `--sigma-levels` | one adapter across several operating points |
 | `--teacher-forcing` | ablation: the refresh is fed `z_y[i]` instead of `ẑ₀[i].detach()` |
-| `--anchor-weight` | SS1.5 row 2; needs `base_denoised.pt` |
+| `--anchor-weight` | **disabled** (2026-09-18 audit F8) — only `0.0` is accepted; no `base_denoised.pt` producer exists and a fixed per-view tensor cannot represent the anchor across chains/sigma/history |
 | `--timing` | per-step phase breakdown; see "Reading the timing lines" below |
-| `--skip-subset-check` | skip the startup read of each source's master; moves a stale-subset failure to step 0 |
-| `--overwrite` | delete an `--output`'s existing `metrics_rank*.jsonl` before launching |
-| `--resume` | launch into a used `--output` anyway; there is no real resume (see Invariants) |
+| `--skip-subset-check` | explicit opt-out of bundle preflight; failures can then occur at any later chain load |
+| `--overwrite` | archive a used `--output`'s prior contents into `archived_<timestamp>/` before launching (see Invariants) |
 
 **Teacher vs self forcing differ in exactly one tensor** — what `refresh` is handed. Nothing
 else in the loop, and nothing in `causal_core`, knows which regime is in play.
@@ -132,32 +133,49 @@ else in the loop, and nothing in `causal_core`, knows which regime is in play.
   `train_chain` re-checks `cache.fits(...)` before the step's first forward.
 - **A v1 bundle is refused with a pointed error**, never silently reassembled. A reader that
   quietly reconstructs is a second producer of the tensor the trainer learns from.
-- **A stale subset is refused at STARTUP, before the 42 GB checkpoint load.**
-  `assert_subset_matches_geometry` runs two checks: every chain's blocks must exist in the
-  plan implied by its source's recorded `n_latent_frames` (free), and that recorded count must
-  match what the stored master actually holds (one ~6 MB bundle read per distinct source;
-  `--skip-subset-check` opts out). The second is the one that fires in practice and the first
-  cannot see it — a subset frozen before 2026-09-16 is *internally* consistent, because
-  `windows.py` took both the count and the plan from the source video. `train_chain` keeps the
-  per-chain check as the backstop for a subset whose recorded count is itself stale.
+- **A stale subset is refused at STARTUP, before the 42 GB checkpoint load, for EVERY selected
+  source.** `assert_subset_matches_geometry` runs three checks: every chain's blocks must exist
+  in the plan implied by its source's recorded `n_latent_frames` (free); that recorded count
+  must match what the stored capture master actually holds (one ~6 MB bundle read per distinct
+  source); and, when `--guide-mode d1` (the default), each source's guide master must exist and
+  agree with its capture master on the full `[C, F, H, W]` shape (not just latent-frame count —
+  a guide re-encoded at a different resolution can match on frame count alone and still be the
+  wrong shape) and fps. `--skip-subset-check` opts out of the bundle reads. The capture-frame
+  check is the one that fires in practice and the internal
+  check cannot see it — a subset frozen before 2026-09-16 is *internally* consistent, because
+  `windows.py` took both the count and the plan from the source video. `train_chain`/
+  `ChainStore.__getitem__` keep their per-chain checks as the backstop for a subset whose
+  recorded count is itself stale.
+  `_load_training_master` is shared by preflight and lazy chain loading: it requires a nonempty
+  floating `[C, F, H, W]` master and a finite positive FPS, including for D0. Preflight also
+  checks that every capture has the same `[C, H, W]`, since the run reuses one cache. Each
+  required bundle is read once per preflight. Crop/encode/VAE identity and latent content pins
+  remain Stage B/D work; structural acceptance is not semantic provenance validation.
 - **A pre-causal window-chain subset is refused**, not reinterpreted: a window index and a
   block index are different numbers over the same clip. The check lives in
   `ChainStore.__init__` (S2 of the 2026-09-17 cleanup plan), not `train.main`, so
   `visualize_d0.py`'s direct `ChainStore` construction gets the same pointed error instead of
   a raw `KeyError: 'latent_time_scale'` inside geometry setup.
 - **A subset frozen against the other objective is refused.**
-- `--guide-mode d0` with `--anchor-weight > 0` is refused: the anchor target is computed on
-  the guide-noised input, and d0 noises `z_y`.
+- Nonzero/nonfinite anchor weights are refused for both D0 and D1.
 - σ = 0.0 is refused as a training level — the noiser adds nothing, so loss and gradient are
   identically zero (a quarter of one run trained on nothing before this was caught).
-- **A run directory describes exactly one run** (S3b of the 2026-09-17 cleanup plan).
-  `log_file = log_path.open("a")` appends `metrics_rank<r>.jsonl` on every launch, but `step`
-  restarts at 0 every launch too — there is no resume — so an unguarded append into a used
-  `--output` silently merges two runs' records under one step numbering: `plot_training`'s
-  `step_mean` and `report_d0`'s `_mean_by_step` both key on step alone and would average
-  across ranks *and* runs with no indication which is which. Refused at startup with a pointed
-  error unless `--overwrite` (deletes the existing logs) or `--resume` (appends anyway,
-  accepting the merge) is passed.
+- **A run directory describes exactly one run** (S3b of the 2026-09-17 cleanup plan, revised by
+  the 2026-09-18 audit's F6). `step` restarts at 0 every launch — there is no resume — so an
+  unguarded write into a used `--output` would either silently merge two runs' metrics under one
+  step numbering (`plot_training`'s `step_mean` and `report_d0`'s `_mean_by_step` both key on
+  step alone and would average across ranks *and* runs with no indication which is which) or
+  misattribute a prior run's checkpoints/probes to the new one. A used `--output` is refused at
+  startup unless `--overwrite` is passed; there is no `--resume` escape hatch anymore.
+- **`--overwrite` archives, it does not delete, and it does not run early.** The preflight check
+  (used-output refusal) is a read-only glob and runs before subset validation and `--dry-run`,
+  same as always — but the actual archive (the whole prior `--output` directory moved into
+  `archived_<timestamp>/`, not just `metrics_rank*.jsonl`) happens only after `Accelerator()` and
+  model setup, gated to the main process and bracketed by `accelerator.wait_for_everyone()`. The
+  old code globbed and `unlink()`ed on every rank before `Accelerator()` existed — a race under a
+  distributed launch — and did so unconditionally, so `--overwrite --dry-run` deleted logs and
+  then returned 0 without training. Neither is possible now: a failing subset or `--dry-run`
+  returns before the archive code is ever reached, and only one process touches the filesystem.
 
 ## Reading the timing lines
 
@@ -209,3 +227,9 @@ phases start reporting queue time instead of compute.
 `tests/test_train.py` (stubbed transformer) and
 `tests/test_causal_core.py::test_the_real_training_loop_runs_a_chain_against_a_real_transformer`
 — the only place the loop, `causal_core` and a real cache meet before a GPU.
+
+CLI tests corrupt the second source to verify missing guides, mismatched shapes/FPS, malformed
+masters, invalid capture FPS, and cross-source geometry fail before `Accelerator()` for normal
+and dry launches. A successful overwrite dry-run preserves config, metrics and checkpoints.
+CPU stand-ins for two ranks exercise archive ownership/barrier ordering and the saved loss
+identifier; these do not replace a real distributed smoke test (Stage C).

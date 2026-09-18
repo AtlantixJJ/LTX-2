@@ -22,7 +22,7 @@ something that must have one. Before adding code, ask which artifact it produces
 | `argavatar_render[_white].mp4` + `argavatar_alpha.mp4` | `build_guidance.py` | `precompute.py` (paired) |
 | `ltx_vae_latent[_white].pt` — `z_y` | `precompute.py --capture-only` | `train.py`, `stats.py` |
 | `argavatar_ltx_vae_latent[_white].pt` — `z_g` | `precompute.py` (paired) | `train.py`, `stats.py` |
-| `capture_mask_crop.mp4` | `precompute.py` (paired) | `train.py`, `stats.py`; sampled QA copy for first five subjects/part, view 0 |
+| `capture_mask_crop.mp4` | `precompute.py` (paired) | `stats.py` (QA/measurement only — `train.py` does not read it, per its full-frame loss rule); sampled QA copy for first five subjects/part, view 0 |
 | the frozen subset JSON | `windows.py` | `train.py`, `visualize_d0.py` |
 
 ## Data flow
@@ -38,7 +38,8 @@ build_guidance.py  (argavatar env)  motion.py: pose3d → sam3db
                         ─▶ guide video + argavatar_alpha.mp4   [qa.py scores IoU]
    ▼
 precompute.py (paired) ─▶ z_g master · capture_mask_crop.mp4
-   mask MP4 pair ─▶ train.py / stats.py pool transient latent grids on read
+   mask MP4 pair ─▶ stats.py pools transient latent grids on read (QA/measurement only;
+                    train.py reads only z_g/z_y masters -- no mask, no alpha)
    ▼
 windows.py ─▶ causal block chains + actor-disjoint split + sha256 pin ─▶ subset JSON
    ▼

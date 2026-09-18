@@ -4,6 +4,11 @@ Implements `plans/2026-09-15-ltx25-one-step-argavatar-lora-core.md` (design, fil
 next steps; `plans/2026-09-10-...md` is the long-form original). Read the plan for *why*; this
 file is the run order and the things that will bite you.
 
+**2026-09-18 status:** the audit/fix plan is the active work order. Both capture objectives
+already have 3,360 bundles; guide compositing and provenance need Stage B repair before any
+bulk rendering or new training. Commands below are pipeline references, not a request to
+restart completed capture encoding. The current frozen subset is `t2r2.json`.
+
 **One package, two conda envs.** The ARGAvatar renderer and the LTX VAE cannot share a
 process, but that is a *runtime* constraint, not a layout one — exactly one module needs
 ARGAvatar. Every command below runs from the **LTX-2 repo root**:
@@ -27,8 +32,8 @@ per-window latent tree and `expr/onestep_avatar/precomputed/` is no longer produ
 | `<corpus>/capture_latent_manifest.json` | `precompute.py --capture-only` | `build_guidance.py`, `windows.py`, `precompute.py` (paired) |
 | `<view>/ltx_vae_latent[_white].pt` — the capture master `z_y` | `precompute.py --capture-only` | `train.py`, `stats.py`, `precompute.py` (paired) |
 | `<view>/argavatar_ltx_vae_latent[_white].pt` — the guide master `z_g` | `precompute.py` (paired) | `train.py`, `stats.py` |
-| `<view>/argavatar_alpha.mp4` — the render's alpha, 256², lossless gray | `build_guidance.py` | `train.py`, `stats.py` |
-| `<view>/capture_mask_crop.mp4` — the capture matte cropped to the box, 256², lossless gray | `precompute.py` (paired) | `train.py`, `stats.py` |
+| `<view>/argavatar_alpha.mp4` — the render's alpha, 256², lossless gray | `build_guidance.py` | `stats.py` (QA/measurement only — `train.py` does not read it; see the loss rule below) |
+| `<view>/capture_mask_crop.mp4` — the capture matte cropped to the box, 256², lossless gray | `precompute.py` (paired) | `stats.py` (QA/measurement only — `train.py` does not read it; see the loss rule below) |
 | `<subject>/qa/capture_mask_crop.mp4` — sampled review crop | `precompute.py --capture-only` | human QA; first five subjects per `Part_*`, view 0 only |
 | `expr/onestep_avatar/windows/<name>.json` | `windows.py` | `train.py` |
 
@@ -63,22 +68,23 @@ conda run -n ltx python -m scripts.onestep_avatar.precompute \
   --capture-only --views 0 --mask-qa-only
 
 # 2. Render guides into the manifest's box (~20 min per view). DO --limit 8 FIRST AND LOOK.
-#    19 pairs / 12 actors exist as of 09-13; the review gate passed. No longer the binding
-#    constraint -- step 1 is, since a pair also needs its capture latents.
-LTX-2/scripts/onestep_avatar/run_b2b.sh 3           # gpu, then [limit] [driving-views...]
+#    The September 18 audit found 19 bg pairs and a compositing defect. Stage B must repair
+#    that contract and review one real bg/white pair before a bulk rebuild.
+scripts/onestep_avatar/run_b2b.sh 3           # gpu, then [limit] [driving-views...]
 
-# 3. Freeze a training subset: chains, the actor split, the sha256 pin.
-#    --min-holdout-actors matters below T3 scale: it defaults to 12 (the T3/T4 floor from the
-#    plan's SS6.1), which at 8 actors holds out 7 of them, leaving just 1 for training.
-conda run -n ltx python -m scripts.onestep_avatar.windows \
-  --name t2 --max-actors 8 --require-guide --chain-length 3 --min-holdout-actors 2
-
-# 4. Encode each guide render's master latent and store the cropped capture-mask MP4.
+# 3. Encode each guide render's master latent and store the cropped capture-mask MP4.
 #    --objective is a SET: pass both to build them from one decode per source. Currency is
 #    tracked per (source, objective), so this resumes -- and a late-added objective re-encodes
 #    only itself.
 conda run -n ltx python -m scripts.onestep_avatar.precompute --gpu-id 2 \
   --objective bg white
+
+# 4. Freeze a training subset AFTER paired encoding: chains, actor split, sha256 pin.
+#    t2r2 already exists: reuse it for the current dry-run gate, do not overwrite it.
+#    For a new subset, choose an unused name and change the training --subset path below.
+#    --min-holdout-actors defaults to 12; at 8 actors use 2 to avoid a one-actor train split.
+conda run -n ltx python -m scripts.onestep_avatar.windows \
+  --name t2r2 --max-actors 8 --require-guide --chain-length 3 --min-holdout-actors 2
 
 # 5. Measure before training: r, the latent moments, the base model's excursion
 conda run -n ltx python -m scripts.onestep_avatar.stats \
@@ -86,7 +92,7 @@ conda run -n ltx python -m scripts.onestep_avatar.stats \
   --out ../expr/onestep_avatar/analysis_summary.json --gpu-id 2
 
 # 5b. A1 on its own, on the real corpus guides -- characterises Phi at sigma_0 (~2 h, 1 GPU)
-LTX-2/scripts/onestep_avatar/run_a1.sh 2
+scripts/onestep_avatar/run_a1.sh 2
 
 # 5c. Cost per finalized chunk: the causal denoise+refresh pair against k2's two window
 #     forwards (~2 min, 1 GPU). NOT YET RUN under §4.4 -- the compute claim moved when the

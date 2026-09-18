@@ -61,6 +61,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import time
 from collections.abc import Iterator
@@ -148,6 +149,23 @@ def _load_record(path: Path) -> dict:
     return torch.load(path, map_location="cpu", weights_only=True)
 
 
+def _load_training_master(path: Path) -> tuple[torch.Tensor, float]:
+    """Check the tensor and timebase used by both startup and lazy chain loading."""
+    record = _load_record(path)
+    master = dataset.load_master(path, bundle=record)
+    if (
+        not isinstance(master, torch.Tensor)
+        or master.ndim != 4
+        or not master.is_floating_point()
+        or any(size <= 0 for size in master.shape)
+    ):
+        raise SystemExit(f"{path}: master must be a nonempty floating [C, F, H, W] tensor")
+    fps = record.get("fps")
+    if isinstance(fps, bool) or not isinstance(fps, (int, float)) or not math.isfinite(fps) or fps <= 0:
+        raise SystemExit(f"{path}: fps must be a finite positive number, got {fps!r}")
+    return master, float(fps)
+
+
 class ChainStore:
     """Reads ``windows.py``'s frozen subset against the corpus's own per-view bundles.
 
@@ -200,19 +218,17 @@ class ChainStore:
     def __getitem__(self, i: int) -> Chain:
         chain = self.chains[i]
         view = self.root / chain["source"]
-        capture = _load_record(view / self.capture_bundle)
-        z_y = dataset.load_master(view / self.capture_bundle, bundle=capture)
+        z_y, fps = _load_training_master(view / self.capture_bundle)
         # Guide-mode d0 never reads z_g (train_chain uses z_y as both source and target), so
         # skip requiring the guide bundle to exist for callers that only run d0 -- e.g. the
         # D0 sanity probe, which must work against capture-only precompute output.
         z_g = None
         if self.with_guide:
-            guide = _load_record(view / self.guide_bundle)
-            z_g = dataset.load_master(view / self.guide_bundle, bundle=guide)
+            z_g, guide_fps = _load_training_master(view / self.guide_bundle)
             if z_g.shape != z_y.shape:
                 raise ValueError(f"{chain['source']}: guide {tuple(z_g.shape)} != capture {tuple(z_y.shape)}")
-            if capture["fps"] != guide["fps"]:
-                raise ValueError(f"{chain['source']}: guide fps {guide['fps']} != capture fps {capture['fps']}")
+            if fps != guide_fps:
+                raise ValueError(f"{chain['source']}: guide fps {guide_fps} != capture fps {fps}")
 
         z0_base = None
         if self.with_anchor:
@@ -227,16 +243,24 @@ class ChainStore:
             blocks=list(chain["blocks"]),
             z_g=z_g,
             z_y=z_y,
-            fps=float(capture["fps"]),
+            fps=fps,
             z0_base=z0_base,
         )
+
+
+# The one regression-loss identifier this package produces (2026-09-18 audit, binding
+# decision: unweighted full-frame loss). Stamped into checkpoint metadata and run config.json
+# rather than left implicit, so an artifact can be told apart from a hypothetical future loss
+# convention by reading its own record instead of by the date it was written.
+FULL_FRAME_X0_MSE = "full_frame_x0_mse"
 
 
 def full_frame_mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """Plain mean squared error over every predicted token and channel.
 
     Training deliberately has no silhouette, alpha, or disagreement weighting: every pixel
-    of the objective's continuous capture encode is part of the target.
+    of the objective's continuous capture encode is part of the target. This is
+    ``FULL_FRAME_X0_MSE``.
     """
     return (pred.float() - target.float()).pow(2).mean()
 
@@ -296,19 +320,26 @@ def assert_subset_matches_geometry(
     *,
     corpus_root: Path | None = None,
     objective: str = dataset.DEFAULT_OBJECTIVE,
+    with_guide: bool = False,
 ) -> None:
-    """Refuse an untrainable subset at STARTUP, in two checks that catch different staleness.
+    """Refuse an untrainable subset at STARTUP, in checks that catch different staleness.
 
-    ``train_chain`` catches the same thing per chain, but only once the run has paid the
-    prompt cache, a 42 GB checkpoint load and ``accelerator.prepare`` -- minutes per rank, to
-    learn that the subset was never trainable. Both checks here run before any of that.
+    ``train_chain``/``ChainStore.__getitem__`` catch the same things per chain, but only once
+    the run has paid the prompt cache, a 42 GB checkpoint load and ``accelerator.prepare`` --
+    minutes per rank, to learn that the subset was never trainable. And per-chain is not even
+    every SOURCE: ``--dry-run`` only ever draws ``store[0]``, so a subset whose first source is
+    fine and whose Nth source is missing its guide master sails through a dry run and normal
+    startup, and only fails when a rank happens to draw chain N -- which can be well after
+    ``Accelerator()``, model load and FSDP `prepare` (2026-09-18 audit, Stage A gap 1). All
+    checks here run before any of that, over EVERY selected source, not just the first drawn.
 
     1. **Internal** (free): every chain's blocks must exist in the plan implied by its
        source's recorded ``n_latent_frames``. Catches a ``--block-latent-frames`` that
        disagrees with the freeze.
 
-    2. **Against the bundles** (``corpus_root`` given): each source's recorded
-       ``n_latent_frames`` must match what its master latent actually holds. This is the one
+    2. **Against the bundles** (``corpus_root`` given): require nonempty floating 4D masters,
+       finite positive FPS, and common channel/spatial geometry across sources. Each source's
+       recorded ``n_latent_frames`` must match what its master latent actually holds. This is the one
        that matters in practice, and (1) cannot see it -- a subset frozen before 2026-09-16
        is *internally* consistent, because ``windows.py`` sized both the count and the plan
        from the source VIDEO's length. A master consolidated out of v1 per-window slices stops
@@ -316,9 +347,16 @@ def assert_subset_matches_geometry(
        stores 137 pixel frames = 18 latent, not 19), so the subset claims one block per source
        the latents do not contain. It is a stale artifact, not a geometry flag.
 
-    (2) reads one bundle per DISTINCT source (~6 MB each; 0.04 s for a 13-source subset warm,
-    disk-bound and minutes at full-corpus scale) -- ``--skip-subset-check`` opts out, at the
-    cost of finding out at step 0 instead.
+    3. **The guide master, for every source** (``with_guide`` -- i.e. ``--guide-mode d1``, the
+       default): the guide bundle must exist, and must agree with the capture master on the
+       FULL ``[C, F, H, W]`` shape (not just latent-frame count -- a guide re-encoded at a
+       different resolution can match on frame count alone) and on fps, exactly what
+       ``ChainStore.__getitem__`` otherwise only discovers the first time a rank draws that
+       particular source's chain.
+
+    (2) and (3) read bundles for every DISTINCT source (~6 MB each; disk-bound, minutes at
+    full-corpus scale) -- ``--skip-subset-check`` opts out of both, at the cost of finding out
+    at step 0 (or later, mid-run, for a source no early chain happens to draw) instead.
     """
     planned = {
         record["relative_dir"]: len(geometry.plan(int(record["n_latent_frames"])))
@@ -346,7 +384,10 @@ def assert_subset_matches_geometry(
     if corpus_root is None:
         return
     bundle_name = dataset.capture_bundle_name(objective)
-    drifted: list[tuple[str, int, int | None]] = []
+    guide_name = dataset.guide_bundle_name(objective)
+    drifted: list[tuple[str, int, int]] = []
+    guide_problems: list[str] = []
+    spatial_shape: tuple[int, int, int] | None = None
     for record in subset["sources"]:
         bundle = corpus_root / record["relative_dir"] / bundle_name
         if not bundle.is_file():
@@ -355,13 +396,41 @@ def assert_subset_matches_geometry(
                 f"source. Re-run `precompute.py --capture-only --objective {objective}` for it, "
                 f"or re-freeze the subset against what is actually on disk"
             )
-        actual = dataset.capture_master_latent_frames(bundle)
+        capture, capture_fps = _load_training_master(bundle)
+        actual = capture.shape[1]
+        current_shape = (capture.shape[0], capture.shape[2], capture.shape[3])
+        if spatial_shape is not None and current_shape != spatial_shape:
+            raise SystemExit(
+                f"{bundle}: capture [C, H, W] {current_shape} != {spatial_shape}; "
+                "all sources must share one channel/spatial geometry for the training cache"
+            )
+        spatial_shape = current_shape
         if actual != int(record["n_latent_frames"]):
             drifted.append((record["relative_dir"], int(record["n_latent_frames"]), actual))
+
+        if with_guide:
+            guide_path = corpus_root / record["relative_dir"] / guide_name
+            if not guide_path.is_file():
+                raise SystemExit(
+                    f"{guide_path} does not exist, but the subset lists {record['relative_dir']} "
+                    f"as a source and --guide-mode d1 needs its guide master. Re-run "
+                    f"`precompute.py --objective {objective}` (the paired pass) for it, or "
+                    f"re-freeze the subset without this source, or pass --guide-mode d0"
+                )
+            guide, guide_fps = _load_training_master(guide_path)
+            if guide.shape != capture.shape:
+                guide_problems.append(
+                    f"{record['relative_dir']}: guide master ({guide_name}) shape "
+                    f"{tuple(guide.shape)} != capture master ({bundle_name}) shape {tuple(capture.shape)}"
+                )
+            elif capture_fps != guide_fps:
+                guide_problems.append(
+                    f"{record['relative_dir']}: guide fps {guide_fps} != capture fps {capture_fps}"
+                )
     if drifted:
         listed = "\n  ".join(
             f"{source}: subset says {recorded} latent frames, the master holds "
-            f"{actual if actual is not None else 'no master (pre-v2 bundle)'} "
+            f"{actual} "
             f"({len(geometry.plan(recorded))} blocks frozen vs "
             f"{len(geometry.plan(actual)) if actual else 0} real)"
             for source, recorded, actual in drifted[:5]
@@ -371,6 +440,16 @@ def assert_subset_matches_geometry(
             f"what this subset was frozen against:\n  {listed}"
             + (f"\n  ... and {len(drifted) - 5} more" if len(drifted) > 5 else "")
             + f"\n\n{_REFREEZE_HINT}"
+        )
+    if guide_problems:
+        listed = "\n  ".join(guide_problems[:5])
+        raise SystemExit(
+            f"{len(guide_problems)} of {len(planned)} source(s) have a guide master that "
+            f"disagrees with its capture master -- ChainStore would otherwise only discover "
+            f"this the first time a rank drew that source's chain:\n  {listed}"
+            + (f"\n  ... and {len(guide_problems) - 5} more" if len(guide_problems) > 5 else "")
+            + f"\n\nRe-run `precompute.py --objective {objective}` (the paired pass) for the "
+            f"affected source(s), or re-freeze the subset without them."
         )
 
 
@@ -609,12 +688,18 @@ def checkpoint_metadata(
     belongs here for the same reason sigma does: an adapter trained with two frames of cached
     context is a different function from one trained with six, and nothing downstream can tell
     by looking at the weights.
+
+    ``onestep_avatar_loss`` records ``FULL_FRAME_X0_MSE`` explicitly (2026-09-18 audit, gap 2)
+    rather than leaving the loss convention implicit: the arithmetic has been full-frame MSE
+    since before this field existed, but nothing on a saved artifact said so, and a reader
+    (or a future loss change) had no field to check against.
     """
     sigma_levels = training_sigmas(args)
     geometry = causal_geometry(args, model)
     return {
         # ``mixed`` deliberately prevents a fixed-sigma deployment loader from accepting a
         # multi-level adapter as though it were calibrated for just one noise level.
+        "onestep_avatar_loss": FULL_FRAME_X0_MSE,
         "onestep_avatar_sigma0": repr(args.sigma0) if args.sigma_levels is None else "mixed",
         "onestep_avatar_sigma_levels": ",".join(repr(sigma) for sigma in sigma_levels),
         "onestep_avatar_chain_length": str(subset["chain_length"]),
@@ -751,6 +836,25 @@ def assert_exported_lora_is_noop(state_dict: dict[str, torch.Tensor]) -> None:
         )
 
 
+def archive_existing_run(output: Path) -> Path | None:
+    """Move everything already in ``output`` aside before ``--overwrite`` reuses the directory.
+
+    The old behaviour deleted only ``metrics_rank*.jsonl``, so a relaunch's fresh checkpoints
+    and probes landed beside a prior run's under the same directory name with nothing to say
+    which run produced which (F6). Archiving the whole directory into one timestamped
+    subdirectory keeps that provenance intact and recoverable instead of silently mixed or
+    discarded. Returns ``None`` (and does nothing) if there is nothing to move.
+    """
+    entries = [entry for entry in output.iterdir() if not entry.name.startswith("archived_")]
+    if not entries:
+        return None
+    archive_dir = output / f"archived_{time.strftime('%Y%m%d_%H%M%S')}"
+    archive_dir.mkdir()
+    for entry in entries:
+        entry.rename(archive_dir / entry.name)
+    return archive_dir
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--subset", type=Path, required=True, help="windows.py's frozen subset JSON")
@@ -764,17 +868,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--output", type=Path, required=True)
     p.add_argument(
-        "--resume", action="store_true",
-        help="Allow launching into a --output that already holds metrics_rank*.jsonl. There is "
-        "no actual resume here -- step restarts at 0 -- so this is an acknowledgement that the "
-        "new records will be appended after the old ones under one step numbering, not a "
-        "promise the run continues where the last one left off. See --overwrite.",
-    )
-    p.add_argument(
         "--overwrite", action="store_true",
-        help="Delete existing metrics_rank*.jsonl under --output before launching, so this run's "
-        "records are the only ones there. Use this for a genuine relaunch; use --resume only if "
-        "you specifically want the old and new records to coexist in one file.",
+        help="Relaunch into a --output that already holds a run: the whole prior directory "
+        "(metrics, checkpoints, config.json, everything) is moved aside into an "
+        "'archived_<timestamp>/' subdirectory before this run creates anything, rather than "
+        "being deleted or left to coexist under one step numbering. There is no resume -- step "
+        "always restarts at 0 -- so a used --output is otherwise refused outright.",
     )
     p.add_argument("--model", choices=model_registry.SUPPORTED_MODELS, default="2.5")
     p.add_argument("--sigma0", type=float, default=DEFAULT_SIGMA0)
@@ -869,7 +968,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Skip the startup check that each source's master latent holds the number of "
         "frames the subset was frozen against. That check reads one ~6 MB bundle per distinct "
         "source -- negligible for a review tier, disk-bound at full-corpus scale. Skipping it "
-        "does not make a stale subset trainable; it just moves the failure to step 0, after "
+        "does not make a stale subset trainable; it moves failures to chain loading, after "
         "the 42 GB checkpoint load.",
     )
     p.add_argument("--dry-run", action="store_true", help="report the plan and the data shapes, load no model")
@@ -881,35 +980,42 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     if args.lora_alpha is None:
         args.lora_alpha = args.lora_rank
     sigmas = training_sigmas(args)
-    if args.guide_mode == "d0" and args.anchor_weight > 0.0:
-        # base_denoised (SS4.3 row 2) is Phi(lerp(z_g, eps, sigma_0)) -- the frozen model's
-        # output on the GUIDE-noised input. d0 noises z_y instead, so the anchor would be
-        # pulling this run toward an output computed on an input it never sees.
+    if args.anchor_weight != 0.0:
+        # 2026-09-18 audit F8: no `base_denoised.pt` producer exists anywhere in the corpus,
+        # and even if one did, a single frozen per-view tensor cannot BE "the anchor" for every
+        # chain that reaches that view -- noise depends on chain index, sigma can vary between
+        # ranks/steps, and primed vs. clip-start chains carry different history into the same
+        # block. Refuse before the 42 GB checkpoint load rather than failing per-chain inside
+        # `ChainStore`/`train_chain` once a run is already minutes into startup.
         raise SystemExit(
-            "--guide-mode d0 is noised from z_y; its anchor target would be off-input. "
-            "Drop --anchor-weight."
+            "nonzero --anchor-weight is disabled: the anchor path is unsupported under the current "
+            "contract (see plans/2026-09-18-onestep-avatar-audit-and-fix-plan.md F8) -- no "
+            "`base_denoised.pt` producer exists, and a fixed per-view tensor cannot represent "
+            "the anchor for every chain/sigma/history combination that would read it. Train "
+            "with --anchor-weight 0.0 (the default) until the offline-teacher objective this "
+            "flag was for is actually defined and produced."
         )
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    # S3b of the 2026-09-17 cleanup plan: a used --output is refused rather than silently
-    # merged. `log_file = log_path.open("a")` below has no resume behind it -- `step` restarts
-    # at 0 on every launch -- so an append there is never actually the intent; it was only ever
-    # "convenient" because appending needs no separate first-launch/relaunch branch. Every rank
-    # evaluates this identically (a filesystem glob, not a forward), so no rank sees a
-    # different answer than the others.
-    existing_logs = sorted(args.output.glob("metrics_rank*.jsonl"))
-    if existing_logs and not args.resume and not args.overwrite:
+    # S3b of the 2026-09-17 cleanup plan, revised by the 2026-09-18 audit's F6: a used --output
+    # is refused rather than silently merged, exactly as before. What changed is WHEN the used
+    # directory is actually touched -- see `needs_archive` below, and its consumption right
+    # before this run's own config.json/log file are created. This check itself is read-only
+    # (a filesystem glob), so every rank evaluating it identically before `Accelerator()` costs
+    # nothing and cannot itself race.
+    if args.output.exists() and not args.output.is_dir():
+        raise SystemExit(f"{args.output}: --output must be a directory")
+    existing_entries = sorted(args.output.glob("*")) if args.output.is_dir() else []
+    if existing_entries and not args.overwrite:
         raise SystemExit(
-            f"{args.output} already has {len(existing_logs)} metrics_rank*.jsonl file(s) from a "
-            f"previous launch, and this run's config.json would overwrite the one that describes "
-            f"them. train.py has no resume -- step restarts at 0 every launch -- so appending "
-            f"here would silently merge two runs under one step numbering, indistinguishable to "
-            f"every reader (plot_training, report_d0). Pass --overwrite to start fresh (deletes "
-            f"the existing logs) or --resume to append anyway and accept the merge."
+            f"{args.output} already has {len(existing_entries)} entr{'y' if len(existing_entries) == 1 else 'ies'} "
+            f"from a previous launch, and this run's config.json/logs would land beside them. "
+            f"train.py has no resume -- step restarts at 0 every launch -- so writing into a "
+            f"used directory would either silently merge two runs under one step numbering "
+            f"(metrics) or misattribute old checkpoints/probes to this run. Pass --overwrite to "
+            f"archive the existing directory (moved aside, not deleted) before this run starts."
         )
-    if existing_logs and args.overwrite:
-        for log in existing_logs:
-            log.unlink()
+    needs_archive = bool(existing_entries) and args.overwrite
 
     subset = json.loads(args.subset.read_text())
     # The block-chain `kind` check lives in ChainStore.__init__ now (S2 of the 2026-09-17
@@ -946,6 +1052,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
         geometry,
         corpus_root=None if args.skip_subset_check else corpus_root,
         objective=args.objective,
+        with_guide=args.guide_mode != "d0",
     )
 
     if args.dry_run:
@@ -1021,18 +1128,45 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
         raise SystemExit(f"{len(store)} chains cannot be split across {world} ranks")
     order = list(range(len(store)))
 
+    if needs_archive:
+        # F6: archiving (not deleting) happens here rather than at argument-parsing time, for
+        # two reasons. First, everything above this line -- subset validation, `--dry-run` --
+        # is now side-effect free: a bad subset or a dry run leaves a used --output untouched,
+        # where the old code deleted metrics_rank*.jsonl unconditionally before either check
+        # ran. Second, `Accelerator()` now exists, so ranks can be coordinated: every process
+        # races on the SAME preflight (the glob above), but only the main process touches the
+        # filesystem, bracketed by barriers so no rank opens its log file into a directory
+        # still being archived and no rank starts training before the archive is visible to it.
+        accelerator.wait_for_everyone()
+        if accelerator.is_main_process:
+            archived = archive_existing_run(args.output)
+            if archived is not None:
+                LOGGER.info("archived previous run to %s", archived)
+        accelerator.wait_for_everyone()
+
     args.output.mkdir(parents=True, exist_ok=True)
     if accelerator.is_main_process:
         (args.output / "config.json").write_text(
             json.dumps(
-                {**vars(args), "world_size": world, "causal_geometry": geometry.as_dict()},
+                {
+                    **vars(args),
+                    "world_size": world,
+                    "causal_geometry": geometry.as_dict(),
+                    "loss": FULL_FRAME_X0_MSE,
+                },
                 indent=2,
                 default=str,
             )
         )
     wandb_run = init_wandb(
         args,
-        config={**vars(args), "world_size": world, "sigma_levels": list(sigmas), **geometry.as_dict()},
+        config={
+            **vars(args),
+            "world_size": world,
+            "sigma_levels": list(sigmas),
+            "loss": FULL_FRAME_X0_MSE,
+            **geometry.as_dict(),
+        },
     ) if accelerator.is_main_process else None
     log_path = args.output / f"metrics_rank{rank}.jsonl"
     log_file = log_path.open("a")
