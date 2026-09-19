@@ -18,11 +18,11 @@ something that must have one. Before adding code, ask which artifact it produces
 
 | Artifact | Producer | Consumers |
 |---|---|---|
-| `capture_latent_manifest.json` — the crop box of record | `precompute.py --capture-only` | `build_guidance.py`, `windows.py` |
-| `argavatar_render[_white].mp4` + `argavatar_alpha.mp4` | `build_guidance.py` | `precompute.py` (paired) |
-| `ltx_vae_latent[_white].pt` — `z_y` | `precompute.py --capture-only` | `train.py`, `stats.py` |
-| `argavatar_ltx_vae_latent[_white].pt` — `z_g` | `precompute.py` (paired) | `train.py`, `stats.py` |
-| `capture_mask_crop.mp4` | `precompute.py` (paired) | `stats.py` (QA/measurement only — `train.py` does not read it, per its full-frame loss rule); sampled QA copy for first five subjects/part, view 0 |
+| `capture_latent_manifest.json` — the crop box of record | `precompute.py --process_gt_latent` | `build_guidance.py`, `windows.py` |
+| `argavatar_render[_white].mp4` + `argavatar_alpha.mp4` | `build_guidance.py` | `precompute.py --process_syn_latent` |
+| `ltx_vae_latent[_white].pt` — `z_y` | `precompute.py --process_gt_latent` | `train.py`, `stats.py` |
+| `argavatar_ltx_vae_latent[_white].pt` — `z_g` | `precompute.py --process_syn_latent` | `train.py`, `stats.py` |
+| `capture_mask_crop.mp4` | `precompute.py --process_syn_latent` | `stats.py` (QA/measurement only — `train.py` does not read it, per its full-frame loss rule); sampled QA copy for first five subjects/part, view 0 |
 | the frozen subset JSON | `windows.py` | `train.py`, `visualize_d0.py` |
 
 ## Data flow
@@ -30,14 +30,14 @@ something that must have one. Before adding code, ask which artifact it produces
 ```
 corpus (rgb.mp4, mask.mp4, bbox.npy, pose3d.npy, meta.json)
    │
-   ├─ precompute.py --capture-only ─▶ crop box of record + z_y master (per objective)
+   ├─ precompute.py --process_gt_latent ─▶ crop box of record + z_y master (per objective)
    │                                   [geometry.py owns the square-crop rule]
    ▼
 build_guidance.py  (argavatar env)  motion.py: pose3d → sam3db
    render into THAT box ─▶ composite over the objective's background
                         ─▶ guide video + argavatar_alpha.mp4   [qa.py scores IoU]
    ▼
-precompute.py (paired) ─▶ z_g master · capture_mask_crop.mp4
+precompute.py --process_syn_latent ─▶ z_g master · capture_mask_crop.mp4
    mask MP4 pair ─▶ stats.py pools transient latent grids on read (QA/measurement only;
                     train.py reads only z_g/z_y masters -- no mask, no alpha)
    ▼

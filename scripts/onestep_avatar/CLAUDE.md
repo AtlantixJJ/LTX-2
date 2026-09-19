@@ -78,7 +78,7 @@ then; a stale design doc is worse than none, because it is trusted.
    `visualize_d0.py`, `bench_forward.py` and `windows.py`'s block plan all call it. Never add
    a second "build a block state" path — a train/deploy mismatch must have to be an edit to
    that file rather than a divergence between two that were meant to agree.
-2. **One producer per artifact.** The crop box comes from `precompute.py --capture-only`'s
+2. **One producer per artifact.** The crop box comes from `precompute.py --process_gt_latent`'s
    manifest; `z_y` from the capture pass; the guide and its alpha from `build_guidance.py`;
    the subset from `windows.py`. Readers never recompute and never "reconstruct if missing" —
    they raise with a pointed error.

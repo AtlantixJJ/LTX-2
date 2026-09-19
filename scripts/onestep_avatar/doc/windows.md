@@ -65,7 +65,7 @@ read bundles the freeze never saw.
   Natively-encoded v2 masters do cover the whole clip, which is why this stayed invisible until
   the corpus was consolidated. **Note the tail frames are genuinely absent from the latents** —
   re-freezing makes the subset honest, it does not recover them; only re-running
-  `precompute --capture-only --overwrite` would.
+  `precompute --process_gt_latent --overwrite` would.
 
   **Subsets frozen before 2026-09-16 are still on disk and are still stale.** They are
   *internally* consistent (both the count and the plan came from the video), so nothing about

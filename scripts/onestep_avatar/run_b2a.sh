@@ -51,14 +51,14 @@ echo $$ > "$PIDFILE"
 while true; do
   free_before=$(free -m | awk '/^Mem:/{print $7}')
   {
-    echo "=== $(date -Iseconds) launching precompute --capture-only (gpu=$GPU_ID rank=$RANK/$N_RANK crop-workers=$CROP_WORKERS free_mem=${free_before}MiB) ==="
+    echo "=== $(date -Iseconds) launching precompute --process_gt_latent (gpu=$GPU_ID rank=$RANK/$N_RANK crop-workers=$CROP_WORKERS free_mem=${free_before}MiB) ==="
   } >> "$LOG"
 
   "$PY" -u -m scripts.onestep_avatar.precompute \
-    --model 2.5 --gpu-id "$GPU_ID" --capture-only \
+    --model 2.5 --gpu-id "$GPU_ID" --process_gt_latent \
     --rank "$RANK" --n-rank "$N_RANK" \
     --objective bg white \
-    --views 0 1 2 3 4 5 6 7 --edge 1024 --pad-factor 1.2 --crop-workers "$CROP_WORKERS" \
+    --resolution 1024 --pad-factor 1.2 --crop-workers "$CROP_WORKERS" \
     >> "$LOG" 2>&1
   code=$?
 

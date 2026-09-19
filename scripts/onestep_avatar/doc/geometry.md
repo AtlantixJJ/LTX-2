@@ -24,7 +24,7 @@ two conda envs.
 ## Organization logic
 
 `canonical_crop_box` is **the whole rule in one call**, and since 2026-09-15 it is the *only*
-copy of it. `precompute.py --capture-only` calls it to compute the box it records, and
+copy of it. `precompute.py --process_gt_latent` calls it to compute the box it records, and
 `build_guidance.py` renders into that recorded box — one producer, one arithmetic.
 
 It used to be transcribed into `precompute.py`, with a test pinning the two spellings,

@@ -3,8 +3,8 @@
 Every product this writes lives **beside the source video**, one per view, and the training
 loop reads them directly -- there is no experiment-side latent tree any more:
 
-* ``ltx_vae_latent.pt``            -- the capture master latent ``z_y`` (``--capture-only``);
-* ``argavatar_ltx_vae_latent.pt``  -- the guide master latent ``z_g`` (the paired pass);
+* ``ltx_vae_latent.pt``            -- the capture master latent ``z_y`` (``--process_gt_latent``);
+* ``argavatar_ltx_vae_latent.pt``  -- the guide master latent ``z_g`` (``--process_syn_latent``);
 * ``argavatar_alpha.mp4`` and ``capture_mask_crop.mp4`` -- the two loss masks, stored
   losslessly at 256**2. Readers pool them to their latent geometry on demand; no derived
   latent-grid bundle is persisted.
@@ -22,13 +22,13 @@ causal block scheme a window is not a unit of anything, so the bundle IS the mas
 latent frame was written twice, once per overlapping window) and lets the block geometry
 change without re-encoding a single source.
 
-``z_y`` has exactly one producer (``--capture-only``) and the paired pass does not re-encode
+``z_y`` has exactly one producer (``--process_gt_latent``) and the synthetic pass does not re-encode
 or copy it: the trainer reads that bundle directly.
 
 Run from ``LTX-2`` using the ``ltx`` conda environment, for example::
 
     conda run -n ltx python -m scripts.onestep_avatar.precompute \
-        --capture-only --objective bg white --model 2.5 --gpu-id 0
+        --process_gt_latent --objective bg white --model 2.5 --gpu-id 0
 """
 
 from __future__ import annotations
@@ -73,16 +73,13 @@ ENCODE_CONTRACT_VERSION = 1
 # 2026-09-15 consolidation put both modules in one tree.
 DEFAULT_CORPUS_ROOT = dataset.DEFAULT_CORPUS_ROOT
 CAPTURE_MANIFEST_NAME = dataset.CAPTURE_MANIFEST_NAME
-# Provenance only. `expr/onestep_avatar/precomputed/` held the per-window latent tree until
-# SS4.4 (2026-09-14); nothing writes latents there any more, and `train.py` does not read it.
-DEFAULT_MANIFEST_ROOT = model_registry.WORKSPACE_ROOT / "expr" / "onestep_avatar" / "paired"
 # Each worker holds one source's raw-frame batch (~3000x4096 px, ~1-2 GB) plus its
 # accumulated resized crops until the whole source returns. `os.cpu_count()` (e.g. 48
 # on this workstation) workers at that footprint can spike host RAM by 50-100+ GB on
-# top of other users' jobs, which is exactly what killed the first --capture-only run
+# top of other users' jobs, which is exactly what killed the first --process_gt_latent run
 # on 2026-09-10. Default low; raise explicitly only after checking `free -h` headroom.
 DEFAULT_CROP_WORKERS = 6
-# Written by --capture-only at the corpus root; caches plan_source's per-source output so a
+# Written by --process_gt_latent at the corpus root; caches plan_source's per-source output so a
 # restart does not re-open and frame-0-decode all 3360 sources before touching a single bundle
 # (plan §1.3: ~1.5 h with no bundle written and no log line, on 3 crop workers). Keyed off the
 # same rgb_fingerprint AND bbox_fingerprint (size;mtime_ns each) discover_capture_sources
@@ -104,7 +101,7 @@ def rank_slice(items: list[T], rank: int, n_rank: int) -> list[T]:
 class Pair:
     """A guide render plus the capture bundle it is paired with, relative to the corpus root.
 
-    The capture side is the ``ltx_vae_latent.pt`` bundle ``--capture-only`` already wrote, not
+    The capture side is the ``ltx_vae_latent.pt`` bundle ``--process_gt_latent`` already wrote, not
     a capture video: ``z_y`` is copied out of it verbatim rather than re-encoded, so the paired
     outputs and the bundle are the same tensors by construction.
     """
@@ -250,45 +247,49 @@ def atomic_json_save(value: object, destination: Path) -> None:
     dataset.atomic_write(destination, lambda temp: temp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n"))
 
 
-def _merge_capture_manifest(existing: dict | None, new: dict) -> dict:
-    """Merge one ``--capture-only`` run's freshly-discovered ``--views`` selection into the
-    existing corpus-wide manifest, instead of replacing it wholesale (F5, 2026-09-18 audit).
+def is_capture_manifest_valid(
+    manifest: dict | None,
+    *,
+    geometry: WindowGeometry,
+    resolution: int,
+    pad_factor: float,
+) -> bool:
+    """Check whether an existing capture manifest is valid and compatible with the current run.
 
-    ``discover_capture_sources`` is scoped to ``--views`` (default just two of eight), so
-    publishing ``new`` as-is would erase every OTHER view's crop box from the registry --
-    even though their bundles are still on disk and still valid. Entries for source
-    directories this run did not touch are carried over verbatim from ``existing``; entries
-    for directories this run DID touch are replaced by ``new``'s (the current, correct box).
-
-    Refuses to merge across a geometry change (window/overlap/edge/pad_factor): a merged
-    manifest can only record ONE geometry at its top level, so silently blending two would
-    misdescribe whichever entries were actually encoded under the other one. Re-run over the
-    full corpus (all views) to replace the manifest deliberately, or use a separate
-    ``--corpus-root``, instead of merging across geometries.
+    Returns False if manifest is None, not a dict, or if geometry, resolution/edge,
+    or pad_factor differ from the requested run.
     """
-    if existing is None:
-        return new
-    incompatible = sorted(key for key in ("geometry", "edge", "pad_factor") if existing.get(key) != new[key])
-    if incompatible:
-        raise ValueError(
-            f"{CAPTURE_MANIFEST_NAME} was built with a different {incompatible} than this "
-            f"run; merging would misdescribe whichever entries were encoded under the other "
-            f"one. Re-run over the full corpus (all views) to replace it deliberately, or use "
-            f"a separate --corpus-root"
-        )
-    new_dirs = {source["relative_dir"] for source in new["sources"]}
-    merged_sources = [s for s in existing.get("sources", []) if s["relative_dir"] not in new_dirs] + new["sources"]
-    # A window's owning source directory is the same rsplit CaptureManifest.load uses -- one
-    # spelling of "which directory does this entry belong to", not a second parser of it.
-    merged_windows = [
-        w for w in existing.get("windows", []) if w["bundle"].rsplit("/", 1)[0] not in new_dirs
-    ] + new["windows"]
-    return {
-        **new,
-        "views": sorted(set(existing.get("views", [])) | set(new["views"])),
-        "sources": merged_sources,
-        "windows": merged_windows,
-    }
+    if not isinstance(manifest, dict):
+        return False
+    try:
+        geom = manifest.get("geometry")
+        if not isinstance(geom, dict):
+            return False
+        if int(geom["window_frames"]) != int(geometry.window_frames):
+            return False
+        if int(geom["overlap_frames"]) != int(geometry.overlap_frames):
+            return False
+        if "scale_factors" in geom and list(geom["scale_factors"]) != list(geometry.scale_factors):
+            return False
+
+        recorded_resolution = manifest.get("resolution")
+        if recorded_resolution is None:
+            recorded_resolution = manifest.get("edge")
+        if recorded_resolution is None or int(recorded_resolution) != int(resolution):
+            return False
+
+        if "pad_factor" not in manifest or abs(float(manifest["pad_factor"]) - float(pad_factor)) > 1e-4:
+            return False
+
+        if "kind" in manifest and manifest["kind"] != "one_step_raw_capture_target_latents":
+            return False
+
+        if not isinstance(manifest.get("sources", []), list) or not isinstance(manifest.get("windows", []), list):
+            return False
+
+        return True
+    except (ValueError, TypeError, KeyError):
+        return False
 
 
 def discover_pairs(corpus_root: Path, objective: str = dataset.DEFAULT_OBJECTIVE) -> list[Pair]:
@@ -437,8 +438,8 @@ def _read_cropped_masks(
     return np.stack(pooled)
 
 
-def discover_capture_sources(corpus_root: Path, views: set[int]) -> list[CaptureSource]:
-    """Discover selected raw views; no processed capture video is required."""
+def discover_capture_sources(corpus_root: Path, views: set[int] | None = None) -> list[CaptureSource]:
+    """Discover raw views; no processed capture video is required."""
     sources: list[CaptureSource] = []
     for rgb in sorted(corpus_root.glob("Part_*/*/views/view*_cam*/rgb.mp4")):
         name = rgb.parent.name
@@ -447,7 +448,7 @@ def discover_capture_sources(corpus_root: Path, views: set[int]) -> list[Capture
         except ValueError:
             continue
         bbox = rgb.with_name("bbox.npy")
-        if view not in views or not bbox.is_file():
+        if (views is not None and view not in views) or not bbox.is_file():
             continue
         sources.append(
             CaptureSource(
@@ -558,7 +559,7 @@ def enumerate_capture_jobs(
     respectively, from ``discover_capture_sources``) and ``key`` (pad factor + window
     geometry -- everything else ``plan_source`` depends on) still match, and only the
     remaining sources are opened and planned. This is what makes a restart of a killed
-    ``--capture-only`` run cheap: without it, every restart re-opens and frame-0-decodes all
+    ``--process_gt_latent`` run cheap: without it, every restart re-opens and frame-0-decodes all
     selected sources before a single (already-complete) bundle is skipped. Both fingerprints
     are required (F5, 2026-09-18 audit): ``plan_source`` computes the box from ``bbox.npy``,
     so a cache keyed on ``rgb.mp4`` alone would keep serving a stale box after a bbox
@@ -948,14 +949,6 @@ def encode_capture_jobs(
 ) -> tuple[int, int, list[str]]:
     """Write each source's ``z_y`` as ONE continuous per-source VAE encode -- the master.
 
-    Revised 2026-09-11 (plan SS4.4): a genuine causal keyframe only ever exists at latent
-    frame 0 of a truly continuous encode, and nothing re-keys mid-rollout, so encoding each
-    window independently was manufacturing data the deployed AR rollout never produces
-    (measured: a mid-clip window differed ~24 % from its sliced counterpart). Revised again
-    2026-09-14: the slices are not stored either. The bundle IS the master, and the trainer
-    slices the blocks it wants out of it -- which is also what lets the block geometry change
-    without re-encoding a single source.
-
     ``jobs`` still carries the window plan because that is what says how many pixel frames a
     source needs decoded and which crop box it uses; it no longer says anything about how the
     latents are stored.
@@ -1109,7 +1102,7 @@ def encode_capture_jobs(
     return completed, skipped, failed
 
 
-def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share parser/provenance.
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=model_registry.SUPPORTED_MODELS, default="2.5")
     parser.add_argument("--gpu-id", type=int, default=0)
@@ -1131,10 +1124,10 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
     parser.add_argument(
         "--manifest-root",
         type=Path,
-        default=DEFAULT_MANIFEST_ROOT,
-        help="Where the paired-run provenance manifest is written. NOT a latent tree any more: "
-        "since SS4.4 every latent and mask lives beside its source video, and "
-        "expr/onestep_avatar/precomputed/ is no longer produced or read by anything.",
+        default=DEFAULT_CORPUS_ROOT,
+        help="Where the paired-run provenance manifest is written (default: DEFAULT_CORPUS_ROOT). "
+        "NOT a latent tree any more: since SS4.4 every latent and mask lives beside its "
+        "source video, and expr/onestep_avatar/precomputed/ is no longer produced or read.",
     )
     parser.add_argument(
         "--objective",
@@ -1151,19 +1144,36 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
     )
     parser.add_argument("--window-frames", type=int, default=refine_task.WINDOW_FRAMES)
     parser.add_argument("--overlap-frames", type=int, default=refine_task.OVERLAP_FRAMES)
-    parser.add_argument(
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--process_gt_latent",
+        "--process-gt-latent",
         "--capture-only",
         action="store_true",
+        dest="process_gt_latent",
         help="Encode z_y directly from raw rgb.mp4 crops; persists latents only, no capture video.",
     )
-    parser.add_argument("--views", type=int, nargs="+", default=[1, 5], help="Raw capture views for --capture-only.")
-    parser.add_argument("--edge", type=int, default=1024, help="Square raw-capture crop edge for --capture-only.")
-    parser.add_argument("--pad-factor", type=float, default=1.20, help="BBox padding factor for --capture-only.")
+    mode_group.add_argument(
+        "--process_syn_latent",
+        "--process-syn-latent",
+        action="store_true",
+        dest="process_syn_latent",
+        help="Encode z_g master latents from synthetic ARGAvatar renders (paired pass).",
+    )
+    parser.add_argument(
+        "--resolution",
+        "--edge",
+        dest="resolution",
+        type=int,
+        default=1024,
+        help="Square raw-capture crop resolution for --process_gt_latent.",
+    )
+    parser.add_argument("--pad-factor", type=float, default=1.20, help="BBox padding factor for --process_gt_latent.")
     parser.add_argument(
         "--mask-qa-only",
         action="store_true",
         help="Write the sampled capture-mask QA gallery and exit without loading the VAE. "
-        "Requires --capture-only and view 0 in --views.",
+        "Requires --process_gt_latent.",
     )
     parser.add_argument(
         "--limit",
@@ -1176,10 +1186,17 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
         "--crop-workers",
         type=int,
         default=DEFAULT_CROP_WORKERS,
-        help="Parallel worker processes for window planning/cropping (--capture-only). "
+        help="Parallel worker processes for window planning/cropping (--process_gt_latent). "
         f"Default: {DEFAULT_CROP_WORKERS} (NOT os.cpu_count() -- see DEFAULT_CROP_WORKERS docstring).",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share parser/provenance.
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not args.process_gt_latent and not args.process_syn_latent:
+        parser.error("Must specify either --process_gt_latent or --process_syn_latent")
     # Deduplicated and put in a fixed order so a run's provenance does not depend on the
     # order the flags were typed in.
     objectives = tuple(o for o in dataset.OBJECTIVES if o in set(args.objective))
@@ -1189,19 +1206,17 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
         parser.error("--n-rank must be positive")
     if args.rank < 0 or args.rank >= args.n_rank:
         parser.error("--rank must satisfy 0 <= rank < n_rank")
-    if args.edge <= 0 or args.edge % 32:
-        parser.error("--edge must be a positive multiple of 32")
+    if args.resolution <= 0 or args.resolution % 32:
+        parser.error("--resolution must be a positive multiple of 32")
     if args.pad_factor < 1:
         parser.error("--pad-factor must be at least 1")
-    if any(view < 0 or view > 7 for view in args.views):
-        parser.error("--views must be in [0, 7]")
-    if args.mask_qa_only and (not args.capture_only or 0 not in args.views):
-        parser.error("--mask-qa-only requires --capture-only and view 0 in --views")
+    if args.mask_qa_only and not args.process_gt_latent:
+        parser.error("--mask-qa-only requires --process_gt_latent")
 
     model = model_registry.resolve(args.model)
     geometry = WindowGeometry(args.window_frames, args.overlap_frames, model.scale_factors)
-    if args.capture_only:
-        sources = discover_capture_sources(args.corpus_root, set(args.views))
+    if args.process_gt_latent:
+        sources = discover_capture_sources(args.corpus_root)
         if not sources:
             raise SystemExit(f"No selected raw rgb.mp4 + bbox.npy views under {args.corpus_root}")
         all_jobs = enumerate_capture_jobs(
@@ -1237,6 +1252,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
             rank_sources = rank_sources[: args.limit]
         rank_dirs = {source.relative_dir for source in rank_sources}
         jobs = [job for job in all_jobs if job.source.relative_dir in rank_dirs]
+        all_views = sorted({int(Path(s.rgb).parent.name.removeprefix("view")[:2]) for s in sources})
         capture_manifest = {
             "schema_version": SCHEMA_VERSION,
             "kind": "one_step_raw_capture_target_latents",
@@ -1246,9 +1262,10 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
                 "scale_factors": list(model.scale_factors),
             },
             "geometry": geometry.as_dict(),
-            "edge": args.edge,
+            "resolution": args.resolution,
+            "edge": args.resolution,
             "pad_factor": args.pad_factor,
-            "views": args.views,
+            "views": all_views,
             "sources": [asdict(source) for source in sources],
             "windows": [
                 {
@@ -1277,20 +1294,35 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
                 )
             )
             return 0
-        # Merge into, rather than replace, an existing manifest (F5): a --views selection is
-        # a subset of the corpus, and every rank in a normal (same --views) multi-GPU launch
-        # computes the identical merged result from the identical existing base, so the race
-        # between ranks' atomic replaces stays safe the same way the pre-merge identical-write
-        # race was -- see _merge_capture_manifest's docstring for what "identical" requires.
-        existing_manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else None
-        capture_manifest = _merge_capture_manifest(existing_manifest, capture_manifest)
+        overwrite = args.overwrite
+        if manifest_path.is_file():
+            try:
+                existing_manifest = json.loads(manifest_path.read_text())
+            except Exception:
+                existing_manifest = None
+            is_valid = is_capture_manifest_valid(
+                existing_manifest,
+                geometry=geometry,
+                resolution=args.resolution,
+                pad_factor=args.pad_factor,
+            )
+            if not is_valid or args.overwrite:
+                overwrite = True
+                LOGGER.info(
+                    "Existing %s is %s (overwrite=%s); overwriting.",
+                    manifest_path,
+                    "invalid" if not is_valid else "valid",
+                    overwrite,
+                )
+            else:
+                LOGGER.info("Existing %s is valid; overwriting manifest directly.", manifest_path)
         atomic_json_save(capture_manifest, manifest_path)
         completed, skipped, failed = encode_capture_jobs(
             model,
             jobs,
             gpu_id=args.gpu_id,
-            edge=args.edge,
-            overwrite=args.overwrite,
+            edge=args.resolution,
+            overwrite=overwrite,
             max_crop_workers=args.crop_workers,
             objectives=objectives,
         )
@@ -1319,7 +1351,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
             raise SystemExit(
                 f"No views with both {dataset.render_name(objective)} and "
                 f"{dataset.capture_bundle_name(objective)} under {args.corpus_root}. Run "
-                f"--capture-only --objective {objective} first, then build_guidance.py "
+                f"--process_gt_latent --objective {objective} first, then build_guidance.py "
                 f"--objective {objective} and its visual review gate."
             )
         pairs = rank_slice(all_pairs, args.rank, args.n_rank)

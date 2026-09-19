@@ -18,7 +18,7 @@ from scripts.onestep_avatar.precompute import (
     Pair,
     VideoReader,
     _master_bundle_is_current,
-    _merge_capture_manifest,
+    is_capture_manifest_valid,
     check_pair_alignment,
     discover_pairs,
     enumerate_capture_jobs,
@@ -26,6 +26,9 @@ from scripts.onestep_avatar.precompute import (
     master_record,
     rank_slice,
     write_capture_mask_qa,
+    build_parser,
+    main,
+    DEFAULT_CORPUS_ROOT,
 )
 from scripts.prune.core.refine_core import WindowGeometry
 
@@ -149,7 +152,7 @@ def _write_render(view: Path, frames: int = 25, *, box: list[float] | None = Non
 
 
 def _write_manifest(root: Path, views: list[Path], *, box: list[float] | None = None) -> None:
-    """A capture manifest in --capture-only's own shape, covering ``views``.
+    """A capture manifest in --process_gt_latent's own shape, covering ``views``.
 
     Includes ``pad_factor``/``edge`` -- required by ``dataset.CaptureManifest.load``, the one
     reader since S1(8) of the 2026-09-17 cleanup plan retired ``precompute.manifest_boxes``,
@@ -175,7 +178,7 @@ def _write_manifest(root: Path, views: list[Path], *, box: list[float] | None = 
 
 
 def _write_bundle(view: Path, *, pixel_frames: int = 25, fps: float = 30.0) -> None:
-    """A minimal v2 capture bundle in ``--capture-only``'s own format."""
+    """A minimal v2 capture bundle in ``--process_gt_latent``'s own format."""
     latent_frames = (pixel_frames - 1) // 8 + 1
     torch.save(
         master_record(
@@ -357,40 +360,102 @@ def _manifest(*, views: list[int], sources: list[dict], windows: list[dict], edg
     }
 
 
-def test_merge_capture_manifest_is_the_identity_with_no_existing_manifest() -> None:
-    """A fresh corpus (no manifest yet) has nothing to preserve -- merging is a no-op."""
-    new = _manifest(views=[1], sources=[{"relative_dir": "a/view01"}], windows=[{"bundle": "a/view01/x.pt"}])
-    assert _merge_capture_manifest(None, new) == new
+def test_is_capture_manifest_valid_true_for_matching_manifest() -> None:
+    manifest = _manifest(views=[0, 1], sources=[], windows=[], edge=1024, pad_factor=1.2)
+    assert is_capture_manifest_valid(manifest, geometry=_GEOMETRY, resolution=1024, pad_factor=1.2)
 
 
-def test_merge_capture_manifest_preserves_untouched_views_and_replaces_touched_ones() -> None:
-    """F5 (2026-09-18 audit): a routine partial ``--views`` run must not erase the crop boxes
-    of views it was not asked to touch -- their bundles are still on disk and still valid."""
-    existing = _manifest(
-        views=[0, 1],
-        sources=[{"relative_dir": "a/view00", "note": "old"}, {"relative_dir": "a/view01", "note": "old"}],
-        windows=[{"bundle": "a/view00/x.pt", "box_xyxy": "old"}, {"bundle": "a/view01/x.pt", "box_xyxy": "old"}],
-    )
-    # This run only re-discovers view01 (e.g. a corrected bbox for it), not view00.
-    new = _manifest(
-        views=[1],
-        sources=[{"relative_dir": "a/view01", "note": "new"}],
-        windows=[{"bundle": "a/view01/x.pt", "box_xyxy": "new"}],
-    )
-
-    merged = _merge_capture_manifest(existing, new)
-
-    assert merged["views"] == [0, 1]
-    by_dir = {s["relative_dir"]: s["note"] for s in merged["sources"]}
-    assert by_dir == {"a/view00": "old", "a/view01": "new"}  # view00 preserved, view01 replaced
-    by_bundle = {w["bundle"]: w["box_xyxy"] for w in merged["windows"]}
-    assert by_bundle == {"a/view00/x.pt": "old", "a/view01/x.pt": "new"}
+def test_is_capture_manifest_valid_false_for_mismatched_geometry() -> None:
+    manifest = _manifest(views=[0, 1], sources=[], windows=[], edge=1024, pad_factor=1.2)
+    diff_geom = WindowGeometry(window_frames=33, overlap_frames=9, scale_factors=SpatioTemporalScaleFactors.default())
+    assert not is_capture_manifest_valid(manifest, geometry=diff_geom, resolution=1024, pad_factor=1.2)
 
 
-def test_merge_capture_manifest_rejects_a_geometry_change() -> None:
-    """A merged manifest can only record ONE geometry at its top level, so silently blending
-    two would misdescribe whichever entries were actually encoded under the other one."""
-    existing = _manifest(views=[0], sources=[], windows=[], pad_factor=1.2)
-    new = _manifest(views=[0], sources=[], windows=[], pad_factor=1.5)
-    with pytest.raises(ValueError, match="pad_factor"):
-        _merge_capture_manifest(existing, new)
+def test_is_capture_manifest_valid_false_for_mismatched_resolution() -> None:
+    manifest = _manifest(views=[0, 1], sources=[], windows=[], edge=512, pad_factor=1.2)
+    assert not is_capture_manifest_valid(manifest, geometry=_GEOMETRY, resolution=1024, pad_factor=1.2)
+
+
+def test_is_capture_manifest_valid_false_for_mismatched_pad_factor() -> None:
+    manifest = _manifest(views=[0, 1], sources=[], windows=[], edge=1024, pad_factor=1.5)
+    assert not is_capture_manifest_valid(manifest, geometry=_GEOMETRY, resolution=1024, pad_factor=1.2)
+
+
+def test_is_capture_manifest_valid_handles_resolution_and_edge_keys() -> None:
+    manifest = {
+        "kind": "one_step_raw_capture_target_latents",
+        "geometry": _GEOM_DICT,
+        "resolution": 1024,
+        "pad_factor": 1.2,
+        "sources": [],
+        "windows": [],
+    }
+    assert is_capture_manifest_valid(manifest, geometry=_GEOMETRY, resolution=1024, pad_factor=1.2)
+
+
+def test_is_capture_manifest_valid_false_for_none_or_malformed() -> None:
+    assert not is_capture_manifest_valid(None, geometry=_GEOMETRY, resolution=1024, pad_factor=1.2)
+    assert not is_capture_manifest_valid({}, geometry=_GEOMETRY, resolution=1024, pad_factor=1.2)
+    assert not is_capture_manifest_valid("not a dict", geometry=_GEOMETRY, resolution=1024, pad_factor=1.2)
+
+
+def test_cli_requires_either_gt_or_syn_latent() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        main([])
+
+
+def test_cli_accepts_process_gt_latent() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["--process_gt_latent"])
+    assert args.process_gt_latent is True
+    assert args.process_syn_latent is False
+
+    args2 = parser.parse_args(["--process-gt-latent"])
+    assert args2.process_gt_latent is True
+    assert args2.process_syn_latent is False
+
+    # Backwards compatibility alias
+    args3 = parser.parse_args(["--capture-only"])
+    assert args3.process_gt_latent is True
+    assert args3.process_syn_latent is False
+
+
+def test_cli_accepts_process_syn_latent() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["--process_syn_latent"])
+    assert args.process_syn_latent is True
+    assert args.process_gt_latent is False
+
+    args2 = parser.parse_args(["--process-syn-latent"])
+    assert args2.process_syn_latent is True
+    assert args2.process_gt_latent is False
+
+
+def test_cli_rejects_both_gt_and_syn_latent() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--process_gt_latent", "--process_syn_latent"])
+
+
+def test_cli_accepts_resolution_and_edge_alias() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["--process_gt_latent", "--resolution", "512"])
+    assert args.resolution == 512
+
+    args2 = parser.parse_args(["--process_gt_latent", "--edge", "768"])
+    assert args2.resolution == 768
+
+
+def test_cli_rejects_views_argument() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--process_gt_latent", "--views", "0", "1"])
+
+
+def test_manifest_root_defaults_to_corpus_root() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["--process_syn_latent"])
+    assert args.manifest_root == DEFAULT_CORPUS_ROOT
+
+

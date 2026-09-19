@@ -34,12 +34,13 @@ per-window latent tree and `expr/onestep_avatar/precomputed/` is no longer produ
 
 | file | produced by | consumed by |
 |---|---|---|
-| `<corpus>/capture_latent_manifest.json` | `precompute.py --capture-only` | `build_guidance.py`, `windows.py`, `precompute.py` (paired) |
-| `<view>/ltx_vae_latent[_white].pt` — the capture master `z_y` | `precompute.py --capture-only` | `train.py`, `stats.py`, `precompute.py` (paired) |
-| `<view>/argavatar_ltx_vae_latent[_white].pt` — the guide master `z_g` | `precompute.py` (paired) | `train.py`, `stats.py` |
+| `<corpus>/capture_latent_manifest.json` | `precompute.py --process_gt_latent` | `build_guidance.py`, `windows.py`, `precompute.py --process_syn_latent` |
+| `<corpus>/manifest[.white].json` | `precompute.py --process_syn_latent` | paired-run provenance manifest at corpus root (default: `--corpus-root`) |
+| `<view>/ltx_vae_latent[_white].pt` — the capture master `z_y` | `precompute.py --process_gt_latent` | `train.py`, `stats.py`, `precompute.py --process_syn_latent` |
+| `<view>/argavatar_ltx_vae_latent[_white].pt` — the guide master `z_g` | `precompute.py --process_syn_latent` | `train.py`, `stats.py` |
 | `<view>/argavatar_alpha.mp4` — the render's alpha, 256², lossless gray | `build_guidance.py` | `stats.py` (QA/measurement only — `train.py` does not read it; see the loss rule below) |
-| `<view>/capture_mask_crop.mp4` — the capture matte cropped to the box, 256², lossless gray | `precompute.py` (paired) | `stats.py` (QA/measurement only — `train.py` does not read it; see the loss rule below) |
-| `<subject>/qa/capture_mask_crop.mp4` — sampled review crop | `precompute.py --capture-only` | human QA; first five subjects per `Part_*`, view 0 only |
+| `<view>/capture_mask_crop.mp4` — the capture matte cropped to the box, 256², lossless gray | `precompute.py --process_syn_latent` | `stats.py` (QA/measurement only — `train.py` does not read it; see the loss rule below) |
+| `<subject>/qa/capture_mask_crop.mp4` — sampled review crop | `precompute.py --process_gt_latent` | human QA; first five subjects per `Part_*`, view 0 only |
 | `expr/onestep_avatar/windows/<name>.json` | `windows.py` | `train.py` |
 
 Every past bug in this pipeline has been the same shape: **two producers of something that must
@@ -52,7 +53,7 @@ stores only continuous schema-v2 masters and no longer carries migration-only co
 ## Run order
 
 ```bash
-# 1. Capture target latents, from raw rgb.mp4 (days; --capture-only is idempotent per source).
+# 1. Capture target latents, from raw rgb.mp4 (days; --process_gt_latent is idempotent per source).
 #    Use the detached supervisor, not a bare invocation -- a plain foreground/backgrounded run
 #    shares this shell's process group, so a signal to the shell (closed terminal, killed job)
 #    takes the retry loop down with the job it is supervising (this happened twice, see the plan
@@ -65,7 +66,7 @@ disown
 
 # Regenerate only the sampled mask QA gallery (CPU-only, no VAE):
 conda run -n ltx python -m scripts.onestep_avatar.precompute \
-  --capture-only --views 0 --mask-qa-only
+  --process_gt_latent --mask-qa-only
 
 # 2. Render guides into the manifest's box (~20 min per view). DO --limit 8 FIRST AND LOOK.
 #    The September 18 audit found a compositing defect (F1), now fixed and versioned as guide
@@ -79,7 +80,7 @@ scripts/onestep_avatar/run_b2b.sh 3           # gpu, then [limit] [driving-views
 #    tracked per (source, objective), so this resumes -- and a late-added objective re-encodes
 #    only itself.
 conda run -n ltx python -m scripts.onestep_avatar.precompute --gpu-id 2 \
-  --objective bg white
+  --process_syn_latent --objective bg white
 
 # 4. Freeze a training subset AFTER paired encoding: chains, actor split, sha256 pin.
 #    t2r2 already exists: reuse it for the current dry-run gate, do not overwrite it.
@@ -150,7 +151,7 @@ conda run -n ltx python -m scripts.onestep_avatar.plot_training --run <run>
 - **`--crop-workers 3` is load-bearing.** Each worker holds one source's raw-frame batch
   (1–2 GB); the default `os.cpu_count()` fan-out killed the first capture run by exhausting
   host RAM. Check `free -h` before raising it.
-- **A `--capture-only` restart looks like a hang** on any source not yet in the plan cache
+- **A `--process_gt_latent` restart looks like a hang** on any source not yet in the plan cache
   (`.capture_plan_cache.json`, corpus root): it must still open + frame-0-decode those before
   checking which bundles exist, with no log line and no bundle written meanwhile, parent at ~0 %
   CPU in `futex_wait`. The tell is the *worker* CPU (`ps --ppid`), which is at several hundred

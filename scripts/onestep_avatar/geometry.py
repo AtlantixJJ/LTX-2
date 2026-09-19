@@ -63,7 +63,7 @@ def canonical_crop_box(
 ) -> XYXY:
     """The full SS4.5 box in one call: union -> padded square -> fitted into the canvas.
 
-    This is the arithmetic ``precompute.py --capture-only`` runs to produce the box it
+    This is the arithmetic ``precompute.py --process_gt_latent`` runs to produce the box it
     records in ``capture_latent_manifest.json``, reproduced here so a consumer can *check*
     the recorded box against the current ``bbox.npy``. It is a guard, not a second producer:
     the manifest's box is what the capture latents were encoded with, so on disagreement the

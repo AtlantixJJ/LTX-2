@@ -6,7 +6,7 @@ Produce, for one (clip, driving view) and **one objective**, the guide video the
 conditioned on — plus the alpha and QA the rest of the pipeline needs. This is the expensive
 half of corpus building (~20 min/view, GPU).
 
-It **consumes** `precompute.py --capture-only`'s crop box and never re-derives it.
+It **consumes** `precompute.py --process_gt_latent`'s crop box and never re-derives it.
 
 ## Data flow
 

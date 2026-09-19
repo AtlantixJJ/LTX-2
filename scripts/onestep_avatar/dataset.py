@@ -28,7 +28,7 @@ T = TypeVar("T")
 WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CORPUS_ROOT = WORKSPACE_ROOT / "data" / "AnimatableHuman" / "DNARenderingVideo"
 
-# Written by ``LTX-2/scripts/onestep_avatar/precompute.py --capture-only`` at the corpus
+# Written by ``LTX-2/scripts/onestep_avatar/precompute.py --process_gt_latent`` at the corpus
 # root. It is the **single producer** of the crop box (SS4.5): the box it records is the one
 # the capture target latents were actually encoded with, so every other stage reads it rather
 # than recomputing a box of its own.
@@ -135,7 +135,7 @@ def load_master(path: Path, *, bundle: dict | None = None) -> torch.Tensor:
     if version != 2 or "master" not in bundle:
         raise SystemExit(
             f"{path}: schema_version={version} holds per-window slices, not the clip's master "
-            "latent. Re-run precompute.py --capture-only for this view"
+            "latent. Re-run precompute.py --process_gt_latent for this view"
         )
     # [C, F, H, W] -- the frame axis is 1.
     return bundle["master"]
@@ -245,7 +245,7 @@ def list_clips(root: Path = DEFAULT_CORPUS_ROOT, *, done_only: bool = True) -> l
 class CaptureManifest:
     """``capture_latent_manifest.json`` -- the crop box of record, per (clip, view).
 
-    ``precompute.py --capture-only`` computes each source's square box, encodes that exact
+    ``precompute.py --process_gt_latent`` computes each source's square box, encodes that exact
     pixel region, and writes the box here alongside the window plan. Nothing downstream may
     recompute a box and hope it matches: ``build_guidance.py`` renders the guide into
     ``box_for(...)``, so the guide and the capture target are the same pixel region *by
@@ -266,7 +266,7 @@ class CaptureManifest:
         path = root / CAPTURE_MANIFEST_NAME
         if not path.is_file():
             raise FileNotFoundError(
-                f"{path} does not exist -- run `precompute.py --capture-only` over this corpus "
+                f"{path} does not exist -- run `precompute.py --process_gt_latent` over this corpus "
                 f"before rendering guides; it produces the crop box this stage renders into"
             )
         record = json.loads(path.read_text())
@@ -292,9 +292,8 @@ class CaptureManifest:
         except KeyError:
             raise KeyError(
                 f"{key} has no crop box in {CAPTURE_MANIFEST_NAME}: "
-                f"`precompute.py --capture-only` has not encoded this view yet. Wait for it, "
-                f"or add the view to its --views selection -- do not render against a locally "
-                f"computed box"
+                f"`precompute.py --process_gt_latent` has not encoded this view yet. Wait for it -- "
+                f"do not render against a locally computed box"
             ) from None
 
     def has(self, view_dir: Path) -> bool:

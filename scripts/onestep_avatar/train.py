@@ -221,7 +221,7 @@ class ChainStore:
         z_y, fps = _load_training_master(view / self.capture_bundle)
         # Guide-mode d0 never reads z_g (train_chain uses z_y as both source and target), so
         # skip requiring the guide bundle to exist for callers that only run d0 -- e.g. the
-        # D0 sanity probe, which must work against capture-only precompute output.
+        # D0 sanity probe, which must work against process_gt_latent precompute output.
         z_g = None
         if self.with_guide:
             z_g, guide_fps = _load_training_master(view / self.guide_bundle)
@@ -393,7 +393,7 @@ def assert_subset_matches_geometry(
         if not bundle.is_file():
             raise SystemExit(
                 f"{bundle} does not exist, but the subset lists {record['relative_dir']} as a "
-                f"source. Re-run `precompute.py --capture-only --objective {objective}` for it, "
+                f"source. Re-run `precompute.py --process_gt_latent --objective {objective}` for it, "
                 f"or re-freeze the subset against what is actually on disk"
             )
         capture, capture_fps = _load_training_master(bundle)

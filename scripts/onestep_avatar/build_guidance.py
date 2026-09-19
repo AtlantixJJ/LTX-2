@@ -2,7 +2,7 @@
 """Render ARGAvatar guides -- the B2 stage of
 ``plans/2026-09-10-ltx25-one-step-argavatar-lora.md``.
 
-**This stage consumes ``precompute.py --capture-only``'s output; it never re-derives it.**
+**This stage consumes ``precompute.py --process_gt_latent``'s output; it never re-derives it.**
 The capture side runs first, encodes each view's target latents from a square crop of the raw
 ``rgb.mp4``, and records the exact box it used in ``capture_latent_manifest.json``. This script
 renders the guide into *that recorded box*. There is therefore one producer of the crop box and
@@ -148,7 +148,7 @@ def read_cropped_masks(clip: ClipRef, view_idx: int, box: geometry.XYXY, out_siz
 def read_cropped_capture(clip: ClipRef, view_idx: int, box: geometry.XYXY, out_size: int):
     """Stream ``rgb.mp4[view_idx]`` cropped to ``box`` and resized -- the capture track.
 
-    Exactly what ``precompute.py --capture-only`` feeds the VAE, reconstructed on the fly for
+    Exactly what ``precompute.py --process_gt_latent`` feeds the VAE, reconstructed on the fly for
     the ``--visualize`` overlay. Nothing is persisted: the capture's durable form is its
     latent bundle, and re-encoding a video of it would only add a second generation of h264.
     """
@@ -257,7 +257,7 @@ def resolve_box(
 ) -> BoxOfRecord:
     """The box this view's capture latents were encoded with, validated against ``bbox.npy``.
 
-    The manifest is the authority -- ``precompute.py --capture-only`` already encoded a
+    The manifest is the authority -- ``precompute.py --process_gt_latent`` already encoded a
     specific pixel region and there is no way to re-negotiate it after the fact. The local
     recomputation here is a *guard*: it catches a corpus re-ingest that moved a bbox, or a
     ``--pad-factor`` that disagrees with the capture pass, at the point where it is still
@@ -664,7 +664,7 @@ def main() -> None:
         raise SystemExit(
             f"--clips selected {len(not_ready)} (clip, view) pairs the capture pass has not "
             f"encoded yet: {', '.join(not_ready[:8])}{' ...' if len(not_ready) > 8 else ''}. "
-            f"Run `precompute.py --capture-only` over them first"
+            f"Run `precompute.py --process_gt_latent` over them first"
         )
 
     skipped = 0 if args.force else sum(1 for c, d in ready_pairs if is_done(c, d))

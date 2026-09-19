@@ -8,12 +8,13 @@ experiment-side latent tree.
 
 | Artifact | Written by | Is |
 |---|---|---|
-| `ltx_vae_latent[_white].pt` | `--capture-only` | `z_y`, the capture master |
-| `argavatar_ltx_vae_latent[_white].pt` | the paired pass | `z_g`, the guide master |
+| `ltx_vae_latent[_white].pt` | `--process_gt_latent` | `z_y`, the capture master |
+| `argavatar_ltx_vae_latent[_white].pt` | `--process_syn_latent` | `z_g`, the guide master |
 | `argavatar_alpha.mp4` | `build_guidance.py` | the rendered alpha, 256², lossless |
-| `capture_mask_crop.mp4` | the paired pass | the capture matte cropped to the same box, 256², lossless |
-| `<subject>/qa/capture_mask_crop.mp4` | `--capture-only` | review crop for view 0 of the first five subjects in each `Part_*` only |
-| `capture_latent_manifest.json` | `--capture-only` | **the crop box of record** — `build_guidance.py` renders into it |
+| `capture_mask_crop.mp4` | `--process_syn_latent` | the capture matte cropped to the same box, 256², lossless |
+| `<subject>/qa/capture_mask_crop.mp4` | `--process_gt_latent` | review crop for view 0 of the first five subjects in each `Part_*` only |
+| `capture_latent_manifest.json` | `--process_gt_latent` | **the crop box of record** — `build_guidance.py` renders into it |
+| `manifest[.white].json` | `--process_syn_latent` | paired-run provenance manifest at the corpus root (default: `--corpus-root`) |
 
 There is deliberately no `loss_mask_grids.pt`. The two MP4s are the canonical masks;
 `train.py` and `stats.py` pool them to the active latent geometry when they read them.
@@ -21,7 +22,7 @@ There is deliberately no `loss_mask_grids.pt`. The two MP4s are the canonical ma
 ## Data flow
 
 ```
---capture-only:
+--process_gt_latent:
   bbox.npy ─▶ square box ─▶ manifest          (the box of record, one producer)
   rgb.mp4  ─┐
   mask.mp4 ─┴─▶ crop_source (worker, CPU) ─▶ {bg: frames, white: matted frames}
@@ -29,7 +30,7 @@ There is deliberately no `loss_mask_grids.pt`. The two MP4s are the canonical ma
                                             ─▶ master_record ─▶ atomic save
   mask.mp4 ─▶ sampled QA crop (first 5 / part, view 0; `--mask-qa-only` skips the VAE)
 
-paired:
+--process_syn_latent (paired):
   argavatar_render[_white].mp4 ─▶ ONE tiled_encode ─▶ z_g master
   argavatar_alpha.mp4 ──────────────────────────────────────────┐
   mask.mp4 ─▶ crop to the box at 256² ─▶ capture_mask_crop.mp4 ─┴─▶ readers pool on demand
@@ -134,20 +135,16 @@ encoder so workers never fork after this process has touched CUDA.
   `dataset.GUIDE_COMPOSITING_VERSION`.
 - A live multi-GPU run uses every rank in `[0, n_rank)` exactly once. Duplicate ranks would
   duplicate work even though atomic writes prevent partial bundles.
-- **`capture_latent_manifest.json` is MERGED, not replaced, by `--capture-only`'s manifest
-  write** (F5's second sub-defect, 2026-09-18 audit fix, via `_merge_capture_manifest`).
-  `discover_capture_sources` is scoped to `--views` (default 2 of 8), so publishing that
-  run's `sources`/`windows` as-is would erase every OTHER view's crop box from the registry
-  even though their bundles are still on disk and still valid -- this actually happened
-  historically and is why a partial re-ingest (e.g. one corrected view) must carry the rest
-  forward. Entries for source directories this run did not touch are preserved verbatim;
-  entries it DID touch are replaced. A merge across a DIFFERENT `geometry`/`edge`/`pad_factor`
-  is refused outright (raises), since a merged manifest can only record one geometry at its
-  top level -- re-run over the full corpus to replace it deliberately instead. Still open:
-  the write happens before `encode_capture_jobs` confirms the bundles it describes actually
-  exist/match (so a killed or partially-failed run can still publish a box ahead of its
-  bundle), and cross-rank publication order under a genuinely partial-view multi-rank launch
-  is unaddressed -- both remain F5 work.
+- **`capture_latent_manifest.json` validation and direct overwrite**: `--process_gt_latent` always
+  processes all available views (the `--views` CLI argument has been removed). When an existing
+  `capture_latent_manifest.json` is present at `--corpus-root`, its validity is checked via
+  `is_capture_manifest_valid` against the current run's `geometry`, `resolution`, and `pad_factor`.
+  If the existing manifest is valid and `--overwrite` is not requested, the manifest is overwritten
+  directly without forcing bundle re-encoding (unmodified bundles are skipped). If the existing
+  manifest is invalid (or if `--overwrite` is passed), `overwrite` is set to `True`, replacing the
+  manifest and re-encoding all capture bundles. Still open: the write happens before
+  `encode_capture_jobs` confirms the bundles it describes actually exist/match (so a killed or
+  partially-failed run can still publish a box ahead of its bundle).
 - Obsolete per-window latent bundles are regenerated; `precompute.py` no longer carries a
   migration path for them.
 
