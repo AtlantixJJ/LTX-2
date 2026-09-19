@@ -42,6 +42,24 @@ what sits behind the render — frame 0 of the driving view for `bg`, a white fr
 `white` — and `composite_guide_frame` is one blend for both. An objective is a *choice of
 background*, not a second guide-construction code path that could drift from the first.
 
+**The renderer's RGB is already composited over white, never straight foreground.**
+ARG-Avatar's own rasterizer (`forward.cu`: `C[ch] + T * bg_color[ch]`, with
+`bg_color=torch.ones(3)`) blends over white before this module ever sees a pixel, so
+`composite_guide_frame` does background *replacement* —
+`guide = R_white + (1 - alpha) * (B - white)` — not a second alpha blend on top of what it
+is handed. Guide contract **v2** (2026-09-18, 2026-09-18 audit finding F1); v1 treated the
+input as straight foreground and blended it again, which applied alpha twice and left a
+white fringe on every soft edge, including in the `white` objective, which should have been
+a no-op. `dataset.GUIDE_COMPOSITING_VERSION` is stamped into every sidecar's
+`compositing_version` and checked by `_render_is_complete` the same way `objective` is — a
+render built under the retired formula is rebuilt, not silently trained against. Unlike
+`objective`, a missing `compositing_version` is never inferred as current: every render
+built before this fix used the wrong formula, so there is no legacy value to grandfather in.
+**The 19 renders on disk predate this fix and are stale under it** — they were reviewed and
+accepted only under the retired v1 contract; the next step in the September 18 plan is one
+reviewed real bg/white pair under v2, then a rebuild of the affected guides (capture bundles
+are unaffected — only the guide's own compositing changed).
+
 **Failures are per-pair exclusions, never batch-fatal.** A pose-tracking gap or a
 reconstruction failure loses that pair (or that clip's pairs), is collected, and is reported
 at the end. A review batch over many actors must not die on one bad clip.
@@ -67,9 +85,11 @@ renderer, so it runs before every import-heavy step in `main()`.
 ## Resumability
 
 `_render_is_complete` accepts a view only if its sidecar and its video agree on frame count,
-geometry, alpha grid, **and objective**, so a killed ffmpeg never looks finished and a render
-built for the other objective is rebuilt rather than trained against. The alpha check accepts
-**either** storage form: a render is not stale merely for predating the MP4 format.
+geometry, alpha grid, **objective, and compositing_version**, so a killed ffmpeg never looks
+finished, a render built for the other objective is rebuilt rather than trained against, and
+a render built under the retired v1 compositing formula is rebuilt rather than accepted as
+current. The alpha check accepts **either** storage form: a render is not stale merely for
+predating the MP4 format.
 
 A sidecar with `composited: true` and no `objective` predates the split; that *is* the `bg`
 render, so it is read as one. Re-rendering the 19 views on disk for a field name would cost
@@ -88,5 +108,7 @@ a GPU-day for nothing.
 
 ## Tests
 
-`tests/test_build_guidance.py` — the blend, `guide_background`'s white path, and the four
-`_render_is_complete` objective cases.
+`tests/test_build_guidance.py` — the v2 background-replacement blend against
+renderer-faithful (already-white-composited) fixtures including the audit's exact CPU repro
+numbers, the `white` objective's exact identity, `guide_background`'s white path, and the
+`_render_is_complete` objective and compositing-version cases.

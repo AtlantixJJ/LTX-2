@@ -85,9 +85,11 @@ DEFAULT_CROP_WORKERS = 6
 # Written by --capture-only at the corpus root; caches plan_source's per-source output so a
 # restart does not re-open and frame-0-decode all 3360 sources before touching a single bundle
 # (plan §1.3: ~1.5 h with no bundle written and no log line, on 3 crop workers). Keyed off the
-# same rgb_fingerprint (size;mtime_ns) discover_capture_sources already computes, plus the
-# geometry/pad-factor that plan_source's output actually depends on -- so a changed source file
-# or a changed --pad-factor/--window-frames/--overlap-frames invalidates only that entry.
+# same rgb_fingerprint AND bbox_fingerprint (size;mtime_ns each) discover_capture_sources
+# already computes, plus the geometry/pad-factor that plan_source's output actually depends
+# on -- so a changed source file, a changed bbox (F5: the box comes from bbox.npy, not
+# rgb.mp4, so rgb_fingerprint alone missed this), or a changed
+# --pad-factor/--window-frames/--overlap-frames invalidates only that entry.
 PLAN_CACHE_NAME = ".capture_plan_cache.json"
 LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -122,6 +124,12 @@ class CaptureSource:
     rgb: str
     bbox: str
     rgb_fingerprint: str
+    # F5 (2026-09-18 audit): the crop box the plan cache remembers comes from bbox.npy, not
+    # rgb.mp4 -- ``_capture_box`` never reads ``rgb_fingerprint``. Without its own
+    # fingerprint, a corpus re-ingest that corrects a bbox with the RGB file untouched would
+    # reuse the OLD cached box forever: `enumerate_capture_jobs`'s cache-hit check only ever
+    # compared `rgb_fingerprint`.
+    bbox_fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -240,6 +248,47 @@ def atomic_torch_save(value: object, destination: Path) -> None:
 
 def atomic_json_save(value: object, destination: Path) -> None:
     dataset.atomic_write(destination, lambda temp: temp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n"))
+
+
+def _merge_capture_manifest(existing: dict | None, new: dict) -> dict:
+    """Merge one ``--capture-only`` run's freshly-discovered ``--views`` selection into the
+    existing corpus-wide manifest, instead of replacing it wholesale (F5, 2026-09-18 audit).
+
+    ``discover_capture_sources`` is scoped to ``--views`` (default just two of eight), so
+    publishing ``new`` as-is would erase every OTHER view's crop box from the registry --
+    even though their bundles are still on disk and still valid. Entries for source
+    directories this run did not touch are carried over verbatim from ``existing``; entries
+    for directories this run DID touch are replaced by ``new``'s (the current, correct box).
+
+    Refuses to merge across a geometry change (window/overlap/edge/pad_factor): a merged
+    manifest can only record ONE geometry at its top level, so silently blending two would
+    misdescribe whichever entries were actually encoded under the other one. Re-run over the
+    full corpus (all views) to replace the manifest deliberately, or use a separate
+    ``--corpus-root``, instead of merging across geometries.
+    """
+    if existing is None:
+        return new
+    incompatible = sorted(key for key in ("geometry", "edge", "pad_factor") if existing.get(key) != new[key])
+    if incompatible:
+        raise ValueError(
+            f"{CAPTURE_MANIFEST_NAME} was built with a different {incompatible} than this "
+            f"run; merging would misdescribe whichever entries were encoded under the other "
+            f"one. Re-run over the full corpus (all views) to replace it deliberately, or use "
+            f"a separate --corpus-root"
+        )
+    new_dirs = {source["relative_dir"] for source in new["sources"]}
+    merged_sources = [s for s in existing.get("sources", []) if s["relative_dir"] not in new_dirs] + new["sources"]
+    # A window's owning source directory is the same rsplit CaptureManifest.load uses -- one
+    # spelling of "which directory does this entry belong to", not a second parser of it.
+    merged_windows = [
+        w for w in existing.get("windows", []) if w["bundle"].rsplit("/", 1)[0] not in new_dirs
+    ] + new["windows"]
+    return {
+        **new,
+        "views": sorted(set(existing.get("views", [])) | set(new["views"])),
+        "sources": merged_sources,
+        "windows": merged_windows,
+    }
 
 
 def discover_pairs(corpus_root: Path, objective: str = dataset.DEFAULT_OBJECTIVE) -> list[Pair]:
@@ -406,6 +455,7 @@ def discover_capture_sources(corpus_root: Path, views: set[int]) -> list[Capture
                 rgb=str(rgb),
                 bbox=str(bbox),
                 rgb_fingerprint=f"size={rgb.stat().st_size};mtime_ns={rgb.stat().st_mtime_ns}",
+                bbox_fingerprint=f"size={bbox.stat().st_size};mtime_ns={bbox.stat().st_mtime_ns}",
             )
         )
     return sources
@@ -476,6 +526,11 @@ def _jobs_from_cache_entry(source: CaptureSource, entry: dict) -> list[CaptureJo
 def _cache_entry_from_jobs(source: CaptureSource, jobs: list[CaptureJob], key: str) -> dict:
     return {
         "fingerprint": source.rgb_fingerprint,
+        # F5: the box `plan_source` computed depends on bbox.npy, not just rgb.mp4 -- an
+        # entry from before this field existed has no `bbox_fingerprint` at all, which never
+        # equals a real one, so old entries miss the cache (replanned once) rather than being
+        # silently trusted.
+        "bbox_fingerprint": source.bbox_fingerprint,
         "key": key,
         "jobs": [
             {"index": job.index, "start": job.start, "end": job.end, "fps": job.fps, "box_xyxy": list(job.box_xyxy)}
@@ -498,12 +553,16 @@ def enumerate_capture_jobs(
     hundreds of sources; running them one at a time serializes hundreds of small
     ``cv2.VideoCapture`` opens for no reason, since sources are independent.
 
-    ``cache_path``, when given, is read for entries whose ``fingerprint`` (the source's own
-    ``size;mtime_ns``, from ``discover_capture_sources``) and ``key`` (pad factor + window
-    geometry -- everything ``plan_source`` actually depends on) still match, and only the
+    ``cache_path``, when given, is read for entries whose ``fingerprint`` and
+    ``bbox_fingerprint`` (the source's own ``size;mtime_ns`` for ``rgb.mp4`` and ``bbox.npy``
+    respectively, from ``discover_capture_sources``) and ``key`` (pad factor + window
+    geometry -- everything else ``plan_source`` depends on) still match, and only the
     remaining sources are opened and planned. This is what makes a restart of a killed
     ``--capture-only`` run cheap: without it, every restart re-opens and frame-0-decodes all
-    selected sources before a single (already-complete) bundle is skipped.
+    selected sources before a single (already-complete) bundle is skipped. Both fingerprints
+    are required (F5, 2026-09-18 audit): ``plan_source`` computes the box from ``bbox.npy``,
+    so a cache keyed on ``rgb.mp4`` alone would keep serving a stale box after a bbox
+    correction that left the RGB file untouched.
     """
     key = _plan_cache_key(pad_factor, geometry)
     entries = _load_plan_cache(cache_path) if cache_path is not None else {}
@@ -512,7 +571,12 @@ def enumerate_capture_jobs(
     to_plan: list[CaptureSource] = []
     for source in sources:
         entry = entries.get(source.relative_dir)
-        if entry is not None and entry.get("fingerprint") == source.rgb_fingerprint and entry.get("key") == key:
+        if (
+            entry is not None
+            and entry.get("fingerprint") == source.rgb_fingerprint
+            and entry.get("bbox_fingerprint") == source.bbox_fingerprint
+            and entry.get("key") == key
+        ):
             by_source[source.relative_dir] = _jobs_from_cache_entry(source, entry)
         else:
             to_plan.append(source)
@@ -1213,9 +1277,13 @@ def main() -> int:  # noqa: PLR0912, PLR0915 -- two explicit CLI modes share par
                 )
             )
             return 0
-        # Every rank writes the same full-corpus manifest through a PID-unique temp file.
-        # Identical atomic replaces are safe, while a rank-local manifest would lose the boxes
-        # owned by every other GPU and make downstream rendering incomplete.
+        # Merge into, rather than replace, an existing manifest (F5): a --views selection is
+        # a subset of the corpus, and every rank in a normal (same --views) multi-GPU launch
+        # computes the identical merged result from the identical existing base, so the race
+        # between ranks' atomic replaces stays safe the same way the pre-merge identical-write
+        # race was -- see _merge_capture_manifest's docstring for what "identical" requires.
+        existing_manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else None
+        capture_manifest = _merge_capture_manifest(existing_manifest, capture_manifest)
         atomic_json_save(capture_manifest, manifest_path)
         completed, skipped, failed = encode_capture_jobs(
             model,

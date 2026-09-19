@@ -11,6 +11,10 @@ Three jobs, all "one constant (or one function), not a convention repeated at ca
    (SS1.2). Every module reads it from here. It was transcribed into a second module
    (`corpus_names.py`) while the package was split across two trees; consolidating removed
    both the copy and the test that pinned it.
+   Also owns `GUIDE_COMPOSITING_VERSION` — the guide's RGB/alpha *contract* version, as
+   opposed to *which filename* it lives in. It belongs beside the naming map for the same
+   reason: `build_guidance.py`'s `_render_is_complete` reads it the same way it reads
+   `render_name`, so one module still owns "how does a reader know this artifact is current".
 3. **`atomic_write`, since S1 of the 2026-09-17 cleanup plan.** Not a corpus-layout concern by
    itself, but every writer in the package needs it and this is the one leaf module every
    writer (`precompute.py`, `build_guidance.py`, `mask_video.py`, `windows.py`) already
@@ -56,6 +60,11 @@ a renderer to learn a filename.
   [mask_video.md](mask_video.md).
 - **An unknown objective raises**, rather than falling back to a default. A typo that
   silently resolves to `bg` would train the wrong pair with no error anywhere.
+- **`GUIDE_COMPOSITING_VERSION` has no legacy value to grandfather in.** Unlike a
+  pre-`objective` sidecar (which correctly infers as `bg`), every render built before this
+  field existed used the retired v1 double-alpha formula — there is no historical value that
+  means "current", so a missing/old version is always stale (2026-09-18 audit finding F1;
+  see [build_guidance.md](build_guidance.md)).
 
 ## Invariants
 

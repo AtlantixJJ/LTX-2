@@ -124,8 +124,30 @@ encoder so workers never fork after this process has touched CUDA.
   training decision (SS1.5); pre-combining or persisting a derived grid would bake one answer
   and one geometry into the corpus.
 - Every source's windows share one fixed crop box.
+- **The on-disk plan cache (`enumerate_capture_jobs`, `.capture_plan_cache.json`) is keyed on
+  BOTH `rgb_fingerprint` and `bbox_fingerprint`** (F5, 2026-09-18 audit fix). `plan_source`
+  computes the box from `bbox.npy`, so keying on the RGB file's fingerprint alone (the
+  original design) let a corpus re-ingest that corrected a bbox with the RGB file untouched
+  keep serving the OLD cached box indefinitely — silently, since nothing else re-derives it.
+  A cache entry from before this field existed has no `bbox_fingerprint` and therefore always
+  misses (replanned once, then cached again), the same no-legacy-value rule as
+  `dataset.GUIDE_COMPOSITING_VERSION`.
 - A live multi-GPU run uses every rank in `[0, n_rank)` exactly once. Duplicate ranks would
   duplicate work even though atomic writes prevent partial bundles.
+- **`capture_latent_manifest.json` is MERGED, not replaced, by `--capture-only`'s manifest
+  write** (F5's second sub-defect, 2026-09-18 audit fix, via `_merge_capture_manifest`).
+  `discover_capture_sources` is scoped to `--views` (default 2 of 8), so publishing that
+  run's `sources`/`windows` as-is would erase every OTHER view's crop box from the registry
+  even though their bundles are still on disk and still valid -- this actually happened
+  historically and is why a partial re-ingest (e.g. one corrected view) must carry the rest
+  forward. Entries for source directories this run did not touch are preserved verbatim;
+  entries it DID touch are replaced. A merge across a DIFFERENT `geometry`/`edge`/`pad_factor`
+  is refused outright (raises), since a merged manifest can only record one geometry at its
+  top level -- re-run over the full corpus to replace it deliberately instead. Still open:
+  the write happens before `encode_capture_jobs` confirms the bundles it describes actually
+  exist/match (so a killed or partially-failed run can still publish a box ahead of its
+  bundle), and cross-rank publication order under a genuinely partial-view multi-rank launch
+  is unaddressed -- both remain F5 work.
 - Obsolete per-window latent bundles are regenerated; `precompute.py` no longer carries a
   migration path for them.
 

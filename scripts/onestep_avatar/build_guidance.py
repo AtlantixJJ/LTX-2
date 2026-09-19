@@ -27,13 +27,15 @@ Per (clip, driving view ``D``):
    read-only QA number -- SSB1's decisive alignment check -- and the alpha is persisted
    (``argavatar_alpha.mp4``, lossless gray; see ``mask_video.py``) for SS4.3 row 1's masked
    loss. A legacy ``.npy`` is still read, and ``--migrate-alpha`` converts one.
-6. **The guide is composited in pixel space** (SS1.2): ``guide_t = render_t * alpha_t +
-   background * (1 - alpha_t)``, using the render's own (continuous, unthresholded) alpha.
-   ``--objective`` chooses the background, and that is the ONLY thing it chooses here:
-   ``bg`` blends the crop of ``D``'s own ``rgb.mp4`` frame 0 (the product's real background),
-   ``white`` blends a white frame (the render on white, for the arm that isolates the subject
-   gap). Done here, in the same pass over the RGBA frames, because the full-resolution alpha
-   only exists transiently in this loop.
+6. **The guide is composited in pixel space** (SS1.2, guide contract v2): the renderer's own
+   RGB is already alpha-composited over white (``forward.cu``: ``C[ch] + T * bg_color[ch]``),
+   so ``composite_guide_frame`` REPLACES that white background rather than blending a second
+   time -- ``guide_t = render_t + (1 - alpha_t) * (background - white)``, using the render's
+   own (continuous, unthresholded) alpha. ``--objective`` chooses the background, and that is
+   the ONLY thing it chooses here: ``bg`` blends the crop of ``D``'s own ``rgb.mp4`` frame 0
+   (the product's real background), ``white`` is the identity (the render already IS on
+   white). Done here, in the same pass over the RGBA frames, because the full-resolution
+   alpha only exists transiently in this loop.
 7. The composited result is encoded and persisted, atomically, as
    ``clip.view_dir(D)/`` + ``dataset.render_name(objective)`` -- the exact path/name
    ``LTX-2/scripts/onestep_avatar/precompute.py``'s ``discover_pairs()`` expects as the
@@ -177,24 +179,50 @@ def _atomic_write_video(frame_dir: Path, output: Path, fps: float) -> list[str]:
 def composite_guide_frame(
     render_bgr: np.ndarray, alpha: np.ndarray, background_bgr: np.ndarray
 ) -> np.ndarray:
-    """SS1.2's pixel-space composite: ``render * alpha + background * (1 - alpha)``.
+    """Replace the renderer's white background with ``background_bgr`` (guide contract v2).
 
-    ONE function for both objectives -- they differ only in what ``background_bgr`` is:
+    ``render_bgr`` is NOT straight foreground color -- ARG-Avatar's own rasterizer
+    (``xlib/render/gaussian_splatting_3d.py`` -> ``diff-gaussian-rasterization-da``'s
+    ``forward.cu``: ``C[ch] + T * bg_color[ch]``) already composites over
+    ``bg_color=torch.ones(3)`` before this function ever sees the pixels. So the incoming
+    RGB is
+
+        R_white = alpha * foreground + (1 - alpha) * white
+
+    Blending that a second time as ``alpha * R_white + (1 - alpha) * B`` (guide contract v1,
+    now known wrong) applies alpha twice and leaves a white fringe baked into every
+    partially-covered edge pixel -- confirmed against the renderer's actual convention: with
+    foreground 50, alpha 128/255, background 20, v1 produced 86 instead of 35, and even the
+    ``white`` objective did not reproduce its own already-white render exactly.
+
+    Algebraically replacing the known white contribution with the requested one instead:
+
+        guide = R_white + (1 - alpha) * (B - white)
+              = alpha * foreground + (1 - alpha) * B
+
+    recovers exactly the background-composited RGB, without ever dividing by alpha to
+    reconstruct straight foreground. For ``white`` itself, ``B == white`` makes this the
+    identity within rounding -- the render already IS the guide, unchanged, which is also
+    the white-background regression check.
+
+    ONE function for both objectives -- they differ only in what ``background_bgr`` (``B``)
+    is:
 
     * ``bg``    -- frame 0 of the driving view, cropped to the same box. The product.
-    * ``white`` -- a white frame, so the guide is the render on white and the target is the
-      capture matted to white. Both sides then agree on the background by construction.
+    * ``white`` -- a white frame; identity, per above.
 
     Writing it as one blend rather than two branches is the point: an objective is a choice
     of background, not a second guide-construction code path that could drift from this one.
 
     ``alpha`` is the render's own uint8 [0, 255] coverage, used continuous (not thresholded)
-    so the boundary is a soft blend rather than a hard-edged 32x-latent-cell quantisation
-    (SS1.2's reason 1 against a latent-space blend). Pure and shape-only, so it is unit
-    tested directly rather than only through the full render pipeline.
+    so the boundary is a soft blend rather than a hard-edged 32x-latent-cell quantisation.
+    Pure and shape-only, so it is unit tested directly rather than only through the full
+    render pipeline.
     """
     alpha_f = (alpha.astype(np.float32) / 255.0)[..., None]
-    blended = render_bgr.astype(np.float32) * alpha_f + background_bgr.astype(np.float32) * (1.0 - alpha_f)
+    white = np.float32(255.0)
+    delta_from_white = background_bgr.astype(np.float32) - white
+    blended = render_bgr.astype(np.float32) + (1.0 - alpha_f) * delta_from_white
     return blended.round().clip(0, 255).astype(np.uint8)
 
 
@@ -311,6 +339,10 @@ def _render_is_complete(
         # A pre-objective sidecar carries ``composited: true`` and no ``objective``; that is
         # exactly the ``bg`` render, so it is accepted as one rather than re-rendered.
         and record.get("objective", "bg" if record.get("composited") else None) == objective
+        # F1: a sidecar with no compositing_version predates the field and was built with the
+        # retired double-alpha formula -- unlike ``objective`` there is no legacy value to
+        # grandfather in, because every render on disk before the fix used the wrong contract.
+        and record.get("compositing_version") == dataset.GUIDE_COMPOSITING_VERSION
         and (frames, width, height) == (expected_frames, out_size, out_size)
     )
 
@@ -451,6 +483,10 @@ def render_pair(
         # render. Checked by _render_is_complete, so a guide built for the other objective
         # is rebuilt rather than silently trained against.
         "objective": objective,
+        # F1: the RGB/alpha contract composite_guide_frame implements. Checked by
+        # _render_is_complete alongside objective, so a render built under a retired
+        # compositing formula is rebuilt rather than silently trained against.
+        "compositing_version": dataset.GUIDE_COMPOSITING_VERSION,
         "fps": fps,
         "n_frames": len(ious),
         "padded_fraction": padded_fraction(box, view_meta["width"], view_meta["height"]),

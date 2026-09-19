@@ -4,10 +4,15 @@ Implements `plans/2026-09-15-ltx25-one-step-argavatar-lora-core.md` (design, fil
 next steps; `plans/2026-09-10-...md` is the long-form original). Read the plan for *why*; this
 file is the run order and the things that will bite you.
 
-**2026-09-18 status:** the audit/fix plan is the active work order. Both capture objectives
-already have 3,360 bundles; guide compositing and provenance need Stage B repair before any
-bulk rendering or new training. Commands below are pipeline references, not a request to
-restart completed capture encoding. The current frozen subset is `t2r2.json`.
+**2026-09-18 status:** the audit/fix plan is the active work order; Stage A is complete. Both
+capture objectives already have 3,360 bundles; the guide RGB/alpha contract had a
+double-alpha compositing bug (F1) against white-composited renderer output, now fixed and
+versioned as `dataset.GUIDE_COMPOSITING_VERSION` (currently 2) — `build_guidance.py` now
+correctly rejects every render built before this fix as stale, since none of the 19 on-disk
+guide renders were built under the corrected contract. Stage B's remaining gate is one
+reviewed real bg/white pair rendered under v2 before any bulk guide rebuild. Commands below
+are pipeline references, not a request to restart completed capture encoding or to bulk-
+rebuild guides yet. The current frozen subset is `t2r2.json`.
 
 **One package, two conda envs.** The ARGAvatar renderer and the LTX VAE cannot share a
 process, but that is a *runtime* constraint, not a layout one — exactly one module needs
@@ -57,19 +62,16 @@ for rank in 0 1 2 3; do
     </dev/null >/dev/null 2>&1 &
 done
 disown
-# tail -f expr/onestep_avatar/logs/precompute_capture_only_gpu1.log to watch it.
-# Equivalent bare invocation, for reference (don't launch it this way for a multi-day run):
-conda run -n ltx python -m scripts.onestep_avatar.precompute \
-  --capture-only --objective bg white --views 0 1 2 3 4 5 6 7 \
-  --edge 1024 --pad-factor 1.2 --crop-workers 2 --gpu-id 0 --rank 0 --n-rank 4
 
 # Regenerate only the sampled mask QA gallery (CPU-only, no VAE):
 conda run -n ltx python -m scripts.onestep_avatar.precompute \
   --capture-only --views 0 --mask-qa-only
 
 # 2. Render guides into the manifest's box (~20 min per view). DO --limit 8 FIRST AND LOOK.
-#    The September 18 audit found 19 bg pairs and a compositing defect. Stage B must repair
-#    that contract and review one real bg/white pair before a bulk rebuild.
+#    The September 18 audit found a compositing defect (F1), now fixed and versioned as guide
+#    contract v2 (dataset.GUIDE_COMPOSITING_VERSION); every one of the 19 existing bg renders
+#    predates the fix and will be rebuilt on the next run. Review one real bg/white pair under
+#    v2 before a bulk rebuild.
 scripts/onestep_avatar/run_b2b.sh 3           # gpu, then [limit] [driving-views...]
 
 # 3. Encode each guide render's master latent and store the cropped capture-mask MP4.

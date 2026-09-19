@@ -18,6 +18,7 @@ from scripts.onestep_avatar.precompute import (
     Pair,
     VideoReader,
     _master_bundle_is_current,
+    _merge_capture_manifest,
     check_pair_alignment,
     discover_pairs,
     enumerate_capture_jobs,
@@ -118,6 +119,7 @@ def test_capture_mask_qa_is_limited_to_view0_of_each_parts_first_five_subjects(t
             rgb=str(view_dir / "rgb.mp4"),
             bbox=str(view_dir / "bbox.npy"),
             rgb_fingerprint="fixture",
+            bbox_fingerprint="fixture",
         )
 
     written = write_capture_mask_qa(source(subjects[0]), (0, 0, 16, 16), overwrite=False)
@@ -253,7 +255,9 @@ def test_pair_alignment_rejects_a_guide_shorter_than_its_capture(tmp_path: Path)
         check_pair_alignment(pair, WindowGeometry(25, 9, SpatioTemporalScaleFactors.default()))
 
 
-def _write_capture_source(view: Path, *, frames: int = 25, fps: float = 30.0) -> CaptureSource:
+def _write_capture_source(
+    view: Path, *, frames: int = 25, fps: float = 30.0, bbox_xyxy: tuple[float, float, float, float] = (10.0, 5.0, 40.0, 35.0)
+) -> CaptureSource:
     """A raw rgb.mp4 + bbox.npy pair, real enough for plan_source to open and decode."""
     view.mkdir(parents=True, exist_ok=True)
     rgb = view / "rgb.mp4"
@@ -265,12 +269,13 @@ def _write_capture_source(view: Path, *, frames: int = 25, fps: float = 30.0) ->
     bbox = view / "bbox.npy"
     np.save(
         bbox,
-        {"xyxy": np.tile(np.array([10.0, 5.0, 40.0, 35.0]), (frames, 1)), "valid": np.ones(frames, dtype=bool)},
+        {"xyxy": np.tile(np.array(bbox_xyxy), (frames, 1)), "valid": np.ones(frames, dtype=bool)},
     )
-    stat = rgb.stat()
+    rgb_stat, bbox_stat = rgb.stat(), bbox.stat()
     return CaptureSource(
         relative_dir=str(view.name), rgb=str(rgb), bbox=str(bbox),
-        rgb_fingerprint=f"size={stat.st_size};mtime_ns={stat.st_mtime_ns}",
+        rgb_fingerprint=f"size={rgb_stat.st_size};mtime_ns={rgb_stat.st_mtime_ns}",
+        bbox_fingerprint=f"size={bbox_stat.st_size};mtime_ns={bbox_stat.st_mtime_ns}",
     )
 
 
@@ -312,3 +317,80 @@ def test_enumerate_capture_jobs_replans_a_changed_source(tmp_path: Path) -> None
     # A pad-factor change must also miss the cache even with the same source file.
     repadded = enumerate_capture_jobs([changed], _GEOMETRY, 1.5, max_workers=1, cache_path=cache_path)
     assert repadded[0].box_xyxy != jobs[0].box_xyxy
+
+
+def test_enumerate_capture_jobs_replans_a_bbox_change_with_rgb_untouched(tmp_path: Path) -> None:
+    """F5 (2026-09-18 audit): the box `plan_source` computes comes from bbox.npy, not
+    rgb.mp4, so a corpus re-ingest that only corrects the bbox (RGB file untouched, same
+    ``rgb_fingerprint``) must still miss the cache -- otherwise the OLD box is served forever."""
+    view = tmp_path / "view00"
+    source = _write_capture_source(view, bbox_xyxy=(10.0, 5.0, 40.0, 35.0))
+    cache_path = tmp_path / "plan_cache.json"
+    first = enumerate_capture_jobs([source], _GEOMETRY, 1.2, max_workers=1, cache_path=cache_path)
+
+    # Only bbox.npy changes; rgb.mp4 is untouched, so rgb_fingerprint is identical.
+    np.save(
+        view / "bbox.npy",
+        {"xyxy": np.tile(np.array([0.0, 0.0, 20.0, 20.0]), (25, 1)), "valid": np.ones(25, dtype=bool)},
+    )
+    bbox_stat = (view / "bbox.npy").stat()
+    moved_bbox = CaptureSource(
+        relative_dir=source.relative_dir, rgb=source.rgb, bbox=source.bbox,
+        rgb_fingerprint=source.rgb_fingerprint,
+        bbox_fingerprint=f"size={bbox_stat.st_size};mtime_ns={bbox_stat.st_mtime_ns}",
+    )
+    assert moved_bbox.rgb_fingerprint == source.rgb_fingerprint
+    assert moved_bbox.bbox_fingerprint != source.bbox_fingerprint
+
+    second = enumerate_capture_jobs([moved_bbox], _GEOMETRY, 1.2, max_workers=1, cache_path=cache_path)
+    assert second[0].box_xyxy != first[0].box_xyxy
+
+
+_GEOM_DICT = {"window_frames": 25, "overlap_frames": 9}
+
+
+def _manifest(*, views: list[int], sources: list[dict], windows: list[dict], edge: int = 1024, pad_factor: float = 1.2) -> dict:
+    return {
+        "schema_version": 1, "kind": "one_step_raw_capture_target_latents",
+        "model": {"key": "m"}, "geometry": _GEOM_DICT, "edge": edge, "pad_factor": pad_factor,
+        "views": views, "sources": sources, "windows": windows,
+    }
+
+
+def test_merge_capture_manifest_is_the_identity_with_no_existing_manifest() -> None:
+    """A fresh corpus (no manifest yet) has nothing to preserve -- merging is a no-op."""
+    new = _manifest(views=[1], sources=[{"relative_dir": "a/view01"}], windows=[{"bundle": "a/view01/x.pt"}])
+    assert _merge_capture_manifest(None, new) == new
+
+
+def test_merge_capture_manifest_preserves_untouched_views_and_replaces_touched_ones() -> None:
+    """F5 (2026-09-18 audit): a routine partial ``--views`` run must not erase the crop boxes
+    of views it was not asked to touch -- their bundles are still on disk and still valid."""
+    existing = _manifest(
+        views=[0, 1],
+        sources=[{"relative_dir": "a/view00", "note": "old"}, {"relative_dir": "a/view01", "note": "old"}],
+        windows=[{"bundle": "a/view00/x.pt", "box_xyxy": "old"}, {"bundle": "a/view01/x.pt", "box_xyxy": "old"}],
+    )
+    # This run only re-discovers view01 (e.g. a corrected bbox for it), not view00.
+    new = _manifest(
+        views=[1],
+        sources=[{"relative_dir": "a/view01", "note": "new"}],
+        windows=[{"bundle": "a/view01/x.pt", "box_xyxy": "new"}],
+    )
+
+    merged = _merge_capture_manifest(existing, new)
+
+    assert merged["views"] == [0, 1]
+    by_dir = {s["relative_dir"]: s["note"] for s in merged["sources"]}
+    assert by_dir == {"a/view00": "old", "a/view01": "new"}  # view00 preserved, view01 replaced
+    by_bundle = {w["bundle"]: w["box_xyxy"] for w in merged["windows"]}
+    assert by_bundle == {"a/view00/x.pt": "old", "a/view01/x.pt": "new"}
+
+
+def test_merge_capture_manifest_rejects_a_geometry_change() -> None:
+    """A merged manifest can only record ONE geometry at its top level, so silently blending
+    two would misdescribe whichever entries were actually encoded under the other one."""
+    existing = _manifest(views=[0], sources=[], windows=[], pad_factor=1.2)
+    new = _manifest(views=[0], sources=[], windows=[], pad_factor=1.5)
+    with pytest.raises(ValueError, match="pad_factor"):
+        _merge_capture_manifest(existing, new)

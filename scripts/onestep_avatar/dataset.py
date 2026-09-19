@@ -61,6 +61,27 @@ CAPTURE_MANIFEST_NAME = "capture_latent_manifest.json"
 OBJECTIVES = ("bg", "white")
 DEFAULT_OBJECTIVE = "bg"
 
+# The RGB/alpha contract ``build_guidance.composite_guide_frame`` implements, stamped into
+# every render sidecar's ``compositing_version`` and checked by ``_render_is_complete`` the
+# same way ``objective`` is -- a render built under a different contract describes a
+# different artifact and must be rebuilt, not silently trained against.
+#
+#   v1 (retired) -- treated the renderer's RGB as straight foreground and blended it again
+#                   with ``alpha * render + (1 - alpha) * background``. The renderer's own
+#                   rasterizer had already composited over white first, so this applied
+#                   alpha twice and left a white fringe on every soft edge -- including the
+#                   ``white`` objective, which should have been a no-op. See build_guidance's
+#                   2026-09-18 audit finding F1.
+#   v2 (current)  -- background REPLACEMENT: ``R_white + (1 - alpha) * (B - white)``, which
+#                   algebraically undoes the renderer's white compositing instead of
+#                   compositing a second time. Identity for ``white`` within rounding.
+#
+# A sidecar with no ``compositing_version`` at all predates the field and is v1 by
+# construction (every render on disk before this fix was built with the v1 formula) --
+# there is no "pre-compositing" case to grandfather in the way ``objective`` has one, because
+# the renderer has always emitted an already-white-composited RGB.
+GUIDE_COMPOSITING_VERSION = 2
+
 # The side (pixels) both persisted coverage grids are stored/read at. One spelling for the
 # producer (precompute.py's alpha/mask crop) and the consumer (build_guidance.py's alpha
 # render) to agree on -- they used to each declare their own ``ALPHA_GRID = 256``.
