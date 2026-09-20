@@ -59,7 +59,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch \
     --objective white \
     --guide-mode d0 \
     --teacher-forcing \
-    --output ../expr/onestep_avatar/runs/white-d0-teacher-forced \
+    --output ../expr/onestep_avatar/runs/white-c0-teacher-forced \
     --lora-rank 32 \
     --steps 2000
 
