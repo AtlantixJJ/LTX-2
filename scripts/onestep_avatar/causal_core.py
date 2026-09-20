@@ -66,21 +66,30 @@ from scripts.prune.core import refine_core
 # exactly the span the old rollout finalized per window.
 BLOCK_LATENT_FRAMES = 2
 
-# Clean latent frames kept in the cache besides the pinned frame-0 sink. Every extra frame
+# Clean latent frames kept in the cache BESIDES the pinned frame-0 sink. Every extra frame
 # costs ~0.8 GB at the 22B geometry (48 layers x 1024 tokens x 4096 dims x 2 tensors x 2
 # bytes), which is why this is a flag rather than "the whole history".
-CONTEXT_LATENT_FRAMES = 2
+#
+# The default is the deepest setting the retained history supports: 1 sink + 15 context is a
+# RETAINED HISTORY OF 16 LATENT FRAMES, the ceiling MAX_CONTEXT_LATENT_FRAMES prices below.
+# Read the two numbers together -- the flag counts context frames, the budget counts the
+# whole cache, and confusing them is an off-by-one worth ~0.8 GB per rank.
+#
+# At this depth a corpus-length chain evicts nothing: block 2 attends to c0 plus clean frames
+# 1-4, and a rollout only starts dropping once it has finalized past frame 15.
+CONTEXT_LATENT_FRAMES = 15
 
-# The deepest cache this scheme supports. 16 clean latent frames is 128 pixel frames -- most
-# of a corpus clip (the 137-frame tier is 18 latent frames), so at this depth a K-block
-# rollout evicts nothing and the cache simply ACCUMULATES every frame the chain has
-# finalized, plus the primed prefix. That is the regime the deeper settings exist for.
+# The deepest cache this scheme supports, as CONTEXT frames. 16 clean latent frames is 128
+# pixel frames -- most of a corpus clip (the 137-frame tier is 18 latent frames), so at this
+# depth a K-block rollout evicts nothing and the cache simply ACCUMULATES every frame the
+# chain has finalized, plus the primed prefix. That is the regime the default sits in.
 #
 # Two things bound it, and neither is arbitrary:
 #
-# * Memory. ~0.8 GB per retained latent frame per rank at the 22B geometry, so 16 frames is
-#   ~13 GB of K/V on top of the model -- real on a 49 GB card, and the reason this is a
-#   ceiling rather than a default.
+# * Memory. ~0.8 GB per retained latent frame per rank at the 22B geometry, so a 16-frame
+#   retained history is ~13 GB of K/V on top of the model -- real on a 49 GB card. The
+#   default spends exactly that budget (sink + 15 context); this ceiling leaves one frame of
+#   slack for a deliberate override rather than being the number the default sits on.
 # * RoPE. The temporal axis is seconds against MAX_ROPE_SECONDS; 16 latent frames is ~4.3 s
 #   at 30 fps, comfortably inside it, and ClipGrid.build raises for anything that is not.
 #

@@ -4,8 +4,6 @@
 > [core_algorithm.md](core_algorithm.md); the arms that call it in
 > [experiments.md](experiments.md); the places it does not meet the contract in
 > [known_gaps.md](known_gaps.md) — notably
-> [G1](known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition) (no clean
-> first-frame condition) and
 > [G2](known_gaps.md#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target)
 > (`rollout(teacher_forcing=True)` refreshes from the guide, not the target).
 
@@ -31,21 +29,35 @@ speed/quality trade — it would silently compute a different function.
 
 ## Data flow
 
+```mermaid
+flowchart TD
+  IN[("clip master latent + fps")]
+  GRID["ClipGrid.build<br/>global RoPE, keyframe mask (frame 0), denoise mask"]
+  PLAN["CausalGeometry.plan<br/>block bounds [start, end)"]
+  ALLOC["BlockCache.allocate<br/>min(policy need, clip length) × tokens/frame"]
+  PRIME["prime_cache(upto)<br/>always exactly one forward"]
+  DEN["denoise_block"]
+  REF["refresh_block"]
+  EV["cache.evict()"]
+  CACHE{{"K/V cache"}}
+
+  IN --> GRID --> PLAN --> ALLOC --> CACHE
+  PRIME --> CACHE
+  CACHE -->|"history"| DEN
+  DEN --> REF --> CACHE --> EV -->|"next block"| DEN
+
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  classDef state fill:#fdecc8,stroke:#b07d18,color:#3d2a05;
+  classDef nograd fill:#fdecc8,stroke:#b07d18,color:#3d2a05,stroke-dasharray:5 3;
+  class GRID,PLAN,ALLOC,DEN proc;
+  class IN disk;
+  class CACHE state;
+  class PRIME,REF,EV nograd;
 ```
-clip master latent + fps
-   ▼
-ClipGrid.build  ──▶ tools, GLOBAL RoPE positions, keyframe mask (frame 0 only), denoise mask
-   ▼
-CausalGeometry.plan(latent_frames) ──▶ block bounds [start, end)
-   ▼
-BlockCache.allocate(grid, geometry)   capacity = min(policy need, clip length) × tokens/frame
-   ▼
-prime_cache(upto)      one no-grad block-causal forward over the GT prefix   [ALWAYS one forward]
-   ▼
-per block i:  denoise_block  (reads cache, writes nothing)
-              refresh_block  (no_grad, the ONLY cache writer)
-              cache.evict()  (keep the pinned sink + the last `context` frames)
-```
+
+`denoise_block` reads the cache and writes nothing; `refresh_block` is the only writer;
+`cache.evict()` keeps the pinned sink plus the last `context` frames.
 
 ## Organization logic
 
@@ -77,17 +89,18 @@ during training.
 | | |
 |---|---|
 | `BLOCK_LATENT_FRAMES = 2` | 16 pixel frames = the deployed stride, so an adapter finalizes per step exactly the span `k2` does |
-| `CONTEXT_LATENT_FRAMES = 2` | clean frames retained besides the sink |
-| `MAX_CONTEXT_LATENT_FRAMES = 16` | the supported ceiling — ~13 GB of K/V per rank at the 22B geometry |
+| `CONTEXT_LATENT_FRAMES = 15` | clean frames retained besides the sink — with it, a **retained history of 16 latent frames** (~13 GB of K/V per rank) |
+| `MAX_CONTEXT_LATENT_FRAMES = 16` | the supported ceiling, in *context* frames — one frame of slack above the default |
 | `SINK_LATENT_FRAMES = 1` | latent frame 0, pinned, never evicted |
 
 **Cache depth is a memory knob first** — ~0.8 GB per retained latent frame per rank (48
 layers × 1024 tokens × 4096 dims × k and v × 2 bytes).
 
-**Deep context = accumulation.** Past roughly the chain's own reach, eviction never fires and
-the cache simply holds the pinned sink plus every frame the rollout has finalized. At `K = 3`
-and a 2-frame block that is 6 finalized frames plus whatever priming put there. Eviction is
-what bounds a *long* rollout, not what a short one spends its time doing.
+**Deep context = accumulation, and that is now the default.** Past roughly the chain's own
+reach, eviction never fires and the cache simply holds the pinned sink plus every frame the
+rollout has finalized. At `K = 3` and a 2-frame block that is 6 finalized frames plus whatever
+priming put there — well inside the default 15, so a corpus-length chain never evicts. Eviction
+is what bounds a *long* rollout, not what a short one spends its time doing.
 
 **Capacity is capped by the clip** (`cache_latent_frames_for`): reserving 16 frames of K/V
 for an 18-frame clip a 3-block chain touches half of would be gigabytes of untouched memory.

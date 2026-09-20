@@ -11,23 +11,35 @@
 ## Objective
 
 Make a checkpoint's behaviour visible, as video, at the distilled refiner's operating points.
-One MP4 per σ in `PROBE_SIGMAS = (0.909375, 0.725, 0.421875)`, laid out:
+**One rollout per σ in `PROBE_SIGMAS = (0.909375, 0.725, 0.421875)` — three in total** — and
+one MP4 each, laid out:
 
-```
-ground-truth capture │ frozen base │ LoRA checkpoint
-```
+`ground-truth capture | frozen base | LoRA checkpoint`, side by side.
 
-A fixed chain and fixed seeds make a sequence of checkpoints directly comparable. `--run` +
+Each rollout covers the **whole clip** (`--span clip`, the default): block 0 through the last
+full block, the same sequence deployment produces, so drift accumulated across the AR rollout
+is visible instead of being truncated at the training chain's `K` blocks. `--span chain`
+restores the older behaviour of covering only the subset chain's own blocks, for a
+like-for-like comparison with probes taken before this change.
+
+Every frame carries a burned-in caption — `latent N · rollout step M (block a-b)` — so a
+drift seen in the video can be traced to the block that produced it without counting frames by
+hand off a 137-frame clip. `--no-frame-labels` turns it off.
+
+A fixed clip and fixed seeds make a sequence of checkpoints directly comparable. `--run` +
 `--steps` visualizes several checkpoints from one run in a single call (e.g. `--steps 100 500
 1000`), reusing one shared frozen-base decode and GT panel across all of them.
 
 ## Data flow
 
-```
-LoRA checkpoint + corpus masters ─▶ causal_core rollout at each probe σ
-                                 ─▶ VAE decode (offline, no FSDP resident)
-                                 ─▶ runs/<name>/probes/step_<N>/<σ>.mp4
-```
+LoRA checkpoint + corpus masters → one `causal_core` rollout per probe σ, over the span
+`--span` selects → VAE decode (offline, no FSDP resident) →
+`runs/<name>/probes/step_<N>/<σ>.mp4`. Each rollout is `2·len(plan)` forwards: one denoise and
+one refresh per block, with no priming, since it starts at block 0.
+
+`_frame_labels` turns the plan into one caption per decoded pixel frame and `_stamp` burns it
+into all three panels just before `t3_video` writes them. The manifest records `span`,
+`blocks_rolled_out`, `latent_frames_covered` and `frame_labels` alongside the existing fields.
 
 ## Organization logic
 
@@ -35,8 +47,10 @@ LoRA checkpoint + corpus masters ─▶ causal_core rollout at each probe σ
 are the deployed ones. It does **not** call `onestep_core`, which refuses D0 — a probe for a
 non-deployable arm cannot go through a deployment-only path.
 
-A causal rollout writes one latent covering the whole chain, so there is no per-window overlap
-to stitch and no seam to get wrong — a simplification that fell out of the rewrite.
+A causal rollout writes one latent covering the whole span, so there is no per-window overlap
+to stitch and no seam to get wrong — a simplification that fell out of the rewrite. The GT
+panel is sliced to exactly the frames the rollout covered, so the panels stay frame-aligned at
+either span.
 
 It is an **offline** probe: no VAE is resident while FSDP training is stepping.
 
@@ -46,7 +60,20 @@ It is an **offline** probe: no VAE is resident while FSDP training is stepping.
   since S2 of the 2026-09-17 cleanup plan that constructor is where a pre-causal window-chain
   subset is refused (moved out of `train.main`, so both readers share the check) — a pointed
   `SystemExit` instead of `KeyError: 'latent_time_scale'` deep inside geometry setup.
-- The chain is asserted `seed_is_clip_start`, so the probe never depends on GT cache priming.
+- **The rollout always starts at block 0**, so `prime_cache` is never called and the probe
+  never depends on a teacher-forced GT prefix in its cache. At `--span clip` this is automatic;
+  at `--span chain` the chain is asserted `seed_is_clip_start` for the same reason.
+- **`c0` is the clean first-frame condition in the probe too** — latent frame 0 of the same
+  objective's `z_y`, passed as `first_frame_condition`, exactly as
+  [`core_algorithm.md` §3](core_algorithm.md#3-the-conditioning-contract) requires of every
+  caller of the rollout.
+- **The caption must follow the VAE's frame mapping, not a ratio.** Latent frame 0 is one
+  pixel frame and every later latent frame is `time_scale` of them, so pixel frame `p` is
+  latent `0 if p == 0 else ceil(p / time_scale)`. A wrong caption is worse than none: it sends
+  a reader to the wrong block. Pinned by `tests/test_visualize_d0.py`.
+- **`_stamp` writes only the caption band.** Rendering a whole frame through PIL would
+  round-trip every pixel through uint8 and quantize the image under review; a probe must not
+  alter what it is showing. Also pinned by the tests.
 - D0 must be probed in its **own** state (capture-noised), not a guide-noised approximation —
   that is the whole reason this script exists rather than reusing a deployment renderer.
 - **`--teacher-forcing` must match how the checkpoint was trained, or the probe is measuring
@@ -64,6 +91,12 @@ It is an **offline** probe: no VAE is resident while FSDP training is stepping.
   hours before it was caught.
 - The first attempt used the wrong σ grid entirely. The grid is the distilled model's own, not
   a sweep.
+
+## Tests
+
+`tests/test_visualize_d0.py` (CPU, no model): `--span clip` covers the whole clip and `--span
+chain` only the chain's blocks; captions follow the VAE's frame mapping and cover exactly the
+decoded frames; `_stamp` leaves every pixel below the band untouched.
 
 ## Owed
 

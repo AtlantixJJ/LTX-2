@@ -2,12 +2,19 @@
 
 D0 is deliberately not deployable: it noises the capture latent itself.  That makes it a
 useful capacity control, but only if its review artifact uses that exact state rather than a
-guide-noised approximation.  This script rolls a fixed chain of causal blocks at each probe
-sigma and writes one portable MP4 per level:
+guide-noised approximation.
+
+It runs **one rollout per probe sigma** -- three in total -- and writes one portable MP4 per
+level:
 
     ground-truth capture | frozen base | D0 LoRA checkpoint
 
-The fixed chain and seeds make a sequence of checkpoints directly comparable.  It is an
+Each rollout covers the **whole clip** by default (``--span clip``): block 0 through the last
+full block, the same sequence an inference run produces, so error accumulated across the AR
+rollout is visible rather than truncated at the training chain's ``K`` blocks. ``--span chain``
+restores the old behaviour of covering only the subset chain's blocks.
+
+The fixed clip and seeds make a sequence of checkpoints directly comparable.  It is an
 offline checkpoint probe, so no VAE is resident while FSDP training is stepping.
 
 **Revised 2026-09-14 (SS4.4).** The probe rolls out through ``causal_core`` -- block-causal
@@ -45,7 +52,9 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 import torch
+from PIL import Image, ImageDraw, ImageFont
 
 from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
 from scripts.onestep_avatar import causal_core, dataset
@@ -68,19 +77,50 @@ from scripts.prune.evaluate.metrics import t3_video
 PROBE_SIGMAS = (0.909375, 0.725, 0.421875)
 
 
-def _chain(store: ChainStore, index: int) -> Chain:
+def _chain(store: ChainStore, index: int, span: str) -> Chain:
     if index < 0 or index >= len(store):
         raise SystemExit(f"--chain-index {index} is outside [0, {len(store) - 1}]")
     chain = store[index]
-    if not chain.seed_is_clip_start:
+    # At ``--span clip`` the rollout starts at block 0 regardless of where the chain does, so
+    # the cache is never primed and this property is not needed. At ``--span chain`` it is: a
+    # mid-clip chain would otherwise need a teacher-forced GT prefix in its cache, which is a
+    # different condition from the one the checkpoint is being judged on.
+    if span == "chain" and not chain.seed_is_clip_start:
         raise SystemExit(
-            "the D0 visual probe must start at a clip boundary so its cache is not primed from "
-            "a teacher-forced GT prefix; choose a chain whose seed_is_clip_start is true"
+            "--span chain must start at a clip boundary so its cache is not primed from "
+            "a teacher-forced GT prefix; choose a chain whose seed_is_clip_start is true, "
+            "or use the default --span clip"
         )
     return chain
 
 
-def _run_d0_chain(transformer, context, chain: Chain, geometry, sigma: float, *, device, latent_channels: int, seed: int, teacher_forcing: bool = False):  # noqa: ANN001
+def _plan_for(chain: Chain, geometry, grid, span: str) -> list[tuple[int, int]]:  # noqa: ANN001
+    """The blocks this probe rolls out.
+
+    ``clip`` (the default) is the whole clip from block 0 to the last full block -- the full
+    sequence an inference run produces, so drift across the rollout is visible rather than
+    truncated at the training chain's ``K``. ``chain`` reproduces the historical behaviour of
+    covering only the subset chain's own blocks.
+    """
+    plan = geometry.plan(grid.latent_frames)
+    if span == "clip":
+        return plan
+    return [plan[index] for index in chain.blocks]
+
+
+def _run_d0_chain(  # noqa: ANN202
+    transformer,  # noqa: ANN001
+    context,  # noqa: ANN001
+    chain: Chain,
+    geometry,  # noqa: ANN001
+    sigma: float,
+    *,
+    device,  # noqa: ANN001
+    latent_channels: int,
+    seed: int,
+    teacher_forcing: bool = False,
+    span: str = "clip",
+):
     """Exact D0 AR rollout: ``z_y`` is both the noising source and the target reference.
 
     Goes through ``causal_core.rollout``, the one implementation training and deployment both
@@ -100,7 +140,7 @@ def _run_d0_chain(transformer, context, chain: Chain, geometry, sigma: float, *,
         device=device, dtype=DTYPE,
     )
     z_y = grid.patchify(chain.z_y.unsqueeze(0).to(device=device, dtype=DTYPE))
-    plan = [geometry.plan(grid.latent_frames)[index] for index in chain.blocks]
+    plan = _plan_for(chain, geometry, grid, span)
     tokens, _ = causal_core.rollout(
         causal_core.denoised_from_x0_model(transformer),
         grid, geometry, cache, z_y, context, sigma, seed=seed, blocks=plan, teacher_forcing=teacher_forcing,
@@ -110,10 +150,63 @@ def _run_d0_chain(transformer, context, chain: Chain, geometry, sigma: float, *,
     return grid, grid.unpatchify_block(tokens[:, : covered * grid.tokens_per_latent_frame], covered)
 
 
-def _target_latent(chain: Chain, grid, geometry, device: torch.device) -> torch.Tensor:  # noqa: ANN001
+def _target_latent(chain: Chain, grid, geometry, device: torch.device, span: str) -> torch.Tensor:  # noqa: ANN001
     """The GT capture over exactly the frames the rollout covered, for a frame-aligned panel."""
-    plan = [geometry.plan(grid.latent_frames)[index] for index in chain.blocks]
+    plan = _plan_for(chain, geometry, grid, span)
     return chain.z_y.unsqueeze(0)[:, :, : plan[-1][1]].to(device=device, dtype=DTYPE)
+
+
+def _frame_labels(plan: list[tuple[int, int]], time_scale: int) -> list[str]:
+    """One caption per decoded pixel frame: which latent frame and which rollout step.
+
+    The mapping is the causal VAE's, not a ratio: latent frame 0 is a single pixel frame (the
+    keyframe) and every later latent frame is ``time_scale`` of them, so pixel frame ``p``
+    belongs to latent frame ``0 if p == 0 else ceil(p / time_scale)``. Reading a drift back to
+    the block that produced it is the whole point of the probe, and counting frames by hand
+    off a 137-frame video is how that gets got wrong.
+    """
+    labels: list[str] = []
+    for step, (start, end) in enumerate(plan):
+        for latent in range(start, end):
+            first_pixel = 0 if latent == 0 else (latent - 1) * time_scale + 1
+            last_pixel = 0 if latent == 0 else latent * time_scale
+            for _ in range(last_pixel - first_pixel + 1):
+                labels.append(f"latent {latent}  ·  rollout step {step}  (block {start}-{end - 1})")
+    return labels
+
+
+def _stamp(pixels: torch.Tensor, labels: list[str]) -> torch.Tensor:
+    """Burn ``labels[i]`` into the top-left of frame ``i`` of a ``[T, C, H, W]`` 0-1 tensor.
+
+    Burned in rather than written to a sidecar because the artifact that gets looked at, and
+    forwarded, is the MP4 itself; a caption that lives anywhere else is not there when someone
+    scrubs to the frame where the identity slips.
+
+    Only the caption band is written. Rendering the whole frame through PIL would round-trip
+    every pixel through uint8 and quantize the image being reviewed -- a probe must not alter
+    the thing it is showing, even by half a level.
+    """
+    frames, _, height, width = pixels.shape
+    size = max(14, height // 36)
+    try:
+        font = ImageFont.load_default(size=size)
+    except TypeError:  # Pillow < 10 has no size argument
+        font = ImageFont.load_default()
+    pad = max(2, size // 4)
+    bands: dict[str, torch.Tensor] = {}  # a caption repeats for every pixel frame of its latent frame
+    out = pixels.clone()
+    for index in range(min(frames, len(labels))):
+        text = labels[index]
+        band = bands.get(text)
+        if band is None:
+            box = ImageDraw.Draw(Image.new("RGB", (1, 1))).textbbox((0, 0), text, font=font)
+            image = Image.new("RGB", (min(box[2] + 2 * pad, width), min(box[3] + 2 * pad, height)), (0, 0, 0))
+            ImageDraw.Draw(image).text((pad, pad), text, fill=(255, 255, 255), font=font)
+            band = torch.from_numpy(np.array(image)).permute(2, 0, 1).float().div(255)
+            bands[text] = band.to(dtype=out.dtype, device=out.device)
+            band = bands[text]
+        out[index, :3, : band.shape[1], : band.shape[2]] = band
+    return out
 
 
 def _checkpoint_name(path: Path) -> str:
@@ -156,7 +249,7 @@ def generate_checkpoint(args: argparse.Namespace, checkpoint: Path | None, chain
             _, latent = _run_d0_chain(
                 transformer, session.context, chain, geometry, sigma,
                 device=session.device, latent_channels=session.model.caps.latent_channels, seed=args.seed,
-                teacher_forcing=args.teacher_forcing,
+                teacher_forcing=args.teacher_forcing, span=args.span,
             )
             outputs[sigma] = latent
 
@@ -188,7 +281,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--split", choices=("train", "held_out"), default="train")
-    parser.add_argument("--chain-index", type=int, default=0, help="Index within --split; must begin at clip start.")
+    parser.add_argument("--chain-index", type=int, default=0, help="Index within --split; selects the clip (and, at --span chain, the blocks).")
+    parser.add_argument(
+        "--span", choices=("clip", "chain"), default="clip",
+        help=(
+            "clip (default): roll the WHOLE clip from block 0, so each video is the full "
+            "inference sequence and drift across it is visible. chain: cover only the subset "
+            "chain's own K blocks, the historical behaviour; requires a clip-start chain."
+        ),
+    )
     parser.add_argument(
         "--teacher-forcing", action="store_true",
         help=(
@@ -197,6 +298,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "a checkpoint trained with --teacher-forcing the way it was actually trained; the "
             "default (off) is the self-forced regime a real deployment has to use."
         ),
+    )
+    parser.add_argument(
+        "--no-frame-labels", action="store_true",
+        help="Do not burn the per-frame 'latent N · rollout step M' caption into the video.",
     )
     add_model_args(parser)
     return parser.parse_args(argv)
@@ -212,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
     store = ChainStore(
         subset, corpus_root, split=args.split, objective=objective, with_anchor=False, with_guide=False,
     )
-    chain = _chain(store, args.chain_index)
+    chain = _chain(store, args.chain_index, args.span)
     checkpoints = _resolve_checkpoints(args)
     args.output.mkdir(parents=True, exist_ok=True)
     sessions_and_outputs = [generate_checkpoint(args, checkpoint, chain) for checkpoint in (None, *checkpoints)]
@@ -224,15 +329,24 @@ def main(argv: list[str] | None = None) -> int:
     # requested before/after comparison in one frame-aligned artifact: GT | frozen base | LoRA.
     # No stitching any more: a causal rollout writes one latent covering the whole chain, so
     # there is no per-window overlap to drop and no seam to get wrong.
+    plan = _plan_for(chain, geometry, grid, args.span)
+    labels = [] if args.no_frame_labels else _frame_labels(plan, geometry.scale_factors.time)
     with session.decoder() as decoder:
-        target = decode_latent(session, _target_latent(chain, grid, geometry, session.device), decoder)
+        target = decode_latent(session, _target_latent(chain, grid, geometry, session.device, args.span), decoder)
         base_pixels = {sigma: decode_latent(session, latent.to(session.device), decoder) for sigma, latent in base.items()}
+        if labels:
+            # Stamped on every panel, so a frame stays readable however the video is cropped
+            # or which panel someone is looking at.
+            target = _stamp(target, labels)
+            base_pixels = {sigma: _stamp(pixels, labels) for sigma, pixels in base_pixels.items()}
         # Skip the frozen-base entry of sessions_and_outputs here: its own video would be
         # GT | frozen base | frozen base, which is redundant with base_pixels already being
         # one of the three panels in every LoRA checkpoint's video below.
         for checkpoint, (_unused_session, outputs) in zip(checkpoints, sessions_and_outputs[1:], strict=True):
             for sigma, latent in outputs.items():
                 candidate = decode_latent(session, latent.to(session.device), decoder)
+                if labels:
+                    candidate = _stamp(candidate, labels)
                 path = args.output / f"{_checkpoint_name(checkpoint)}_sigma_{sigma:.6f}.mp4"
                 t3_video(target, base_pixels[sigma], candidate, path, fps=chain.fps)
                 written.append(path)
@@ -240,13 +354,17 @@ def main(argv: list[str] | None = None) -> int:
         "kind": "d0_gt_renoise_probe",
         "attention": "block_causal",
         "source": chain.source,
-        "blocks": chain.blocks,
+        "span": args.span,
+        "blocks": chain.blocks if args.span == "chain" else "whole_clip",
         "geometry": geometry.as_dict(),
         "fps": chain.fps,
         "seed": args.seed,
         "sigmas": list(PROBE_SIGMAS),
         "teacher_forcing": args.teacher_forcing,
         "layout": "ground_truth_capture | frozen_base_generated | checkpoint_generated",
+        "frame_labels": not args.no_frame_labels,
+        "blocks_rolled_out": [list(span) for span in plan],
+        "latent_frames_covered": plan[-1][1] if plan else 0,
         "videos": [str(path.name) for path in written],
     }, indent=2) + "\n")
     for path in written:

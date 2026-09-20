@@ -14,11 +14,8 @@ run from memory.
 
 ## Data flow
 
-```
-runs/<name>/  checkpoint + metrics_rank*.jsonl + probes/*.mp4
-        ▼  (each checked before anything is written)
-   report markdown / JSON
-```
+`runs/<name>/` — checkpoint, `metrics_rank*.jsonl` and `probes/*.mp4` — → report markdown /
+JSON. Each input is checked before anything is written.
 
 ## Organization logic
 

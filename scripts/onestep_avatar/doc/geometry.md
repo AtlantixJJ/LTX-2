@@ -10,12 +10,9 @@ capture never had, and the temporal RoPE would learn it.
 
 ## Data flow
 
-```
-bbox.npy (per-frame xyxy + valid) ─▶ union over valid frames
-                                   ─▶ square of max(w,h) × pad_factor, centred
-                                   ─▶ fit_square_to_canvas  (shift, then cap)
-                                   ─▶ XYXY, consumed by build_guidance and precompute
-```
+`bbox.npy` (per-frame xyxy + valid) → union over the valid frames → a square of
+`max(w, h) × pad_factor`, centred → `fit_square_to_canvas` (shift, then cap) → the `XYXY`
+consumed by `build_guidance` and `precompute`.
 
 Pure numpy: no GPU, no torch, no dataset access. That is deliberate — it makes the rule
 unit-testable without the corpus, which is what lets the same arithmetic be pinned across

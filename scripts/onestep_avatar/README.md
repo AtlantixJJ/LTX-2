@@ -24,17 +24,18 @@ them, not definitions.
 
 ## Implementation status
 
-> **The product's defining input does not reach the model yet.** The supplied real first frame is
-> not a clean model condition in any arm: at a clip start latent frame 0 is noised with the rest
-> of block 0, and deployment has no argument to pass a first-frame latent at all. This is
-> [**G1**](doc/known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition), tracked as
-> F2 / Stage C of the September 18 audit, and **not fixed**. Every command below runs under it.
+> **The supplied real first frame is a clean model condition** (`clean_c0_v1`): at a clip start
+> latent frame 0 enters block 0 clean at per-token timestep zero and is preserved through the
+> output, the refresh and the pinned cache sink; `onestep_core.rollout` requires an explicit
+> `first_frame_latent`. This was
+> [**G1**](doc/known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition), **verified
+> 2026-09-19**. Runs from before that date are not comparable with runs after it.
 
 | | State |
 |---|---|
 | Causal block training (D0 and D1a, `bg` and `white`, teacher and self forcing) | implemented and runnable |
 | Unweighted full-frame latent MSE | implemented; the binding loss decision |
-| Clean supplied first-frame condition `c0` | **required, not implemented** (G1) |
+| Clean supplied first-frame condition `c0` | implemented as `clean_c0_v1` (G1 verified) |
 | D1 probe; checkpoint-condition enforcement; shared σ validator | owed — G2–G5 |
 | Guide artifacts under the v2 compositing contract | 1 of 19 `bg` pairs rebuilt; 0 `white` guides — G6 |
 | D1b / D1c | deferred proposals, no code |
@@ -128,7 +129,7 @@ scripts/onestep_avatar/run_a1.sh 2
 # 5c. Cost per finalized chunk: the causal denoise+refresh pair against k2's two window
 #     forwards (~2 min, 1 GPU). NOT YET RUN under the causal scheme -- the compute claim moved
 #     when the cache landed, and this is the measurement that settles where it moved to. Sweep the
-#     cache depth, which is the knob: --context-latent-frames 0 2 4
+#     cache depth, which is the knob: --context-latent-frames 0 2 4 15
 conda run -n ltx python -m scripts.onestep_avatar.bench_forward --gpu-id 3
 
 # 6. Train (2 GPUs shown; drop --lora-rank when GPUs are scarce, never K).
@@ -142,7 +143,7 @@ CUDA_VISIBLE_DEVICES=2,3 accelerate launch \
 #     --objective must match the subset's. Training uses unweighted full-frame latent MSE, no
 #     mask and no disagreement weighting. The corpus root comes from the subset;
 #     --context-latent-frames is the cache depth (the compute/quality knob), recorded in the
-#     checkpoint metadata. Runs under G1: the supplied first frame is not a condition yet.
+#     checkpoint metadata. The supplied first frame is a clean condition (clean_c0_v1).
 
 # 6a. D0 one-step initialization sanity check. The run writes both the exactly-no-op
 #     step-0 adapter and the adapter after its first optimizer update. A non-zero exported
@@ -216,7 +217,9 @@ conda run -n ltx python -m scripts.onestep_avatar.plot_training --run <run>
   forward against a masked full-sequence one.
 - **The cache costs ~0.8 GB of VRAM per retained latent frame** at the 22B geometry (48 layers
   x 1024 tokens x 4096 dims x k and v x 2 bytes), per rank. `--context-latent-frames` is the
-  knob; the pinned frame-0 sink is always there on top of it.
+  knob; the pinned frame-0 sink is always there on top of it. The default 15 + the sink is a
+  retained history of 16 latent frames (~13 GB per rank), at which a corpus-length chain never
+  evicts.
 - **An adapter is only valid at the cache depth it was trained at.** It is in the checkpoint
   metadata for the same reason sigma_0 is: two frames of context and six are different
   functions, and nothing downstream can tell by looking at the weights.

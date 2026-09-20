@@ -9,9 +9,7 @@ consolidation removed the two-tree reason for the duplication.
 
 ## Data flow
 
-```
-Path ─▶ sha256() ─▶ hex digest
-```
+`Path` → `sha256()` → hex digest.
 
 Two callers: `precompute.py` hashes the video VAE checkpoint and each capture/guide bundle for
 provenance; `windows.py` hashes the selected `rgb.mp4` and guide render to content-pin a frozen

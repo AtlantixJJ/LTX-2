@@ -23,19 +23,64 @@ already incorporates the source matte before VAE encoding.
 
 ## Data flow
 
-```
---process_gt_latent:
-  bbox.npy ─▶ square box ─▶ manifest          (the box of record, one producer)
-  rgb.mp4  ─┐
-  mask.mp4 ─┴─▶ crop_source (worker, CPU) ─▶ {bg: frames, white: matted frames}
-                                            ─▶ ONE tiled_encode per objective
-                                            ─▶ master_record ─▶ atomic save
-  mask.mp4 ─▶ sampled QA crop (first 5 / part, view 0; `--mask-qa-only` skips the VAE)
+Two passes, one per CLI flag.
 
---process_syn_latent (paired):
-  argavatar_render[_white].mp4 ─▶ ONE tiled_encode ─▶ z_g master
-  argavatar_alpha.mp4 ──────────────────────────────────────────┐
-  mask.mp4 ─▶ crop to the box at 256² ─▶ capture_mask_crop.mp4 ─┴─▶ readers pool on demand
+**`--process_gt_latent`** — owns the crop box and the capture master:
+
+```mermaid
+flowchart TD
+  BBOX[("bbox.npy")]
+  BOX["square box"]
+  MAN[("capture_latent_manifest.json<br/>the box of record, one producer")]
+  RGB[("rgb.mp4")]
+  MASK[("mask.mp4")]
+  CROP["crop_source<br/>worker, CPU"]
+  FRAMES("bg: frames · white: matted frames")
+  ENC["tiled_encode<br/>once per objective"]
+  REC["master_record"]
+  OUT[("z_y master — atomic save")]
+  QA["sampled QA crop<br/>first 5 / part, view 0"]
+
+  BBOX --> BOX --> MAN
+  RGB --> CROP
+  MASK --> CROP
+  CROP --> FRAMES --> ENC --> REC --> OUT
+  MASK --> QA
+
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  classDef mem fill:#dff3e4,stroke:#2f7d4f,color:#123324;
+  class BOX,CROP,ENC,REC,QA proc;
+  class BBOX,RGB,MASK,MAN,OUT disk;
+  class FRAMES mem;
+```
+
+`--mask-qa-only` skips the VAE and runs the QA crop alone.
+
+**`--process_syn_latent`** — the paired guide pass:
+
+```mermaid
+flowchart TD
+  REND[("argavatar_render[_white].mp4")]
+  ENC["tiled_encode — once"]
+  ZG[("z_g master")]
+  AMP4[("argavatar_alpha.mp4")]
+  MASK[("mask.mp4")]
+  CROPM["crop to the box at 256²"]
+  CMP4[("capture_mask_crop.mp4")]
+  RD(["readers pool on demand"])
+
+  REND --> ENC --> ZG
+  MASK --> CROPM --> CMP4
+  AMP4 --> RD
+  CMP4 --> RD
+
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
+  class ENC,CROPM proc;
+  class REND,ZG,AMP4,MASK,CMP4 disk;
+  class RD out;
 ```
 
 ## Organization logic

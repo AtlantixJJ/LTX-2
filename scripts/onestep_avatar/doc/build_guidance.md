@@ -10,25 +10,41 @@ It **consumes** `precompute.py --process_gt_latent`'s crop box and never re-deri
 
 ## Data flow
 
+```mermaid
+flowchart TD
+  MAN[("capture_latent_manifest.json")]
+  BOX["resolve_box"]
+  POSE[("pose3d.npy")]
+  MOT["motion.build_motion"]
+  MOTPTH[("motion.pth")]
+  RECON["reconstruct_avatar<br/>views 00 · 02 · 04, frame-0 crops"]
+  RENDER["pipeline.render_motion_window<br/>box, 1024²"]
+  RGBA("RGBA frames — full res, transient")
+  IOU["qa.mask_iou vs mask.mp4"]
+  ALPHA["alpha → 256² grid"]
+  COMP["composite_guide_frame<br/>render, alpha, guide_background(obj)"]
+  SIDE[("IoU percentiles → render sidecar")]
+  AMP4[("argavatar_alpha.mp4 — lossless")]
+  MP4[("argavatar_render[_white].mp4 + .json")]
+
+  MAN -->|"asserted, never recomputed"| BOX --> RENDER
+  POSE --> MOT --> MOTPTH --> RENDER
+  RECON --> RENDER
+  RENDER --> RGBA
+  RGBA --> IOU --> SIDE
+  RGBA --> ALPHA --> AMP4
+  RGBA --> COMP -->|"ffmpeg crf 12"| MP4
+
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  classDef mem fill:#dff3e4,stroke:#2f7d4f,color:#123324;
+  class BOX,MOT,RECON,RENDER,IOU,ALPHA,COMP proc;
+  class MAN,POSE,MOTPTH,SIDE,AMP4,MP4 disk;
+  class RGBA mem;
 ```
-capture_latent_manifest.json ─▶ resolve_box ──────────────┐  (asserted, not recomputed)
-pose3d.npy ─▶ motion.build_motion ─▶ motion.pth ─┐        │
-recon views {00,02,04} frame-0 crops ─▶ reconstruct_avatar│
-                                                  ▼        ▼
-                              pipeline.render_motion_window(box, 1024²)
-                                                  │
-                                         RGBA frames (temp, full res)
-                                                  │
-              ┌───────────────────────────────────┼──────────────────────────────┐
-              ▼                                   ▼                              ▼
-   qa.mask_iou(alpha, mask.mp4)      alpha → 256² grid              composite_guide_frame(
-   → IoU percentiles → sidecar       → argavatar_alpha.mp4 (lossless)            render, alpha,
-                                                                      guide_background(obj))
-                                                  │                    → overwrites the PNG
-                                                  ▼
-                                     ffmpeg crf-12 → argavatar_render[_white].mp4
-                                                  + argavatar_render[_white].json
-```
+
+`composite_guide_frame` overwrites the rendered PNG in place, so the composite is the only
+version that reaches the encoder.
 
 ## Organization logic
 

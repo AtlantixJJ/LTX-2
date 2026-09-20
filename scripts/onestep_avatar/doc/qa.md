@@ -8,10 +8,24 @@ the same subject in the same pixels — computed before any training is attempte
 
 ## Data flow
 
-```
-render RGBA alpha (full res, transient) ─┐
-                                          ├─▶ mask_iou ─▶ per-frame IoU ─▶ percentiles
-cropped mask.mp4 frame (same box/size)  ─┘                                 in the render sidecar
+```mermaid
+flowchart TD
+  ALPHA("render RGBA alpha<br/>full res, transient")
+  MASK[("cropped mask.mp4 frame<br/>same box and size")]
+  IOU["mask_iou"]
+  PCT(["per-frame IoU → percentiles, in the render sidecar"])
+
+  ALPHA --> IOU
+  MASK --> IOU --> PCT
+
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  classDef mem fill:#dff3e4,stroke:#2f7d4f,color:#123324;
+  classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
+  class IOU proc;
+  class MASK disk;
+  class ALPHA mem;
+  class PCT out;
 ```
 
 Called once per frame inside `build_guidance.render_pair`'s single pass over the RGBA frames,

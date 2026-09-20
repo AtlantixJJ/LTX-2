@@ -97,6 +97,31 @@ does not, is a **code** defect: label the two plainly (Required / Current) and f
 known violation stays prominently marked — in the module doc, in the affected recipes, and in
 `known_gaps.md` — until a fix is implemented *and* verified.
 
+## Diagrams
+
+Draw a diagram only for a **topology** — what flows where, who produces what. Per-block facts
+(source, timestep, cache contents) belong in a table, which states them; a picture only gestures
+at them.
+
+- **Mermaid in a fenced ` ```mermaid ` block**, never ASCII art and never a committed SVG. It
+  renders on GitHub and in editor previews, diffs line-by-line, and reads as a graph for a
+  model. ASCII shears on edit and an image rots invisibly.
+- **Shape and colour carry meaning**, one vocabulary across the package: rectangle/blue = code,
+  cylinder/grey = on-disk artifact, rounded/green = in-memory tensor, hexagon/amber = mutable
+  state, dashed = `no_grad`, stadium/purple = terminal consumer. The legend lives in
+  [`doc/core_algorithm.md`](doc/core_algorithm.md) §7 — reuse it, do not invent a second one.
+- **One branch per figure.** Two regimes that differ structurally (teacher vs self forcing) get
+  two figures differing by one edge, not one figure with both drawn. A branch that only changes
+  *which tensor* flows down an existing edge (D0 vs D1) is an edge label.
+- **Labels are names.** A node is the callable or file (`refresh_block`, `windows.py`, with the
+  arg when it selects a pass); an edge is the distinction it makes. Everything else goes in the
+  prose under the figure, where it does not compete with the layout.
+- **Do not depend on layout hints.** A subgraph's `direction` is ignored once its nodes have
+  outside edges, and invisible `~~~` links become rank edges; both render differently across
+  Mermaid versions. If nodes must sit a certain way, restructure the graph.
+- **Render before committing** — `npx -y @mermaid-js/mermaid-cli -i <file.md> -o /tmp/out.md`
+  — and look at the result. Valid syntax is not a readable figure.
+
 ## The contract rules
 
 - **One canonical owner per cross-module contract.** `core_algorithm.md` owns the algorithm and
@@ -115,7 +140,7 @@ known violation stays prominently marked — in the module doc, in the affected 
   whether deployment can supply it at all.
 - **The clean first-frame condition `c0` is invariant across arm and forcing policy.** "The sink
   is pinned", "`keyframes_mask` marks frame 0", and "training and deployment share `causal_core`"
-  are **not** evidence that it holds. The cache-parity tests pass today with it missing.
+  are **not** evidence that it holds; assert the assembled block-0 input and its timesteps.
 - **Configuration changes document defaults, explicit recipes and saved metadata together**, and
   keep implemented, proposed, deprecated and historical settings distinguishable. Never invent a
   flag or a loadable config file; `train.py` is CLI-driven.
@@ -128,8 +153,10 @@ known violation stays prominently marked — in the module doc, in the affected 
 
 0. **Every generated block, including block 0, must have the supplied first-frame clean latent
    as initial conditioning** — independent of D0/D1 and of teacher/self forcing. This is the
-   product contract. It is **not implemented**:
-   [G1](doc/known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition).
+   product contract, implemented as `clean_c0_v1`
+   ([G1](doc/known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition), verified
+   2026-09-19). Cache-parity tests do not cover it; the dedicated conditioning tests in
+   `tests/test_train.py` do.
 1. **`causal_core.py` is the ONE rollout implementation.** `train.py`, `onestep_core.py`,
    `visualize_d0.py`, `bench_forward.py` and `windows.py`'s block plan all call it. Never add
    a second "build a block state" path — a train/deploy mismatch must have to be an edit to

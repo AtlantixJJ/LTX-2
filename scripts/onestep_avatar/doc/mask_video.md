@@ -44,11 +44,29 @@ materializing the whole clip.
 
 ## Data flow
 
+```mermaid
+flowchart TD
+  BGUID["build_guidance.py<br/>alpha_grid [N,256,256] uint8"]
+  PRE["precompute.py<br/>cropped matte [N,256,256]"]
+  W["write_mask_video"]
+  A[("argavatar_alpha.mp4")]
+  C[("capture_mask_crop.mp4")]
+  R(["train.py / stats.py — read_mask(stem)"])
+
+  BGUID --> W --> A
+  PRE --> W --> C
+  A --> R
+  C --> R
+
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
+  class BGUID,PRE,W proc;
+  class A,C disk;
+  class R out;
 ```
-build_guidance.py   alpha_grid [N,256,256] uint8 ─▶ write_mask_video ─▶ argavatar_alpha.mp4
-precompute.py       cropped matte [N,256,256]    ─▶ write_mask_video ─▶ capture_mask_crop.mp4
-train.py / stats.py read_mask(stem) ─▶ pool spatially + over causal frame groups in memory
-```
+
+Readers pool spatially and over causal frame groups in memory; nothing is written back.
 
 ## Organization logic
 

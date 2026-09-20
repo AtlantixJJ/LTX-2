@@ -17,21 +17,40 @@ plumbing are all reused from `ltx_trainer`.
 
 ## Data flow
 
-```
-subset JSON (windows.py) ─┐
-corpus masters ───────────┴─▶ ChainStore ─▶ Chain(z_g, z_y, z0_base)
-                                              │  lazy per CLIP (~5 MB bf16 each)
-                                              ▼
-                              clip_grid_for ─▶ ClipGrid   (global RoPE, one keyframe)
-                              BlockCache.allocate         (once per run, sized for the
-                                                           subset's LONGEST clip)
-                                              ▼
-            prime_cache (GT; ALWAYS called -- one forward even with nothing to prime)
-                                              ▼
-       per block:  noise_block ─▶ denoise_block ─▶ full-frame MSE ─▶ backward
-                                              ─▶ refresh_block ─▶ evict
-                                              ▼
-              metrics_rank<r>.jsonl  +  LoRA safetensors with metadata
+```mermaid
+flowchart TD
+  SUB[("subset JSON — windows.py")]
+  MASTERS[("corpus masters")]
+  STORE["ChainStore"]
+  CHAIN("Chain(z_g, z_y, z0_base)<br/>lazy per clip, ~5 MB bf16 each")
+  GRID["clip_grid_for → ClipGrid<br/>global RoPE, one keyframe"]
+  ALLOC["BlockCache.allocate<br/>once per run, sized for the subset's longest clip"]
+  PRIME["prime_cache<br/>GT; always one forward, even with nothing to prime"]
+  NOISE["noise_block"]
+  DEN["denoise_block"]
+  MSE["full_frame_mse"]
+  BWD["backward"]
+  REF["refresh_block"]
+  EV["cache.evict()"]
+  MET[("metrics_rank&lt;r&gt;.jsonl")]
+  CKPT[("LoRA safetensors + metadata")]
+
+  SUB --> STORE
+  MASTERS --> STORE --> CHAIN --> GRID --> ALLOC --> PRIME
+  PRIME --> NOISE --> DEN --> MSE --> BWD
+  BWD -->|"next block"| NOISE
+  DEN --> REF --> EV
+  BWD --> MET
+  BWD --> CKPT
+
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  classDef mem fill:#dff3e4,stroke:#2f7d4f,color:#123324;
+  classDef nograd fill:#fdecc8,stroke:#b07d18,color:#3d2a05,stroke-dasharray:5 3;
+  class STORE,GRID,ALLOC,NOISE,DEN,MSE,BWD proc;
+  class SUB,MASTERS,MET,CKPT disk;
+  class CHAIN mem;
+  class PRIME,REF,EV nograd;
 ```
 
 ## The loss rule

@@ -15,9 +15,23 @@ forwards against the causal path's denoise + refresh, sweeping `--context-latent
 
 ## Data flow
 
-```
-model ─┬─ refine_core window forward × 2      ──▶ k2 baseline seconds/chunk
-       └─ causal denoise + refresh, per depth ──▶ causal seconds/chunk, ratio vs k2
+```mermaid
+flowchart TD
+  MODEL[("model")]
+  K2["refine_core window forward × 2"]
+  CAUSAL["causal denoise + refresh<br/>per cache depth"]
+  R1(["k2 baseline seconds/chunk"])
+  R2(["causal seconds/chunk + ratio vs k2"])
+
+  MODEL --> K2 --> R1
+  MODEL --> CAUSAL --> R2
+
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
+  class K2,CAUSAL proc;
+  class MODEL disk;
+  class R1,R2 out;
 ```
 
 `k2` is timed **through `refine_core`** — the module every frozen `k2` number came from — so

@@ -15,12 +15,30 @@ than the block being re-encoded from its own pixels.
 
 ## Data flow
 
-```
-z_g master + σ₀ ─▶ ClipGrid ─▶ plan ─▶ BlockCache.allocate
-                                  ▼
-              per block: noise_block ─▶ denoise_block ─▶ refresh_block ─▶ evict
-                                  ▼
-                        RolloutResult(latent, forwards, …)
+```mermaid
+flowchart TD
+  IN[("z_g master + σ₀")]
+  GRID["ClipGrid"]
+  PLAN["plan"]
+  ALLOC["BlockCache.allocate"]
+  NOISE["noise_block"]
+  DEN["denoise_block"]
+  REF["refresh_block"]
+  EV["evict"]
+  RES(["RolloutResult(latent, forwards, …)"])
+
+  IN --> GRID --> PLAN --> ALLOC --> NOISE
+  NOISE --> DEN --> REF --> EV -->|"next block"| NOISE
+  DEN --> RES
+
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  classDef nograd fill:#fdecc8,stroke:#b07d18,color:#3d2a05,stroke-dasharray:5 3;
+  classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
+  class GRID,PLAN,ALLOC,NOISE,DEN proc;
+  class IN disk;
+  class REF,EV nograd;
+  class RES out;
 ```
 
 ## Organization logic

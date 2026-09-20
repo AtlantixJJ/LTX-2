@@ -10,13 +10,23 @@ standing between a bug and a wasted GPU-week**.
 
 ## Data flow
 
+```mermaid
+flowchart TD
+  JSONL[("runs/&lt;name&gt;/metrics_rank*.jsonl<br/>one record per (rank, step)")]
+  PLOT["plot_training.py"]
+  FIGS[("figures/ — loss_curves · lr_grad_norm · throughput · block_position")]
+  SUM[("training_summary.json")]
+
+  JSONL --> PLOT --> FIGS
+  PLOT --> SUM
+
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  class PLOT proc;
+  class JSONL,FIGS,SUM disk;
 ```
-runs/<name>/metrics_rank*.jsonl  (one record per (rank, step): loss/mse/anchor, lr,
-                                  grad_norm, elapsed_s, source)
-        ▼
-  figures/  loss_curves · lr_grad_norm · throughput · block_position
-  training_summary.json
-```
+
+Each record carries loss/mse/anchor, lr, grad_norm, elapsed_s and source.
 
 `train.py` does no aggregation and no plotting of its own; multi-run overlay is how arms get
 compared.

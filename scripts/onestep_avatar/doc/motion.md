@@ -9,11 +9,8 @@ so the two cannot silently diverge.
 
 ## Data flow
 
-```
-pose3d.npy[view] ─▶ build_motion(pose3d, bbox, frame_height) ─▶ sam3db dict
-                                                              ─▶ torch.save → motion.pth
-                                                              ─▶ pipeline.render_motion_window
-```
+`pose3d.npy[view]` → `build_motion(pose3d, bbox, frame_height)` → a `sam3db` dict →
+`torch.save` → `motion.pth` → `pipeline.render_motion_window`.
 
 Consumed only by `build_guidance.render_pair`, into a temp file that never outlives the
 render.

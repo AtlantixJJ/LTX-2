@@ -15,17 +15,27 @@ and **pin it**. Its output JSON (`kind: one_step_argavatar_block_chains`) is the
 
 ## Data flow
 
-```
-corpus + capture_latent_manifest.json
-   │  survey_source: has a planned box? a capture bundle? a guide render? not clipped?
-   ▼
-per-source records (n_blocks, actor, relative_dir)
-   │  actor-disjoint split by a hash of the BARE actor id
-   ▼
-K-block chains, never straddling a source
-   │  sha256 each rgb.mp4 and guide render INDIVIDUALLY
-   ▼
-subset JSON → train.py
+```mermaid
+flowchart TD
+  IN[("corpus + capture_latent_manifest.json")]
+  SURVEY["survey_source<br/>planned box? capture bundle? guide render? not clipped?"]
+  REC("per-source records<br/>n_blocks, actor, relative_dir")
+  SPLIT["actor-disjoint split<br/>hash of the BARE actor id"]
+  CHAINS("K-block chains, never straddling a source")
+  PIN["sha256 each rgb.mp4 and guide render individually"]
+  SUB[("subset JSON")]
+  TRAIN(["train.py"])
+
+  IN --> SURVEY --> REC --> SPLIT --> CHAINS --> PIN --> SUB --> TRAIN
+
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  classDef mem fill:#dff3e4,stroke:#2f7d4f,color:#123324;
+  classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
+  class SURVEY,SPLIT,PIN proc;
+  class IN,SUB disk;
+  class REC,CHAINS mem;
+  class TRAIN out;
 ```
 
 ## Organization logic

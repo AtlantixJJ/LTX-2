@@ -927,12 +927,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--context-latent-frames", type=int, default=causal_core.CONTEXT_LATENT_FRAMES,
-        help=f"Clean latent frames kept in the K/V cache besides the pinned frame-0 sink, up "
-        f"to {causal_core.MAX_CONTEXT_LATENT_FRAMES}. Each one costs ~0.8 GB per rank at the "
-        f"22B geometry and lengthens every block's attention, so this is the compute/quality "
-        f"knob of the scheme. Past roughly the chain's own reach the cache stops evicting and "
-        f"simply ACCUMULATES the whole rollout's history -- at the default K=3 and a 2-frame "
-        f"block that is 6 finalized frames plus the primed prefix. Recorded in the checkpoint "
+        help=f"Clean latent frames kept in the K/V cache BESIDES the pinned frame-0 sink, up "
+        f"to {causal_core.MAX_CONTEXT_LATENT_FRAMES}. The default "
+        f"{causal_core.CONTEXT_LATENT_FRAMES} is a retained history of "
+        f"{causal_core.CONTEXT_LATENT_FRAMES + causal_core.SINK_LATENT_FRAMES} latent frames "
+        f"(c0 plus clean frames 1-{causal_core.CONTEXT_LATENT_FRAMES}). Each one costs ~0.8 GB "
+        f"per rank at the 22B geometry and lengthens every block's attention, so this is the "
+        f"compute/quality knob of the scheme. Past roughly the chain's own reach the cache "
+        f"stops evicting and simply ACCUMULATES the whole rollout's history -- at the default "
+        f"depth a K=3, 2-frame-block chain never evicts at all. Recorded in the checkpoint "
         f"metadata: an adapter trained at one depth is a different function at another.",
     )
     p.add_argument("--split", choices=("train", "held_out"), default="train")

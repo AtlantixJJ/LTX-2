@@ -13,11 +13,21 @@ Four numbers, each of which decides something the design would otherwise be gues
 
 ## Data flow
 
-```
---pairs <corpus root>  ─▶ master z_g / z_y per view ─▶ r_full, r_subject, moments   [--no-gpu]
-model + guide latents  ─▶ one-step forwards at σ₀   ─▶ eps spread, excursion a      [GPU]
-                                          ▼
-                              analysis_summary*.json
+```mermaid
+flowchart TD
+  PAIRS[("--pairs &lt;corpus root&gt;<br/>master z_g / z_y per view")]
+  MODEL[("model + guide latents")]
+  RATIO["r_full, r_subject, moments<br/>--no-gpu"]
+  FWD["one-step forwards at σ₀<br/>eps spread, excursion a · GPU"]
+  OUTJ[("analysis_summary*.json")]
+
+  PAIRS --> RATIO --> OUTJ
+  MODEL --> FWD --> OUTJ
+
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  class RATIO,FWD proc;
+  class PAIRS,MODEL,OUTJ disk;
 ```
 
 ## Organization logic

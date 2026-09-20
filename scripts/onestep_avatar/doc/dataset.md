@@ -26,15 +26,13 @@ Three jobs, all "one constant (or one function), not a convention repeated at ca
 Mostly pure path/metadata resolution — reads `meta.json`, opens no video. `atomic_write` is
 the one exception: it is generic file I/O, used by every producer in the package.
 
-```
-corpus root ─▶ ClipRef ─▶ rgb_path / mask_path / bbox_path / pose3d_path / view_dir
-                       └▶ actor_id / fps / n_frames / is_done   (from meta.json)
+Three independent resolutions, no I/O beyond `meta.json`:
 
-objective ─▶ render_name / render_metadata_name
-             guide_bundle_name / capture_bundle_name
-
-(destination, write_to) ─▶ atomic_write ─▶ write_to(temp) ─▶ temp.replace(destination)
-```
+- corpus root → `ClipRef` → `rgb_path` / `mask_path` / `bbox_path` / `pose3d_path` / `view_dir`,
+  and `actor_id` / `fps` / `n_frames` / `is_done` from `meta.json`;
+- objective → `render_name` / `render_metadata_name` / `guide_bundle_name` /
+  `capture_bundle_name`;
+- `(destination, write_to)` → `atomic_write` → `write_to(temp)` → `temp.replace(destination)`.
 
 `CaptureManifest` reads the **crop box of record** written by the LTX half. It is a reader
 only: nothing here computes a box.

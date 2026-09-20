@@ -16,7 +16,7 @@ not as definitions.
 |---|---|
 | [core_algorithm.md](core_algorithm.md) | symbols, tensor/data flow, the **conditioning contract**, the block-by-block algorithm, teacher/self forcing, and the train/probe/deploy comparison |
 | [experiments.md](experiments.md) | the canonical D0/D1 definitions, the objective and forcing axes, and what is implemented, deferred or historical |
-| [known_gaps.md](known_gaps.md) | where the code does not meet the contract, with evidence, impact and acceptance criteria. **[G1](known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition) — the supplied first frame is not a model condition — affects every arm and every recipe** |
+| [known_gaps.md](known_gaps.md) | where the code does not meet the contract, with evidence, impact and acceptance criteria |
 | [../configs/README.md](../configs/README.md) | the runnable D0/D1 command recipes and the Accelerate topology YAMLs |
 
 Each fact has **one** canonical home. A module doc explains its own file and links to the
@@ -42,29 +42,61 @@ something that must have one. Before adding code, ask which artifact it produces
 
 ## Data flow
 
+```mermaid
+flowchart TD
+  CORPUS[("corpus<br/>rgb.mp4 · mask.mp4 · bbox.npy · pose3d.npy · meta.json")]
+  GT["precompute.py --process_gt_latent"]
+  GEO["geometry.py"]
+  MAN[("capture_latent_manifest.json")]
+  ZY[("z_y master")]
+  MOT["motion.py"]
+  BG["build_guidance.py"]
+  QA["qa.py"]
+  GUIDE[("guide render + argavatar_alpha.mp4")]
+  SYN["precompute.py --process_syn_latent"]
+  ZG[("z_g master")]
+  MASK[("capture_mask_crop.mp4")]
+  STATS["stats.py"]
+  WIN["windows.py"]
+  SUB[("subset JSON")]
+  TRAIN["train.py"]
+  CKPT[("LoRA safetensors + metadata")]
+  DEP(["onestep_core.py"])
+  VIS(["visualize_d0.py"])
+  BENCH(["bench_forward.py"])
+
+  CORPUS --> GT
+  GEO -.->|"square-crop rule"| GT
+  GT --> MAN
+  GT --> ZY
+  CORPUS --> MOT --> BG
+  MAN -.->|"the box"| BG
+  BG --> GUIDE
+  BG --> QA
+  GUIDE --> SYN --> ZG
+  SYN --> MASK
+  MASK -.-> STATS
+  ZY --> WIN
+  ZG -->|"D1 only"| WIN
+  WIN --> SUB --> TRAIN
+  ZY --> TRAIN
+  ZG -->|"D1 only"| TRAIN
+  TRAIN --> CKPT
+  CKPT --> DEP
+  CKPT --> VIS
+  CKPT --> BENCH
+
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
+  class GT,GEO,MOT,BG,QA,SYN,STATS,WIN,TRAIN proc;
+  class CORPUS,MAN,ZY,GUIDE,ZG,MASK,SUB,CKPT disk;
+  class DEP,VIS,BENCH out;
 ```
-corpus (rgb.mp4, mask.mp4, bbox.npy, pose3d.npy, meta.json)
-   │
-   ├─ precompute.py --process_gt_latent ─▶ crop box of record + z_y master (per objective)
-   │                                   [geometry.py owns the square-crop rule]
-   ▼
-build_guidance.py  (argavatar env)  motion.py: pose3d → sam3db
-   render into THAT box ─▶ composite over the objective's background
-                        ─▶ guide video + argavatar_alpha.mp4   [qa.py scores IoU]
-   ▼
-precompute.py --process_syn_latent ─▶ z_g master · capture_mask_crop.mp4
-   mask MP4 pair ─▶ stats.py pools transient latent grids on read (QA/measurement only;
-                    train.py reads only z_g/z_y masters -- no mask, no alpha)
-   ▼
-windows.py ─▶ causal block chains + actor-disjoint split + sha256 pin ─▶ subset JSON
-   ▼
-train.py ── per block: denoise → backward → refresh → evict   [all four in causal_core]
-   │       (the required clean first-frame condition c0 has NO producer here yet — G1)
-   ▼  LoRA safetensors + metadata
-   ├─▶ onestep_core.py   (deployment)
-   ├─▶ visualize_d0.py   (decoded probe)
-   └─▶ bench_forward.py  (cost vs k2)
-```
+
+`train.py` reads only the `z_y`/`z_g` masters — no mask, no alpha; `stats.py` pools the mask
+pair on read for QA and measurement only. Per block, `train.py` runs denoise → backward →
+refresh → evict, all four in `causal_core`, with `c0` taken from the `z_y` master.
 
 ## Files
 
@@ -100,7 +132,7 @@ train.py ── per block: denoise → backward → refresh → evict   [all fou
 | [stats.md](stats.md) | `stats.py` | measurement only: the excursion `a`, the gap `r`, latent moments |
 | [bench_forward.md](bench_forward.md) | `bench_forward.py` | wall clock per finalized chunk, causal vs `k2` |
 | [plot_training.md](plot_training.md) | `plot_training.py` | per-rank JSONL → training figures + summary |
-| [visualize_d0.md](visualize_d0.md) | `visualize_d0.py` | decoded `capture │ base │ LoRA` probe per sigma |
+| [visualize_d0.md](visualize_d0.md) | `visualize_d0.py` | decoded `capture │ base │ LoRA` probe: one whole-clip rollout per sigma, frames captioned with latent/rollout-step |
 | [report_d0.md](report_d0.md) | `report_d0.py` | artifact-checked handoff record for the D0 arm |
 
 `__init__.py` carries no design. `configs/` holds the Accelerate topology YAMLs **and** the
