@@ -2,7 +2,7 @@
 
 ## Objective
 
-Four numbers, each of which decides something the plan would otherwise be guessing at:
+Four numbers, each of which decides something the design would otherwise be guessing at:
 
 | | What | Decides |
 |---|---|---|

@@ -1,8 +1,12 @@
 # `train.py` — the AR LoRA training loop
 
+> Contract: [core_algorithm.md](core_algorithm.md). Arms and axes:
+> [experiments.md](experiments.md). Runnable recipes:
+> [`../configs/README.md`](../configs/README.md). Open defects: [known_gaps.md](known_gaps.md).
+
 ## Objective
 
-SS1.6's block-causal AR loop as a bespoke training step. One optimizer step per chain,
+The block-causal AR loop as a bespoke training step. One optimizer step per chain,
 gradients accumulated over `K` blocks.
 
 **Why not a `ltx-trainer` strategy:** `Trainer._training_step` runs exactly one transformer
@@ -75,7 +79,9 @@ The ordering is denoise → backward → refresh → evict. The denoise pass can
 because it carries gradients; refresh is a separate no-grad clean-latent forward, making its
 K/V final and reusable by later blocks. Eviction retains the pinned frame-0 sink and the
 configured most-recent context. `prime_cache` is deliberately called even at block 0: its
-empty forward keeps every FSDP rank at the same `1 + K + K` transformer-forward count.
+empty forward keeps every FSDP rank at the same `1 + 2K` transformer-forward count. That forward
+attaches no cache and its result is discarded. Block 0 receives the clean first-frame condition
+in its own modality; the extra forward exists only for collective lockstep.
 
 ## The checkpoint contract
 
@@ -86,6 +92,12 @@ implicit in the date it was trained), σ₀ (or `"mixed"`), the σ level list, `
 attention kind, **block and cache geometry**, the subset hash, the **objective**, guide mode,
 anchor weight, teacher forcing, LoRA rank/alpha/target. `--output/config.json` and the W&B run
 config carry the same `loss` field.
+
+**Nothing reads this metadata back at load time** — neither the probe nor deployment validates
+an adapter's σ, geometry, arm or objective
+([G3](known_gaps.md#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced)), and
+the exported LoRA does not carry its `alpha/rank` scale into fusion, so keep `--lora-alpha` equal
+to `--lora-rank`. Stamping is a record, not an enforcement.
 
 Cache depth belongs there for the same reason σ does: an adapter trained with two frames of
 cached context is a different function from one trained with sixteen, and nothing downstream
@@ -107,7 +119,7 @@ exactly zero; failure refuses to create a misleading baseline artifact. This mak
 | `--guide-mode {d0,d1}` | `d1` = D1a (guide as the noised init); `d0` = the GT-renoise capacity check, not deployable |
 | `--block-latent-frames` / `--context-latent-frames` | SS1.6's geometry and cache depth |
 | `--sigma-levels` | one adapter across several operating points |
-| `--teacher-forcing` | ablation: the refresh is fed `z_y[i]` instead of `ẑ₀[i].detach()` |
+| `--teacher-forcing` | ablation: the refresh is fed `z_y[i]` instead of `ẑ₀[i].detach()`. **This loop feeds the target**; the generic `causal_core.rollout` feeds the *guide*, which agrees only for D0 ([G2](known_gaps.md#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target)) |
 | `--anchor-weight` | **disabled** (2026-09-18 audit F8) — only `0.0` is accepted; no `base_denoised.pt` producer exists and a fixed per-view tensor cannot represent the anchor across chains/sigma/history |
 | `--timing` | per-step phase breakdown; see "Reading the timing lines" below |
 | `--skip-subset-check` | explicit opt-out of bundle preflight; failures can then occur at any later chain load |

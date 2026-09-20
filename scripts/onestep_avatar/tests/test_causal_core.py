@@ -160,6 +160,7 @@ def test_teacher_forcing_flag_refreshes_the_cache_from_the_guide() -> None:
     tf_cache = _cache()
     tf_tokens, _ = causal_core.rollout(
         denoise_fn, grid, geometry, tf_cache, guide, context, SIGMA0, seed=7, blocks=plan[:2], teacher_forcing=True,
+        first_frame_condition=guide[:, : grid.tokens_per_latent_frame],
     )
 
     ref_cache = _cache()
@@ -176,6 +177,7 @@ def test_teacher_forcing_flag_refreshes_the_cache_from_the_guide() -> None:
     sf_cache = _cache()
     sf_tokens, _ = causal_core.rollout(
         denoise_fn, grid, geometry, sf_cache, guide, context, SIGMA0, seed=7, blocks=plan[:2], teacher_forcing=False,
+        first_frame_condition=guide[:, : grid.tokens_per_latent_frame],
     )
     assert not torch.allclose(tf_tokens[:, lo1:hi1], sf_tokens[:, lo1:hi1], rtol=2e-4, atol=2e-4)
 

@@ -3,8 +3,23 @@
 Guidance for Claude Code when working inside this package: the one-step LTX-2.5 avatar
 renderer, corpus tooling and model training in **one tree**.
 
-**Read [`doc/README.md`](doc/README.md) before editing anything here** — it carries the
-cross-file data flow, and every module has its own design doc beside it.
+## Reading order — binding
+
+Before editing anything here, in this order:
+
+1. [`doc/core_algorithm.md`](doc/core_algorithm.md) — symbols, the conditioning contract, the
+   block-by-block algorithm, train/probe/deploy parity.
+2. [`doc/experiments.md`](doc/experiments.md) — D0/D1, `bg`/`white`, teacher/self forcing, and
+   what is implemented, deferred or historical.
+3. [`doc/known_gaps.md`](doc/known_gaps.md) — the open contract violations.
+4. [`doc/README.md`](doc/README.md) — the per-module index, and the module doc for the file you
+   are touching.
+5. [`configs/README.md`](configs/README.md) — before writing or quoting any run command.
+
+Items 1–3 and 5 are **required** before changing conditioning, noising, the cache, the loss,
+configuration, a probe, or deployment. Everything a reader needs is in this package: workspace
+`plans/` are historical and progress records, not the explanation of record, and `SS…` markers
+in older prose are citations into them.
 
 ## One package, two conda envs
 
@@ -69,11 +84,52 @@ needs no doc edit; a new flag that changes what lands on disk always does.
 same commit, keeping the existing section shape — Objective · Data flow · Organization logic ·
 Invariants · Gotchas · Tests.
 
-**When a doc and the code disagree, the code is right and the doc is a bug.** Fix it there and
-then; a stale design doc is worse than none, because it is trusted.
+**When a doc and the code disagree, decide which kind of disagreement it is.**
+
+> Code establishes **current** behavior; the explicit user-approved contract establishes
+> **required** behavior. When they disagree, record a defect with evidence in
+> [`doc/known_gaps.md`](doc/known_gaps.md) and keep both descriptions clear. Do not rewrite the
+> intended contract to legitimize a bug, and do not describe a planned fix as shipped.
+
+So: a doc that misdescribes what the code *does* is a stale doc — fix it there and then, because
+a stale design doc is worse than none. A doc that describes what the code *must* do, and the code
+does not, is a **code** defect: label the two plainly (Required / Current) and file the gap. A
+known violation stays prominently marked — in the module doc, in the affected recipes, and in
+`known_gaps.md` — until a fix is implemented *and* verified.
+
+## The contract rules
+
+- **One canonical owner per cross-module contract.** `core_algorithm.md` owns the algorithm and
+  the conditioning contract; `experiments.md` owns the arm/objective/forcing definitions;
+  `known_gaps.md` owns defect status; `configs/README.md` owns the runnable recipes. A module doc
+  summarises and links; it does not restate a parameter table or the whole algorithm.
+- **Core behavior and runnable configuration are self-contained in this package.** Do not write a
+  doc whose explanation is "see the plan", and do not leave a bare `SS1.6` where a reader needs
+  the substance.
+- **A contract change updates everything at once**, in the same commit: the core docs, the
+  affected module docs, the recipes in `configs/README.md`, and the gap status. The per-module
+  documentation contract below and the two-environment rule still apply.
+- **Reviewing a core change means tracing three cases**: block 0, block 1, and a **mid-clip**
+  chain start. For each, identify every condition's source, its noise level and per-token
+  timestep, what it can attend to, whether it is retained in the cache, its role in the loss, and
+  whether deployment can supply it at all.
+- **The clean first-frame condition `c0` is invariant across arm and forcing policy.** "The sink
+  is pinned", "`keyframes_mask` marks frame 0", and "training and deployment share `causal_core`"
+  are **not** evidence that it holds. The cache-parity tests pass today with it missing.
+- **Configuration changes document defaults, explicit recipes and saved metadata together**, and
+  keep implemented, proposed, deprecated and historical settings distinguishable. Never invent a
+  flag or a loadable config file; `train.py` is CLI-driven.
+- **Verification matches the change.** For docs-only changes: check links, cited symbols, and that
+  each recipe matches `train.parse_args`. For behavior changes: the focused and full test runs
+  below, plus `scripts/prune`'s `checks.method_parity` where a tensor on the `k2` path can move.
+  Passing cache-parity tests never establishes a missing first-frame condition.
 
 ## The invariants that are not obvious from one file
 
+0. **Every generated block, including block 0, must have the supplied first-frame clean latent
+   as initial conditioning** — independent of D0/D1 and of teacher/self forcing. This is the
+   product contract. It is **not implemented**:
+   [G1](doc/known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition).
 1. **`causal_core.py` is the ONE rollout implementation.** `train.py`, `onestep_core.py`,
    `visualize_d0.py`, `bench_forward.py` and `windows.py`'s block plan all call it. Never add
    a second "build a block state" path — a train/deploy mismatch must have to be an edit to

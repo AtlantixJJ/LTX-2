@@ -1,5 +1,9 @@
 # `onestep_core.py` — the deployment rollout
 
+> Contract and parity table: [core_algorithm.md §6](core_algorithm.md#6-train--probe--deploy).
+> Open defects: [G3](known_gaps.md#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced),
+> [G5](known_gaps.md#g5--training-and-deployment-disagree-about-valid-sigma).
+
 ## Objective
 
 The deployed counterpart of `train.py`'s loop: one denoise plus one clean cache refresh per
@@ -37,6 +41,10 @@ implementation and the source of every frozen `k2` number.
   by omitting the refresh.
 - **`guide_conditionings` refuses `d0`.** D0 noises the capture latent, and there is no `z_y`
   at inference; a deployable path must not be able to express it.
+- **The frame-0 sink retains generated content, not a supplied real-image condition.**
+  The current API takes the guide master only. Frame 0 is noised and predicted with the
+  first block, then cached. A keyframe marker and a pinned cache slot do not keep an input
+  image clean; explicit first-frame conditioning remains an unimplemented product contract.
 - A causal rollout writes one latent covering the whole chain, so there is **no per-window
   overlap to stitch** and no seam to get wrong.
 

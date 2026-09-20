@@ -104,6 +104,7 @@ def _run_d0_chain(transformer, context, chain: Chain, geometry, sigma: float, *,
     tokens, _ = causal_core.rollout(
         causal_core.denoised_from_x0_model(transformer),
         grid, geometry, cache, z_y, context, sigma, seed=seed, blocks=plan, teacher_forcing=teacher_forcing,
+        first_frame_condition=z_y[:, : grid.tokens_per_latent_frame],
     )
     covered = plan[-1][1]
     return grid, grid.unpatchify_block(tokens[:, : covered * grid.tokens_per_latent_frame], covered)

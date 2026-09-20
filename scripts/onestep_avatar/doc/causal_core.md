@@ -1,8 +1,17 @@
 # `causal_core.py` — the one rollout implementation
 
+> The shared contract this file implements lives in
+> [core_algorithm.md](core_algorithm.md); the arms that call it in
+> [experiments.md](experiments.md); the places it does not meet the contract in
+> [known_gaps.md](known_gaps.md) — notably
+> [G1](known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition) (no clean
+> first-frame condition) and
+> [G2](known_gaps.md#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target)
+> (`rollout(teacher_forcing=True)` refreshes from the guide, not the target).
+
 ## Objective
 
-SS1.6's whole scheme, in one file: block-causal attention, a clean-latent K/V cache, and
+The whole causal scheme, in one file: block-causal attention, a clean-latent K/V cache, and
 master latents. It replaces the sliding-window-with-a-frozen-carryover construction that
 `refine_core` still owns for the `k2` baseline.
 
@@ -89,9 +98,14 @@ overflows. `BlockCache.fits(latent_frames)` is the question to ask before the fo
 
 ## Invariants
 
-- **The pinned frame-0 sink never leaves the cache.** It is the causal VAE's single-pixel
-  keyframe *and* the product's given real first frame — the background every later frame is
-  asked to propagate.
+- **The pinned frame-0 sink never leaves the cache once written.** This is a retention
+  policy, not first-frame image conditioning. At clip start the cache is empty and
+  `noise_block` noises frame 0 too; its timestep is sigma, because the grid's denoise mask
+  is all ones. Self forcing subsequently caches the generated frame 0. D0 teacher forcing
+  instead caches the clean capture frame 0 (and the rest of the completed target block),
+  even if the displayed prediction depicts a different person. Mid-clip training priming
+  also uses clean capture tokens. The product's intended supplied-image condition is not
+  implemented by this sink or by `keyframes_mask`.
 - **Only latent frame 0 is marked a keyframe.** The per-window tools marked every window's
   own first frame, which is false for every window past a clip's first.
 - **RoPE positions are global.** Per-window tools restarted the time axis at 0, so every
@@ -108,6 +122,16 @@ overflows. `BlockCache.fits(latent_frames)` is the question to ask before the fo
   **hangs** rather than failing. This was a live bug until 2026-09-16; see the Gotchas below.
 
 ## Gotchas
+
+- **D0 teacher forcing can produce an identity transition after block 0.** With two latent
+  frames per block, block 0 spans latent `[0, 3)` (17 pixel frames at temporal scale 8).
+  It sees only noised capture tokens; block 1 additionally sees clean GT history. The
+  decoded video concatenates predictions, not the GT tensors used to refresh the cache.
+  Thus visual continuity with a mistaken generated first frame is not enforced, and the
+  VAE can spread the transition around the block boundary. Preserving a supplied first
+  frame requires clean input tokens, zero per-token timestep, and output/refresh
+  preservation in both training and rollout; changing the timestep alone leaves noised
+  pixels in the condition.
 
 - **A data-dependent forward is a data-parallel deadlock.** `prime_cache` returned early for
   clip-start chains until 2026-09-16. On a 4-GPU run the ranks that drew such a chain issued

@@ -17,7 +17,9 @@ experiment-side latent tree.
 | `manifest[.white].json` | `--process_syn_latent` | paired-run provenance manifest at the corpus root (default: `--corpus-root`) |
 
 There is deliberately no `loss_mask_grids.pt`. The two MP4s are the canonical masks;
-`train.py` and `stats.py` pool them to the active latent geometry when they read them.
+`stats.py` pools them to the active latent geometry for QA/measurement. `train.py` reads
+the latent masters only and computes unweighted full-frame MSE. The white capture target
+already incorporates the source matte before VAE encoding.
 
 ## Data flow
 
@@ -76,11 +78,14 @@ same rule to its sorted pair list. All ranks write the same full-corpus manifest
 PID-unique temporary files; identical atomic replacements are safe, whereas rank-local
 manifests would omit other ranks' crop boxes. Rank 0 alone writes the sampled QA gallery.
 
-For four GPUs, launch four supervisors with unique ranks:
+For four GPUs, launch four processes with unique ranks (the `run_b2a.sh` wrapper was retired;
+call the module directly, and detach a long run with `setsid` so a signal to the shell does not
+take it down):
 
 ```bash
 for rank in 0 1 2 3; do
-  setsid -f scripts/onestep_avatar/run_b2a.sh "$rank" 2 "$rank" 4 \
+  setsid -f conda run -n ltx python -m scripts.onestep_avatar.precompute \
+    --process_gt_latent --objective bg white --gpu-id "$rank" --rank "$rank" --n_rank 4 \
     </dev/null >/dev/null 2>&1 &
 done
 ```

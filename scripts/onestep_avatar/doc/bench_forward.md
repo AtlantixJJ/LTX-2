@@ -2,7 +2,7 @@
 
 ## Objective
 
-Measure the plan's headline compute claim, honestly. The causal scheme moved that number in
+Measure the project's headline compute claim ("one-step at roughly half `k2`'s transformer compute"), honestly. The causal scheme moved that number in
 both directions at once:
 
 - the denoising forward covers only the **block** (2 latent frames), not a 4-latent-frame
@@ -35,7 +35,7 @@ the baseline it was meant to replace — 1.05× `k2` measured, against a 1.09× 
 ## Status
 
 The estimate to replace: 0.53× `k2` at `context=2`, 0.59× at `context=4`. **Not yet run under
-the causal scheme**, so the plan's "roughly half the compute" is currently an estimate.
+the causal scheme**, so "roughly half the compute" is currently an estimate, not a measurement.
 
 | | query tokens | key tokens | forwards |
 |---|---|---|---|

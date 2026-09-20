@@ -33,7 +33,7 @@ Lossy settings were measured and rejected:
 crf 12 buys 1.7× over lossless and pays for it on **exactly** the 1.4 % of pixels that carry
 the anti-aliased silhouette edge — the part the composite's smooth boundary and the latent
 coverage both come from. And masks here are already one generation of lossy video away from
-the truth (the capture matte is a hard threshold off h264 — risk 8); §1.7's rule is that this
+the truth (the capture matte is a hard threshold off h264); the rule is that this
 pipeline does not add a second. 42× for free beats 72× for a corrupted edge.
 
 ## Why MP4 rather than `.npz` or FFV1

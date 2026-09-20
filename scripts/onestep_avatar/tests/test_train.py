@@ -79,6 +79,18 @@ class StubTransformer(torch.nn.Module):
         return self.scale * video.latent, None
 
 
+class CapturingStubTransformer(StubTransformer):
+    """Stub that retains modalities so the c0 input contract can be asserted directly."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.modalities = []
+
+    def forward(self, video, audio, perturbations) -> tuple[torch.Tensor, None]:  # noqa: ANN001, ARG002
+        self.modalities.append(video)
+        return super().forward(video, audio, perturbations)
+
+
 class _StubAccelerator:
     """The two ``Accelerator`` members ``train_chain`` uses, without a distributed context."""
 
@@ -253,6 +265,29 @@ def test_teacher_forcing_refreshes_with_the_gt_instead_of_self_generation(monkey
         assert torch.equal(tokens, target[:, lo:hi])
 
 
+def test_d0_teacher_forcing_conditions_block_zero_on_clean_capture_frame() -> None:
+    """D0's source is the capture, but c0 still has to bypass noising and AdaLN time.
+
+    This tests the assembled model input, rather than inferring the condition from a pinned
+    sink after refresh: the latter can pass even when block 0 itself was never conditioned.
+    """
+    chain = _chain(blocks=[0], seed=9)
+    model = CapturingStubTransformer()
+    _run(chain, model, guide_mode="d0", teacher_forcing=True)
+
+    grid = _grid(chain)
+    target = grid.patchify(chain.z_y.unsqueeze(0).to(train.DTYPE))
+    denoise = next(
+        modality
+        for modality in model.modalities
+        if not modality.kv_write and torch.count_nonzero(modality.timesteps) > 0
+    )
+    c0_tokens = grid.tokens_per_latent_frame
+    torch.testing.assert_close(denoise.latent[:, :c0_tokens], target[:, :c0_tokens], rtol=0, atol=0)
+    assert torch.count_nonzero(denoise.timesteps[:, :c0_tokens]) == 0
+    assert torch.all(denoise.timesteps[:, c0_tokens:] == SIGMA0)
+
+
 def test_a_mid_clip_chain_primes_the_cache_from_the_ground_truth(monkeypatch: pytest.MonkeyPatch) -> None:
     """SS4.4's one remaining teacher-forced seam, and it should be visible as one.
 
@@ -298,11 +333,13 @@ def test_k1_chain_matches_a_single_non_ar_step() -> None:
     lo, hi = grid.token_span(*span)
     guide = grid.patchify(chain.z_g.unsqueeze(0).to(train.DTYPE))
     target = grid.patchify(chain.z_y.unsqueeze(0).to(train.DTYPE))
-    noisy = causal_core.noise_block(guide[:, lo:hi], SIGMA0, 0)
+    c0 = target[:, : grid.tokens_per_latent_frame]
+    noisy = causal_core.with_clean_prefix(causal_core.noise_block(guide[:, lo:hi], SIGMA0, 0), c0)
     z0 = causal_core.denoise_block(
         causal_core.denoised_from_velocity_model(model_plain), grid, _cache(chain), noisy,
-        torch.zeros(1, 1, 8), SIGMA0, span,
+        torch.zeros(1, 1, 8), SIGMA0, span, clean_prefix_tokens=c0.shape[1],
     )
+    z0 = causal_core.with_clean_prefix(z0, c0)
     loss = train.full_frame_mse(z0, target[:, lo:hi])
     loss.backward()
 
@@ -895,7 +932,8 @@ def test_rollout_slices_blocks_out_of_one_master_encode() -> None:
     denoise_fn = causal_core.denoised_from_velocity_model(model)
     guide = grid.patchify(chain.z_g.unsqueeze(0).to(train.DTYPE))
     tokens, forwards = causal_core.rollout(
-        denoise_fn, grid, geometry, cache, guide, torch.zeros(1, 1, 8), SIGMA0
+        denoise_fn, grid, geometry, cache, guide, torch.zeros(1, 1, 8), SIGMA0,
+        first_frame_condition=guide[:, : grid.tokens_per_latent_frame],
     )
     plan = geometry.plan(LATENT_FRAMES)
     assert forwards == 2 * len(plan)  # one denoise plus one cache refresh per block
@@ -944,6 +982,7 @@ def test_rollout_refuses_an_off_grid_sigma0() -> None:
             GEOMETRY,
             0.5,  # off the nine-point distilled grid
             FPS,
+            first_frame_latent=chain.z_y.unsqueeze(0)[:, :, :1],
             device=DEVICE,
             latent_channels=CHANNELS,
             num_layers=1,
@@ -965,6 +1004,7 @@ def test_rollout_runs_end_to_end_at_an_on_grid_sigma0() -> None:
         GEOMETRY,
         SIGMA0,
         FPS,
+        first_frame_latent=chain.z_y.unsqueeze(0)[:, :, :1],
         device=DEVICE,
         seed=0,
         latent_channels=CHANNELS,
@@ -974,3 +1014,50 @@ def test_rollout_runs_end_to_end_at_an_on_grid_sigma0() -> None:
     plan = GEOMETRY.plan(LATENT_FRAMES)
     assert result.blocks == len(plan)
     assert result.forwards == result.denoise_forwards + result.refresh_forwards == 2 * len(plan)
+
+
+def test_wandb_default_enabled() -> None:
+    """W&B logging is enabled by default to 'onestep-avatar' in online mode."""
+    args = train.parse_args(["--subset", "/fake/subset.json", "--output", "/fake/out"])
+    assert args.wandb_project == "onestep-avatar"
+    assert args.wandb_mode == "online"
+    assert not args.no_wandb
+    assert train.wandb_is_enabled(args) is True
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--no-wandb"],
+        ["--wandb-mode", "disabled"],
+        ["--wandb-project", ""],
+        ["--wandb-project", "none"],
+    ],
+)
+def test_wandb_disable_options(extra_args: list[str]) -> None:
+    """W&B can be disabled via --no-wandb, --wandb-mode disabled, or empty/none project."""
+    args = train.parse_args(["--subset", "/fake/subset.json", "--output", "/fake/out", *extra_args])
+    assert train.wandb_is_enabled(args) is False
+    assert train.init_wandb(args, config={}) is None
+
+
+def test_init_wandb_calls_wandb_init(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When enabled, init_wandb calls wandb.init with project and mode."""
+    called_with = {}
+
+    class FakeWandb:
+        @staticmethod
+        def init(**kwargs):  # noqa: ANN003
+            called_with.update(kwargs)
+            return "fake_run"
+
+    monkeypatch.setattr(train, "wandb", FakeWandb, raising=False)
+    import sys
+    monkeypatch.setitem(sys.modules, "wandb", FakeWandb)
+
+    args = train.parse_args(["--subset", "/fake/subset.json", "--output", "/fake/out"])
+    run = train.init_wandb(args, config={"test_key": 123})
+    assert run == "fake_run"
+    assert called_with["project"] == "onestep-avatar"
+    assert called_with["mode"] == "online"
+    assert called_with["config"] == {"test_key": 123}

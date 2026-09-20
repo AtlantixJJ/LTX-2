@@ -1,5 +1,13 @@
 # `visualize_d0.py` — the decoded checkpoint probe
 
+> **D0 only** ([G4](known_gaps.md#g4--no-d1-probe)): a D1 counterpart is owed, and this tool
+> does not refuse a D1 adapter. It also validates none of the adapter's recorded conditions —
+> it always uses the default deployed geometry and all three `PROBE_SIGMAS`, so a probe at a σ
+> or a cache depth the adapter was not trained at is off-condition and unlabelled
+> ([G3](known_gaps.md#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced)).
+> `--teacher-forcing` here goes through the generic rollout, which refreshes from the guide
+> ([G2](known_gaps.md#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target)).
+
 ## Objective
 
 Make a checkpoint's behaviour visible, as video, at the distilled refiner's operating points.

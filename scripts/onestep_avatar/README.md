@@ -1,18 +1,47 @@
 # `onestep_avatar` — the one-step LTX-2.5 avatar renderer pipeline
 
-Implements `plans/2026-09-15-ltx25-one-step-argavatar-lora-core.md` (design, file structure,
-next steps; `plans/2026-09-10-...md` is the long-form original). Read the plan for *why*; this
-file is the run order and the things that will bite you.
+**The product.** One real first frame plus a guided ARGAvatar 3DGS render of the motion, turned
+into a photorealistic video in **one denoising step** through a LoRA on the distilled LTX-2.5
+checkpoint: the subject follows the render, the background is the first frame's. Training is
+autoregressive over causal blocks with a clean-latent K/V cache; deployment runs the same blocks
+with the same primitives.
 
-**2026-09-18 status:** the audit/fix plan is the active work order; Stage A is complete. Both
-capture objectives already have 3,360 bundles; the guide RGB/alpha contract had a
-double-alpha compositing bug (F1) against white-composited renderer output, now fixed and
-versioned as `dataset.GUIDE_COMPOSITING_VERSION` (currently 2) — `build_guidance.py` now
-correctly rejects every render built before this fix as stale, since none of the 19 on-disk
-guide renders were built under the corrected contract. Stage B's remaining gate is one
-reviewed real bg/white pair rendered under v2 before any bulk guide rebuild. Commands below
-are pipeline references, not a request to restart completed capture encoding or to bulk-
-rebuild guides yet. The current frozen subset is `t2r2.json`.
+**The docs are self-contained — read them, not the workspace plans.**
+
+| Read | For |
+|---|---|
+| [`doc/core_algorithm.md`](doc/core_algorithm.md) | symbols, the conditioning contract, the block-by-block algorithm, the full data flow, train/probe/deploy parity |
+| [`doc/experiments.md`](doc/experiments.md) | what D0/D1, `bg`/`white` and teacher/self forcing mean, and which are implemented |
+| [`doc/known_gaps.md`](doc/known_gaps.md) | where the code does not meet the contract |
+| [`configs/README.md`](configs/README.md) | the four named run recipes and the Accelerate topology YAMLs |
+| [`doc/README.md`](doc/README.md) | the per-module design docs |
+| [`CLAUDE.md`](CLAUDE.md) | the maintenance and review rules for this package |
+
+Workspace `plans/` (`2026-09-15-...-core.md`, `2026-09-10-...md`, the 2026-09-18 audit) are
+**history and progress records**. They are where a decision's measurements and dates live; they
+are not the explanation of anything here, and `SS…` markers in older prose are citations into
+them, not definitions.
+
+## Implementation status
+
+> **The product's defining input does not reach the model yet.** The supplied real first frame is
+> not a clean model condition in any arm: at a clip start latent frame 0 is noised with the rest
+> of block 0, and deployment has no argument to pass a first-frame latent at all. This is
+> [**G1**](doc/known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition), tracked as
+> F2 / Stage C of the September 18 audit, and **not fixed**. Every command below runs under it.
+
+| | State |
+|---|---|
+| Causal block training (D0 and D1a, `bg` and `white`, teacher and self forcing) | implemented and runnable |
+| Unweighted full-frame latent MSE | implemented; the binding loss decision |
+| Clean supplied first-frame condition `c0` | **required, not implemented** (G1) |
+| D1 probe; checkpoint-condition enforcement; shared σ validator | owed — G2–G5 |
+| Guide artifacts under the v2 compositing contract | 1 of 19 `bg` pairs rebuilt; 0 `white` guides — G6 |
+| D1b / D1c | deferred proposals, no code |
+
+Capture is complete: 3,360 bundles per objective. The current frozen subset is `t2r2` (`bg`). The
+commands below are pipeline references, not a request to restart completed capture encoding or to
+bulk-rebuild guides.
 
 **One package, two conda envs.** The ARGAvatar renderer and the LTX VAE cannot share a
 process, but that is a *runtime* constraint, not a layout one — exactly one module needs
@@ -54,15 +83,13 @@ stores only continuous schema-v2 masters and no longer carries migration-only co
 
 ```bash
 # 1. Capture target latents, from raw rgb.mp4 (days; --process_gt_latent is idempotent per source).
-#    Use the detached supervisor, not a bare invocation -- a plain foreground/backgrounded run
-#    shares this shell's process group, so a signal to the shell (closed terminal, killed job)
-#    takes the retry loop down with the job it is supervising (this happened twice, see the plan
-#    plan's §1.3). setsid gives the loop its own session so it survives that.
-for rank in 0 1 2 3; do
-  setsid -f scripts/onestep_avatar/run_b2a.sh "$rank" 2 "$rank" 4 \
-    </dev/null >/dev/null 2>&1 &
-done
-disown
+#    Capture is COMPLETE for both objectives (3,360 bundles each) -- this is the reference, not
+#    a job to restart. For a long re-run, detach it with `setsid`: a plain backgrounded run
+#    shares this shell's process group, so a signal to the shell takes the job down with it
+#    (this happened twice). --process_gt_latent discovers every bbox-bearing view itself;
+#    --rank/--n_rank shard that one plan across processes.
+python -m scripts.onestep_avatar.precompute  --process_gt_latent --objective white
+# python -m scripts.onestep_avatar.precompute  --process_gt_latent --objective white --rank 0 --n_rank 1
 
 # Regenerate only the sampled mask QA gallery (CPU-only, no VAE):
 conda run -n ltx python -m scripts.onestep_avatar.precompute \
@@ -70,9 +97,9 @@ conda run -n ltx python -m scripts.onestep_avatar.precompute \
 
 # 2. Render guides into the manifest's box (~20 min per view). DO --limit 8 FIRST AND LOOK.
 #    The September 18 audit found a compositing defect (F1), now fixed and versioned as guide
-#    contract v2 (dataset.GUIDE_COMPOSITING_VERSION); every one of the 19 existing bg renders
-#    predates the fix and will be rebuilt on the next run. Review one real bg/white pair under
-#    v2 before a bulk rebuild.
+#    contract v2 (dataset.GUIDE_COMPOSITING_VERSION). One bg/white pair has been rebuilt and
+#    reviewed under v2; the other 18 bg pairs are still stale and will be rebuilt on the next
+#    run (doc/known_gaps.md G6). There are no white guide renders yet.
 scripts/onestep_avatar/run_b2b.sh 3           # gpu, then [limit] [driving-views...]
 
 # 3. Encode each guide render's master latent and store the cropped capture-mask MP4.
@@ -83,6 +110,7 @@ conda run -n ltx python -m scripts.onestep_avatar.precompute --gpu-id 2 \
   --process_syn_latent --objective bg white
 
 # 4. Freeze a training subset AFTER paired encoding: chains, actor split, sha256 pin.
+#    K (blocks per training sample) is fixed HERE by --chain-length, not by train.py.
 #    t2r2 already exists: reuse it for the current dry-run gate, do not overwrite it.
 #    For a new subset, choose an unused name and change the training --subset path below.
 #    --min-holdout-actors defaults to 12; at 8 actors use 2 to avoid a one-actor train split.
@@ -98,20 +126,23 @@ conda run -n ltx python -m scripts.onestep_avatar.stats \
 scripts/onestep_avatar/run_a1.sh 2
 
 # 5c. Cost per finalized chunk: the causal denoise+refresh pair against k2's two window
-#     forwards (~2 min, 1 GPU). NOT YET RUN under §4.4 -- the compute claim moved when the
-#     cache landed, and this is the measurement that settles where it moved to. Sweep the
+#     forwards (~2 min, 1 GPU). NOT YET RUN under the causal scheme -- the compute claim moved
+#     when the cache landed, and this is the measurement that settles where it moved to. Sweep the
 #     cache depth, which is the knob: --context-latent-frames 0 2 4
 conda run -n ltx python -m scripts.onestep_avatar.bench_forward --gpu-id 3
 
-# 6. Train (2 GPUs shown; drop --lora-rank when GPUs are scarce, never --chain-length)
+# 6. Train (2 GPUs shown; drop --lora-rank when GPUs are scarce, never K).
+#     The four NAMED recipes -- d0/d1 x teacher/self forcing, with every flag spelled out and
+#     the bg/white substitution -- are in configs/README.md. This is the short form.
 CUDA_VISIBLE_DEVICES=2,3 accelerate launch \
   --config_file scripts/onestep_avatar/configs/fsdp_2gpu.yaml --main_process_port 29517 \
   -m scripts.onestep_avatar.train \
   --subset ../expr/onestep_avatar/windows/t2r2.json \
   --output ../expr/onestep_avatar/runs/t2-r16 --lora-rank 16 --steps 2000
-#     --objective must match the subset's. Training uses full-frame loss with no mask or
-#     disagreement weighting. The corpus root comes from the subset; --context-latent-frames is the cache depth (and
-#     therefore the compute/quality knob), recorded in the checkpoint metadata.
+#     --objective must match the subset's. Training uses unweighted full-frame latent MSE, no
+#     mask and no disagreement weighting. The corpus root comes from the subset;
+#     --context-latent-frames is the cache depth (the compute/quality knob), recorded in the
+#     checkpoint metadata. Runs under G1: the supplied first frame is not a condition yet.
 
 # 6a. D0 one-step initialization sanity check. The run writes both the exactly-no-op
 #     step-0 adapter and the adapter after its first optimizer update. A non-zero exported
@@ -128,7 +159,8 @@ CUDA_VISIBLE_DEVICES=2,3 accelerate launch \
 #     ... --sigma-levels 0.909375 0.725 0.421875
 
 # 7. Look at a checkpoint. Decodes a fixed chain at a fixed seed into one MP4 per sigma,
-#    laid out `capture | frozen base | LoRA`. D0 only today; a D1 counterpart is owed.
+#    laid out `capture | frozen base | LoRA`. D0 only today; a D1 counterpart is owed (G4),
+#    and it validates none of the adapter's recorded conditions (G3).
 conda run -n ltx python -m scripts.onestep_avatar.visualize_d0 \
   --subset ../expr/onestep_avatar/windows/t2r2.json \
   --checkpoint <run>/checkpoints/lora_weights_step_00200.safetensors \
@@ -142,7 +174,7 @@ conda run -n ltx python -m scripts.onestep_avatar.visualize_d0 \
   --run ../expr/onestep_avatar/runs/d0-init-sanity --steps 0 1 \
   --output ../expr/onestep_avatar/runs/d0-init-sanity/probes/init --gpu-id 2
 
-# 8. Figures from the rank logs (4 of the plan's 7; no reference lines yet).
+# 8. Figures from the rank logs (4 of the 7 the long-form plan sketched; no reference lines yet).
 conda run -n ltx python -m scripts.onestep_avatar.plot_training --run <run>
 ```
 
@@ -197,6 +229,19 @@ conda run -n ltx python -m scripts.onestep_avatar.plot_training --run <run>
   default it.
 - **Training uses one unweighted full-frame loss.** Alpha and capture masks remain corpus/QA
   artifacts; `train.py` does not read them and has no loss-mask or disagreement-weight option.
+- **The pinned frame-0 sink is a retention policy, not image conditioning.** It keeps whatever
+  the first refresh wrote there — a *generated* frame 0 under self forcing. `keyframes_mask` is
+  the VAE's geometry mark, not a "hold this image" instruction. See
+  [G1](doc/known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition); "the sink is
+  pinned" is never evidence that the first frame is conditioned.
+- **Teacher forcing does not mean the same thing in both callers.** `train.py` refreshes from
+  the target `z_y`; the generic `causal_core.rollout(teacher_forcing=True)` refreshes from the
+  guide, which equals the target for D0 only
+  ([G2](doc/known_gaps.md#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target)).
+- **Checkpoint metadata is written, not enforced.** Nothing validates an adapter's σ, geometry,
+  arm or objective at load ([G3](doc/known_gaps.md#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced)),
+  and a run-directory name is not provenance. Keep `--lora-alpha` equal to `--lora-rank`: the
+  scale is stamped but not applied at fusion.
 - **Two objectives, one code path.** `bg` (the product) and `white` (both sides on white)
   differ only in which pixels were encoded and which filename holds them. `bg` keeps the
   unsuffixed names, so nothing already on disk was invalidated. A subset records the objective
@@ -219,3 +264,10 @@ encoded, or re-point every chain in every subset already frozen.
 `test_causal_core` is the one that matters most: it runs a real (2-layer) `LTXModel` on CPU and
 asserts the cached block rollout equals a full-sequence forward under a block-causal mask,
 block for block. Everything the cache buys rests on that equality.
+
+**What the suite does not establish.** It pins cache/attention equivalence, the crop box, the
+block plan and the mask codec — not conditioning correctness. The cache-parity test passes today
+*with* the missing first-frame condition, so it is not evidence about
+[G1](doc/known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition); neither is "the
+sink is pinned" or "training and deployment share `causal_core`". The tests owed for the
+first-frame fix are listed with that gap.

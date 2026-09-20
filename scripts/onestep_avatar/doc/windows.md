@@ -1,5 +1,12 @@
 # `windows.py` — freeze the training subset
 
+
+> **`K` is fixed here, not in `train.py`.** `--chain-length` sets how many causal blocks one
+> training sample spans; `train.py` has no such flag and reads it from the subset's chains. The
+> subset also records the objective it was frozen against. Freeze recipes:
+> [`../configs/README.md`](../configs/README.md); definitions:
+> [experiments.md](experiments.md).
+
 ## Objective
 
 Turn "every view the capture pass has encoded" into "the exact blocks this run trains on",
@@ -23,7 +30,7 @@ subset JSON → train.py
 
 ## Organization logic
 
-Four jobs the plan says must not be left to the training loop:
+Four jobs that must not be left to the training loop:
 
 1. **Chain blocks.** A training sample is `K` *consecutive* causal blocks of one source at
    the deployed stride, so the cached context the model reads forward is what deployment

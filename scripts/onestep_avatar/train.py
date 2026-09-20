@@ -46,10 +46,22 @@ silently (SS9 risk 13).
 Run from ``LTX-2`` in the ``ltx`` env. Two or three GPUs is a preliminary-scale run -- drop
 the rank rather than the chain length, since ``K`` is what the loop exists to exercise::
 
-    accelerate launch --config_file scripts/onestep_avatar/configs/fsdp_2gpu.yaml \\
-      -m scripts.onestep_avatar.train \\
-      --subset ../expr/onestep_avatar/windows/t2r2.json \\
-      --output ../expr/onestep_avatar/runs/prelim --lora-rank 8 --steps 200
+accelerate launch --config_file scripts/onestep_avatar/configs/fsdp_2gpu.yaml \
+    -m scripts.onestep_avatar.train \
+    --subset ../expr/onestep_avatar/windows/t2r2.json \
+    --output ../expr/onestep_avatar/runs/prelim --lora-rank 8 --steps 200
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch \
+    --config_file scripts/onestep_avatar/configs/fsdp_4gpu.yaml \
+    --main_process_port 29519 \
+    -m scripts.onestep_avatar.train \
+    --subset ../expr/onestep_avatar/windows/white-d0-t2r2.json \
+    --objective white \
+    --guide-mode d0 \
+    --teacher-forcing \
+    --output ../expr/onestep_avatar/runs/white-d0-teacher-forced \
+    --lora-rank 32 \
+    --steps 2000
 
 accelerate launch --config_file scripts/onestep_avatar/configs/fsdp_4gpu.yaml -m scripts.onestep_avatar.train --subset ../expr/onestep_avatar/windows/t2r2.json --output ../expr/onestep_avatar/runs/prelim --lora-rank 64 --steps 200
 """
@@ -535,6 +547,7 @@ def train_chain(  # noqa: PLR0913, PLR0915 -- one AR training step is defined by
         raise ValueError(f"unknown guide mode {guide_mode!r}; expected 'd0' or 'd1'")
     guide_tokens = grid.patchify(source)
     target_tokens = grid.patchify(z_y)
+    c0 = target_tokens[:, : grid.tokens_per_latent_frame]
     base_tokens = (
         grid.patchify(chain.z0_base.unsqueeze(0).to(device=device, dtype=DTYPE))
         if chain.z0_base is not None
@@ -588,8 +601,17 @@ def train_chain(  # noqa: PLR0913, PLR0915 -- one AR training step is defined by
         span = plan[block_index]
         lo, hi = grid.token_span(*span)
         block_started = time.time()
-        noisy = causal_core.noise_block(guide_tokens[:, lo:hi], sigma0, seed + block_index)
-        z0 = causal_core.denoise_block(denoise_fn, grid, cache, noisy, context, sigma0, span)
+        first_frame = c0 if span[0] == 0 else None
+        noisy = causal_core.with_clean_prefix(
+            causal_core.noise_block(guide_tokens[:, lo:hi], sigma0, seed + block_index), first_frame
+        )
+        z0 = causal_core.denoise_block(
+            denoise_fn, grid, cache, noisy, context, sigma0, span,
+            clean_prefix_tokens=0 if first_frame is None else first_frame.shape[1],
+        )
+        # The supplied condition is an input token and stays authoritative in the emitted
+        # block; its regression term is consequently exactly zero.
+        z0 = causal_core.with_clean_prefix(z0, first_frame)
         denoised_at = time.time()
 
         mse = full_frame_mse(z0, target_tokens[:, lo:hi])
@@ -715,6 +737,7 @@ def checkpoint_metadata(
         "onestep_avatar_guide_mode": args.guide_mode,
         "onestep_avatar_anchor_weight": repr(args.anchor_weight),
         "onestep_avatar_teacher_forcing": str(args.teacher_forcing),
+        "onestep_avatar_first_frame_conditioning": "clean_c0_v1",
         "model_key": model.key,
         "lora_rank": str(args.lora_rank),
         "lora_alpha": str(args.lora_alpha),
@@ -760,14 +783,28 @@ def sigma_for_rank(sigmas: tuple[float, ...], rank: int, step: int) -> float:
     return sigmas[(rank + step) % len(sigmas)]
 
 
+def wandb_is_enabled(args: argparse.Namespace) -> bool:
+    """True if W&B logging is enabled for this run."""
+    if getattr(args, "no_wandb", False):
+        return False
+    if not args.wandb_project or str(args.wandb_project).strip().lower() in ("", "none"):
+        return False
+    if getattr(args, "wandb_mode", "online") == "disabled":
+        return False
+    return True
+
+
 def init_wandb(args: argparse.Namespace, *, config: dict) -> object | None:
     """Create one online W&B run on rank 0; all ranks still participate in metric gathers."""
-    if args.wandb_project is None:
+    if not wandb_is_enabled(args):
         return None
     try:
         import wandb  # noqa: PLC0415 -- optional dependency, imported only when requested.
     except ImportError as exc:  # pragma: no cover - environment/setup error
-        raise SystemExit("--wandb-project requires the wandb package in the active environment") from exc
+        raise SystemExit(
+            f"W&B logging is enabled (project: {args.wandb_project!r}), but the wandb package "
+            "is not installed in the active environment. Install wandb or pass --no-wandb."
+        ) from exc
     return wandb.init(
         project=args.wandb_project,
         entity=args.wandb_entity,
@@ -956,10 +993,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "per-step detail, and it is per-block, so it is off by default.",
     )
     p.add_argument("--max-grad-norm", type=float, default=1.0)
-    p.add_argument("--wandb-project", default=None, help="Enable online W&B logging to this project.")
+    p.add_argument(
+        "--wandb-project",
+        default="onestep-avatar",
+        help="Enable online W&B logging to this project (default: 'onestep-avatar'). "
+             "Pass --no-wandb, set --wandb-mode disabled, or pass an empty string to disable.",
+    )
     p.add_argument("--wandb-entity", default=None)
     p.add_argument("--wandb-run-name", default=None)
     p.add_argument("--wandb-mode", choices=("online", "offline", "disabled"), default="online")
+    p.add_argument("--no-wandb", action="store_true", help="Disable W&B logging.")
     p.add_argument("--no-gradient-checkpointing", action="store_true")
     p.add_argument("--init-device", default="cuda", help="'cuda' (default, avoids host-RAM staging) or 'cpu'")
     p.add_argument(
@@ -1275,7 +1318,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                 }
                 log_file.write(json.dumps(record) + "\n")
                 log_file.flush()
-                if args.wandb_project is not None:
+                if wandb_is_enabled(args):
                     # 0.0 rather than float(None): accelerate's clip_grad_norm_ returns None
                     # for some distributed types, and rank_mean is a COLLECTIVE -- a TypeError
                     # on one rank here would hang the others in the gather it never joins.
@@ -1287,7 +1330,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                         ],
                     )
                     block_mse = rank_mean(accelerator, [block["mse"] for block in per_block])
-                    if accelerator.is_main_process:
+                    if accelerator.is_main_process and wandb_run is not None:
                         wandb_run.log(
                             {
                                 "train/loss": mean_loss,

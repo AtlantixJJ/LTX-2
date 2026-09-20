@@ -4,8 +4,23 @@ Per-file design docs for the one-step LTX-2.5 avatar renderer. Corpus tooling an
 training live in this one package; see [`../CLAUDE.md`](../CLAUDE.md) for the env split
 (only `build_guidance.py` needs `argavatar`) and the documentation contract.
 
-**Plan:** `plans/2026-09-15-ltx25-one-step-argavatar-lora-core.md`. Section references
-(SS1.2, SS1.5, SS1.6, …) are that plan's.
+**These docs are self-contained.** The product, the D0/D1 configurations and the whole
+conditioning/training/inference data flow are explained here; workspace `plans/` are historical
+and progress records, not required reading and never the explanation of record. Section markers
+of the form `SS1.6` in older prose and docstrings refer to those plans; treat them as citations,
+not as definitions.
+
+## Start here — the three cross-module contracts
+
+| Doc | Owns |
+|---|---|
+| [core_algorithm.md](core_algorithm.md) | symbols, tensor/data flow, the **conditioning contract**, the block-by-block algorithm, teacher/self forcing, and the train/probe/deploy comparison |
+| [experiments.md](experiments.md) | the canonical D0/D1 definitions, the objective and forcing axes, and what is implemented, deferred or historical |
+| [known_gaps.md](known_gaps.md) | where the code does not meet the contract, with evidence, impact and acceptance criteria. **[G1](known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition) — the supplied first frame is not a model condition — affects every arm and every recipe** |
+| [../configs/README.md](../configs/README.md) | the runnable D0/D1 command recipes and the Accelerate topology YAMLs |
+
+Each fact has **one** canonical home. A module doc explains its own file and links to the
+contract above rather than restating it; the package [README](../README.md) is the run order.
 
 ## The two rules that shape everything
 
@@ -44,6 +59,7 @@ precompute.py --process_syn_latent ─▶ z_g master · capture_mask_crop.mp4
 windows.py ─▶ causal block chains + actor-disjoint split + sha256 pin ─▶ subset JSON
    ▼
 train.py ── per block: denoise → backward → refresh → evict   [all four in causal_core]
+   │       (the required clean first-frame condition c0 has NO producer here yet — G1)
    ▼  LoRA safetensors + metadata
    ├─▶ onestep_core.py   (deployment)
    ├─▶ visualize_d0.py   (decoded probe)
@@ -51,6 +67,14 @@ train.py ── per block: denoise → backward → refresh → evict   [all fou
 ```
 
 ## Files
+
+### Cross-module contracts (not tied to one module)
+
+| Doc | Owns |
+|---|---|
+| [core_algorithm.md](core_algorithm.md) | conditioning contract, block algorithm, data flow, train/probe/deploy parity |
+| [experiments.md](experiments.md) | D0/D1 · bg/white · teacher/self, and implementation status |
+| [known_gaps.md](known_gaps.md) | contract violations and their acceptance criteria |
 
 ### Corpus side
 
@@ -79,8 +103,9 @@ train.py ── per block: denoise → backward → refresh → evict   [all fou
 | [visualize_d0.md](visualize_d0.md) | `visualize_d0.py` | decoded `capture │ base │ LoRA` probe per sigma |
 | [report_d0.md](report_d0.md) | `report_d0.py` | artifact-checked handoff record for the D0 arm |
 
-`__init__.py` carries no design. `configs/fsdp_{2,3,4}gpu.yaml` are accelerate configs;
-`run_a1.sh` / `run_b2a.sh` / `run_b2b.sh` are launchers documented in [`../README.md`](../README.md).
+`__init__.py` carries no design. `configs/` holds the Accelerate topology YAMLs **and** the
+D0/D1 run recipes — [`../configs/README.md`](../configs/README.md); `run_a1.sh` / `run_b2b.sh`
+are launchers documented in [`../README.md`](../README.md).
 
 ## Keeping these docs true
 
@@ -88,3 +113,8 @@ A doc here is part of the change, not a write-up after it. When a module's **obj
 flow, invariants, or contract with another module** changes, update its doc in the same commit.
 Inline docstrings answer "why this line"; these docs answer "how this file fits the others" —
 which is what a reader cannot reconstruct from one file, and what has actually gone wrong here.
+
+**Code establishes current behavior; the approved contract establishes required behavior.** When
+they disagree, that is a defect: record it in [known_gaps.md](known_gaps.md) with its evidence and
+keep both descriptions clear. Do not rewrite the intended contract to legitimize a bug, and do not
+describe a planned fix as shipped. See [`../CLAUDE.md`](../CLAUDE.md) for the full rule.

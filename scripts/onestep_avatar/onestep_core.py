@@ -12,8 +12,9 @@ is now block-causal attention plus a clean-latent K/V cache, exactly as training
 * a block's queries attend over ``[cached clean context | this block]`` and nothing later;
 * after a block is denoised, one clean no-grad ``refresh`` forward puts its keys and values in
   the cache, so no later block ever forwards that content again;
-* the pinned frame-0 sink -- the causal keyframe, which under §2.0 is the product's *given*
-  real first frame -- stays in the cache for the whole rollout.
+* the pinned frame-0 sink stays in the cache after the first refresh. In this self-forced
+  rollout it contains the generated frame 0: the supplied-real-image condition intended by
+  §2.0 is not implemented, and frame 0 is currently noised along with the first block.
 
 `k2` is untouched: it still runs ``refine_core``'s window step, which is what every frozen
 number under ``expr/refiner_prune/2.5/`` was measured with. The two schemes coexist rather
@@ -101,6 +102,7 @@ def rollout(  # noqa: PLR0913 -- a rollout is defined by its geometry, schedule,
     sigma0: float,
     fps: float,
     *,
+    first_frame_latent: torch.Tensor,
     device: torch.device,
     seed: int = 42,
     latent_channels: int = 128,
@@ -125,6 +127,8 @@ def rollout(  # noqa: PLR0913 -- a rollout is defined by its geometry, schedule,
     9-point grid) through :func:`one_step_sigma` before anything is denoised -- an off-grid
     sigma0 raises here rather than deploying a point the model was never trained at.
     """
+    if first_frame_latent.shape[2] != 1:
+        raise ValueError("first_frame_latent must contain exactly the supplied latent frame 0")
     guide_conditionings(master, guide_mode)  # validates the arm; D1 adds nothing
     sigma0 = one_step_sigma(model_sigmas if model_sigmas is not None else DISTILLED_SIGMA_VALUES, sigma0)
     dtype = dtype if dtype is not None else master.dtype
@@ -149,6 +153,7 @@ def rollout(  # noqa: PLR0913 -- a rollout is defined by its geometry, schedule,
         dtype=dtype,
     )
     guide_tokens = grid.patchify(master.to(device=device, dtype=dtype))
+    c0 = grid.patchify(first_frame_latent.to(device=device, dtype=dtype))
     denoise_fn = causal_core.denoised_from_x0_model(transformer)
     plan = geometry.plan(latent_frames)
     with torch.no_grad():
@@ -162,6 +167,7 @@ def rollout(  # noqa: PLR0913 -- a rollout is defined by its geometry, schedule,
             sigma0,
             seed=seed,
             blocks=plan,
+            first_frame_condition=c0,
         )
     covered = plan[-1][1] if plan else 0
     latent = grid.unpatchify_block(tokens[:, : covered * grid.tokens_per_latent_frame], covered)

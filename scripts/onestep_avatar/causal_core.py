@@ -427,6 +427,21 @@ def noise_block(clean_tokens: torch.Tensor, sigma: float, seed: int) -> torch.Te
     return torch.lerp(clean_tokens.float(), eps.float(), sigma).to(clean_tokens.dtype)
 
 
+def with_clean_prefix(tokens: torch.Tensor, clean_prefix: torch.Tensor | None) -> torch.Tensor:
+    """Replace a leading token span with a supplied clean condition.
+
+    ``c0`` is the sole caller today.  Keeping this replacement beside the noiser makes the
+    contract explicit: the condition is part of the model input, not an output-only clamp.
+    """
+    if clean_prefix is None:
+        return tokens
+    if clean_prefix.ndim != tokens.ndim or clean_prefix.shape[0] != tokens.shape[0] or clean_prefix.shape[2:] != tokens.shape[2:]:
+        raise ValueError("clean prefix must match token batch and channel dimensions")
+    if not 0 < clean_prefix.shape[1] <= tokens.shape[1]:
+        raise ValueError("clean prefix must contain between one and all block tokens")
+    return torch.cat((clean_prefix, tokens[:, clean_prefix.shape[1] :]), dim=1)
+
+
 def block_modality(
     grid: ClipGrid,
     tokens: torch.Tensor,
@@ -437,6 +452,7 @@ def block_modality(
     cache: BlockCache | None = None,
     kv_write: bool = False,
     attention_mask: torch.Tensor | None = None,
+    clean_prefix_tokens: int = 0,
 ) -> Modality:
     """One forward's ``Modality``, assembled from slices of the clip grid.
 
@@ -448,11 +464,17 @@ def block_modality(
     positions = torch.cat([grid.positions[:, :, lo:hi] for lo, hi in token_slices], dim=2)
     keyframes = torch.cat([grid.keyframes_mask[:, lo:hi] for lo, hi in token_slices], dim=1)
     denoise = torch.cat([grid.denoise_mask[:, lo:hi] for lo, hi in token_slices], dim=1)
+    if not 0 <= clean_prefix_tokens <= tokens.shape[1]:
+        raise ValueError("clean_prefix_tokens must be within this modality's token span")
+    timesteps = denoise * sigma
+    if clean_prefix_tokens:
+        timesteps = timesteps.clone()
+        timesteps[:, :clean_prefix_tokens] = 0
     sigma_tensor = torch.tensor([sigma], device=device, dtype=tokens.dtype)
     return Modality(
         latent=tokens,
         sigma=sigma_tensor,
-        timesteps=denoise * sigma,
+        timesteps=timesteps,
         positions=positions,
         context=context,
         context_mask=None,
@@ -591,6 +613,8 @@ def denoise_block(
     context: torch.Tensor,
     sigma: float,
     span: tuple[int, int],
+    *,
+    clean_prefix_tokens: int = 0,
 ) -> torch.Tensor:
     """One block's denoised tokens. Reads the cache, writes nothing.
 
@@ -606,6 +630,7 @@ def denoise_block(
             token_slices=[grid.token_span(*span)],
             cache=cache,
             kv_write=False,
+            clean_prefix_tokens=clean_prefix_tokens,
         )
     )
 
@@ -650,6 +675,7 @@ def rollout(
     seed: int = 42,
     blocks: list[tuple[int, int]] | None = None,
     teacher_forcing: bool = False,
+    first_frame_condition: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, int]:
     """Roll the whole clip forward one block at a time; return ``(tokens, forwards)``.
 
@@ -666,14 +692,23 @@ def rollout(
     it self-forced evaluates an input distribution training never produced; pass
     ``teacher_forcing=True`` to roll it out the way it was trained.
     """
+    if first_frame_condition is None:
+        raise ValueError("first_frame_condition is required: supply the clean latent-frame-0 tokens as c0")
+    if first_frame_condition.shape[1] != grid.tokens_per_latent_frame:
+        raise ValueError("first_frame_condition must contain exactly one latent frame of tokens")
     cache.reset()
     plan = geometry.plan(grid.latent_frames) if blocks is None else blocks
     out = torch.zeros_like(guide_tokens)
     forwards = 0
     for index, span in enumerate(plan):
         lo, hi = grid.token_span(*span)
-        noisy = noise_block(guide_tokens[:, lo:hi], sigma, seed + index)
-        denoised = denoise_block(denoise_fn, grid, cache, noisy, context, sigma, span)
+        c0 = first_frame_condition if span[0] == 0 else None
+        noisy = with_clean_prefix(noise_block(guide_tokens[:, lo:hi], sigma, seed + index), c0)
+        denoised = denoise_block(
+            denoise_fn, grid, cache, noisy, context, sigma, span,
+            clean_prefix_tokens=0 if c0 is None else c0.shape[1],
+        )
+        denoised = with_clean_prefix(denoised, c0)
         out[:, lo:hi] = denoised
         clean = guide_tokens[:, lo:hi] if teacher_forcing else denoised
         refresh_block(denoise_fn, grid, cache, clean, context, span)
