@@ -70,14 +70,20 @@ BLOCK_LATENT_FRAMES = 2
 # costs ~0.8 GB at the 22B geometry (48 layers x 1024 tokens x 4096 dims x 2 tensors x 2
 # bytes), which is why this is a flag rather than "the whole history".
 #
-# The default is the deepest setting the retained history supports: 1 sink + 15 context is a
-# RETAINED HISTORY OF 16 LATENT FRAMES, the ceiling MAX_CONTEXT_LATENT_FRAMES prices below.
-# Read the two numbers together -- the flag counts context frames, the budget counts the
-# whole cache, and confusing them is an off-by-one worth ~0.8 GB per rank.
+# 1 sink + 8 context is a RETAINED HISTORY OF 9 LATENT FRAMES -- ~72 pixel frames, ~2.4 s at
+# 30 fps. Read the two numbers together: the flag counts context frames, the memory budget
+# counts the whole cache, and confusing them is an off-by-one worth ~0.8 GB per rank.
 #
-# At this depth a corpus-length chain evicts nothing: block 2 attends to c0 plus clean frames
-# 1-4, and a rollout only starts dropping once it has finalized past frame 15.
-CONTEXT_LATENT_FRAMES = 15
+# **This default is set by what fits, not by what would help.** Measured 2026-09-19 on 4x49 GB
+# with LoRA rank 32 and the t2r2 subset: depth 15 (history 16) OOMs in BACKWARD -- not in the
+# forward, and not fixed by PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True -- because
+# gradient recompute holds attention over the whole retained history. Depth 7 ran flat at
+# ~45.1 GB of 47.4. Depth 8 sits between a measured-good and a measured-bad point: treat a
+# new OOM here as the depth, not as a leak, and drop to 7.
+#
+# At this depth a corpus-length chain evicts nothing until it has finalized past frame 8:
+# block 2 attends to c0 plus clean frames 1-4.
+CONTEXT_LATENT_FRAMES = 8
 
 # The deepest cache this scheme supports, as CONTEXT frames. 16 clean latent frames is 128
 # pixel frames -- most of a corpus clip (the 137-frame tier is 18 latent frames), so at this
@@ -87,9 +93,9 @@ CONTEXT_LATENT_FRAMES = 15
 # Two things bound it, and neither is arbitrary:
 #
 # * Memory. ~0.8 GB per retained latent frame per rank at the 22B geometry, so a 16-frame
-#   retained history is ~13 GB of K/V on top of the model -- real on a 49 GB card. The
-#   default spends exactly that budget (sink + 15 context); this ceiling leaves one frame of
-#   slack for a deliberate override rather than being the number the default sits on.
+#   retained history is ~13 GB of K/V on top of the model -- and the attention it lengthens
+#   costs more again in backward. On 4x49 GB that ceiling does NOT fit at LoRA rank 32; it is
+#   reachable only on larger cards or with a smaller adapter.
 # * RoPE. The temporal axis is seconds against MAX_ROPE_SECONDS; 16 latent frames is ~4.3 s
 #   at 30 fps, comfortably inside it, and ClipGrid.build raises for anything that is not.
 #

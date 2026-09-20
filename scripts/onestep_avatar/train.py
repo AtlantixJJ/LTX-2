@@ -46,10 +46,6 @@ silently (SS9 risk 13).
 Run from ``LTX-2`` in the ``ltx`` env. Two or three GPUs is a preliminary-scale run -- drop
 the rank rather than the chain length, since ``K`` is what the loop exists to exercise::
 
-accelerate launch --config_file scripts/onestep_avatar/configs/fsdp_2gpu.yaml \
-    -m scripts.onestep_avatar.train \
-    --subset ../expr/onestep_avatar/windows/t2r2.json \
-    --output ../expr/onestep_avatar/runs/prelim --lora-rank 8 --steps 200
 
 CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch \
     --config_file scripts/onestep_avatar/configs/fsdp_4gpu.yaml \
@@ -61,9 +57,18 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch \
     --teacher-forcing \
     --output ../expr/onestep_avatar/runs/white-c0-teacher-forced \
     --lora-rank 32 \
-    --steps 2000
+    --steps 2000 --sigma-levels 0.421875 0.725 0.909375
 
-accelerate launch --config_file scripts/onestep_avatar/configs/fsdp_4gpu.yaml -m scripts.onestep_avatar.train --subset ../expr/onestep_avatar/windows/t2r2.json --output ../expr/onestep_avatar/runs/prelim --lora-rank 64 --steps 200
+CUDA_VISIBLE_DEVICES=0,1 accelerate launch \
+    --config_file scripts/onestep_avatar/configs/fsdp_2gpu.yaml \
+    --main_process_port 29519 \
+    -m scripts.onestep_avatar.train \
+    --subset ../expr/onestep_avatar/windows/white-d0-t2r2.json \
+    --objective white \
+    --guide-mode d0 \
+    --teacher-forcing \
+    --output ../expr/onestep_avatar/runs/white-d0-tf-c0-debug \
+    --lora-rank 8 --save-initial --save-every 1 --steps 1
 """
 
 from __future__ import annotations

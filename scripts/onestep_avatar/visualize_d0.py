@@ -39,6 +39,14 @@ python -m scripts.onestep_avatar.visualize_d0 \
     --run ../expr/onestep_avatar/runs/test --steps 100 500 1000 \
     --output ../expr/onestep_avatar/runs/test/probes/multi --gpu-id 5
 
+python -m scripts.onestep_avatar.visualize_d0 \
+    --subset ../expr/onestep_avatar/windows/t2r2.json \
+    --run ../expr/onestep_avatar/runs/white-d0-tf-c0-debug \
+    --steps 0 1 \
+    --output ../expr/onestep_avatar/runs/white-d0-tf-c0-debug/probes/init \
+    --teacher-forcing \
+    --gpu-id 1
+
 Pass ``--teacher-forcing`` when the run itself was trained with ``train.py --teacher-forcing``
 (check the run's ``config.json``): it refreshes the rollout's cache from the ground-truth
 capture instead of the checkpoint's own denoised output, the same ablation ``train.py`` makes,

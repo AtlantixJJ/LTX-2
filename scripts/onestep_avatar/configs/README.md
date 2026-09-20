@@ -86,7 +86,7 @@ CUDA_VISIBLE_DEVICES=<GPUS> accelerate launch \
   -m scripts.onestep_avatar.train \
   --subset <SUBSET> --output <OUT> \
   --model 2.5 --objective white --guide-mode d0 --teacher-forcing \
-  --sigma0 0.725 --block-latent-frames 2 --context-latent-frames 15 \
+  --sigma0 0.725 --block-latent-frames 2 --context-latent-frames 8 \
   --lora-rank 32 --lora-alpha 32 --lora-target attn \
   --lr 1e-4 --warmup-steps 20 --steps 2000 --seed 42 \
   --save-every 100 --anchor-weight 0.0
@@ -113,7 +113,7 @@ CUDA_VISIBLE_DEVICES=<GPUS> accelerate launch \
   -m scripts.onestep_avatar.train \
   --subset <SUBSET> --output <OUT> \
   --model 2.5 --objective bg --guide-mode d1 --teacher-forcing \
-  --sigma0 0.725 --block-latent-frames 2 --context-latent-frames 15 \
+  --sigma0 0.725 --block-latent-frames 2 --context-latent-frames 8 \
   --lora-rank 16 --lora-alpha 16 --lora-target attn \
   --lr 1e-4 --warmup-steps 20 --steps 2000 --seed 42 \
   --save-every 100 --anchor-weight 0.0
@@ -159,7 +159,7 @@ Subset requirements per combination:
 | `--model` | `2.5` | **checked default**, stated explicitly |
 | `--sigma0` | `0.725` | **checked default** — the deployed operating point |
 | `--block-latent-frames` | `2` (`causal_core.BLOCK_LATENT_FRAMES`) | **checked default** — the deployed 16-pixel-frame stride |
-| `--context-latent-frames` | `15` (`causal_core.CONTEXT_LATENT_FRAMES`, max 16) | **checked default**; a retained history of 16 latent frames including the pinned sink — the compute/quality knob |
+| `--context-latent-frames` | `8` (`causal_core.CONTEXT_LATENT_FRAMES`, max 16) | **checked default**; a retained history of 9 latent frames including the pinned sink. Memory-bound: depth 15 OOMs in `backward` at rank 32 on 4×49 GB, depth 7 measured flat at ~45.1 GB |
 | `--guide-mode` | `d1` | experiment choice |
 | `--objective` | `bg` | experiment choice; must match the subset |
 | `--teacher-forcing` | off | experiment choice |

@@ -89,18 +89,18 @@ during training.
 | | |
 |---|---|
 | `BLOCK_LATENT_FRAMES = 2` | 16 pixel frames = the deployed stride, so an adapter finalizes per step exactly the span `k2` does |
-| `CONTEXT_LATENT_FRAMES = 15` | clean frames retained besides the sink — with it, a **retained history of 16 latent frames** (~13 GB of K/V per rank) |
-| `MAX_CONTEXT_LATENT_FRAMES = 16` | the supported ceiling, in *context* frames — one frame of slack above the default |
+| `CONTEXT_LATENT_FRAMES = 8` | clean frames retained besides the sink — a **retained history of 9 latent frames**; set by what fits on 4×49 GB, not by what would help |
+| `MAX_CONTEXT_LATENT_FRAMES = 16` | the supported ceiling, in *context* frames — OOMs in `backward` at rank 32 on 4×49 GB |
 | `SINK_LATENT_FRAMES = 1` | latent frame 0, pinned, never evicted |
 
 **Cache depth is a memory knob first** — ~0.8 GB per retained latent frame per rank (48
 layers × 1024 tokens × 4096 dims × k and v × 2 bytes).
 
-**Deep context = accumulation, and that is now the default.** Past roughly the chain's own
-reach, eviction never fires and the cache simply holds the pinned sink plus every frame the
-rollout has finalized. At `K = 3` and a 2-frame block that is 6 finalized frames plus whatever
-priming put there — well inside the default 15, so a corpus-length chain never evicts. Eviction
-is what bounds a *long* rollout, not what a short one spends its time doing.
+**Deep context = accumulation.** Past roughly the chain's own reach, eviction never fires and
+the cache simply holds the pinned sink plus every frame the rollout has finalized. At `K = 3`
+and a 2-frame block that is 6 finalized frames plus whatever priming put there — inside the
+default 8, so a training chain rarely evicts. Eviction is what bounds a *long* rollout, not
+what a short one spends its time doing.
 
 **Capacity is capped by the clip** (`cache_latent_frames_for`): reserving 16 frames of K/V
 for an 18-frame clip a 3-block chain touches half of would be gigabytes of untouched memory.

@@ -71,11 +71,16 @@ frames** — it holds three.
 
 Eviction keeps the pinned sink (latent frame 0, `SINK_LATENT_FRAMES = 1`) plus the last
 `--context-latent-frames` finalized latent frames. The cache depth is configurable and the
-default is a **retained history of 16 latent frames**: `sink_latent_frames = 1` plus
-`CONTEXT_LATENT_FRAMES = 15`, so the cache holds `c0` plus clean frames 1–15 and evicts nothing
-until a rollout has finalized past frame 15. Block 2 therefore sees `c0` + clean frames 1–4.
-The flag counts *context* frames; the 16 is the whole retained history — ~0.8 GB per frame per
-rank at the 22B geometry, so ~13 GB of K/V.
+default is a **retained history of 9 latent frames**: `sink_latent_frames = 1` plus
+`CONTEXT_LATENT_FRAMES = 8`, so the cache holds `c0` plus clean frames 1–8 and evicts nothing
+until a rollout has finalized past frame 8. Block 2 therefore sees `c0` + clean frames 1–4.
+The flag counts *context* frames; the 9 is the whole retained history — ~0.8 GB per frame per
+rank at the 22B geometry.
+
+**The default is set by what fits.** Measured 2026-09-19 on 4×49 GB at LoRA rank 32: depth 15
+OOMs in `backward` (gradient recompute holds attention over the whole history; the allocator
+flag does not save it), depth 7 runs flat at ~45.1 GB. `MAX_CONTEXT_LATENT_FRAMES = 16` is
+reachable only on larger cards.
 
 ---
 
@@ -124,7 +129,7 @@ denoise:  queries = block i's noisy tokens, keys = [cache | block i]   read-only
 loss:     full-frame latent MSE against z_y over block i's tokens
 backward: immediately, so peak activation memory is ONE block
 refresh:  queries = block i's CLEAN tokens at timestep 0, no_grad      the only cache writer
-evict:    keep the pinned frame-0 sink and the last `context` latent frames (default 15)
+evict:    keep the pinned frame-0 sink and the last `context` latent frames (default 8)
 ```
 
 Pseudocode, as `train.train_chain` and `causal_core.rollout` both run it:
@@ -173,7 +178,7 @@ clean override at timestep zero and are not part of that expression.
 
 ## 5. Worked example — blocks 0, 1, 2
 
-`block_latent_frames = 2`, `context_latent_frames = 15` (the default retained history of 16),
+`block_latent_frames = 2`, `context_latent_frames = 8` (the default retained history of 9),
 chain starting at the clip start. Spans `[0,3)`, `[3,5)`, `[5,7)`. Nothing is evicted this early
 — the "retained" rows below are the whole history, and at a shallower depth (e.g.
 `--context-latent-frames 2`) block 2 would instead keep only `c0` + 3, 4.
@@ -204,7 +209,7 @@ Identical to the row above except:
 
 | Case | Block 0 | Block 1 |
 |---|---|---|
-| D0 teacher forcing | sees clean `c0` immediately; only generation tokens are noised | keeps `c0` and the completed GT history (up to 15 frames) |
+| D0 teacher forcing | sees clean `c0` immediately; only generation tokens are noised | keeps `c0` and the completed GT history (up to 8 frames) |
 | D0/D1 self forcing | sees the same clean `c0` immediately | keeps `c0`; other history comes from predictions |
 
 ### "Clean" in the cache means timestep-zero, not ground truth

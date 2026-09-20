@@ -129,7 +129,7 @@ scripts/onestep_avatar/run_a1.sh 2
 # 5c. Cost per finalized chunk: the causal denoise+refresh pair against k2's two window
 #     forwards (~2 min, 1 GPU). NOT YET RUN under the causal scheme -- the compute claim moved
 #     when the cache landed, and this is the measurement that settles where it moved to. Sweep the
-#     cache depth, which is the knob: --context-latent-frames 0 2 4 15
+#     cache depth, which is the knob: --context-latent-frames 0 2 4 8
 conda run -n ltx python -m scripts.onestep_avatar.bench_forward --gpu-id 3
 
 # 6. Train (2 GPUs shown; drop --lora-rank when GPUs are scarce, never K).
@@ -217,9 +217,9 @@ conda run -n ltx python -m scripts.onestep_avatar.plot_training --run <run>
   forward against a masked full-sequence one.
 - **The cache costs ~0.8 GB of VRAM per retained latent frame** at the 22B geometry (48 layers
   x 1024 tokens x 4096 dims x k and v x 2 bytes), per rank. `--context-latent-frames` is the
-  knob; the pinned frame-0 sink is always there on top of it. The default 15 + the sink is a
-  retained history of 16 latent frames (~13 GB per rank), at which a corpus-length chain never
-  evicts.
+  knob; the pinned frame-0 sink is always there on top of it. The default 8 + the sink is a
+  retained history of 9 latent frames. It is bounded by what fits: measured 2026-09-19 at LoRA
+  rank 32 on 4x49 GB, depth 15 OOMs in `backward` and depth 7 ran flat at ~45.1 GB.
 - **An adapter is only valid at the cache depth it was trained at.** It is in the checkpoint
   metadata for the same reason sigma_0 is: two frames of context and six are different
   functions, and nothing downstream can tell by looking at the weights.
