@@ -46,6 +46,7 @@ re-basing, and this module should raise rather than silently extrapolate.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import pairwise
 
 import torch
 
@@ -273,11 +274,7 @@ class ClipGrid:
         """``(1, L, C)`` block tokens -> ``(1, C, F, H, W)``, using the grid's spatial shape."""
         shape = self.tools.target_shape
         channels = tokens.shape[-1]
-        return (
-            tokens.transpose(1, 2)
-            .reshape(1, channels, latent_frames, shape.height, shape.width)
-            .contiguous()
-        )
+        return tokens.transpose(1, 2).reshape(1, channels, latent_frames, shape.height, shape.width).contiguous()
 
 
 class BlockCache:
@@ -435,11 +432,25 @@ def noise_block(clean_tokens: torch.Tensor, sigma: float, seed: int) -> torch.Te
     arithmetic is pinned against ``GaussianNoiser`` by ``tests/test_causal_core.py`` so the
     two cannot drift.
     """
+    return mix_block_noise(clean_tokens, epsilon_block(clean_tokens, seed), sigma)
+
+
+def epsilon_block(clean_tokens: torch.Tensor, seed: int) -> torch.Tensor:
+    """Draw the epsilon used by :func:`noise_block`, without mixing it with the source.
+
+    Probe code uses this to persist and reuse an identical noise realization across sigma
+    arms. Keeping the draw here prevents its seed/device/dtype convention from drifting from
+    the rollout's established ``seed + block_index`` convention.
+    """
     generator = torch.Generator(device=clean_tokens.device).manual_seed(seed)
-    eps = torch.randn(
-        *clean_tokens.shape, device=clean_tokens.device, dtype=clean_tokens.dtype, generator=generator
-    )
-    return torch.lerp(clean_tokens.float(), eps.float(), sigma).to(clean_tokens.dtype)
+    return torch.randn(*clean_tokens.shape, device=clean_tokens.device, dtype=clean_tokens.dtype, generator=generator)
+
+
+def mix_block_noise(clean_tokens: torch.Tensor, epsilon: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Apply the rollout's noise mixture to an explicit epsilon tensor."""
+    if epsilon.shape != clean_tokens.shape:
+        raise ValueError(f"epsilon shape {tuple(epsilon.shape)} does not match block shape {tuple(clean_tokens.shape)}")
+    return torch.lerp(clean_tokens.float(), epsilon.float(), sigma).to(clean_tokens.dtype)
 
 
 def with_clean_prefix(tokens: torch.Tensor, clean_prefix: torch.Tensor | None) -> torch.Tensor:
@@ -450,7 +461,11 @@ def with_clean_prefix(tokens: torch.Tensor, clean_prefix: torch.Tensor | None) -
     """
     if clean_prefix is None:
         return tokens
-    if clean_prefix.ndim != tokens.ndim or clean_prefix.shape[0] != tokens.shape[0] or clean_prefix.shape[2:] != tokens.shape[2:]:
+    if (
+        clean_prefix.ndim != tokens.ndim
+        or clean_prefix.shape[0] != tokens.shape[0]
+        or clean_prefix.shape[2:] != tokens.shape[2:]
+    ):
         raise ValueError("clean prefix must match token batch and channel dimensions")
     if not 0 < clean_prefix.shape[1] <= tokens.shape[1]:
         raise ValueError("clean prefix must contain between one and all block tokens")
@@ -630,11 +645,20 @@ def denoise_block(
     span: tuple[int, int],
     *,
     clean_prefix_tokens: int = 0,
+    kv_write: bool = False,
 ) -> torch.Tensor:
-    """One block's denoised tokens. Reads the cache, writes nothing.
+    """One block's denoised tokens. Reads the cache; writes only when asked.
 
-    Read-only is what keeps gradient checkpointing usable on this pass: a cache write would
-    be replayed by recomputation, and this is the only pass that stores activations at all.
+    Read-only by default, and that default is what keeps gradient checkpointing usable on this
+    pass: a cache write would be replayed by recomputation, and this is the only pass that
+    stores activations at all. ``kv_write=True`` exists for ``rollout(kv_source="denoise")``,
+    which trades the refresh forward away by caching what this pass already computed -- safe
+    under ``no_grad`` at inference, and requiring the write to be hoisted out of the
+    checkpointed region before it could be used in training.
+
+    The read is unaffected either way: ``block_modality`` captures ``kv_start = cache.start``
+    before the forward, so the block attends to the history prefix and its own write lands at
+    the end of it.
     """
     return denoise_fn(
         block_modality(
@@ -644,7 +668,7 @@ def denoise_block(
             sigma,
             token_slices=[grid.token_span(*span)],
             cache=cache,
-            kv_write=False,
+            kv_write=kv_write,
             clean_prefix_tokens=clean_prefix_tokens,
         )
     )
@@ -678,7 +702,60 @@ def refresh_block(
     cache.evict()
 
 
-def rollout(
+def euler_to(
+    sample: torch.Tensor, denoised: torch.Tensor, sigma_from: float, sigma_to: float
+) -> torch.Tensor:
+    """One deterministic Euler step along the straight flow path, ``sigma_from -> sigma_to``.
+
+    The local convention here is ``x_s = (1-s)*y + s*eps``, so the velocity implied by a
+    denoised estimate is ``v = (x - y_hat)/sigma`` (``ltx_core.utils.to_velocity``) and the
+    step is ``x + (s - t)*v``. Written out, ``x_s = y_hat + (s/t)*(x_t - y_hat)``: the state
+    is pulled toward the estimate by exactly the fraction of noise removed.
+
+    This is the sampler a multi-step causal teacher needs and the one-step student does not.
+    It lives here rather than in a caller because ``rollout`` is the one place a block's state
+    advances, and a second stepper somewhere else is exactly the "two producers of one thing"
+    shape this package's bugs have taken.
+
+    No noise is injected. A stochastic sampler would make the teacher's endpoint depend on
+    random choices the student cannot reproduce from its own inputs, which is the coupling the
+    plan's endpoint-distillation construction is built to preserve.
+    """
+    if not 0.0 <= sigma_to < sigma_from:
+        raise ValueError(f"expected 0 <= sigma_to < sigma_from, got {sigma_to} and {sigma_from}")
+    if sigma_from == 0.0:
+        raise ValueError("sigma_from must be nonzero: there is no step to take from a clean state")
+    ratio = sigma_to / sigma_from
+    return denoised + ratio * (sample - denoised)
+
+
+def validate_schedule(
+    schedule: list[float] | tuple[float, ...], model_sigmas: list[float] | None = None
+) -> tuple[float, ...]:
+    """A per-block denoising schedule: strictly decreasing, ending at exactly 0.
+
+    ``[sigma0, 0.0]`` is the one-step student -- one denoise call, its output taken as the
+    endpoint -- so the multi-step path is the same code with a longer list, not a branch.
+    ``model_sigmas``, when given, is the selected checkpoint's own grid: every nonzero level
+    must sit on it, because an off-grid level is an untrained operating point for a distilled
+    model and produces a plausible video with no standing.
+    """
+    values = tuple(float(v) for v in schedule)
+    if len(values) < 2:
+        raise ValueError("a schedule needs at least a start sigma and a terminal 0.0")
+    if values[-1] != 0.0:
+        raise ValueError(f"a schedule must end at exactly 0.0, got {values[-1]}")
+    if any(b >= a for a, b in pairwise(values)):
+        raise ValueError(f"a schedule must be strictly decreasing, got {values}")
+    if model_sigmas is not None:
+        grid = [float(v) for v in model_sigmas]
+        for level in values[:-1]:
+            if not any(abs(level - g) < 1e-9 for g in grid):
+                raise ValueError(f"schedule level {level} is not on the model grid {grid}")
+    return values
+
+
+def rollout(  # noqa: PLR0912, PLR0913 -- one AR block loop; every branch is a documented arm (schedule, forcing, kv_source)
     denoise_fn,  # noqa: ANN001
     grid: ClipGrid,
     geometry: CausalGeometry,
@@ -690,7 +767,11 @@ def rollout(
     seed: int = 42,
     blocks: list[tuple[int, int]] | None = None,
     teacher_forcing: bool = False,
+    teacher_tokens: torch.Tensor | None = None,
     first_frame_condition: torch.Tensor | None = None,
+    block_epsilons: list[torch.Tensor] | None = None,
+    schedule: list[float] | tuple[float, ...] | None = None,
+    kv_source: str = "refresh",
 ) -> tuple[torch.Tensor, int]:
     """Roll the whole clip forward one block at a time; return ``(tokens, forwards)``.
 
@@ -700,34 +781,88 @@ def rollout(
     change to this function rather than a divergence between two of them.
 
     ``teacher_forcing`` mirrors ``train.py``'s ``train_chain`` ablation of the same name:
-    ``refresh`` is fed ``guide_tokens`` -- the clean source the block was noised from -- instead
-    of the model's own denoised output. Off by default, which is the self-forced regime a real
+    ``refresh`` is fed the **ground-truth target** for the completed block instead of the
+    model's own denoised output. Off by default, which is the self-forced regime a real
     deployment has to use (there is no ground truth at inference). A checkpoint trained with
     ``--teacher-forcing`` never saw its own denoising errors accumulate in the cache, so probing
     it self-forced evaluates an input distribution training never produced; pass
     ``teacher_forcing=True`` to roll it out the way it was trained.
+
+    ``teacher_tokens`` is that target, and it is **required** whenever ``teacher_forcing`` is
+    set. It used to be implicit: the refresh read ``guide_tokens``, the tensor the block was
+    noised from. Those are the same tensor for D0 only, where the noising source *is* ``z_y``;
+    for D1 that silently teacher-forced on the render guide, which is not the target, and
+    evaluated a regime training never ran without raising ([G2]). D0 callers pass their
+    ``z_y`` for both arguments and say so; D1 callers pass ``z_g`` as the guide and ``z_y``
+    here. Making it explicit is the whole fix -- an implicit default would restore the bug
+    for the next caller.
     """
     if first_frame_condition is None:
         raise ValueError("first_frame_condition is required: supply the clean latent-frame-0 tokens as c0")
     if first_frame_condition.shape[1] != grid.tokens_per_latent_frame:
         raise ValueError("first_frame_condition must contain exactly one latent frame of tokens")
+    if teacher_forcing and teacher_tokens is None:
+        raise ValueError(
+            "teacher_forcing=True requires an explicit teacher_tokens target (z_y). Refreshing "
+            "from guide_tokens is correct for D0 only, where the noising source is already the "
+            "target; for D1 it teacher-forces on the render. Pass z_y explicitly."
+        )
+    if teacher_tokens is not None and teacher_tokens.shape != guide_tokens.shape:
+        raise ValueError(
+            f"teacher_tokens {tuple(teacher_tokens.shape)} must match guide_tokens {tuple(guide_tokens.shape)}"
+        )
+    if kv_source not in ("refresh", "denoise"):
+        raise ValueError(f"kv_source must be 'refresh' or 'denoise', got {kv_source!r}")
+    if teacher_forcing and kv_source == "denoise":
+        raise ValueError(
+            "teacher_forcing=True is incompatible with kv_source='denoise': teacher forcing "
+            "means caching the ground-truth target, which the denoising pass never saw"
+        )
+    levels = (float(sigma), 0.0) if schedule is None else validate_schedule(schedule)
+    if levels[0] != float(sigma):
+        raise ValueError(f"schedule must start at sigma={sigma}, got {levels[0]}")
     cache.reset()
     plan = geometry.plan(grid.latent_frames) if blocks is None else blocks
+    if block_epsilons is not None and len(block_epsilons) != len(plan):
+        raise ValueError(f"received {len(block_epsilons)} block epsilons for a {len(plan)}-block rollout")
     out = torch.zeros_like(guide_tokens)
     forwards = 0
     for index, span in enumerate(plan):
         lo, hi = grid.token_span(*span)
         c0 = first_frame_condition if span[0] == 0 else None
-        noisy = with_clean_prefix(noise_block(guide_tokens[:, lo:hi], sigma, seed + index), c0)
-        denoised = denoise_block(
-            denoise_fn, grid, cache, noisy, context, sigma, span,
-            clean_prefix_tokens=0 if c0 is None else c0.shape[1],
+        clean_source = guide_tokens[:, lo:hi]
+        noisy_source = (
+            noise_block(clean_source, sigma, seed + index)
+            if block_epsilons is None
+            else mix_block_noise(clean_source, block_epsilons[index], sigma)
         )
-        denoised = with_clean_prefix(denoised, c0)
+        state = with_clean_prefix(noisy_source, c0)
+        prefix = 0 if c0 is None else c0.shape[1]
+        denoised = state
+        last = len(levels) - 2  # index of the final denoising call
+        for step, (level, next_level) in enumerate(pairwise(levels)):
+            denoised = with_clean_prefix(
+                denoise_block(
+                    denoise_fn, grid, cache, state, context, level, span,
+                    clean_prefix_tokens=prefix,
+                    kv_write=(kv_source == "denoise" and step == last),
+                ),
+                c0,
+            )
+            forwards += 1
+            if next_level > 0.0:
+                # Advance only the generated tokens; c0 is clean at every level by contract and
+                # stepping it would re-noise the one input the product guarantees.
+                state = with_clean_prefix(euler_to(state, denoised, level, next_level), c0)
         out[:, lo:hi] = denoised
-        clean = guide_tokens[:, lo:hi] if teacher_forcing else denoised
-        refresh_block(denoise_fn, grid, cache, clean, context, span)
-        forwards += 2
+        if kv_source == "refresh":
+            clean = teacher_tokens[:, lo:hi] if teacher_forcing else denoised
+            refresh_block(denoise_fn, grid, cache, clean, context, span)
+            forwards += 1
+        else:
+            # The write happened inside the last denoise call; only eviction is still owed,
+            # and refresh_block is the only other place that calls it.
+            cache.evict()
     return out, forwards
 
 

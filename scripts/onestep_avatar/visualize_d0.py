@@ -1,13 +1,17 @@
-"""Decode the D0 GT-renoise sanity probe at the distilled refiner's three levels.
+"""Decode a configurable renoise probe of either arm at distilled schedule levels.
 
-D0 is deliberately not deployable: it noises the capture latent itself.  That makes it a
-useful capacity control, but only if its review artifact uses that exact state rather than a
-guide-noised approximation.
+``--guide-mode d0`` (the default) noises the capture latent itself.  D0 is deliberately not
+deployable, which makes it a useful capacity control, but only if its review artifact uses
+that exact state rather than a guide-noised approximation.  ``--guide-mode d1`` noises the
+ARGAvatar guide ``z_g`` instead -- the deployable arm, whose checkpoints had no probe at all
+until this flag existed (``doc/known_gaps.md`` G4).  The arms differ in that **one tensor**;
+the target reference and the clean first-frame condition ``c0`` are the capture in both, and
+both go through the same ``causal_core.rollout``.
 
-It runs **one rollout per probe sigma** -- three in total -- and writes one portable MP4 per
-level:
+It runs one rollout per ``--probe-sigmas`` value and writes portable MP4s and raw latents.
+Checkpoint mode writes one comparison per level:
 
-    ground-truth capture | frozen base | D0 LoRA checkpoint
+    ground-truth capture | frozen base | LoRA checkpoint
 
 Each rollout covers the **whole clip** by default (``--span clip``): block 0 through the last
 full block, the same sequence an inference run produces, so error accumulated across the AR
@@ -17,11 +21,21 @@ restores the old behaviour of covering only the subset chain's blocks.
 The fixed clip and seeds make a sequence of checkpoints directly comparable.  It is an
 offline checkpoint probe, so no VAE is resident while FSDP training is stepping.
 
+For a matched frozen-base experiment, ``--base-only`` removes the checkpoint requirement.
+The probe materializes one epsilon tensor per block, reuses it for every sigma arm, and saves
+the tensors beside the outputs. ``--block-latent-frames`` and ``--context-latent-frames``
+make the rollout geometry explicit.
+
 **Revised 2026-09-14 (SS4.4).** The probe rolls out through ``causal_core`` -- block-causal
 attention plus the clean-latent K/V cache -- exactly as training and deployment do, so the
-probe cannot silently diverge from either. What keeps it D0-specific is only that it noises
-``z_y`` rather than ``z_g``; it still does not call :mod:`onestep_core`, which refuses D0 to
-protect deployment from accepting an arm that needs the unavailable capture latent.
+probe cannot silently diverge from either. It does not call :mod:`onestep_core`, which refuses
+D0 on purpose to protect deployment from accepting an arm that needs the unavailable capture
+latent -- and this tool has to be able to run both arms through one code path.
+
+**Revised 2026-09-21.** ``--guide-mode d1`` added, closing the "the arm that deploys cannot be
+inspected" half of G4.  Teacher forcing now passes the capture target explicitly rather than
+letting the refresh read whatever the block was noised from, which was right for D0 and silently
+wrong for D1 (G2).
 
 Run from ``LTX-2`` in the ``ltx`` environment::
 
@@ -58,6 +72,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -65,6 +80,7 @@ import torch
 from PIL import Image, ImageDraw, ImageFont
 
 from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
+from ltx_trainer.video_utils import save_video
 from scripts.onestep_avatar import causal_core, dataset
 from scripts.onestep_avatar.train import Chain, ChainStore, clip_grid_for
 from scripts.prune.core.session import DTYPE, add_model_args, open_session
@@ -116,7 +132,26 @@ def _plan_for(chain: Chain, geometry, grid, span: str) -> list[tuple[int, int]]:
     return [plan[index] for index in chain.blocks]
 
 
-def _run_d0_chain(  # noqa: ANN202
+def _source_master(chain: Chain, guide_mode: str) -> torch.Tensor:
+    """The master latent the block input is noised from -- the one line the arm changes.
+
+    D0 noises the capture itself (``z_y``), so the correspondence gap is zero and the probe
+    measures capacity. D1 noises the render (``z_g``) -- the deployable arm's actual input.
+    The *target* is ``z_y`` in both, and so is ``c0``: the guide's frame 0 is a render
+    composite, never the supplied real first frame (``experiments.md`` §1).
+    """
+    if guide_mode == "d0":
+        return chain.z_y
+    if chain.z_g is None:
+        raise SystemExit(
+            "--guide-mode d1 needs the guide master z_g, which this chain did not load. "
+            "Freeze the subset with --require-guide and check the guide latents are current "
+            f"under GUIDE_COMPOSITING_VERSION={dataset.GUIDE_COMPOSITING_VERSION}."
+        )
+    return chain.z_g
+
+
+def _run_chain(  # noqa: ANN202, PLR0913
     transformer,  # noqa: ANN001
     context,  # noqa: ANN001
     chain: Chain,
@@ -126,33 +161,61 @@ def _run_d0_chain(  # noqa: ANN202
     device,  # noqa: ANN001
     latent_channels: int,
     seed: int,
+    guide_mode: str = "d0",
     teacher_forcing: bool = False,
+    schedule: list[float] | None = None,
+    kv_source: str = "refresh",
     span: str = "clip",
+    block_epsilons: list[torch.Tensor] | None = None,
 ):
-    """Exact D0 AR rollout: ``z_y`` is both the noising source and the target reference.
+    """One AR rollout of the selected arm; ``z_y`` is the target reference in both.
 
     Goes through ``causal_core.rollout``, the one implementation training and deployment both
     use, so the cached context, the block-causal attention, the pinned frame-0 sink and the
-    RoPE positions are the deployed ones by construction. The single D0-specific line is that
-    the guide handed to the rollout is the capture's own master latent -- which for D0 is also
-    the ground truth, so ``teacher_forcing`` needs no separate target tensor: refreshing from
-    ``guide_tokens`` already means refreshing from ``z_y``.
+    RoPE positions are the deployed ones by construction. The arm changes exactly one tensor,
+    the noising source (``_source_master``); ``c0`` and the teacher target stay ``z_y``.
+
+    Teacher forcing passes ``z_y`` explicitly as ``teacher_tokens`` rather than relying on the
+    old implicit refresh-from-the-noising-source, which was right for D0 and wrong for D1
+    (``known_gaps.md`` G2).
 
     It does not call :mod:`onestep_core`: that module refuses D0 on purpose, to protect
-    deployment from accepting an arm that needs the unavailable capture latent.
+    deployment from accepting an arm that needs the unavailable capture latent, and this probe
+    has to run both arms through one code path.
     """
     grid = clip_grid_for(chain, geometry, device=device, latent_channels=latent_channels)
     base = causal_core.base_model(transformer)
     cache = causal_core.BlockCache.allocate(
-        grid, geometry, num_layers=len(base.transformer_blocks), inner_dim=base.inner_dim,
-        device=device, dtype=DTYPE,
+        grid,
+        geometry,
+        num_layers=len(base.transformer_blocks),
+        inner_dim=base.inner_dim,
+        device=device,
+        dtype=DTYPE,
     )
     z_y = grid.patchify(chain.z_y.unsqueeze(0).to(device=device, dtype=DTYPE))
+    source = (
+        z_y
+        if guide_mode == "d0"
+        else grid.patchify(_source_master(chain, guide_mode).unsqueeze(0).to(device=device, dtype=DTYPE))
+    )
     plan = _plan_for(chain, geometry, grid, span)
     tokens, _ = causal_core.rollout(
         causal_core.denoised_from_x0_model(transformer),
-        grid, geometry, cache, z_y, context, sigma, seed=seed, blocks=plan, teacher_forcing=teacher_forcing,
+        grid,
+        geometry,
+        cache,
+        source,
+        context,
+        sigma,
+        seed=seed,
+        blocks=plan,
+        teacher_forcing=teacher_forcing,
+        teacher_tokens=z_y if teacher_forcing else None,
+        schedule=schedule,
+        kv_source=kv_source,
         first_frame_condition=z_y[:, : grid.tokens_per_latent_frame],
+        block_epsilons=block_epsilons,
     )
     covered = plan[-1][1]
     return grid, grid.unpatchify_block(tokens[:, : covered * grid.tokens_per_latent_frame], covered)
@@ -217,6 +280,23 @@ def _stamp(pixels: torch.Tensor, labels: list[str]) -> torch.Tensor:
     return out
 
 
+def _as_fchw(pixels: torch.Tensor) -> torch.Tensor:
+    """Normalize decoder output to the frame-major layout used by stamping and video I/O."""
+    if pixels.ndim == 5:  # B,C,T,H,W
+        return pixels.permute(0, 2, 1, 3, 4).flatten(0, 1)
+    if pixels.ndim == 4 and pixels.shape[-1] in (1, 3, 4):  # F,H,W,C
+        return pixels.permute(0, 3, 1, 2)
+    if pixels.ndim != 4:
+        raise ValueError(f"expected decoded BCTHW, FCHW or FHWC video, got {tuple(pixels.shape)}")
+    return pixels
+
+
+def _decode(session, latent: torch.Tensor, decoder, seed: int) -> torch.Tensor:  # noqa: ANN001
+    """Decode an arm with an identical fresh diffusion-decoder noise stream."""
+    generator = torch.Generator(device=session.device).manual_seed(seed)
+    return _as_fchw(decode_latent(session, latent.to(session.device), decoder, generator=generator))
+
+
 def _checkpoint_name(path: Path) -> str:
     return path.stem.replace("lora_weights_", "")
 
@@ -235,14 +315,54 @@ def _resolve_checkpoints(args: argparse.Namespace) -> list[Path]:
         checkpoints.extend(
             args.run / "checkpoints" / f"lora_weights_step_{step:05d}.safetensors" for step in args.steps
         )
-    if not checkpoints:
+    if args.base_only and checkpoints:
+        raise SystemExit("--base-only cannot be combined with --checkpoint or --steps")
+    if not checkpoints and not args.base_only:
         raise SystemExit("no checkpoints requested: pass --checkpoint and/or --run with --steps")
     return checkpoints
 
 
-def generate_checkpoint(args: argparse.Namespace, checkpoint: Path | None, chain: Chain) -> tuple[object, dict[float, list[torch.Tensor]]]:
+def _probe_sigmas(values: list[float], schedule: list[float]) -> tuple[float, ...]:
+    """Validate informative sigma arms against the selected distilled model schedule."""
+    if not values:
+        raise SystemExit("--probe-sigmas requires at least one value")
+    if len(set(values)) != len(values):
+        raise SystemExit("--probe-sigmas contains duplicate values")
+    for sigma in values:
+        if sigma <= 0:
+            raise SystemExit(f"probe sigma must be nonzero and positive, got {sigma}")
+        if not any(abs(sigma - scheduled) < 1e-9 for scheduled in schedule):
+            raise SystemExit(f"probe sigma {sigma} is not on model schedule {schedule}")
+    return tuple(values)
+
+
+def _block_epsilons(tokens: torch.Tensor, grid, plan: list[tuple[int, int]], seed: int) -> list[torch.Tensor]:  # noqa: ANN001
+    """Materialize the rollout's established seed+block-index noise stream once."""
+    return [
+        causal_core.epsilon_block(tokens[:, slice(*grid.token_span(*span))], seed + index)
+        for index, span in enumerate(plan)
+    ]
+
+
+def generate_checkpoint(args: argparse.Namespace, checkpoint: Path | None, chain: Chain):  # noqa: ANN201
+    ckpt_name = "frozen base" if checkpoint is None else checkpoint.name
+    print(f"--> Generating rollouts for {ckpt_name}...", flush=True)  # noqa: T201
     session = open_session(args, script="onestep_avatar.visualize_d0")
-    geometry = causal_core.deployed_geometry(session.model.scale_factors)
+    geometry = causal_core.deployed_geometry(
+        session.model.scale_factors,
+        block_latent_frames=args.block_latent_frames,
+        context_latent_frames=args.context_latent_frames,
+    )
+    sigmas = _probe_sigmas(args.probe_sigmas, session.model.sigmas)
+    if args.schedule is not None:
+        # Validated against the model's own grid here rather than inside the rollout, so an
+        # off-grid teacher arm fails before 42 GB of weights are loaded rather than after.
+        levels = causal_core.validate_schedule(args.schedule, list(session.model.sigmas))
+        if len(sigmas) != 1 or abs(sigmas[0] - levels[0]) > 1e-9:
+            raise SystemExit(
+                f"--schedule starts at {levels[0]} but --probe-sigmas is {list(sigmas)}; a "
+                "multi-step arm probes exactly the one operating point it starts from"
+            )
     loras = ()
     if checkpoint is not None:
         if not checkpoint.is_file():
@@ -252,33 +372,86 @@ def generate_checkpoint(args: argparse.Namespace, checkpoint: Path | None, chain
     # The VAE is held only after all four model outputs have been calculated, avoiding the
     # transformer+decoder coexistence that §7.4 explicitly excludes from the train loop.
     outputs: dict[float, torch.Tensor] = {}
+    grid = clip_grid_for(chain, geometry, device=session.device, latent_channels=session.model.caps.latent_channels)
+    source = grid.patchify(
+        _source_master(chain, args.guide_mode).unsqueeze(0).to(device=session.device, dtype=DTYPE)
+    )
+    plan = _plan_for(chain, geometry, grid, args.span)
+    # The epsilon stream depends only on the source's shape/dtype/device, which the two arms
+    # share -- but derive it from the arm's own source anyway, so a future shape divergence
+    # fails here rather than silently reusing the other arm's noise.
+    epsilons = _block_epsilons(source, grid, plan, args.seed)
+    started = time.perf_counter()
+    if session.device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(session.device)
     with session.transformer(loras=loras) as transformer:
-        for sigma in PROBE_SIGMAS:
-            _, latent = _run_d0_chain(
-                transformer, session.context, chain, geometry, sigma,
-                device=session.device, latent_channels=session.model.caps.latent_channels, seed=args.seed,
-                teacher_forcing=args.teacher_forcing, span=args.span,
+        for sigma in sigmas:
+            print(f"    rolling out sigma={sigma:.6f}...", flush=True)  # noqa: T201
+            _, latent = _run_chain(
+                transformer,
+                session.context,
+                chain,
+                geometry,
+                sigma,
+                device=session.device,
+                latent_channels=session.model.caps.latent_channels,
+                seed=args.seed,
+                guide_mode=args.guide_mode,
+                teacher_forcing=args.teacher_forcing,
+                schedule=args.schedule,
+                kv_source=args.kv_source,
+                span=args.span,
+                block_epsilons=epsilons,
             )
             outputs[sigma] = latent
 
     # CPU tensors keep this result cheap while the next checkpoint's transformer is loaded.
-    return session, {sigma: latent.cpu() for sigma, latent in outputs.items()}
+    timing = {
+        "transformer_wall_seconds": time.perf_counter() - started,
+        "peak_cuda_memory_bytes": torch.cuda.max_memory_allocated(session.device)
+        if session.device.type == "cuda"
+        else None,
+    }
+    return session, {sigma: latent.cpu() for sigma, latent in outputs.items()}, [eps.cpu() for eps in epsilons], timing
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--subset", type=Path, required=True)
     parser.add_argument(
-        "--corpus-root", type=Path, default=None,
+        "--corpus-root",
+        type=Path,
+        default=None,
         help="Defaults to the subset's own corpus_root, where the master latents live.",
     )
-    parser.add_argument("--checkpoint", type=Path, action="append", default=[], help="Explicit checkpoint path; repeat for multiple.")
     parser.add_argument(
-        "--run", type=Path, default=None,
+        "--checkpoint", type=Path, action="append", default=[], help="Explicit checkpoint path; repeat for multiple."
+    )
+    parser.add_argument(
+        "--base-only",
+        action="store_true",
+        help="Probe only the frozen base; no LoRA checkpoint is required.",
+    )
+    parser.add_argument(
+        "--probe-sigmas",
+        type=float,
+        nargs="+",
+        default=list(PROBE_SIGMAS),
+        help="Explicit nonzero sigma values from the selected model schedule.",
+    )
+    parser.add_argument("--block-latent-frames", type=int, default=causal_core.BLOCK_LATENT_FRAMES)
+    parser.add_argument("--context-latent-frames", type=int, default=causal_core.CONTEXT_LATENT_FRAMES)
+    parser.add_argument(
+        "--run",
+        type=Path,
+        default=None,
         help="Run directory whose checkpoints/lora_weights_step_NNNNN.safetensors --steps resolves against.",
     )
     parser.add_argument(
-        "--steps", type=int, nargs="+", default=[],
+        "--steps",
+        type=int,
+        nargs="+",
+        default=[],
         help="Step numbers to visualize, e.g. --steps 100 500 1000; resolved under --run. Combines with --checkpoint.",
     )
     parser.add_argument(
@@ -289,9 +462,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--split", choices=("train", "held_out"), default="train")
-    parser.add_argument("--chain-index", type=int, default=0, help="Index within --split; selects the clip (and, at --span chain, the blocks).")
     parser.add_argument(
-        "--span", choices=("clip", "chain"), default="clip",
+        "--chain-index",
+        type=int,
+        default=0,
+        help="Index within --split; selects the clip (and, at --span chain, the blocks).",
+    )
+    parser.add_argument(
+        "--span",
+        choices=("clip", "chain"),
+        default="clip",
         help=(
             "clip (default): roll the WHOLE clip from block 0, so each video is the full "
             "inference sequence and drift across it is visible. chain: cover only the subset "
@@ -299,7 +479,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--teacher-forcing", action="store_true",
+        "--kv-source",
+        choices=("refresh", "denoise"),
+        default="refresh",
+        help=(
+            "What fills the K/V cache. refresh (default): a second forward on the finished "
+            "block at timestep zero -- 2 forwards per block. denoise: cache what the denoising "
+            "forward already computed and skip the second forward -- 1 forward per block, half "
+            "the steady-state latency, at whatever quality cost the comparison shows. "
+            "Incompatible with --teacher-forcing, which is defined as caching the target."
+        ),
+    )
+    parser.add_argument(
+        "--schedule",
+        type=float,
+        nargs="+",
+        default=None,
+        help=(
+            "Denoising levels for the CURRENT block, strictly decreasing and ending at 0. "
+            "Default (omitted) is the one-step student: [probe sigma, 0]. Pass e.g. "
+            "--schedule 0.725 0.421875 0 for the two-step causal teacher arm -- the same "
+            "rollout, the same cached history, one more denoising forward per block. Every "
+            "nonzero level must be on the selected model's grid. Requires a single "
+            "--probe-sigmas value matching the schedule's first level."
+        ),
+    )
+    parser.add_argument(
+        "--guide-mode",
+        choices=("d0", "d1"),
+        default="d0",
+        help=(
+            "Which master the block input is noised from. d0 (default): the capture z_y -- the "
+            "capacity diagnostic, not deployable. d1: the ARGAvatar guide z_g -- the deployable "
+            "arm, and the one whose checkpoints could not be looked at before (known_gaps G4). "
+            "The target reference and c0 are the capture in both."
+        ),
+    )
+    parser.add_argument(
+        "--teacher-forcing",
+        action="store_true",
         help=(
             "Refresh the cache from the ground-truth capture instead of the model's own "
             "denoised output, matching train.py's --teacher-forcing ablation. Use this to probe "
@@ -308,31 +526,67 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--no-frame-labels", action="store_true",
+        "--no-frame-labels",
+        action="store_true",
         help="Do not burn the per-frame 'latent N · rollout step M' caption into the video.",
     )
     add_model_args(parser)
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915
     args = parse_args(argv)
     subset = json.loads(args.subset.read_text())
     corpus_root = args.corpus_root or Path(subset["corpus_root"])
     objective = args.objective or subset.get("objective", dataset.DEFAULT_OBJECTIVE)
-    # D0-only probe: _run_d0_chain never reads chain.z_g, so don't require the guide bundle to
-    # exist on disk (see ChainStore.with_guide).
+    # D0 never reads chain.z_g, so don't require the guide bundle to exist on disk for it
+    # (see ChainStore.with_guide); D1 is the arm that needs it, and says so.
     store = ChainStore(
-        subset, corpus_root, split=args.split, objective=objective, with_anchor=False, with_guide=False,
+        subset,
+        corpus_root,
+        split=args.split,
+        objective=objective,
+        with_anchor=False,
+        with_guide=args.guide_mode == "d1",
     )
     chain = _chain(store, args.chain_index, args.span)
     checkpoints = _resolve_checkpoints(args)
     args.output.mkdir(parents=True, exist_ok=True)
     sessions_and_outputs = [generate_checkpoint(args, checkpoint, chain) for checkpoint in (None, *checkpoints)]
-    session, base = sessions_and_outputs[0]
-    geometry = causal_core.deployed_geometry(session.model.scale_factors)
+    session, base, epsilons, base_timing = sessions_and_outputs[0]
+    for _candidate_session, _outputs, candidate_epsilons, _timing in sessions_and_outputs[1:]:
+        if len(candidate_epsilons) != len(epsilons) or any(
+            not torch.equal(expected, actual) for expected, actual in zip(epsilons, candidate_epsilons, strict=True)
+        ):
+            raise RuntimeError("checkpoint arms did not reuse the frozen base's block epsilon tensors")
+    geometry = causal_core.deployed_geometry(
+        session.model.scale_factors,
+        block_latent_frames=args.block_latent_frames,
+        context_latent_frames=args.context_latent_frames,
+    )
     grid = clip_grid_for(chain, geometry, device=session.device, latent_channels=session.model.caps.latent_channels)
     written = []
+    latent_paths = []
+    noise_path = args.output / "block_epsilons.pt"
+    torch.save(
+        {
+            "seed": args.seed,
+            "blocks": [list(span) for span in _plan_for(chain, geometry, grid, args.span)],
+            "epsilons": epsilons,
+        },
+        noise_path,
+    )
+    for sigma, latent in base.items():
+        path = args.output / f"frozen_base_sigma_{sigma:.6f}.pt"
+        torch.save(latent, path)
+        latent_paths.append(path)
+    for checkpoint, (_unused_session, outputs, _unused_epsilons, _timing) in zip(
+        checkpoints, sessions_and_outputs[1:], strict=True
+    ):
+        for sigma, latent in outputs.items():
+            path = args.output / f"{_checkpoint_name(checkpoint)}_sigma_{sigma:.6f}.pt"
+            torch.save(latent, path)
+            latent_paths.append(path)
     # Decode once, after all transformer passes.  Every checkpoint video therefore gives the
     # requested before/after comparison in one frame-aligned artifact: GT | frozen base | LoRA.
     # No stitching any more: a causal rollout writes one latent covering the whole chain, so
@@ -340,8 +594,22 @@ def main(argv: list[str] | None = None) -> int:
     plan = _plan_for(chain, geometry, grid, args.span)
     labels = [] if args.no_frame_labels else _frame_labels(plan, geometry.scale_factors.time)
     with session.decoder() as decoder:
-        target = decode_latent(session, _target_latent(chain, grid, geometry, session.device, args.span), decoder)
-        base_pixels = {sigma: decode_latent(session, latent.to(session.device), decoder) for sigma, latent in base.items()}
+        print("--> Decoding target latent...", flush=True)  # noqa: T201
+        target = _decode(session, _target_latent(chain, grid, geometry, session.device, args.span), decoder, args.seed)
+        print("--> Decoding base latents...", flush=True)  # noqa: T201
+        base_pixels = {sigma: _decode(session, latent, decoder, args.seed) for sigma, latent in base.items()}
+        capture_path = args.output / "capture.mp4"
+        save_video(target, capture_path, fps=chain.fps, video_format="FCHW")
+        written.append(capture_path)
+        for sigma, pixels in base_pixels.items():
+            path = args.output / f"frozen_base_sigma_{sigma:.6f}.mp4"
+            save_video(pixels, path, fps=chain.fps, video_format="FCHW")
+            written.append(path)
+        if args.base_only and len(base_pixels) >= 2:
+            first, second = list(base_pixels)[:2]
+            path = args.output / f"capture_sigma_{first:.6f}_vs_{second:.6f}.mp4"
+            t3_video(target, base_pixels[first], base_pixels[second], path, fps=chain.fps)
+            written.append(path)
         if labels:
             # Stamped on every panel, so a frame stays readable however the video is cropped
             # or which panel someone is looking at.
@@ -350,31 +618,78 @@ def main(argv: list[str] | None = None) -> int:
         # Skip the frozen-base entry of sessions_and_outputs here: its own video would be
         # GT | frozen base | frozen base, which is redundant with base_pixels already being
         # one of the three panels in every LoRA checkpoint's video below.
-        for checkpoint, (_unused_session, outputs) in zip(checkpoints, sessions_and_outputs[1:], strict=True):
+        for checkpoint, (_unused_session, outputs, _unused_epsilons, _timing) in zip(
+            checkpoints, sessions_and_outputs[1:], strict=True
+        ):
+            print(f"--> Decoding and writing videos for {_checkpoint_name(checkpoint)}...", flush=True)  # noqa: T201
             for sigma, latent in outputs.items():
-                candidate = decode_latent(session, latent.to(session.device), decoder)
+                candidate = _decode(session, latent, decoder, args.seed)
                 if labels:
                     candidate = _stamp(candidate, labels)
                 path = args.output / f"{_checkpoint_name(checkpoint)}_sigma_{sigma:.6f}.mp4"
                 t3_video(target, base_pixels[sigma], candidate, path, fps=chain.fps)
                 written.append(path)
-    (args.output / "manifest.json").write_text(json.dumps({
-        "kind": "d0_gt_renoise_probe",
-        "attention": "block_causal",
-        "source": chain.source,
-        "span": args.span,
-        "blocks": chain.blocks if args.span == "chain" else "whole_clip",
-        "geometry": geometry.as_dict(),
-        "fps": chain.fps,
-        "seed": args.seed,
-        "sigmas": list(PROBE_SIGMAS),
-        "teacher_forcing": args.teacher_forcing,
-        "layout": "ground_truth_capture | frozen_base_generated | checkpoint_generated",
-        "frame_labels": not args.no_frame_labels,
-        "blocks_rolled_out": [list(span) for span in plan],
-        "latent_frames_covered": plan[-1][1] if plan else 0,
-        "videos": [str(path.name) for path in written],
-    }, indent=2) + "\n")
+                print(f"    Wrote {path}", flush=True)  # noqa: T201
+    timing = {"frozen_base": base_timing}
+    timing.update(
+        {
+            _checkpoint_name(checkpoint): checkpoint_timing
+            for checkpoint, (_session, _outputs, _epsilons, checkpoint_timing) in zip(
+                checkpoints, sessions_and_outputs[1:], strict=True
+            )
+        }
+    )
+    base_layout = (
+        "ground_truth_capture | first_sigma | second_sigma"
+        if len(base) >= 2
+        else "individual ground_truth_capture and frozen_base_generated"
+    )
+    (args.output / "manifest.json").write_text(
+        json.dumps(
+            {
+                "kind": "d0_gt_renoise_probe",
+                "attention": "block_causal",
+                "guide_mode": args.guide_mode,
+                "noising_source": "z_y (capture)" if args.guide_mode == "d0" else "z_g (ARGAvatar guide)",
+                "source": chain.source,
+                "span": args.span,
+                "blocks": chain.blocks if args.span == "chain" else "whole_clip",
+                "geometry": geometry.as_dict(),
+                "fps": chain.fps,
+                "seed": args.seed,
+                "objective": objective,
+                "sigmas": list(base),
+                "schedule": list(args.schedule) if args.schedule else None,
+                "kv_source": args.kv_source,
+                "denoise_forwards_per_block": (len(args.schedule) - 1) if args.schedule else 1,
+                "refresh_forwards_per_block": 1 if args.kv_source == "refresh" else 0,
+                "teacher_forcing": args.teacher_forcing,
+                "history_policy": "real_capture" if args.teacher_forcing else "generated_output",
+                "conditioning": {"first_frame": "clean capture latent frame 0", "text": "session prompt cache"},
+                "model": session.stamp(dtype=str(DTYPE)),
+                "noise": {
+                    "path": noise_path.name,
+                    "scheme": "torch.Generator(seed + block_index)",
+                    "shared_across_sigmas": True,
+                },
+                "decode_noise": {
+                    "seed": args.seed,
+                    "fresh_identical_generator_per_arm": True,
+                },
+                "timing": timing,
+                "layout": "ground_truth_capture | frozen_base_generated | checkpoint_generated"
+                if checkpoints
+                else base_layout,
+                "frame_labels": not args.no_frame_labels,
+                "blocks_rolled_out": [list(span) for span in plan],
+                "latent_frames_covered": plan[-1][1] if plan else 0,
+                "videos": [str(path.name) for path in written],
+                "latents": [str(path.name) for path in latent_paths],
+            },
+            indent=2,
+        )
+        + "\n"
+    )
     for path in written:
         print(path)  # noqa: T201
     return 0

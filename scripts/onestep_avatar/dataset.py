@@ -229,6 +229,14 @@ class ClipRef:
     def pose3d_path(self, view_idx: int) -> Path:
         return self.view_dir(view_idx) / "pose3d.npy"
 
+    def refined_pose3d_path(self) -> Path:
+        """Clip-level multiview pose refinement, shared by every camera view.
+
+        It contains only the body parameters which the multiview solve refines; the
+        camera-dependent entries remain in each view's ``pose3d.npy``.
+        """
+        return self.dir / "refined_pose3d.npy"
+
 
 def list_clips(root: Path = DEFAULT_CORPUS_ROOT, *, done_only: bool = True) -> list[ClipRef]:
     """Every clip under ``root``, across every ``Part_*`` directory, sorted for determinism."""

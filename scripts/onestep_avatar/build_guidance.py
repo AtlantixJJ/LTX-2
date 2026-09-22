@@ -70,7 +70,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from scripts.onestep_avatar import dataset, mask_video, geometry, motion, qa
+from scripts.onestep_avatar import dataset, geometry, hashing, mask_video, motion, qa
 from scripts.onestep_avatar.dataset import ClipRef
 
 DEFAULT_ARGAVATAR_ROOT = Path("/home/jianjinx/data2/ARG-Avatar")
@@ -310,7 +310,8 @@ def padded_fraction(box_xyxy: geometry.XYXY, frame_width: float, frame_height: f
 
 
 def _render_is_complete(
-    output: Path, metadata_path: Path, expected_frames: int, out_size: int, objective: str
+    output: Path, metadata_path: Path, expected_frames: int, out_size: int, objective: str,
+    motion_sha256: str | None = None,
 ) -> bool:
     """Per-view resumability: a render counts as built only if its sidecar and its video
     agree on frame count and geometry, so a killed ffmpeg never looks finished."""
@@ -343,8 +344,25 @@ def _render_is_complete(
         # retired double-alpha formula -- unlike ``objective`` there is no legacy value to
         # grandfather in, because every render on disk before the fix used the wrong contract.
         and record.get("compositing_version") == dataset.GUIDE_COMPOSITING_VERSION
+        # The guide's geometry is unchanged when the body trajectory is refined, so the
+        # pose input must be part of currency or an old render would be reused silently.
+        and (motion_sha256 is None or record.get("motion_sha256") == motion_sha256)
         and (frames, width, height) == (expected_frames, out_size, out_size)
     )
+
+
+def motion_input_sha256(clip: ClipRef, driving_view: int, use_refined_pose: bool) -> str:
+    """Content identity of every pose record that contributes to a guide render."""
+    view_digest = hashing.sha256(clip.pose3d_path(driving_view))
+    if not use_refined_pose:
+        return view_digest
+    refined_path = clip.refined_pose3d_path()
+    if not refined_path.is_file():
+        raise FileNotFoundError(
+            f"{refined_path} does not exist; pass --per-view-pose only to reproduce the "
+            "unrefined per-view trajectory"
+        )
+    return f"{view_digest}:{hashing.sha256(refined_path)}"
 
 
 def write_overlay(
@@ -382,9 +400,21 @@ class PairResult:
 def render_pair(
     clip: ClipRef, driving_view: int, box_record: BoxOfRecord, avatar, pipeline, out_size: int,
     pad_factor: float, force: bool, objective: str = dataset.DEFAULT_OBJECTIVE,
+    use_refined_pose: bool = True,
 ) -> PairResult:
-    pose3d = np.load(clip.pose3d_path(driving_view), allow_pickle=True).item()
+    pose_path = clip.pose3d_path(driving_view)
+    pose3d = np.load(pose_path, allow_pickle=True).item()
     bbox = np.load(clip.bbox_path(driving_view), allow_pickle=True).item()
+    refined_valid = None
+    if use_refined_pose:
+        refined_path = clip.refined_pose3d_path()
+        refinement = np.load(refined_path, allow_pickle=True).item()
+        pose3d = motion.repair_view_camera_gaps(pose3d, bbox)
+        pose3d = motion.merge_multiview_refinement(
+            pose3d, refinement
+        )
+        refined_valid = np.asarray(refinement["valid"], dtype=bool)
+    motion_sha256 = motion_input_sha256(clip, driving_view, use_refined_pose)
     box = box_record.xyxy  # the manifest's, never recomputed here
     fps = clip.fps()
     expected_frames = clip.n_frames()
@@ -393,7 +423,9 @@ def render_pair(
     output = view_dir / dataset.render_name(objective)
     metadata_path = view_dir / dataset.render_metadata_name(objective)
 
-    if not force and _render_is_complete(output, metadata_path, expected_frames, out_size, objective):
+    if not force and _render_is_complete(
+        output, metadata_path, expected_frames, out_size, objective, motion_sha256
+    ):
         record = json.loads(metadata_path.read_text())
         iou = {p: record[f"iou_p{p}"] for p in IOU_PERCENTILES}
         return PairResult(
@@ -403,7 +435,9 @@ def render_pair(
 
     # -- S1: motion file (SS3.1 conversions) -------------------------------------------------
     view_meta = clip.view_meta(driving_view)
-    sam3db = motion.build_motion(pose3d, bbox, frame_height=view_meta["height"])
+    sam3db = motion.build_motion(
+        pose3d, bbox, frame_height=view_meta["height"], valid=refined_valid
+    )
 
     with tempfile.TemporaryDirectory(prefix=f"{clip.name}_view{driving_view:02d}_") as tmp:
         tmp_dir = Path(tmp)
@@ -487,6 +521,8 @@ def render_pair(
         # _render_is_complete alongside objective, so a render built under a retired
         # compositing formula is rebuilt rather than silently trained against.
         "compositing_version": dataset.GUIDE_COMPOSITING_VERSION,
+        "motion_source": "clip_refined_multiview" if use_refined_pose else "per_view",
+        "motion_sha256": motion_sha256,
         "fps": fps,
         "n_frames": len(ious),
         "padded_fraction": padded_fraction(box, view_meta["width"], view_meta["height"]),
@@ -584,7 +620,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out-size", type=int, default=geometry.OUT_SIZE)
     p.add_argument("--pad-factor", type=float, default=geometry.PADDING_FACTOR)
     p.add_argument("--limit", type=int, default=0, help="stop after this many (clip, view) pairs; 0 = no limit")
-    p.add_argument("--visualize", action="store_true", help="also build qa/overlay_view<D>.mp4 (capture cropped from rgb.mp4 on the fly)")
+    p.add_argument(
+        "--visualize",
+        action="store_true",
+        help="also build the objective-specific capture/render overlay in qa/",
+    )
+    p.add_argument(
+        "--per-view-pose", action="store_true",
+        help="use the legacy per-view pose3d.npy instead of the required clip-level refined_pose3d.npy",
+    )
     p.add_argument("--force", action="store_true", help="rebuild pairs whose guide render already exists")
     p.add_argument(
         "--objective",
@@ -641,12 +685,17 @@ def main() -> None:
 
     def is_done(clip: ClipRef, d: int) -> bool:
         view_dir = clip.view_dir(d)
+        try:
+            motion_sha256 = motion_input_sha256(clip, d, not args.per_view_pose)
+        except FileNotFoundError:
+            return False
         return _render_is_complete(
             view_dir / dataset.render_name(args.objective),
             view_dir / dataset.render_metadata_name(args.objective),
             clip.n_frames(),
             args.out_size,
             args.objective,
+            motion_sha256,
         )
 
     def is_encoded(clip: ClipRef, d: int) -> bool:
@@ -728,6 +777,7 @@ def main() -> None:
                         result = render_pair(
                             clip, d, box_record, avatar, pipeline, args.out_size, args.pad_factor,
                             args.force, args.objective,
+                            use_refined_pose=not args.per_view_pose,
                         )
                         iou_str = " ".join(f"p{p}={v:.3f}" for p, v in sorted(result.iou.items()))
                         clipped = " CLIPPED-SUBJECT" if box_record.clipped_subject else ""
@@ -736,7 +786,10 @@ def main() -> None:
                             f"pad={box_record.effective_pad_factor:.3f}{clipped}) -> {result.render_path}"
                         )
                         if args.visualize:
-                            overlay_path = clip.dir / "qa" / f"overlay_view{d:02d}.mp4"
+                            # QA is objective-specific just like the guide: a white guide's
+                            # review overlay must not overwrite the existing bg review.
+                            suffix = "" if args.objective == dataset.DEFAULT_OBJECTIVE else f"_{args.objective}"
+                            overlay_path = clip.dir / "qa" / f"overlay_view{d:02d}{suffix}.mp4"
                             write_overlay(
                                 Path(result.render_path), clip, d, box_record.xyxy, overlay_path,
                                 args.out_size, result.fps,

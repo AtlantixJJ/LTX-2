@@ -5,7 +5,9 @@
 > [experiments.md](experiments.md); the places it does not meet the contract in
 > [known_gaps.md](known_gaps.md) — notably
 > [G2](known_gaps.md#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target)
-> (`rollout(teacher_forcing=True)` refreshes from the guide, not the target).
+> (`rollout(teacher_forcing=True)` used to refresh from the guide rather than the target;
+> fixed 2026-09-21 -- it now takes an explicit `teacher_tokens` target and refuses to run
+> teacher-forced without one).
 
 ## Objective
 
@@ -77,7 +79,7 @@ number this project quotes.
 not `K`.
 
 **`rollout`'s `teacher_forcing` flag mirrors `train_chain`'s ablation of the same name.**
-Refresh is fed `guide_tokens` (the clean source the block was noised from) instead of the
+Refresh is fed the explicit `teacher_tokens` target (`z_y`) instead of the
 block's own denoised output. Off by default — the self-forced regime a real deployment has to
 use, since there is no ground truth at inference. `visualize_d0.py` exposes it as
 `--teacher-forcing` so a checkpoint trained with `train.py --teacher-forcing` can be probed
@@ -108,6 +110,39 @@ A caller that allocates **once** for many clips must therefore pass
 `BlockCache.allocate(capacity_latent_frames=…)` with the LONGEST clip it will see — sizing
 from whichever clip came first makes the buffer depend on the shuffle, and a longer clip then
 overflows. `BlockCache.fits(latent_frames)` is the question to ask before the forward.
+
+## Per-block denoising schedule (added 2026-09-21)
+
+`rollout(schedule=…)` denoises the current block over several levels instead of one.
+`None` — the default — means `[sigma, 0.0]` and is **bit-identical** to the previous one-step
+behaviour; `[.725, .421875, 0]` is the two-step causal teacher arm the September 21 study's E1
+gate compares against it.
+
+| | |
+|---|---|
+| `euler_to(sample, denoised, t, s)` | the one stepper: `y_hat + (s/t)(x_t − y_hat)`, deterministic, no injected noise |
+| `validate_schedule(levels, model_sigmas)` | strictly decreasing, ends at exactly `0.0`, every nonzero level on the checkpoint's own grid |
+
+Three things this is **not**:
+
+- **Not a second rollout.** The history, cache, mask, positions, `c0` handling and refresh are
+  the existing ones; only the current block's state advances between levels. A teacher that
+  could see later blocks would be a *joint* teacher, a different construction, and must be
+  labelled as one.
+- **Not free, and not counted as one step.** Each extra level is one more **denoising** forward
+  per block. The refresh forward is unchanged, so a two-step schedule is 3 forwards per block
+  against the one-step arm's 2. "One step" in this package has always meant one denoising call
+  per emitted block and has never counted the refresh; report the two numbers separately.
+- **Not stochastic.** `euler_to` injects no noise, deliberately. A sampler that did would make
+  the teacher's endpoint depend on random choices the student cannot reproduce from its own
+  inputs — which is exactly the coupling an endpoint-distillation target has to preserve.
+
+`c0` is re-pinned on the intermediate state, not only on the block's input and output. The
+intermediate state comes from the stepper rather than the noiser, so without that the second
+denoising call would receive a partially re-noised copy of the product's one guaranteed real
+input — and nothing downstream would show it, because the output is overwritten with `c0` on
+the way out. `tests/test_causal_core.py::test_schedule_never_renoises_the_supplied_first_frame`
+spies on every forward's first latent frame for that reason.
 
 ## Invariants
 

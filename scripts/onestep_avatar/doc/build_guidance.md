@@ -14,8 +14,8 @@ It **consumes** `precompute.py --process_gt_latent`'s crop box and never re-deri
 flowchart TD
   MAN[("capture_latent_manifest.json")]
   BOX["resolve_box"]
-  POSE[("pose3d.npy")]
-  MOT["motion.build_motion"]
+  POSE[("pose3d.npy + refined_pose3d.npy")]
+  MOT["motion.merge_multiview_refinement → build_motion"]
   MOTPTH[("motion.pth")]
   RECON["reconstruct_avatar<br/>views 00 · 02 · 04, frame-0 crops"]
   RENDER["pipeline.render_motion_window<br/>box, 1024²"]
@@ -76,9 +76,11 @@ accepted only under the retired v1 contract; the next step in the September 18 p
 reviewed real bg/white pair under v2, then a rebuild of the affected guides (capture bundles
 are unaffected — only the guide's own compositing changed).
 
-**Failures are per-pair exclusions, never batch-fatal.** A pose-tracking gap or a
-reconstruction failure loses that pair (or that clip's pairs), is collected, and is reported
-at the end. A review batch over many actors must not die on one bad clip.
+**Failures are per-pair exclusions, never batch-fatal.** A gap in the multiview body trajectory
+or a reconstruction failure loses that pair (or that clip's pairs), is collected, and is
+reported at the end. A view-local detector gap alone does not: the refined path holds its
+nearest finite camera/cache row in memory while retaining the per-frame multiview body pose and
+the manifest crop. A review batch over many actors must not die on one bad clip.
 
 ## Invariants
 
@@ -119,7 +121,7 @@ a GPU-day for nothing.
   frame-count disagreement is a corpus defect, and raising makes it this pair's exclusion.
 - The composite overwrites the render PNG **in place** — the composited frame *is* the guide,
   not a second artifact. Anything that re-reads those PNGs after this loop sees composites.
-- `--visualize` writes `qa/overlay_view<D>.mp4` by cropping `rgb.mp4` on the fly; no
+- `--visualize` writes `qa/overlay_view<D>[_white].mp4` by cropping `rgb.mp4` on the fly; no
   persisted `capture.mp4` is needed or produced.
 
 ## Tests

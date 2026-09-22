@@ -11,9 +11,9 @@ Status vocabulary: **open** (no fix), **in progress** (a fix is partially landed
 | | Gap | Severity | Status |
 |---|---|---|---|
 | [G1](#g1--the-supplied-first-frame-is-not-a-model-condition) | The supplied first frame is not a model condition | blocks the product contract | **verified** |
-| [G2](#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target) | Generic teacher-forced rollout refreshes from the guide, not the target | wrong outside D0 | **open** |
+| [G2](#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target) | Generic teacher-forced rollout refreshes from the guide, not the target | wrong outside D0 | **verified** |
 | [G3](#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced) | Checkpoint/artifact conditions are recorded but not enforced | silent off-condition evaluation | **open** |
-| [G4](#g4--no-d1-probe) | No D1 probe | D1 checkpoints cannot be looked at | **open** |
+| [G4](#g4--no-d1-probe) | No D1 probe | D1 checkpoints cannot be looked at | **in progress** |
 | [G5](#g5--training-and-deployment-disagree-about-valid-sigma) | Training and deployment disagree about valid sigma (σ) | a trained adapter its own API refuses | **open** |
 | [G6](#g6--guide-artifacts-on-disk-predate-the-compositing-fix) | 18 of 19 guide renders predate the v2 compositing fix | D1 data readiness | **in progress** |
 
@@ -94,20 +94,29 @@ teacher-forced step-0/step-1 debug train and matching D0 probe.
 **Required.** Teacher forcing means the cache refresh is fed the **ground-truth target** for the
 completed block.
 
-**Current.** `train.train_chain` does that — `clean = target_tokens[lo:hi]`. But
-`causal_core.rollout(teacher_forcing=True)` refreshes from `guide_tokens`, the tensor the block
-was noised from. Those are the same tensor **for D0 only**, where the source *is* `z_y`. For D1
-the generic rollout teacher-forces on the render guide, which is not the target.
+**Current.** `train.train_chain` does that — `clean = target_tokens[lo:hi]` — and
+`causal_core.rollout` now does too: it takes `teacher_tokens` and refreshes from it.
+
+**What was wrong (until 2026-09-21).** `rollout(teacher_forcing=True)` refreshed from
+`guide_tokens`, the tensor the block was noised from. Those are the same tensor **for D0 only**,
+where the source *is* `z_y`. For D1 the generic rollout teacher-forced on the render guide, which
+is not the target.
 
 **Impact.** `visualize_d0.py --teacher-forcing` and any other caller of the generic rollout
-evaluates a regime training never ran, without raising. It is silent, and it looks like the
-training ablation.
+evaluated a regime training never ran, without raising. It was silent, and it looked like the
+training ablation. No D1 result was ever produced through that path — no D1 run has been
+trained — so nothing on disk needs relabelling.
 
 **Acceptance.** Pass an explicit teacher target through the rollout, or restrict
 `teacher_forcing=True` to D0 and refuse it otherwise; assert that a D1 teacher-forced refresh
 receives `z_y` and not `z_g`.
 
-**Status.** Open. Tracked as a Stage C bullet of the September 18 audit.
+**Status.** **Verified 2026-09-21.** `rollout` takes `teacher_tokens` and raises when
+`teacher_forcing=True` is passed without it — deliberately *required* rather than defaulted, so
+the next caller cannot reintroduce the bug by omission. `visualize_d0.py` passes the capture
+master. `tests/test_causal_core.py::test_teacher_forcing_refreshes_from_the_target_not_the_guide`
+pins all three behaviours on a case where `z_g != z_y`, including that the result no longer
+matches a refresh from the guide.
 
 ---
 
@@ -118,10 +127,12 @@ explicit, recorded override.
 
 **Current.** `train.checkpoint_metadata` stamps σ₀/σ levels, `K`, block and cache geometry,
 objective, guide mode, anchor weight, teacher forcing, LoRA rank/alpha/target, subset hash and
-`loss=full_frame_x0_mse`. Nothing reads it back: `visualize_d0.py` always uses the default
-deployed geometry and all three `PROBE_SIGMAS`, and takes `--teacher-forcing` from the command
-line rather than the adapter. `onestep_core.rollout` checks only that σ₀ is on the model grid and
-the schedule is one step. `refine_task.assert_one_step_conditions` has no production call site.
+`loss=full_frame_x0_mse`. Nothing reads it back: `visualize_d0.py` now accepts explicit geometry
+and sigma overrides and records them, but still takes those values and `--teacher-forcing` from
+the command line rather than the adapter. It checks probe sigmas against the selected base
+model's schedule, not the adapter metadata. `onestep_core.rollout` checks only that σ₀ is on the
+model grid and the schedule is one step. `refine_task.assert_one_step_conditions` has no
+production call site.
 Related enforcement gaps: LoRA `alpha/rank` scaling is stamped but not folded into the exported
 factors nor applied at fusion (safe only at the default `alpha == rank`); `dataset.load_master`
 checks schema, not encode contract/objective/crop provenance; the stamped subset hash covers
@@ -152,7 +163,13 @@ off-condition research allowed only through an explicit recorded override.
 **Acceptance.** A D1-capable probe sharing the evaluation code with an explicit source choice —
 not a second rollout implementation — plus a refusal path in the D0 tool until it exists.
 
-**Status.** Open (audit F3, Stage C).
+**Status.** **In progress (2026-09-21).** `visualize_d0.py --guide-mode d1` exists and shares
+one `causal_core.rollout` with D0, changing only the noising source (`_source_master`); the
+refusal path is moot for the arm itself. Two things keep this open rather than verified: the D1
+path has **not yet been exercised against a real D1 adapter on a GPU** (none exists — no D1 run
+has been trained), and the tool still reads arm/σ/geometry from the command line rather than
+from adapter metadata, which is [G3](#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced)'s
+half of the same problem: nothing stops probing a D0 adapter with `--guide-mode d1`.
 
 ---
 

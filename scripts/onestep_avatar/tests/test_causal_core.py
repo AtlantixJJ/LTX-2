@@ -131,12 +131,14 @@ def test_cached_rollout_matches_block_causal_full_sequence() -> None:
         torch.testing.assert_close(cached_outputs[index], reference[:, prefix_end:], rtol=2e-4, atol=2e-4)
 
 
-def test_teacher_forcing_flag_refreshes_the_cache_from_the_guide() -> None:
+def test_teacher_forcing_flag_refreshes_the_cache_from_the_teacher_target() -> None:
     """``rollout(teacher_forcing=True)`` is `train_chain`'s ablation, not a no-op flag.
 
-    Refresh is fed ``guide_tokens`` instead of the block's own denoised output -- the one
-    tensor `train.py`'s ``clean = target_tokens[...] if teacher_forcing else z0.detach()``
-    also switches on. Checked against a reference built the same way, and against the
+    Refresh is fed the explicit ``teacher_tokens`` target instead of the block's own denoised
+    output -- the one tensor `train.py`'s ``clean = target_tokens[...] if teacher_forcing else
+    z0.detach()`` also switches on. Here the source and the target are the same tensor, which
+    is the D0 case; ``test_teacher_forcing_refreshes_from_the_target_not_the_guide`` covers the
+    D1 case where they differ. Checked against a reference built the same way, and against the
     self-forced default to confirm the two regimes actually diverge.
     """
     torch.manual_seed(2)
@@ -160,6 +162,7 @@ def test_teacher_forcing_flag_refreshes_the_cache_from_the_guide() -> None:
     tf_cache = _cache()
     tf_tokens, _ = causal_core.rollout(
         denoise_fn, grid, geometry, tf_cache, guide, context, SIGMA0, seed=7, blocks=plan[:2], teacher_forcing=True,
+        teacher_tokens=guide,  # D0: the noising source IS the target
         first_frame_condition=guide[:, : grid.tokens_per_latent_frame],
     )
 
@@ -180,6 +183,71 @@ def test_teacher_forcing_flag_refreshes_the_cache_from_the_guide() -> None:
         first_frame_condition=guide[:, : grid.tokens_per_latent_frame],
     )
     assert not torch.allclose(tf_tokens[:, lo1:hi1], sf_tokens[:, lo1:hi1], rtol=2e-4, atol=2e-4)
+
+
+def test_teacher_forcing_refreshes_from_the_target_not_the_guide() -> None:
+    """G2: a D1 teacher-forced refresh must receive ``z_y``, never the render ``z_g``.
+
+    Before the fix the refresh read ``guide_tokens`` unconditionally. That is the target for
+    D0 only; under D1 it teacher-forced on the render and looked exactly like the training
+    ablation while being a regime training never ran. Two assertions pin the fix: the rollout
+    now matches a reference whose refresh is fed ``z_y``, and it *differs* from one fed
+    ``z_g`` -- so a silent regression to the old behaviour cannot pass. The third pins that
+    the argument is required rather than defaulted, which is what stops the next caller from
+    reintroducing it.
+    """
+    torch.manual_seed(3)
+    model = _model()
+    geometry = _geometry()
+    grid = _grid(geometry)
+    context = _context()
+    denoise_fn = causal_core.denoised_from_velocity_model(model)
+    plan = geometry.plan(grid.latent_frames)
+    assert len(plan) >= 2
+
+    tokens = grid.latent_frames * grid.tokens_per_latent_frame
+    z_g = torch.randn(1, tokens, CHANNELS)
+    z_y = torch.randn(1, tokens, CHANNELS)  # a genuinely different target, as D1 has
+
+    def _cache() -> BlockCache:
+        return BlockCache.allocate(
+            grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
+            device=DEVICE, dtype=torch.float32,
+        )
+
+    d1_tokens, _ = causal_core.rollout(
+        denoise_fn, grid, geometry, _cache(), z_g, context, SIGMA0, seed=11, blocks=plan[:2],
+        teacher_forcing=True, teacher_tokens=z_y,
+        first_frame_condition=z_y[:, : grid.tokens_per_latent_frame],
+    )
+
+    lo0, hi0 = grid.token_span(*plan[0])
+    lo1, hi1 = grid.token_span(*plan[1])
+
+    def _reference(refresh_with: torch.Tensor) -> torch.Tensor:
+        cache = _cache()
+        cache.reset()
+        c0 = z_y[:, : grid.tokens_per_latent_frame]
+        noisy0 = causal_core.with_clean_prefix(causal_core.noise_block(z_g[:, lo0:hi0], SIGMA0, 11), c0)
+        causal_core.denoise_block(
+            denoise_fn, grid, cache, noisy0, context, SIGMA0, plan[0],
+            clean_prefix_tokens=c0.shape[1],
+        )
+        causal_core.refresh_block(denoise_fn, grid, cache, refresh_with[:, lo0:hi0], context, plan[0])
+        noisy1 = causal_core.noise_block(z_g[:, lo1:hi1], SIGMA0, 12)
+        return causal_core.denoise_block(denoise_fn, grid, cache, noisy1, context, SIGMA0, plan[1])
+
+    torch.testing.assert_close(d1_tokens[:, lo1:hi1], _reference(z_y), rtol=2e-4, atol=2e-4)
+    assert not torch.allclose(d1_tokens[:, lo1:hi1], _reference(z_g), rtol=2e-4, atol=2e-4), (
+        "the D1 teacher-forced rollout still matches a refresh from the guide"
+    )
+
+    with pytest.raises(ValueError, match="requires an explicit teacher_tokens"):
+        causal_core.rollout(
+            denoise_fn, grid, geometry, _cache(), z_g, context, SIGMA0, seed=11, blocks=plan[:2],
+            teacher_forcing=True,
+            first_frame_condition=z_y[:, : grid.tokens_per_latent_frame],
+        )
 
 
 def test_noise_block_matches_the_gaussian_noiser() -> None:
@@ -531,3 +599,203 @@ def test_base_model_agrees_with_both_retired_walks() -> None:
 def test_base_model_raises_when_no_known_wrapper_shape_matches() -> None:
     with pytest.raises(TypeError, match="cannot find the LTXModel"):
         causal_core.base_model(torch.nn.Module())
+
+
+def test_euler_to_is_the_straight_path_step_and_refuses_bad_intervals() -> None:
+    """``x_s = y_hat + (s/t)(x_t - y_hat)``, and a step that is not a descent raises.
+
+    Two properties matter more than the formula. Stepping all the way to sigma 0 must land
+    exactly on the denoised estimate -- that is what makes ``[sigma, 0]`` identical to the
+    one-step student rather than merely close to it. And an exact-endpoint input must be a
+    fixed point: if the estimate already IS the state, no step moves it, so a multi-step
+    schedule cannot drift a correct answer.
+    """
+    x = torch.randn(1, 6, CHANNELS)
+    y = torch.randn(1, 6, CHANNELS)
+
+    torch.testing.assert_close(causal_core.euler_to(x, y, 0.8, 0.0), y)
+    torch.testing.assert_close(causal_core.euler_to(y, y, 0.8, 0.4), y)
+    torch.testing.assert_close(causal_core.euler_to(x, y, 0.8, 0.4), y + 0.5 * (x - y))
+
+    for bad in ((0.4, 0.8), (0.4, 0.4), (0.0, 0.0)):
+        with pytest.raises(ValueError, match="sigma"):
+            causal_core.euler_to(x, y, *bad)
+
+
+def test_validate_schedule_pins_the_shape_and_the_grid() -> None:
+    """A schedule is strictly decreasing, ends at 0, and (when checked) stays on the grid.
+
+    The grid check is the one that earns its keep: an off-grid level is an untrained operating
+    point for a distilled checkpoint, and it produces a perfectly plausible video with no
+    standing. Silently accepting it is how a teacher arm becomes unusable evidence.
+    """
+    grid = [1.0, 0.909375, 0.725, 0.421875, 0.0]
+    assert causal_core.validate_schedule([0.725, 0.0], grid) == (0.725, 0.0)
+    assert causal_core.validate_schedule([0.725, 0.421875, 0.0], grid) == (0.725, 0.421875, 0.0)
+
+    with pytest.raises(ValueError, match=r"end at exactly 0\.0"):
+        causal_core.validate_schedule([0.725, 0.1], grid)
+    with pytest.raises(ValueError, match="strictly decreasing"):
+        causal_core.validate_schedule([0.421875, 0.725, 0.0], grid)
+    with pytest.raises(ValueError, match="at least"):
+        causal_core.validate_schedule([0.0], grid)
+    with pytest.raises(ValueError, match="not on the model grid"):
+        causal_core.validate_schedule([0.5, 0.0], grid)
+
+
+def test_two_step_schedule_costs_one_extra_forward_and_changes_the_output() -> None:
+    """The multi-step arm is the same rollout with a longer list -- not a second code path.
+
+    Asserted three ways. The default and the explicit ``[sigma, 0]`` must be **bit-identical**,
+    or every existing one-step result silently moved. The two-step arm must differ, or the
+    extra call bought nothing. And the forward count must rise by exactly one per block: the
+    refresh is not a denoising call and has never been counted as one, so a schedule that
+    quietly doubled it would make every latency number in this package wrong.
+    """
+    torch.manual_seed(5)
+    model = _model()
+    geometry = _geometry()
+    grid = _grid(geometry)
+    context = _context()
+    denoise_fn = causal_core.denoised_from_velocity_model(model)
+    plan = geometry.plan(grid.latent_frames)[:2]
+    tokens = grid.latent_frames * grid.tokens_per_latent_frame
+    guide = torch.randn(1, tokens, CHANNELS)
+    c0 = guide[:, : grid.tokens_per_latent_frame]
+
+    def _cache() -> BlockCache:
+        return BlockCache.allocate(
+            grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
+            device=DEVICE, dtype=torch.float32,
+        )
+
+    def _run(schedule):  # noqa: ANN001, ANN202
+        return causal_core.rollout(
+            denoise_fn, grid, geometry, _cache(), guide, context, SIGMA0, seed=3,
+            blocks=plan, first_frame_condition=c0, schedule=schedule,
+        )
+
+    one_default, fwd_default = _run(None)
+    one_explicit, fwd_explicit = _run([SIGMA0, 0.0])
+    two, fwd_two = _run([SIGMA0, SIGMA0 / 2, 0.0])
+
+    torch.testing.assert_close(one_default, one_explicit, rtol=0, atol=0)
+    assert fwd_default == fwd_explicit == 2 * len(plan)
+    assert fwd_two == 3 * len(plan), "a two-step schedule is 2 denoise + 1 refresh per block"
+    lo, hi = grid.token_span(*plan[-1])
+    assert not torch.allclose(one_default[:, lo:hi], two[:, lo:hi], rtol=2e-4, atol=2e-4)
+
+
+def test_schedule_never_renoises_the_supplied_first_frame() -> None:
+    """c0 stays clean at every intermediate level, not just at the block's input and output.
+
+    The intermediate state is the one place a multi-step schedule could quietly re-noise frame
+    0: it is produced by the stepper, not by the noiser, so the clean-prefix rule has to be
+    reapplied there. If it were not, block 0's second denoising call would receive a partially
+    noised version of the product's one guaranteed real input, and nothing downstream would
+    show it -- the output is overwritten with c0 again on the way out.
+    """
+    torch.manual_seed(6)
+    model = _model()
+    geometry = _geometry()
+    grid = _grid(geometry)
+    context = _context()
+    plan = geometry.plan(grid.latent_frames)[:1]
+    tokens = grid.latent_frames * grid.tokens_per_latent_frame
+    guide = torch.randn(1, tokens, CHANNELS)
+    c0 = guide[:, : grid.tokens_per_latent_frame]
+
+    seen: list[torch.Tensor] = []
+
+    def spy(modality):  # noqa: ANN001, ANN202
+        seen.append(modality.latent[:, : grid.tokens_per_latent_frame].clone())
+        return causal_core.denoised_from_velocity_model(model)(modality)
+
+    causal_core.rollout(
+        spy, grid, geometry,
+        BlockCache.allocate(grid, geometry, num_layers=len(model.transformer_blocks),
+                            inner_dim=model.inner_dim, device=DEVICE, dtype=torch.float32),
+        guide, context, SIGMA0, seed=4, blocks=plan, first_frame_condition=c0,
+        schedule=[SIGMA0, SIGMA0 / 2, 0.0],
+    )
+    assert len(seen) == 3, "two denoising calls plus the refresh"
+    for index, first_frame in enumerate(seen):
+        torch.testing.assert_close(first_frame, c0, rtol=0, atol=0, msg=f"call {index} re-noised c0")
+
+
+def test_kv_source_denoise_halves_the_forwards_and_changes_the_history() -> None:
+    """``kv_source="denoise"`` drops the refresh forward; the cache then holds different K/V.
+
+    Three assertions, because two of them would pass on a broken implementation. The forward
+    count must fall to one per block -- that is the entire point, and a version that still ran
+    the refresh and merely ignored it would look identical in output. Block 0 must be
+    UNCHANGED, since nothing has been cached yet when it is denoised; a difference there would
+    mean the write is corrupting the read within the same forward. And a later block must
+    differ, or the cache is not actually being read.
+
+    The later block's difference is asserted as *nonzero*, not as larger than a tolerance. This
+    model has random weights scaled to 0.05, so it barely denoises and the two cache contents
+    are nearly the same tensor; the gap here is ~1e-4. How much the choice actually costs is a
+    question about the real checkpoint, and it is measured there
+    (``expr/.../E1/kv_source.py`` and the decoded rollout comparison) rather than asserted
+    against a toy.
+    """
+    torch.manual_seed(11)
+    model = _model()
+    geometry = _geometry()
+    grid = _grid(geometry)
+    context = _context()
+    denoise_fn = causal_core.denoised_from_velocity_model(model)
+    plan = geometry.plan(grid.latent_frames)[:3]
+    tokens = grid.latent_frames * grid.tokens_per_latent_frame
+    guide = torch.randn(1, tokens, CHANNELS)
+    c0 = guide[:, : grid.tokens_per_latent_frame]
+
+    def _cache() -> BlockCache:
+        return BlockCache.allocate(
+            grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
+            device=DEVICE, dtype=torch.float32,
+        )
+
+    def _run(kv_source: str):  # noqa: ANN202
+        return causal_core.rollout(
+            denoise_fn, grid, geometry, _cache(), guide, context, SIGMA0, seed=9,
+            blocks=plan, first_frame_condition=c0, kv_source=kv_source,
+        )
+
+    refreshed, fwd_refresh = _run("refresh")
+    reused, fwd_reuse = _run("denoise")
+
+    assert fwd_refresh == 2 * len(plan)
+    assert fwd_reuse == len(plan), "kv_source='denoise' must cost ONE forward per block"
+
+    lo0, hi0 = grid.token_span(*plan[0])
+    torch.testing.assert_close(reused[:, lo0:hi0], refreshed[:, lo0:hi0], rtol=0, atol=0)
+
+    lo2, hi2 = grid.token_span(*plan[2])
+    assert not torch.equal(reused[:, lo2:hi2], refreshed[:, lo2:hi2]), (
+        "a later block is bit-identical, so the cached K/V are not reaching it"
+    )
+
+
+def test_kv_source_denoise_refuses_teacher_forcing() -> None:
+    """The two flags contradict each other, so the combination raises instead of picking one.
+
+    Teacher forcing is *defined* as putting the ground-truth target into the cache. The
+    denoising pass never saw the target. Honouring one flag and silently dropping the other is
+    exactly the shape of G2, the defect this module already had once.
+    """
+    model = _model()
+    geometry = _geometry()
+    grid = _grid(geometry)
+    tokens = grid.latent_frames * grid.tokens_per_latent_frame
+    guide = torch.randn(1, tokens, CHANNELS)
+    with pytest.raises(ValueError, match="incompatible"):
+        causal_core.rollout(
+            causal_core.denoised_from_velocity_model(model), grid, geometry,
+            BlockCache.allocate(grid, geometry, num_layers=len(model.transformer_blocks),
+                                inner_dim=model.inner_dim, device=DEVICE, dtype=torch.float32),
+            guide, _context(), SIGMA0, blocks=geometry.plan(grid.latent_frames)[:2],
+            first_frame_condition=guide[:, : grid.tokens_per_latent_frame],
+            teacher_forcing=True, teacher_tokens=guide, kv_source="denoise",
+        )

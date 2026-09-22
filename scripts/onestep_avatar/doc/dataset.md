@@ -28,7 +28,8 @@ the one exception: it is generic file I/O, used by every producer in the package
 
 Three independent resolutions, no I/O beyond `meta.json`:
 
-- corpus root → `ClipRef` → `rgb_path` / `mask_path` / `bbox_path` / `pose3d_path` / `view_dir`,
+- corpus root → `ClipRef` → `rgb_path` / `mask_path` / `bbox_path` / `pose3d_path` /
+  `refined_pose3d_path` / `view_dir`,
   and `actor_id` / `fps` / `n_frames` / `is_done` from `meta.json`;
 - objective → `render_name` / `render_metadata_name` / `guide_bundle_name` /
   `capture_bundle_name`;
@@ -77,6 +78,9 @@ a renderer to learn a filename.
   unique across `Part_*`, and the conservative reading is what makes the held-out split
   leak-proof under either interpretation.
 - `fps()` is never defaulted — fps scales the temporal RoPE axis.
+- `refined_pose3d_path()` is clip-level because the multiview solve refines one shared body
+  trajectory; it is never substituted for the per-view pose record, which owns the calibrated
+  camera and image-cache fields.
 - `CaptureManifest` is the single source of the crop box. Recomputing one "the same way"
   is exactly the desync this file exists to prevent.
 - **`atomic_write`'s temp name is one convention** (`.<stem>.tmp.<pid><suffix>`) for every

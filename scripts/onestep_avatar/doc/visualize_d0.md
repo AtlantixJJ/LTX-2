@@ -1,20 +1,38 @@
 # `visualize_d0.py` — the decoded checkpoint probe
 
-> **D0 only** ([G4](known_gaps.md#g4--no-d1-probe)): a D1 counterpart is owed, and this tool
-> does not refuse a D1 adapter. It also validates none of the adapter's recorded conditions —
-> it always uses the default deployed geometry and all three `PROBE_SIGMAS`, so a probe at a σ
-> or a cache depth the adapter was not trained at is off-condition and unlabelled
+> **Both arms, since 2026-09-21.** `--guide-mode d1` noises the guide `z_g` instead of the
+> capture, which is what [G4](known_gaps.md#g4--no-d1-probe) was owed; the file keeps its
+> `visualize_d0` name. The tool still does not *validate* an adapter's recorded conditions
+> against the flags it is given, so a probe at a σ, arm or cache depth the adapter was not
+> trained at remains the operator's explicit off-condition experiment
 > ([G3](known_gaps.md#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced)).
-> `--teacher-forcing` here goes through the generic rollout, which refreshes from the guide
+> `--teacher-forcing` now passes the capture target through explicitly, so a D1 teacher-forced
+> probe refreshes from `z_y` and not from the render
 > ([G2](known_gaps.md#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target)).
 
 ## Objective
 
-Make a checkpoint's behaviour visible, as video, at the distilled refiner's operating points.
-**One rollout per σ in `PROBE_SIGMAS = (0.909375, 0.725, 0.421875)` — three in total** — and
-one MP4 each, laid out:
+Make a checkpoint or the frozen base's behaviour visible at explicitly selected distilled
+operating points. `--probe-sigmas` defaults to
+`PROBE_SIGMAS = (0.909375, 0.725, 0.421875)` and accepts any unique, nonzero values on the
+selected model's schedule. Checkpoint mode writes one comparison MP4 per σ, laid out:
 
 `ground-truth capture | frozen base | LoRA checkpoint`, side by side.
+
+**`--schedule` selects the denoising interval decomposition.** Omitted, the probe is the
+one-step student (`[probe sigma, 0]`). `--schedule 0.725 0.421875 0` is the two-step causal
+teacher arm: the same rollout, the same cached history, one more denoising forward per block.
+It takes exactly one `--probe-sigmas` value and refuses a schedule that starts anywhere else,
+because a multi-step arm probes the one operating point it starts from. The manifest records
+the schedule and the per-block denoise/refresh forward counts separately, so a latency claim
+cannot quietly fold the refresh into "one step".
+
+**The arm is one tensor.** `--guide-mode d0` (default) noises the capture master `z_y`;
+`--guide-mode d1` noises the guide master `z_g`. The decoded reference panel, the loss-side
+target and the clean first-frame condition `c0` are the capture in **both** — the guide's own
+frame 0 is a render composite, never the supplied real first frame. `d1` requires the guide
+bundle on disk and raises a pointed error naming `GUIDE_COMPOSITING_VERSION` when it is
+missing, rather than falling back to the capture.
 
 Each rollout covers the **whole clip** (`--span clip`, the default): block 0 through the last
 full block, the same sequence deployment produces, so drift accumulated across the AR rollout
@@ -30,16 +48,39 @@ A fixed clip and fixed seeds make a sequence of checkpoints directly comparable.
 `--steps` visualizes several checkpoints from one run in a single call (e.g. `--steps 100 500
 1000`), reusing one shared frozen-base decode and GT panel across all of them.
 
+`--base-only` removes the checkpoint requirement. With two or more sigma arms it also writes
+`capture | first sigma | second sigma`, plus an uncaptioned capture and uncaptioned individual
+base videos. `--block-latent-frames` and `--context-latent-frames` override the deployed
+defaults through `causal_core.CausalGeometry`; the manifest records the resolved geometry.
+
+The matched sigma-1 experiment from the 2026-09-20 plan is:
+
+```bash
+conda run -n ltx python -m scripts.onestep_avatar.visualize_d0 \
+  --subset ../expr/onestep_avatar/windows/t2r2.json \
+  --base-only --probe-sigmas 0.909375 1.0 \
+  --block-latent-frames 2 --context-latent-frames 15 \
+  --teacher-forcing --seed 42 --no-frame-labels \
+  --output ../expr/onestep_avatar/runs/base-block-flicker-sigma-20260920/teacher_forced \
+  --gpu-id 0
+```
+
+Omit `--teacher-forcing` for the corresponding generated-history arms.
+
 ## Data flow
 
-LoRA checkpoint + corpus masters → one `causal_core` rollout per probe σ, over the span
+LoRA checkpoint or frozen base + corpus masters → one `causal_core` rollout per probe σ, over the span
 `--span` selects → VAE decode (offline, no FSDP resident) →
 `runs/<name>/probes/step_<N>/<σ>.mp4`. Each rollout is `2·len(plan)` forwards: one denoise and
 one refresh per block, with no priming, since it starts at block 0.
 
 `_frame_labels` turns the plan into one caption per decoded pixel frame and `_stamp` burns it
 into all three panels just before `t3_video` writes them. The manifest records `span`,
-`blocks_rolled_out`, `latent_frames_covered` and `frame_labels` alongside the existing fields.
+`blocks_rolled_out`, `latent_frames_covered`, conditioning, model paths/fingerprint, timing,
+history policy, noise provenance and every output path. Generated latents and the explicit
+per-block epsilon tensors are saved as `.pt` artifacts before decoding.
+The diffusion VAE receives a fresh generator with the probe seed for every arm, so decoder
+noise is identical rather than becoming an unrecorded difference between sigma arms.
 
 ## Organization logic
 
@@ -67,6 +108,11 @@ It is an **offline** probe: no VAE is resident while FSDP training is stepping.
   objective's `z_y`, passed as `first_frame_condition`, exactly as
   [`core_algorithm.md` §3](core_algorithm.md#3-the-conditioning-contract) requires of every
   caller of the rollout.
+- **Every sigma arm uses the same epsilon tensors.** The probe creates the tensors once with
+  the established `seed + block_index` convention and passes them to `causal_core.rollout`.
+  `c0` is restored after mixing, so changing sigma cannot change the first-frame condition.
+- **Sigma values belong to the selected checkpoint's schedule.** Zero, duplicates and values
+  off the model schedule fail before the transformer is loaded.
 - **The caption must follow the VAE's frame mapping, not a ratio.** Latent frame 0 is one
   pixel frame and every later latent frame is `time_scale` of them, so pixel frame `p` is
   latent `0 if p == 0 else ceil(p / time_scale)`. A wrong caption is worse than none: it sends
@@ -83,6 +129,13 @@ It is an **offline** probe: no VAE is resident while FSDP training is stepping.
   self-forced regime deployment has to use; a run trained with `train.py --teacher-forcing`
   (check its `config.json`) never saw its own errors accumulate in the cache, so a self-forced
   probe of it evaluates an input distribution training never produced.
+
+## Outputs
+
+The output directory contains `manifest.json`, `block_epsilons.pt`, one raw latent and one
+uncaptioned MP4 for each frozen-base sigma arm, and `capture.mp4`. Base-only runs with two or
+more arms contain a three-panel sigma comparison. Checkpoint runs additionally contain the
+existing captioned `capture | base | LoRA` comparisons and raw checkpoint latents.
 
 ## Gotchas
 

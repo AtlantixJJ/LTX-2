@@ -18,7 +18,7 @@ from ltx_pipelines.utils.helpers import post_process_latent
 from scripts.prune.core.session import DTYPE, Session
 
 
-def _token_tools(session: Session, state, token_latent: torch.Tensor) -> VideoLatentTools:
+def _token_tools(session: Session, state, token_latent: torch.Tensor) -> VideoLatentTools:  # noqa: ANN001
     """Reconstruct the unpatchifier geometry from the serialized token positions.
 
     The fps literal passed below is inert: ``VideoLatentTools.unpatchify`` only
@@ -41,18 +41,29 @@ def _token_tools(session: Session, state, token_latent: torch.Tensor) -> VideoLa
     )
 
 
-def decode_latent(session: Session, latent: torch.Tensor, decoder) -> torch.Tensor:
+def decode_latent(
+    session: Session,
+    latent: torch.Tensor,
+    decoder,  # noqa: ANN001
+    *,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
     """A dense ``(B,C,F,H,W)`` latent -> ``[F,H,W,C]`` float pixels in ``[0,1]``.
 
     The phase1_gates rollout path.
     """
     decoded = torch.cat(
-        list(decoder.decode_video(latent.to(device=session.device, dtype=DTYPE), None, None)), dim=0
+        list(decoder.decode_video(latent.to(device=session.device, dtype=DTYPE), None, generator)), dim=0
     ).float()
     return decoded.clamp(0, 1).cpu()
 
 
-def decode_token_latent(session: Session, state, token_latent: torch.Tensor, decoder) -> torch.Tensor:
+def decode_token_latent(
+    session: Session,
+    state,  # noqa: ANN001
+    token_latent: torch.Tensor,
+    decoder,  # noqa: ANN001
+) -> torch.Tensor:
     """Token-space x0 -> ``[F,C,H,W]`` float pixels in ``[0,1]``, conditioning restored.
 
     head_ablation_eval's channel-first convention; ``decode_latent``'s is

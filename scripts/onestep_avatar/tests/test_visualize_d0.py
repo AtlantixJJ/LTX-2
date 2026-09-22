@@ -9,6 +9,7 @@ one is eight -- so an off-by-one here mislabels every frame after the first.
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from scripts.onestep_avatar import causal_core, visualize_d0
@@ -27,8 +28,15 @@ class _Grid:
 
 def _chain(blocks: list[int]) -> Chain:
     return Chain(
-        source="part/clip/view00", split="train", actor="a", seed_is_clip_start=True,
-        blocks=blocks, z_g=None, z_y=torch.zeros(1, 1, 1, 1), fps=30.0, z0_base=None,
+        source="part/clip/view00",
+        split="train",
+        actor="a",
+        seed_is_clip_start=True,
+        blocks=blocks,
+        z_g=None,
+        z_y=torch.zeros(1, 1, 1, 1),
+        fps=30.0,
+        z0_base=None,
     )
 
 
@@ -63,10 +71,10 @@ def test_frame_labels_follow_the_vae_s_own_frame_mapping() -> None:
     assert len(labels) == causal_core.pixel_frames_for(5, 8) == 33
     assert labels[0].startswith("latent 0")
     assert labels[1].startswith("latent 1")
-    assert labels[8].startswith("latent 1")   # last pixel frame of latent 1
-    assert labels[9].startswith("latent 2")   # first of latent 2
-    assert "rollout step 0" in labels[16]     # latent 2 is still block 0
-    assert "rollout step 1" in labels[17]     # latent 3 opens block 1
+    assert labels[8].startswith("latent 1")  # last pixel frame of latent 1
+    assert labels[9].startswith("latent 2")  # first of latent 2
+    assert "rollout step 0" in labels[16]  # latent 2 is still block 0
+    assert "rollout step 1" in labels[17]  # latent 3 opens block 1
 
 
 def test_frame_labels_cover_exactly_the_decoded_frames() -> None:
@@ -81,7 +89,65 @@ def test_stamp_writes_only_the_caption_band() -> None:
     stamped = visualize_d0._stamp(pixels, visualize_d0._frame_labels([(0, 3)], 8)[:3])
 
     assert stamped.shape == pixels.shape
-    assert not torch.equal(stamped[0], pixels[0])            # the band was drawn
+    assert not torch.equal(stamped[0], pixels[0])  # the band was drawn
     assert torch.allclose(stamped[:, :, 40:, :], pixels[:, :, 40:, :])  # the image below is untouched
     assert float(stamped.min()) >= 0.0
     assert float(stamped.max()) <= 1.0
+
+
+def test_probe_sigmas_are_explicit_unique_schedule_members() -> None:
+    schedule = [1.0, 0.909375, 0.725, 0.0]
+    assert visualize_d0._probe_sigmas([0.909375, 1.0], schedule) == (0.909375, 1.0)
+    with pytest.raises(SystemExit, match="duplicate"):
+        visualize_d0._probe_sigmas([1.0, 1.0], schedule)
+    with pytest.raises(SystemExit, match="nonzero"):
+        visualize_d0._probe_sigmas([0.0], schedule)
+    with pytest.raises(SystemExit, match="not on model schedule"):
+        visualize_d0._probe_sigmas([0.8], schedule)
+
+
+def test_explicit_block_epsilon_reuses_noise_across_sigma_mixtures() -> None:
+    clean = torch.arange(12, dtype=torch.float32).reshape(1, 3, 4)
+    epsilon = causal_core.epsilon_block(clean, 42)
+    low = causal_core.mix_block_noise(clean, epsilon, 0.25)
+    high = causal_core.mix_block_noise(clean, epsilon, 1.0)
+
+    assert torch.equal(high, epsilon)
+    assert torch.allclose(low, torch.lerp(clean, epsilon, 0.25))
+
+
+def test_decoder_output_is_normalized_to_frame_major_video() -> None:
+    bcthw = torch.zeros(1, 3, 5, 8, 9)
+    assert visualize_d0._as_fchw(bcthw).shape == (5, 3, 8, 9)
+    fhwc = torch.zeros(5, 8, 9, 3)
+    assert visualize_d0._as_fchw(fhwc).shape == (5, 3, 8, 9)
+
+
+def test_source_master_is_the_one_line_the_arm_changes() -> None:
+    """D0 noises the capture, D1 the guide -- and nothing else about the probe moves.
+
+    The point of ``_source_master`` is that the arm is a *tensor choice*, not a second rollout.
+    ``z_y`` stays the target reference and ``c0`` in both, so a test that only checked "d1 does
+    something different" would pass on an implementation that also swapped the first-frame
+    condition to the guide's composited frame 0 -- which is exactly the thing the conditioning
+    contract forbids.
+    """
+    chain = _chain([0, 1])
+    guide = torch.ones(1, 1, 1, 1)
+    d1_chain = Chain(**{**chain.__dict__, "z_g": guide})
+
+    assert visualize_d0._source_master(chain, "d0") is chain.z_y
+    assert visualize_d0._source_master(d1_chain, "d0") is d1_chain.z_y
+    assert visualize_d0._source_master(d1_chain, "d1") is guide
+
+
+def test_d1_without_a_guide_master_raises_rather_than_falling_back() -> None:
+    """A missing ``z_g`` must not silently degrade D1 into D0.
+
+    Falling back to the capture would produce a plausible video labelled as the deployable arm,
+    which is the failure this package keeps hitting: a wrong conclusion off a working artifact.
+    The error names ``GUIDE_COMPOSITING_VERSION`` because the usual cause is not "no file" but
+    "a stale v1 guide the freezer skipped" (G6).
+    """
+    with pytest.raises(SystemExit, match="GUIDE_COMPOSITING_VERSION"):
+        visualize_d0._source_master(_chain([0]), "d1")

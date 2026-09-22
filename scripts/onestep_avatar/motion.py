@@ -39,6 +39,34 @@ CACHE_KEYS = (
     "img_size", "ori_img_size", "affine_trans", "mask_score",
 )
 
+# The clip-level multiview solve deliberately owns only these camera-independent
+# parameters.  Camera and image-cache fields remain tied to the driving view.
+REFINED_KEYS = ("pred_pose_raw", "shape", "scale", "hand", "face", "valid")
+
+
+def merge_multiview_refinement(view_pose3d: dict, refinement: dict) -> dict:
+    """Overlay a clip's refined body trajectory onto one view's camera record.
+
+    ``refined_pose3d.npy`` cannot itself be rendered: it has no calibrated camera,
+    crop, or image-size fields.  Keep those fields from ``view_pose3d`` and replace
+    exactly the body parameters produced by the multiview fit.  Shape checks make a
+    partial or differently-timed solve fail before ARGAvatar renders a plausible but
+    wrong video.
+    """
+    merged = dict(view_pose3d)
+    for key in REFINED_KEYS:
+        if key not in refinement:
+            raise KeyError(f"refined_pose3d.npy is missing required key {key!r}")
+        if key not in view_pose3d:
+            raise KeyError(f"view pose3d.npy is missing required key {key!r}")
+        if np.asarray(refinement[key]).shape != np.asarray(view_pose3d[key]).shape:
+            raise ValueError(
+                f"refined_pose3d.npy[{key!r}] has shape {np.asarray(refinement[key]).shape}, "
+                f"but the driving view has {np.asarray(view_pose3d[key]).shape}"
+            )
+        merged[key] = refinement[key]
+    return merged
+
 
 def convert_frame(pose3d: dict, frame_idx: int) -> dict:
     """One ``pose3d.npy`` frame -> one ``sam3db`` entry. Pure, CPU-only, no gating."""
@@ -78,7 +106,32 @@ def valid_frame_mask(pose3d: dict, bbox: dict) -> np.ndarray:
     return valid
 
 
-def _fill_gaps(valid: np.ndarray, max_gap: int) -> np.ndarray:
+def repair_view_camera_gaps(view_pose3d: dict, bbox: dict) -> dict:
+    """Fill missing view-local camera/cache rows without changing valid source rows.
+
+    A multiview refinement supplies the body trajectory for every frame, but its companion
+    per-view MHR export can still be absent when that view's detector missed the subject.
+    Those misses make *all* camera/cache arrays NaN.  Copy the nearest valid view-local row
+    into only those holes; `merge_multiview_refinement` then restores the refined body values
+    at their original frame indices.  This is deliberately in-memory: raw corpus evidence is
+    never rewritten.
+    """
+    valid = np.asarray(bbox["valid"], dtype=bool)
+    valid &= ~np.isnan(bbox["xyxy"]).any(axis=1)
+    if not valid.any():
+        raise ValueError("no finite bbox rows available to repair view-local camera fields")
+    source_idx = _fill_gaps(valid, max_gap=None)
+    repaired = dict(view_pose3d)
+    for key, value in view_pose3d.items():
+        array = np.asarray(value)
+        if array.ndim and array.shape[0] == len(valid):
+            copied = array.copy()
+            copied[~valid] = array[source_idx[~valid]]
+            repaired[key] = copied
+    return repaired
+
+
+def _fill_gaps(valid: np.ndarray, max_gap: int | None) -> np.ndarray:
     """For each frame, the index of the nearest valid frame to source its pose from.
 
     Holding the nearest valid frame's pose across a short gap is a much smaller error than
@@ -95,7 +148,7 @@ def _fill_gaps(valid: np.ndarray, max_gap: int) -> np.ndarray:
         if frame_valid:
             if run_start is not None:
                 run_len = i - run_start
-                if run_len > max_gap:
+                if max_gap is not None and run_len > max_gap:
                     raise ValueError(
                         f"invalid-frame run of {run_len} frames at [{run_start}, {i}) exceeds "
                         f"max_gap={max_gap}"
@@ -110,16 +163,18 @@ def _fill_gaps(valid: np.ndarray, max_gap: int) -> np.ndarray:
     return source_idx
 
 
-def build_motion(pose3d: dict, bbox: dict, frame_height: int, max_gap: int = 3) -> dict:
+def build_motion(
+    pose3d: dict, bbox: dict, frame_height: int, max_gap: int = 3, valid: np.ndarray | None = None,
+) -> dict:
     """The full-clip ``sam3db`` dict, keyed ``f"frames/{i:06d}.png"`` (``load_driving_motion``
     consumes ``sorted(sam3db.keys())``, so zero-padding is load-bearing), one entry per frame.
     """
     assert_raw_size_matches_frame(pose3d, frame_height)
-    valid = valid_frame_mask(pose3d, bbox)
-    if not valid.any():
+    usable = valid_frame_mask(pose3d, bbox) if valid is None else np.asarray(valid, dtype=bool)
+    if not usable.any():
         raise ValueError("no valid frames in this clip/view -- nothing to build a motion file from")
-    source_idx = _fill_gaps(valid, max_gap)
+    source_idx = _fill_gaps(usable, max_gap)
     return {
         f"frames/{i:06d}.png": convert_frame(pose3d, int(source_idx[i]))
-        for i in range(len(valid))
+        for i in range(len(usable))
     }

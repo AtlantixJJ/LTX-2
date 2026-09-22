@@ -32,7 +32,7 @@ noised into the block input**.
 | Artifacts required | capture master only (`ltx_vae_latent[_white].pt`) | capture **and** guide masters; the guide must be current under `GUIDE_COMPOSITING_VERSION` |
 | Loss | unweighted full-frame latent MSE, block-averaged | identical |
 | CLI | `--guide-mode d0` | `--guide-mode d1` (the default) |
-| Probe | `visualize_d0.py` (D0-only) | **none** — [G4](known_gaps.md#g4--no-d1-probe) |
+| Probe | `visualize_d0.py --guide-mode d0` | `visualize_d0.py --guide-mode d1` (2026-09-21; [G4](known_gaps.md#g4--no-d1-probe) partly closed) |
 | Deployable | **no** — `onestep_core.guide_conditionings` refuses `d0`, because there is no `z_y` at inference | yes, and the only deployable arm |
 | Interpretation | the architecture's capacity ceiling at σ₀ when the correspondence gap is zero | whether a LoRA closes the measured render→capture gap |
 
@@ -115,7 +115,7 @@ to train whole clips (`windows.py --chain-length` covering the clip), which need
 |---|---|
 | D0, D1a; `bg`, `white`; teacher and self forcing | **implemented** and selectable from the CLI |
 | Clean supplied first frame `c0` in every block | **implemented** as `clean_c0_v1` |
-| D1 probe | **owed** ([G4](known_gaps.md#g4--no-d1-probe)) |
+| D1 probe | **implemented 2026-09-21** as `visualize_d0.py --guide-mode d1`; not yet run against a real D1 adapter ([G4](known_gaps.md#g4--no-d1-probe)) |
 | D1b, D1c | **deferred proposals** — no code, unresolved design contradiction |
 | `d2` extra reference tokens | **dropped** 2026-09-13; not expressible under causal attention |
 | Anchor loss (`--anchor-weight`) | **disabled** — only `0.0` is accepted; no `base_denoised.pt` producer exists and one frozen per-view tensor cannot represent the anchor across chains/σ/history |

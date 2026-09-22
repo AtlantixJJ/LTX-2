@@ -137,6 +137,16 @@ def test_render_is_complete_rejects_a_render_built_under_the_retired_compositing
     assert _complete(tmp_path, "bg", {"objective": "bg"}) is False  # no field at all
 
 
+def test_render_is_complete_rejects_a_render_from_a_different_motion_input(tmp_path: Path) -> None:
+    """A pose refinement changes the guide even when geometry and frame count do not."""
+    motion_sha256 = "a" * 64
+    assert _complete(tmp_path, "bg", {"objective": "bg", "motion_sha256": motion_sha256, **_V2})
+    output = tmp_path / dataset.render_name("bg")
+    metadata = tmp_path / dataset.render_metadata_name("bg")
+    assert _render_is_complete(output, metadata, 5, 32, "bg", motion_sha256) is True
+    assert _render_is_complete(output, metadata, 5, 32, "bg", "b" * 64) is False
+
+
 def test_a_legacy_npy_alpha_still_counts_as_complete(tmp_path: Path) -> None:
     """A render built before the MP4 format must not be rebuilt for the format alone --
     re-rendering 19 views to change a file extension would cost a GPU-day."""

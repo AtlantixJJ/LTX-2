@@ -213,7 +213,41 @@ conda run -n ltx python -m scripts.onestep_avatar.visualize_d0 \
   --subset <SUBSET> --run <OUT> --steps 0 1 --output <OUT>/probes/init --gpu-id <ID>
 ```
 
-The probe is **D0-only** ([G4](../doc/known_gaps.md#g4--no-d1-probe)) and does not validate the
-adapter's recorded conditions (G3): it always uses the default deployed geometry and all three
-`PROBE_SIGMAS`. Do not present its output as a D1 result, and label a probe at a σ the adapter was
-not trained at as off-condition.
+Matched frozen-base sigma comparison (historical geometry made explicit):
+
+```bash
+conda run -n ltx python -m scripts.onestep_avatar.visualize_d0 \
+  --subset ../expr/onestep_avatar/windows/t2r2.json \
+  --base-only --probe-sigmas 0.909375 1.0 \
+  --block-latent-frames 2 --context-latent-frames 15 \
+  --teacher-forcing --seed 42 --no-frame-labels \
+  --output ../expr/onestep_avatar/runs/base-block-flicker-sigma-20260920/teacher_forced \
+  --gpu-id 0
+```
+
+D1 probe, and the two-step causal teacher arm (both added 2026-09-21):
+
+```bash
+# D1: noise the ARGAvatar guide z_g instead of the capture. The reference panel and c0 stay the
+# capture in both arms -- the guide's frame 0 is a render composite, never the supplied frame.
+conda run -n ltx python -m scripts.onestep_avatar.visualize_d0 \
+  --subset <SUBSET> --guide-mode d1 --base-only --probe-sigmas 0.725 \
+  --block-latent-frames 2 --context-latent-frames 8 \
+  --split held_out --chain-index 0 --output <OUT> --gpu-id <ID>
+
+# The same, as a two-step causal teacher: one extra DENOISING forward per block (3 total per
+# block, counting the refresh), same cached history, no future blocks.
+#   ... --schedule 0.725 0.421875 0
+```
+
+`--schedule` takes exactly one `--probe-sigmas` value and refuses a schedule starting elsewhere;
+every nonzero level must be on the selected model's grid. The manifest records the schedule and
+the denoise/refresh forward counts separately, so a latency claim cannot fold the refresh into
+"one step".
+
+The probe covers **both arms** since 2026-09-21 ([G4](../doc/known_gaps.md#g4--no-d1-probe) is
+closed in code, open until a real D1 adapter exercises it), but it still does not validate the
+adapter's recorded conditions against the flags it is given (G3) — nothing stops probing a D0
+adapter with `--guide-mode d1`. Its defaults are the deployed geometry and three `PROBE_SIGMAS`;
+explicit geometry and sigma overrides are recorded but remain off-condition when they differ
+from adapter training.

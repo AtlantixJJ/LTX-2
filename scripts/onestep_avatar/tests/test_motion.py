@@ -145,5 +145,53 @@ class TestBuildMotion(unittest.TestCase):
             motion.build_motion(pose3d, bbox, frame_height=4096)
 
 
+class TestMergeMultiviewRefinement(unittest.TestCase):
+    def test_replaces_only_body_trajectory_and_keeps_view_camera(self):
+        view = _fake_pose3d(2)
+        refinement = {key: np.asarray(view[key]).copy() for key in motion.REFINED_KEYS}
+        refinement["pred_pose_raw"] += 7
+        refinement["valid"] = np.array([True, False])
+
+        merged = motion.merge_multiview_refinement(view, refinement)
+
+        np.testing.assert_array_equal(merged["pred_pose_raw"], refinement["pred_pose_raw"])
+        np.testing.assert_array_equal(merged["valid"], refinement["valid"])
+        assert merged["K_raw"] is view["K_raw"]
+        assert merged["cam_rot"] is view["cam_rot"]
+
+    def test_rejects_a_differently_timed_refinement(self):
+        view = _fake_pose3d(2)
+        refinement = {key: np.asarray(view[key]).copy() for key in motion.REFINED_KEYS}
+        refinement["shape"] = refinement["shape"][:1]
+
+        with self.assertRaisesRegex(ValueError, "shape"):
+            motion.merge_multiview_refinement(view, refinement)
+
+
+class TestRepairViewCameraGaps(unittest.TestCase):
+    def test_repairs_only_missing_rows_from_the_nearest_valid_view_row(self):
+        pose = _fake_pose3d(4)
+        pose["K_raw"][:, 0, 0] = [1, 2, np.nan, 4]
+        bbox = _fake_bbox(4, valid=np.array([True, True, False, True]), nan_at=(2,))
+
+        repaired = motion.repair_view_camera_gaps(pose, bbox)
+
+        np.testing.assert_array_equal(repaired["K_raw"][:, 0, 0], [1, 2, 2, 4])
+        np.testing.assert_array_equal(repaired["pred_pose_raw"][0], pose["pred_pose_raw"][0])
+
+    def test_multiview_validity_can_drive_motion_after_camera_repair(self):
+        pose = _fake_pose3d(4)
+        pose["K_raw"][2] = np.nan
+        bbox = _fake_bbox(4, valid=np.array([True, True, False, True]), nan_at=(2,))
+        repaired = motion.repair_view_camera_gaps(pose, bbox)
+
+        sam3db = motion.build_motion(
+            repaired, bbox, frame_height=4096, valid=np.ones(4, dtype=bool)
+        )
+
+        assert len(sam3db) == 4
+        assert torch.isfinite(sam3db["frames/000002.png"]["K_raw"]).all()
+
+
 if __name__ == "__main__":
     unittest.main()
