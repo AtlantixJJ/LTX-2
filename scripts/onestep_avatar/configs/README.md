@@ -40,6 +40,37 @@ each concurrent launch its own `--main_process_port`.
 
 ## 2. The four named recipes
 
+### Frozen-base D1 appearance-jump diagnostic
+
+Run these as separate fresh output directories on a free GPU, from `LTX-2`. Both schedule
+arms omit `--checkpoint`, so they use identical frozen weights. The probe saves raw D0/D1
+latents and a global frame-indexed epsilon tensor per view. Change only the listed flag for
+each paired control; keep seed, view, geometry and output objective fixed.
+
+```bash
+conda run -n ltx python -m scripts.onestep_avatar.visualize_d1 \
+  --view ../data/AnimatableHuman/DNARenderingVideo/Part_1/0008_01/views/view00_cam51 \
+  --objective white --sigmas 0.909375 --teacher-forcing --seed 42 --gpu-id 1 \
+  --output ../expr/onestep_avatar/d1_diagnostic/base_one_step
+
+conda run -n ltx python -m scripts.onestep_avatar.visualize_d1 \
+  --view ../data/AnimatableHuman/DNARenderingVideo/Part_1/0008_01/views/view00_cam51 \
+  --objective white --sigmas 0.909375 --teacher-forcing --trajectory-only \
+  --seed 42 --gpu-id 1 --output ../expr/onestep_avatar/d1_diagnostic/base_three_step
+```
+
+Repeat the three-step command without `--teacher-forcing` for generated history, then with
+`--history-mode recompute` for the explicit causal-prefix reference. At sigma 1, pass
+`--sigmas 1.0` and compare one step with the eight-step tail. A two-versus-four latent-frame
+comparison uses the same full-grid epsilon for both geometries. The recomputed prefix can
+cost substantially more memory and time; review its raw latents and manifest before using
+decoded panels as evidence. The prompt cache and model paths are resolved by `open_session`.
+For the joint-window reference, change only `--history-mode joint` relative to the recomputed
+causal run; this allows history to attend to the current block and is an inference-only
+architecture experiment. Add `--raw-only` to measure rollout cost without VAE decoding.
+
+---
+
 All commands run **from the LTX-2 repo root** in the `ltx` conda env.
 
 ### Path substitutions
@@ -119,10 +150,10 @@ CUDA_VISIBLE_DEVICES=<GPUS> accelerate launch \
   --save-every 100 --anchor-weight 0.0
 ```
 
-Training refreshes the cache from the **target** `z_y` here, which is correct. The generic
-`causal_core.rollout(teacher_forcing=True)` does not — it refreshes from the guide, which equals
-the target for D0 only ([G2](../doc/known_gaps.md#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target)).
-Do not probe a D1 teacher-forced checkpoint through that path expecting the training regime.
+Training and the generic `causal_core.rollout(teacher_forcing=True)` both refresh from the
+explicit **target** `z_y`. The rollout requires `teacher_tokens`, so D1 cannot silently refresh
+from the render guide; [G2](../doc/known_gaps.md#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target)
+records the verified fix.
 
 ### R4 — `d1_self_forced`
 

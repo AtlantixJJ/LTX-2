@@ -133,6 +133,7 @@ refresh → evict, all four in `causal_core`, with `c0` taken from the `z_y` mas
 | [bench_forward.md](bench_forward.md) | `bench_forward.py` | wall clock per finalized chunk, causal vs `k2` |
 | [plot_training.md](plot_training.md) | `plot_training.py` | per-rank JSONL → training figures + summary |
 | [visualize_d0.md](visualize_d0.md) | `visualize_d0.py` | decoded `capture │ base │ LoRA` probe: one whole-clip rollout per sigma, frames captioned with latent/rollout-step |
+| [visualize_d1.md](visualize_d1.md) | `visualize_d1.py` | paired `capture │ D0 │ D1` rollout comparison, optionally with the same LoRA in both arms |
 | [report_d0.md](report_d0.md) | `report_d0.py` | artifact-checked handoff record for the D0 arm |
 
 `__init__.py` carries no design. `configs/` holds the Accelerate topology YAMLs **and** the

@@ -25,7 +25,7 @@ import torch
 from ltx_core.components.noisers import GaussianNoiser
 from ltx_core.model.transformer.model import LTXModel, LTXModelType
 from ltx_core.types import LatentState, SpatioTemporalScaleFactors
-from scripts.onestep_avatar import causal_core
+from scripts.onestep_avatar import causal_core, visualize_d1
 from scripts.onestep_avatar.causal_core import BlockCache, CausalGeometry, ClipGrid
 from scripts.prune.core import refine_task
 
@@ -40,7 +40,7 @@ CONTEXT_TOKENS = 3
 CONTEXT_DIM = 16
 
 
-def _model() -> LTXModel:
+def _model(*, prompt_adaln: bool = False, weight_scale: float = 0.05) -> LTXModel:
     """A 2-layer LTXModel with every parameter deterministically initialised.
 
     ``LTXModel`` allocates several parameters with ``torch.empty``; left as they come, a CPU
@@ -56,11 +56,13 @@ def _model() -> LTXModel:
         num_layers=2,
         cross_attention_dim=8,  # == inner_dim: caption_projection maps the text dim into it
         caption_projection=torch.nn.Linear(CONTEXT_DIM, 8),
+        cross_attention_adaln=prompt_adaln,
+        use_prompt_adaln_single=prompt_adaln,
     )
     generator = torch.Generator().manual_seed(0)
     with torch.no_grad():
         for parameter in model.parameters():
-            parameter.copy_(torch.randn(parameter.shape, generator=generator) * 0.05)
+            parameter.copy_(torch.randn(parameter.shape, generator=generator) * weight_scale)
     return model.eval()
 
 
@@ -101,8 +103,12 @@ def test_cached_rollout_matches_block_causal_full_sequence() -> None:
     noisy = torch.randn(1, tokens, CHANNELS)
 
     cache = BlockCache.allocate(
-        grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
-        device=DEVICE, dtype=torch.float32,
+        grid,
+        geometry,
+        num_layers=len(model.transformer_blocks),
+        inner_dim=model.inner_dim,
+        device=DEVICE,
+        dtype=torch.float32,
     )
     cache.reset()
     cached_outputs = []
@@ -123,12 +129,125 @@ def test_cached_rollout_matches_block_causal_full_sequence() -> None:
         timesteps = torch.zeros(1, sequence.shape[1], 1)
         timesteps[:, prefix_end:] = SIGMA0
         modality = causal_core.block_modality(
-            grid, sequence, context, SIGMA0,
+            grid,
+            sequence,
+            context,
+            SIGMA0,
             token_slices=[(0, hi)],
             attention_mask=causal_core.block_causal_mask(ids),
         )
         reference = denoise_fn(type(modality)(**{**modality.__dict__, "timesteps": timesteps}))
         torch.testing.assert_close(cached_outputs[index], reference[:, prefix_end:], rtol=2e-4, atol=2e-4)
+
+
+@pytest.mark.parametrize("sigma", [0.725, 1.0])
+@pytest.mark.parametrize("context_frames", [2, 8])
+def test_recomputed_history_exposes_prompt_sigma_cache_difference(sigma: float, context_frames: int) -> None:
+    """The explicit prefix uses clean token times but the active global prompt sigma.
+
+    Before eviction, disabling prompt AdaLN restores cache parity. After eviction, explicit
+    recomputation also changes older hidden states because their former context is gone.
+    With the 2.5 checkpoint's enabled capability, refresh at sigma zero differs already
+    at block 1, before any eviction.
+    """
+    geometry = _geometry(context_frames)
+    grid = _grid(geometry)
+    context = _context()
+    tokens = grid.latent_frames * grid.tokens_per_latent_frame
+    guide = torch.randn(1, tokens, CHANNELS, generator=torch.Generator().manual_seed(32))
+    target = torch.randn(1, tokens, CHANNELS, generator=torch.Generator().manual_seed(33))
+    c0 = target[:, : grid.tokens_per_latent_frame]
+
+    def run(model: LTXModel, mode: str) -> torch.Tensor:
+        cache = BlockCache.allocate(
+            grid,
+            geometry,
+            num_layers=len(model.transformer_blocks),
+            inner_dim=model.inner_dim,
+            device=DEVICE,
+            dtype=torch.float32,
+        )
+        result, _ = causal_core.rollout(
+            causal_core.denoised_from_velocity_model(model),
+            grid,
+            geometry,
+            cache,
+            guide,
+            context,
+            sigma,
+            seed=42,
+            teacher_forcing=True,
+            teacher_tokens=target,
+            first_frame_condition=c0,
+            history_mode=mode,
+        )
+        torch.testing.assert_close(result[:, : c0.shape[1]], c0, rtol=0, atol=0)
+        return result
+
+    plain = _model(weight_scale=0.2)
+    plain_cached = run(plain, "cache")
+    plain_recomputed = run(plain, "recompute")
+    if context_frames == 8:
+        torch.testing.assert_close(plain_cached, plain_recomputed, rtol=2e-4, atol=2e-4)
+    else:
+        # The second block has no eviction yet; later blocks expose the separate effect of
+        # recomputing the remaining history after its earlier context was evicted.
+        _, end = grid.token_span(*geometry.plan(grid.latent_frames)[1])
+        torch.testing.assert_close(plain_cached[:, :end], plain_recomputed[:, :end], rtol=2e-4, atol=2e-4)
+        assert (plain_cached[:, end:] - plain_recomputed[:, end:]).abs().max() > 2e-4
+    conditioned = _model(prompt_adaln=True, weight_scale=0.2)
+    cached = run(conditioned, "cache")
+    recomputed = run(conditioned, "recompute")
+    lo, hi = grid.token_span(*geometry.plan(grid.latent_frames)[1])
+    assert (cached[:, lo:hi] - recomputed[:, lo:hi]).abs().max() > 1e-3
+
+
+def test_global_probe_noise_is_independent_of_block_geometry() -> None:
+    """A frame sees the same epsilon in two- and four-frame block sweeps."""
+    masters = []
+    for block_frames in (2, 4):
+        geometry = CausalGeometry(SCALE, block_latent_frames=block_frames, context_latent_frames=8)
+        grid = _grid(geometry, latent_frames=9)
+        source = torch.zeros(1, grid.latent_frames * grid.tokens_per_latent_frame, CHANNELS)
+        global_noise, blocks = visualize_d1._global_epsilons(source, grid, geometry.plan(9), 42)
+        assembled = torch.cat(blocks, dim=1)
+        torch.testing.assert_close(assembled, global_noise[:, : assembled.shape[1]], rtol=0, atol=0)
+        masters.append(global_noise)
+    torch.testing.assert_close(masters[0], masters[1], rtol=0, atol=0)
+
+
+def test_joint_window_changes_information_access_only_after_block_zero() -> None:
+    """Clean history may respond to the current block only in the joint diagnostic."""
+    geometry = _geometry()
+    grid = _grid(geometry)
+    model = _model(prompt_adaln=True, weight_scale=0.2)
+    guide = torch.randn(
+        1, grid.latent_frames * grid.tokens_per_latent_frame, CHANNELS, generator=torch.Generator().manual_seed(34)
+    )
+    target = torch.randn(1, guide.shape[1], CHANNELS, generator=torch.Generator().manual_seed(35))
+    c0 = target[:, : grid.tokens_per_latent_frame]
+    outputs = {}
+    for mode in ("recompute", "joint"):
+        outputs[mode], _ = causal_core.rollout(
+            causal_core.denoised_from_velocity_model(model),
+            grid,
+            geometry,
+            None,
+            guide,
+            _context(),
+            SIGMA0,
+            seed=42,
+            blocks=geometry.plan(grid.latent_frames)[:2],
+            teacher_forcing=True,
+            teacher_tokens=target,
+            first_frame_condition=c0,
+            history_mode=mode,
+        )
+    lo0, hi0 = grid.token_span(*geometry.plan(grid.latent_frames)[0])
+    lo1, hi1 = grid.token_span(*geometry.plan(grid.latent_frames)[1])
+    torch.testing.assert_close(outputs["joint"][:, lo0:hi0], outputs["recompute"][:, lo0:hi0], rtol=0, atol=0)
+    assert (outputs["joint"][:, lo1:hi1] - outputs["recompute"][:, lo1:hi1]).abs().max() > 1e-5
+    torch.testing.assert_close(outputs["joint"][:, : c0.shape[1]], c0, rtol=0, atol=0)
 
 
 def test_teacher_forcing_flag_refreshes_the_cache_from_the_teacher_target() -> None:
@@ -155,13 +274,26 @@ def test_teacher_forcing_flag_refreshes_the_cache_from_the_teacher_target() -> N
 
     def _cache() -> BlockCache:
         return BlockCache.allocate(
-            grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
-            device=DEVICE, dtype=torch.float32,
+            grid,
+            geometry,
+            num_layers=len(model.transformer_blocks),
+            inner_dim=model.inner_dim,
+            device=DEVICE,
+            dtype=torch.float32,
         )
 
     tf_cache = _cache()
     tf_tokens, _ = causal_core.rollout(
-        denoise_fn, grid, geometry, tf_cache, guide, context, SIGMA0, seed=7, blocks=plan[:2], teacher_forcing=True,
+        denoise_fn,
+        grid,
+        geometry,
+        tf_cache,
+        guide,
+        context,
+        SIGMA0,
+        seed=7,
+        blocks=plan[:2],
+        teacher_forcing=True,
         teacher_tokens=guide,  # D0: the noising source IS the target
         first_frame_condition=guide[:, : grid.tokens_per_latent_frame],
     )
@@ -179,7 +311,16 @@ def test_teacher_forcing_flag_refreshes_the_cache_from_the_teacher_target() -> N
 
     sf_cache = _cache()
     sf_tokens, _ = causal_core.rollout(
-        denoise_fn, grid, geometry, sf_cache, guide, context, SIGMA0, seed=7, blocks=plan[:2], teacher_forcing=False,
+        denoise_fn,
+        grid,
+        geometry,
+        sf_cache,
+        guide,
+        context,
+        SIGMA0,
+        seed=7,
+        blocks=plan[:2],
+        teacher_forcing=False,
         first_frame_condition=guide[:, : grid.tokens_per_latent_frame],
     )
     assert not torch.allclose(tf_tokens[:, lo1:hi1], sf_tokens[:, lo1:hi1], rtol=2e-4, atol=2e-4)
@@ -211,13 +352,26 @@ def test_teacher_forcing_refreshes_from_the_target_not_the_guide() -> None:
 
     def _cache() -> BlockCache:
         return BlockCache.allocate(
-            grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
-            device=DEVICE, dtype=torch.float32,
+            grid,
+            geometry,
+            num_layers=len(model.transformer_blocks),
+            inner_dim=model.inner_dim,
+            device=DEVICE,
+            dtype=torch.float32,
         )
 
     d1_tokens, _ = causal_core.rollout(
-        denoise_fn, grid, geometry, _cache(), z_g, context, SIGMA0, seed=11, blocks=plan[:2],
-        teacher_forcing=True, teacher_tokens=z_y,
+        denoise_fn,
+        grid,
+        geometry,
+        _cache(),
+        z_g,
+        context,
+        SIGMA0,
+        seed=11,
+        blocks=plan[:2],
+        teacher_forcing=True,
+        teacher_tokens=z_y,
         first_frame_condition=z_y[:, : grid.tokens_per_latent_frame],
     )
 
@@ -230,7 +384,13 @@ def test_teacher_forcing_refreshes_from_the_target_not_the_guide() -> None:
         c0 = z_y[:, : grid.tokens_per_latent_frame]
         noisy0 = causal_core.with_clean_prefix(causal_core.noise_block(z_g[:, lo0:hi0], SIGMA0, 11), c0)
         causal_core.denoise_block(
-            denoise_fn, grid, cache, noisy0, context, SIGMA0, plan[0],
+            denoise_fn,
+            grid,
+            cache,
+            noisy0,
+            context,
+            SIGMA0,
+            plan[0],
             clean_prefix_tokens=c0.shape[1],
         )
         causal_core.refresh_block(denoise_fn, grid, cache, refresh_with[:, lo0:hi0], context, plan[0])
@@ -244,7 +404,15 @@ def test_teacher_forcing_refreshes_from_the_target_not_the_guide() -> None:
 
     with pytest.raises(ValueError, match="requires an explicit teacher_tokens"):
         causal_core.rollout(
-            denoise_fn, grid, geometry, _cache(), z_g, context, SIGMA0, seed=11, blocks=plan[:2],
+            denoise_fn,
+            grid,
+            geometry,
+            _cache(),
+            z_g,
+            context,
+            SIGMA0,
+            seed=11,
+            blocks=plan[:2],
             teacher_forcing=True,
             first_frame_condition=z_y[:, : grid.tokens_per_latent_frame],
         )
@@ -296,9 +464,7 @@ def test_eviction_keeps_the_pinned_sink_and_the_newest_context() -> None:
     geometry = CausalGeometry(scale_factors=SCALE, block_latent_frames=2, context_latent_frames=2)
     grid = _grid(geometry, latent_frames=9)
     tokens = grid.tokens_per_latent_frame
-    cache = BlockCache.allocate(
-        grid, geometry, num_layers=1, inner_dim=4, device=DEVICE, dtype=torch.float32
-    )
+    cache = BlockCache.allocate(grid, geometry, num_layers=1, inner_dim=4, device=DEVICE, dtype=torch.float32)
     # Write frames 0..4 as five distinguishable one-frame blocks, evicting after each.
     for frame in range(5):
         value = torch.full((1, tokens, 4), float(frame))
@@ -321,9 +487,7 @@ def test_a_deep_cache_accumulates_the_rollout_instead_of_evicting() -> None:
     geometry = CausalGeometry(scale_factors=SCALE, block_latent_frames=2, context_latent_frames=16)
     grid = _grid(geometry, latent_frames=9)
     tokens = grid.tokens_per_latent_frame
-    cache = BlockCache.allocate(
-        grid, geometry, num_layers=1, inner_dim=4, device=DEVICE, dtype=torch.float32
-    )
+    cache = BlockCache.allocate(grid, geometry, num_layers=1, inner_dim=4, device=DEVICE, dtype=torch.float32)
     for frame in range(5):
         value = torch.full((1, tokens, 4), float(frame))
         cache.caches[0].write(value, value, cache.start)
@@ -360,15 +524,18 @@ def test_a_cache_can_be_sized_for_a_longer_clip_than_the_grid_it_is_built_from()
     short = _grid(deep, latent_frames=9)
     tokens = short.tokens_per_latent_frame
 
-    capped = BlockCache.allocate(
-        short, deep, num_layers=1, inner_dim=4, device=DEVICE, dtype=torch.float32
-    )
+    capped = BlockCache.allocate(short, deep, num_layers=1, inner_dim=4, device=DEVICE, dtype=torch.float32)
     assert capped.caches[0].capacity == 9 * tokens  # the clip it was built from
     assert capped.fits(9)
     assert not capped.fits(20)  # the long-clip chain that used to overflow mid-forward
 
     sized = BlockCache.allocate(
-        short, deep, num_layers=1, inner_dim=4, device=DEVICE, dtype=torch.float32,
+        short,
+        deep,
+        num_layers=1,
+        inner_dim=4,
+        device=DEVICE,
+        dtype=torch.float32,
         capacity_latent_frames=20,
     )
     assert sized.caches[0].capacity == deep.cache_latent_frames * tokens
@@ -376,10 +543,20 @@ def test_a_cache_can_be_sized_for_a_longer_clip_than_the_grid_it_is_built_from()
     assert sized.fits(20)
     # Still bounded by the policy, so an override longer than the policy needs reserves nothing
     # extra -- the memory cap the cap existed for is intact.
-    assert BlockCache.allocate(
-        short, deep, num_layers=1, inner_dim=4, device=DEVICE, dtype=torch.float32,
-        capacity_latent_frames=1000,
-    ).caches[0].capacity == deep.cache_latent_frames * tokens
+    assert (
+        BlockCache.allocate(
+            short,
+            deep,
+            num_layers=1,
+            inner_dim=4,
+            device=DEVICE,
+            dtype=torch.float32,
+            capacity_latent_frames=1000,
+        )
+        .caches[0]
+        .capacity
+        == deep.cache_latent_frames * tokens
+    )
 
 
 def test_context_depth_past_the_supported_maximum_is_refused() -> None:
@@ -451,12 +628,14 @@ def test_prime_cache_forwards_exactly_once_whether_or_not_it_has_anything_to_pri
         nonlocal calls
         calls = 0
         cache = BlockCache.allocate(
-            grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
-            device=DEVICE, dtype=torch.float32,
+            grid,
+            geometry,
+            num_layers=len(model.transformer_blocks),
+            inner_dim=model.inner_dim,
+            device=DEVICE,
+            dtype=torch.float32,
         )
-        causal_core.prime_cache(
-            counting, grid, cache, tokens, geometry, context, upto_latent_frame=upto
-        )
+        causal_core.prime_cache(counting, grid, cache, tokens, geometry, context, upto_latent_frame=upto)
         return cache.start
 
     # Nothing to prime, and something to prime: the SAME number of forwards either way.
@@ -476,7 +655,13 @@ def test_rope_range_is_enforced_rather_than_extrapolated() -> None:
     geometry = _geometry()
     with pytest.raises(ValueError, match="temporal RoPE range"):
         ClipGrid.build(
-            1 + 20 * 30 // 8, EDGE, EDGE, 1.0, geometry, device=DEVICE, dtype=torch.float32,
+            1 + 20 * 30 // 8,
+            EDGE,
+            EDGE,
+            1.0,
+            geometry,
+            device=DEVICE,
+            dtype=torch.float32,
             latent_channels=CHANNELS,
         )
 
@@ -495,12 +680,16 @@ def test_the_real_training_loop_runs_a_chain_against_a_real_transformer() -> Non
     model = _model().to(train.DTYPE)
     geometry = CausalGeometry(scale_factors=SCALE, block_latent_frames=2, context_latent_frames=2)
     chain = train.Chain(
-        source="stub/view00", split="train", actor="stub",
+        source="stub/view00",
+        split="train",
+        actor="stub",
         # Mid-clip on purpose: this is the path that primes the cache from the GT prefix.
-        seed_is_clip_start=False, blocks=[1, 2],
+        seed_is_clip_start=False,
+        blocks=[1, 2],
         z_g=torch.randn(CHANNELS, LATENT_FRAMES, 2, 2),
         z_y=torch.randn(CHANNELS, LATENT_FRAMES, 2, 2),
-        fps=FPS, z0_base=None,
+        fps=FPS,
+        z0_base=None,
     )
 
     class _Accelerator:
@@ -512,12 +701,24 @@ def test_the_real_training_loop_runs_a_chain_against_a_real_transformer() -> Non
 
     grid = train.clip_grid_for(chain, geometry, device=DEVICE, latent_channels=CHANNELS)
     cache = BlockCache.allocate(
-        grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
-        device=DEVICE, dtype=train.DTYPE,
+        grid,
+        geometry,
+        num_layers=len(model.transformer_blocks),
+        inner_dim=model.inner_dim,
+        device=DEVICE,
+        dtype=train.DTYPE,
     )
     totals = train.train_chain(
-        model, torch.randn(1, CONTEXT_TOKENS, CONTEXT_DIM, dtype=train.DTYPE), chain, geometry,
-        cache, _Accelerator(), sigma0=SIGMA0, seed=0, anchor_weight=0.0, latent_channels=CHANNELS,
+        model,
+        torch.randn(1, CONTEXT_TOKENS, CONTEXT_DIM, dtype=train.DTYPE),
+        chain,
+        geometry,
+        cache,
+        _Accelerator(),
+        sigma0=SIGMA0,
+        seed=0,
+        anchor_weight=0.0,
+        latent_channels=CHANNELS,
     )
 
     assert [entry["block_index"] for entry in totals["per_block"]] == [1, 2]
@@ -665,14 +866,27 @@ def test_two_step_schedule_costs_one_extra_forward_and_changes_the_output() -> N
 
     def _cache() -> BlockCache:
         return BlockCache.allocate(
-            grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
-            device=DEVICE, dtype=torch.float32,
+            grid,
+            geometry,
+            num_layers=len(model.transformer_blocks),
+            inner_dim=model.inner_dim,
+            device=DEVICE,
+            dtype=torch.float32,
         )
 
     def _run(schedule):  # noqa: ANN001, ANN202
         return causal_core.rollout(
-            denoise_fn, grid, geometry, _cache(), guide, context, SIGMA0, seed=3,
-            blocks=plan, first_frame_condition=c0, schedule=schedule,
+            denoise_fn,
+            grid,
+            geometry,
+            _cache(),
+            guide,
+            context,
+            SIGMA0,
+            seed=3,
+            blocks=plan,
+            first_frame_condition=c0,
+            schedule=schedule,
         )
 
     one_default, fwd_default = _run(None)
@@ -712,10 +926,23 @@ def test_schedule_never_renoises_the_supplied_first_frame() -> None:
         return causal_core.denoised_from_velocity_model(model)(modality)
 
     causal_core.rollout(
-        spy, grid, geometry,
-        BlockCache.allocate(grid, geometry, num_layers=len(model.transformer_blocks),
-                            inner_dim=model.inner_dim, device=DEVICE, dtype=torch.float32),
-        guide, context, SIGMA0, seed=4, blocks=plan, first_frame_condition=c0,
+        spy,
+        grid,
+        geometry,
+        BlockCache.allocate(
+            grid,
+            geometry,
+            num_layers=len(model.transformer_blocks),
+            inner_dim=model.inner_dim,
+            device=DEVICE,
+            dtype=torch.float32,
+        ),
+        guide,
+        context,
+        SIGMA0,
+        seed=4,
+        blocks=plan,
+        first_frame_condition=c0,
         schedule=[SIGMA0, SIGMA0 / 2, 0.0],
     )
     assert len(seen) == 3, "two denoising calls plus the refresh"
@@ -753,14 +980,27 @@ def test_kv_source_denoise_halves_the_forwards_and_changes_the_history() -> None
 
     def _cache() -> BlockCache:
         return BlockCache.allocate(
-            grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
-            device=DEVICE, dtype=torch.float32,
+            grid,
+            geometry,
+            num_layers=len(model.transformer_blocks),
+            inner_dim=model.inner_dim,
+            device=DEVICE,
+            dtype=torch.float32,
         )
 
     def _run(kv_source: str):  # noqa: ANN202
         return causal_core.rollout(
-            denoise_fn, grid, geometry, _cache(), guide, context, SIGMA0, seed=9,
-            blocks=plan, first_frame_condition=c0, kv_source=kv_source,
+            denoise_fn,
+            grid,
+            geometry,
+            _cache(),
+            guide,
+            context,
+            SIGMA0,
+            seed=9,
+            blocks=plan,
+            first_frame_condition=c0,
+            kv_source=kv_source,
         )
 
     refreshed, fwd_refresh = _run("refresh")
@@ -792,10 +1032,23 @@ def test_kv_source_denoise_refuses_teacher_forcing() -> None:
     guide = torch.randn(1, tokens, CHANNELS)
     with pytest.raises(ValueError, match="incompatible"):
         causal_core.rollout(
-            causal_core.denoised_from_velocity_model(model), grid, geometry,
-            BlockCache.allocate(grid, geometry, num_layers=len(model.transformer_blocks),
-                                inner_dim=model.inner_dim, device=DEVICE, dtype=torch.float32),
-            guide, _context(), SIGMA0, blocks=geometry.plan(grid.latent_frames)[:2],
+            causal_core.denoised_from_velocity_model(model),
+            grid,
+            geometry,
+            BlockCache.allocate(
+                grid,
+                geometry,
+                num_layers=len(model.transformer_blocks),
+                inner_dim=model.inner_dim,
+                device=DEVICE,
+                dtype=torch.float32,
+            ),
+            guide,
+            _context(),
+            SIGMA0,
+            blocks=geometry.plan(grid.latent_frames)[:2],
             first_frame_condition=guide[:, : grid.tokens_per_latent_frame],
-            teacher_forcing=True, teacher_tokens=guide, kv_source="denoise",
+            teacher_forcing=True,
+            teacher_tokens=guide,
+            kv_source="denoise",
         )

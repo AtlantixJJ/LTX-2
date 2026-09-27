@@ -167,6 +167,8 @@ def _run_chain(  # noqa: ANN202, PLR0913
     kv_source: str = "refresh",
     span: str = "clip",
     block_epsilons: list[torch.Tensor] | None = None,
+    history_mode: str = "cache",
+    max_blocks: int | None = None,
 ):
     """One AR rollout of the selected arm; ``z_y`` is the target reference in both.
 
@@ -185,13 +187,17 @@ def _run_chain(  # noqa: ANN202, PLR0913
     """
     grid = clip_grid_for(chain, geometry, device=device, latent_channels=latent_channels)
     base = causal_core.base_model(transformer)
-    cache = causal_core.BlockCache.allocate(
-        grid,
-        geometry,
-        num_layers=len(base.transformer_blocks),
-        inner_dim=base.inner_dim,
-        device=device,
-        dtype=DTYPE,
+    cache = (
+        None
+        if history_mode != "cache"
+        else causal_core.BlockCache.allocate(
+            grid,
+            geometry,
+            num_layers=len(base.transformer_blocks),
+            inner_dim=base.inner_dim,
+            device=device,
+            dtype=DTYPE,
+        )
     )
     z_y = grid.patchify(chain.z_y.unsqueeze(0).to(device=device, dtype=DTYPE))
     source = (
@@ -200,6 +206,10 @@ def _run_chain(  # noqa: ANN202, PLR0913
         else grid.patchify(_source_master(chain, guide_mode).unsqueeze(0).to(device=device, dtype=DTYPE))
     )
     plan = _plan_for(chain, geometry, grid, span)
+    if max_blocks is not None:
+        if not 1 <= max_blocks <= len(plan):
+            raise ValueError(f"max_blocks must be within [1, {len(plan)}], got {max_blocks}")
+        plan = plan[:max_blocks]
     tokens, _ = causal_core.rollout(
         causal_core.denoised_from_x0_model(transformer),
         grid,
@@ -216,6 +226,7 @@ def _run_chain(  # noqa: ANN202, PLR0913
         kv_source=kv_source,
         first_frame_condition=z_y[:, : grid.tokens_per_latent_frame],
         block_epsilons=block_epsilons,
+        history_mode=history_mode,
     )
     covered = plan[-1][1]
     return grid, grid.unpatchify_block(tokens[:, : covered * grid.tokens_per_latent_frame], covered)
@@ -373,9 +384,7 @@ def generate_checkpoint(args: argparse.Namespace, checkpoint: Path | None, chain
     # transformer+decoder coexistence that §7.4 explicitly excludes from the train loop.
     outputs: dict[float, torch.Tensor] = {}
     grid = clip_grid_for(chain, geometry, device=session.device, latent_channels=session.model.caps.latent_channels)
-    source = grid.patchify(
-        _source_master(chain, args.guide_mode).unsqueeze(0).to(device=session.device, dtype=DTYPE)
-    )
+    source = grid.patchify(_source_master(chain, args.guide_mode).unsqueeze(0).to(device=session.device, dtype=DTYPE))
     plan = _plan_for(chain, geometry, grid, args.span)
     # The epsilon stream depends only on the source's shape/dtype/device, which the two arms
     # share -- but derive it from the arm's own source anyway, so a future shape divergence

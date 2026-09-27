@@ -160,6 +160,11 @@ Points that are easy to get wrong:
 * **`refresh` is a second forward and is not optional.** The K/V a later block wants belong to the
   *denoised* content, which the denoising pass never saw. Its cost is counted in every compute
   number this package reports.
+* **Cache equivalence is conditional.** Refresh computes history at global sigma zero. The
+  LTX-2.5 prompt AdaLN branch also conditions text on that global sigma, so a later explicit
+  causal prefix forward at active sigma can produce different history K/V even though its
+  history-token timesteps stay zero. `rollout(history_mode="recompute")` is an inference-only
+  reference for this distinction; see [G7](known_gaps.md#g7--cached-history-can-disagree-with-a-causal-prefix).
 * **`detach`/`no_grad` boundaries**: `refresh` runs under `no_grad`; the self-forced refresh input
   is `ẑ₀.detach()`, so no gradient crosses a block boundary. That is what keeps peak memory at one
   block regardless of `K`.
@@ -232,17 +237,17 @@ not a decoding bug. `c0` itself is preserved on both sides, so frame 0 never par
 | Input available | `z_y` always; `z_g` for D1 | `z_y` and `z_g` from the subset | guide master + a required `first_frame_latent` |
 | Supplied first frame | capture `z_y` latent frame 0, clean at timestep 0 | capture `z_y` latent frame 0 | explicit `first_frame_latent`, clean at timestep 0 |
 | Priming | `prime_cache` from clean `z_y`, **always called** | none — the rollout starts at block 0 | none — always clip start |
-| Source selection | `--guide-mode d0` → `z_y`; `d1` → `z_g` | D0 arm only; a D1 probe is owed (G3) | D1 only; `guide_conditionings` refuses `d0` |
-| Forcing policy | `--teacher-forcing` refreshes from `z_y`; else `ẑ₀.detach()` | `--teacher-forcing` flag, refreshes from `guide_tokens` (G2) | self forcing only |
+| Source selection | `--guide-mode d0` → `z_y`; `d1` → `z_g` | D0 or D1; `visualize_d1.py` pairs them | D1 only; `guide_conditionings` refuses `d0` |
+| Forcing policy | `--teacher-forcing` refreshes from `z_y`; else `ẑ₀.detach()` | `--teacher-forcing` passes explicit `z_y`; else generated output | self forcing only |
 | Output selection | none — loss only, nothing decoded | the whole clip's rolled-out tokens, decoded once per σ (`--span chain` limits it to the chain's `K` blocks) | the whole covered span, unpatchified |
 | Forward count | `1 + 2K` (one priming + denoise + refresh per block) | `2·len(plan)` per σ, ×3 σ levels | `2·len(plan)` |
 | Checkpoint-condition checks | metadata **written** at save | not validated on load (G3) | σ₀ on-grid check only (G3) |
 
 **Shared primitives do not by themselves prove parity.** `train_chain` and `causal_core.rollout`
-are different callers of the same four functions, and they currently differ in what teacher
-forcing refreshes from: training uses `z_y` (the target), the generic rollout uses `guide_tokens`
-(the noised source). Those coincide for D0 only — see
-[G2](known_gaps.md#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target).
+are different callers of the same four functions. Both now pass `z_y` as the explicit teacher
+target; [G2](known_gaps.md#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target)
+records the verified fix. The probe's optional recomputed-history mode is a separate
+inference diagnostic and is not used by training or deployment.
 
 **FSDP lockstep is a requirement on any change.** Every
 rank must issue the same number of transformer forwards per step; `prime_cache`'s empty-prefix

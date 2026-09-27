@@ -21,13 +21,27 @@ Three changes that are **one** change:
    never a later one. Within a block it stays bidirectional — the block is denoised in one
    shot, so there is nothing to order inside it.
 2. **Finished blocks live in a K/V cache.** Under (1) a finished block's keys and values no
-   longer depend on anything after it, so they are computed once.
+   longer depend on later tokens at a fixed global conditioning state. The current refresh
+   computes them at global sigma zero; prompt AdaLN at a later denoise sigma can invalidate
+   equality with an explicit full-prefix forward. See G7 in `known_gaps.md`.
 3. **Everything is a slice of the clip's one continuous encode.**
 
-**(1) is a precondition for (2), and that is the whole argument.** With bidirectional
+**(1) is a precondition for (2), but is not sufficient by itself.** With bidirectional
 attention a context token's K/V depend on the noisy tokens beside it, so they differ in every
 window and nothing is cacheable. Turning the mask off and keeping the cache would not be a
 speed/quality trade — it would silently compute a different function.
+
+`denoise_with_clean_history` is the explicit causal inference reference. It assembles the
+retained clean history and current block at every denoising level, sets history-token timesteps
+to zero, applies the current global sigma to prompt conditioning, and emits only current-block
+predictions. `rollout(history_mode="recompute")` uses it without allocating or writing K/V.
+It requires contiguous blocks from clip start. At eviction, recomputing the truncated prefix
+also changes older states that originally attended to now-evicted context; compare block 1
+before eviction to isolate prompt-sigma effects.
+`rollout(history_mode="joint")` forwards the same clean retained history and noisy current
+block without the causal mask. It is a separate inference-only joint-window quality reference:
+history may respond to the current block, so its outputs are not cacheable. No future block
+is included, and neither training nor deployment uses this mode.
 
 ## Data flow
 
@@ -146,14 +160,10 @@ spies on every forward's first latent frame for that reason.
 
 ## Invariants
 
-- **The pinned frame-0 sink never leaves the cache once written.** This is a retention
-  policy, not first-frame image conditioning. At clip start the cache is empty and
-  `noise_block` noises frame 0 too; its timestep is sigma, because the grid's denoise mask
-  is all ones. Self forcing subsequently caches the generated frame 0. D0 teacher forcing
-  instead caches the clean capture frame 0 (and the rest of the completed target block),
-  even if the displayed prediction depicts a different person. Mid-clip training priming
-  also uses clean capture tokens. The product's intended supplied-image condition is not
-  implemented by this sink or by `keyframes_mask`.
+- **The pinned frame-0 sink never leaves the cache once written.** Retention alone is not
+  conditioning. `rollout` requires the supplied `c0`, replaces block 0's leading input with
+  it, sets those token timesteps to zero, preserves them in the output, and refreshes the
+  pinned sink with the same clean content. `keyframes_mask` remains only a geometry mark.
 - **Only latent frame 0 is marked a keyframe.** The per-window tools marked every window's
   own first frame, which is false for every window past a clip's first.
 - **RoPE positions are global.** Per-window tools restarted the time axis at 0, so every
@@ -173,13 +183,10 @@ spies on every forward's first latent frame for that reason.
 
 - **D0 teacher forcing can produce an identity transition after block 0.** With two latent
   frames per block, block 0 spans latent `[0, 3)` (17 pixel frames at temporal scale 8).
-  It sees only noised capture tokens; block 1 additionally sees clean GT history. The
+  It sees clean `c0` plus noised generation tokens; block 1 additionally sees clean GT history. The
   decoded video concatenates predictions, not the GT tensors used to refresh the cache.
-  Thus visual continuity with a mistaken generated first frame is not enforced, and the
-  VAE can spread the transition around the block boundary. Preserving a supplied first
-  frame requires clean input tokens, zero per-token timestep, and output/refresh
-  preservation in both training and rollout; changing the timestep alone leaves noised
-  pixels in the condition.
+  Thus visual continuity of the generated frames across blocks is not enforced, even though
+  `c0` itself is preserved. The VAE can spread a latent transition around the boundary.
 
 - **A data-dependent forward is a data-parallel deadlock.** `prime_cache` returned early for
   clip-start chains until 2026-09-16. On a 4-GPU run the ranks that drew such a chain issued
@@ -221,8 +228,7 @@ spies on every forward's first latent frame for that reason.
 
 ## Tests
 
-`tests/test_causal_core.py`. The load-bearing one is
-`test_cached_rollout_matches_block_causal_full_sequence`: a **real** 2-layer `LTXModel` on
-CPU, asserting the cached block rollout equals a full-sequence forward under a block-causal
-mask, block for block. Everything the cache buys rests on that equality, and a stub would
-pass whether or not the cache/RoPE/mask interaction is right.
+`tests/test_causal_core.py` uses a real 2-layer `LTXModel` on CPU. The original cache parity
+test covers a model without prompt AdaLN. The recomputed-history test enables the 2.5
+capability and checks the pre-eviction discrepancy at sigma 0.725 and 1, plus the separate
+post-eviction effect. These synthetic weights do not estimate the 22B checkpoint's error.

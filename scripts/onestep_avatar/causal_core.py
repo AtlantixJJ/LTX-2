@@ -8,10 +8,9 @@ the `k2` refiner. Three things change together, and they are one change, not thr
    never to a later one. Within a block it stays bidirectional -- the block is denoised in
    one shot, so there is nothing to order inside it.
 2. **Clean blocks live in a K/V cache.** Under (1) a finished block's keys and values no
-   longer depend on anything that comes after it, so they are computed once and reused for
-   the rest of the rollout instead of being re-forwarded inside every later window. That
-   equivalence is exactly why (1) is a precondition for (2): with bidirectional attention a
-   context token's K/V differ in every window and nothing is cacheable.
+   longer depend on later tokens at a fixed conditioning state, so they are computed once and
+   reused. Block causality is necessary for that reuse, but prompt AdaLN's global sigma also
+   changes history K/V; zero-sigma refresh is not generally an explicit current-sigma prefix.
 3. **Everything is sliced out of the clip's ONE continuous VAE encode** -- the master latent.
    There is no per-window encode and no per-window re-keyed frame 0 (§4.4's 2026-09-11 rule,
    now enforced by construction because a window is no longer a unit of anything).
@@ -674,6 +673,46 @@ def denoise_block(
     )
 
 
+def denoise_with_clean_history(
+    denoise_fn,  # noqa: ANN001
+    grid: ClipGrid,
+    geometry: CausalGeometry,
+    clean_history: torch.Tensor,
+    noisy_tokens: torch.Tensor,
+    context: torch.Tensor,
+    sigma: float,
+    span: tuple[int, int],
+    *,
+    clean_prefix_tokens: int = 0,
+    joint_window: bool = False,
+) -> torch.Tensor:
+    """Explicit causal reference with retained clean history recomputed at this sigma.
+
+    History token timesteps remain zero while the global sigma (including prompt AdaLN)
+    matches the current denoise call. ``joint_window`` lets clean history attend to the
+    current noisy block as a separate information-access diagnostic. No K/V cache is used.
+    """
+    history_spans = retained_prefix_spans(geometry.plan(grid.latent_frames), geometry, span[0])
+    slices = [grid.token_span(start, end) for start, end, _ in history_spans]
+    slices.append(grid.token_span(*span))
+    history = [clean_history[:, lo:hi] for lo, hi in slices[:-1]]
+    prefix_length = sum(item.shape[1] for item in history)
+    sequence = torch.cat([*history, noisy_tokens], dim=1)
+    ids = block_ids_for(
+        [*history_spans, (*span, geometry.plan(grid.latent_frames).index(span))], grid.tokens_per_latent_frame
+    ).to(sequence.device)
+    modality = block_modality(
+        grid,
+        sequence,
+        context,
+        sigma,
+        token_slices=slices,
+        attention_mask=None if joint_window else block_causal_mask(ids),
+        clean_prefix_tokens=prefix_length + clean_prefix_tokens,
+    )
+    return denoise_fn(modality)[:, prefix_length:]
+
+
 def refresh_block(
     denoise_fn,  # noqa: ANN001
     grid: ClipGrid,
@@ -702,9 +741,7 @@ def refresh_block(
     cache.evict()
 
 
-def euler_to(
-    sample: torch.Tensor, denoised: torch.Tensor, sigma_from: float, sigma_to: float
-) -> torch.Tensor:
+def euler_to(sample: torch.Tensor, denoised: torch.Tensor, sigma_from: float, sigma_to: float) -> torch.Tensor:
     """One deterministic Euler step along the straight flow path, ``sigma_from -> sigma_to``.
 
     The local convention here is ``x_s = (1-s)*y + s*eps``, so the velocity implied by a
@@ -755,11 +792,11 @@ def validate_schedule(
     return values
 
 
-def rollout(  # noqa: PLR0912, PLR0913 -- one AR block loop; every branch is a documented arm (schedule, forcing, kv_source)
+def rollout(  # noqa: PLR0912, PLR0913, PLR0915 -- one AR block loop; every branch is a documented arm
     denoise_fn,  # noqa: ANN001
     grid: ClipGrid,
     geometry: CausalGeometry,
-    cache: BlockCache,
+    cache: BlockCache | None,
     guide_tokens: torch.Tensor,
     context: torch.Tensor,
     sigma: float,
@@ -772,6 +809,7 @@ def rollout(  # noqa: PLR0912, PLR0913 -- one AR block loop; every branch is a d
     block_epsilons: list[torch.Tensor] | None = None,
     schedule: list[float] | tuple[float, ...] | None = None,
     kv_source: str = "refresh",
+    history_mode: str = "cache",
 ) -> tuple[torch.Tensor, int]:
     """Roll the whole clip forward one block at a time; return ``(tokens, forwards)``.
 
@@ -813,6 +851,12 @@ def rollout(  # noqa: PLR0912, PLR0913 -- one AR block loop; every branch is a d
         )
     if kv_source not in ("refresh", "denoise"):
         raise ValueError(f"kv_source must be 'refresh' or 'denoise', got {kv_source!r}")
+    if history_mode not in ("cache", "recompute", "joint"):
+        raise ValueError(f"history_mode must be 'cache', 'recompute' or 'joint', got {history_mode!r}")
+    if history_mode != "cache" and kv_source != "refresh":
+        raise ValueError("explicit history modes require kv_source='refresh'")
+    if history_mode == "cache" and cache is None:
+        raise ValueError("history_mode='cache' requires a BlockCache")
     if teacher_forcing and kv_source == "denoise":
         raise ValueError(
             "teacher_forcing=True is incompatible with kv_source='denoise': teacher forcing "
@@ -821,11 +865,15 @@ def rollout(  # noqa: PLR0912, PLR0913 -- one AR block loop; every branch is a d
     levels = (float(sigma), 0.0) if schedule is None else validate_schedule(schedule)
     if levels[0] != float(sigma):
         raise ValueError(f"schedule must start at sigma={sigma}, got {levels[0]}")
-    cache.reset()
     plan = geometry.plan(grid.latent_frames) if blocks is None else blocks
+    if history_mode != "cache" and plan != geometry.plan(grid.latent_frames)[: len(plan)]:
+        raise ValueError("explicit history requires contiguous blocks starting at latent frame 0")
+    if cache is not None:
+        cache.reset()
     if block_epsilons is not None and len(block_epsilons) != len(plan):
         raise ValueError(f"received {len(block_epsilons)} block epsilons for a {len(plan)}-block rollout")
     out = torch.zeros_like(guide_tokens)
+    clean_history = torch.zeros_like(guide_tokens) if history_mode != "cache" else None
     forwards = 0
     for index, span in enumerate(plan):
         lo, hi = grid.token_span(*span)
@@ -841,12 +889,34 @@ def rollout(  # noqa: PLR0912, PLR0913 -- one AR block loop; every branch is a d
         denoised = state
         last = len(levels) - 2  # index of the final denoising call
         for step, (level, next_level) in enumerate(pairwise(levels)):
-            denoised = with_clean_prefix(
-                denoise_block(
-                    denoise_fn, grid, cache, state, context, level, span,
+            if clean_history is None:
+                assert cache is not None
+                prediction = denoise_block(
+                    denoise_fn,
+                    grid,
+                    cache,
+                    state,
+                    context,
+                    level,
+                    span,
                     clean_prefix_tokens=prefix,
                     kv_write=(kv_source == "denoise" and step == last),
-                ),
+                )
+            else:
+                prediction = denoise_with_clean_history(
+                    denoise_fn,
+                    grid,
+                    geometry,
+                    clean_history,
+                    state,
+                    context,
+                    level,
+                    span,
+                    clean_prefix_tokens=prefix,
+                    joint_window=history_mode == "joint",
+                )
+            denoised = with_clean_prefix(
+                prediction,
                 c0,
             )
             forwards += 1
@@ -855,11 +925,15 @@ def rollout(  # noqa: PLR0912, PLR0913 -- one AR block loop; every branch is a d
                 # stepping it would re-noise the one input the product guarantees.
                 state = with_clean_prefix(euler_to(state, denoised, level, next_level), c0)
         out[:, lo:hi] = denoised
-        if kv_source == "refresh":
-            clean = teacher_tokens[:, lo:hi] if teacher_forcing else denoised
+        clean = teacher_tokens[:, lo:hi] if teacher_forcing else denoised
+        if clean_history is not None:
+            clean_history[:, lo:hi] = clean.detach()
+        elif kv_source == "refresh":
+            assert cache is not None
             refresh_block(denoise_fn, grid, cache, clean, context, span)
             forwards += 1
         else:
+            assert cache is not None
             # The write happened inside the last denoise call; only eviction is still owed,
             # and refresh_block is the only other place that calls it.
             cache.evict()

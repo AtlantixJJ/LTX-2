@@ -16,6 +16,49 @@ Status vocabulary: **open** (no fix), **in progress** (a fix is partially landed
 | [G4](#g4--no-d1-probe) | No D1 probe | D1 checkpoints cannot be looked at | **in progress** |
 | [G5](#g5--training-and-deployment-disagree-about-valid-sigma) | Training and deployment disagree about valid sigma (σ) | a trained adapter its own API refuses | **open** |
 | [G6](#g6--guide-artifacts-on-disk-predate-the-compositing-fix) | 18 of 19 guide renders predate the v2 compositing fix | D1 data readiness | **in progress** |
+| [G7](#g7--cached-history-can-disagree-with-a-causal-prefix) | Cached history can disagree with an explicit causal prefix | continuation quality is unmeasured | **in progress** |
+
+---
+
+## G7 — cached history can disagree with a causal prefix
+
+**Required.** Before treating cached refresh as an optimization of explicit causal
+continuation, compare them under matched text conditioning, clean per-token history
+timesteps, positions and retention policy on the real checkpoint. If zero-sigma refresh is
+instead the intended streaming model, its quality must be established under generated history.
+
+**Current.** `refresh_block` computes history K/V with global sigma zero.
+`transformer_args.py` uses global sigma for prompt AdaLN, independently of token timesteps.
+The LTX-2.5 checkpoint enables this branch. A small two-layer CPU model differs at block 1
+before eviction when this branch is enabled. On the real checkpoint, clean block-0 K/V are
+equal at layer 0 but differ from layer 1 onward when only global sigma changes from 0 to
+0.909375 or 1. A two-block real rollout differs at block 1 by relative latent L2 0.12084
+(D0) / 0.11428 (D1) at 0.909375, and 0.23675 in both arms at sigma 1. Block 0 and a
+repeated cached run agree exactly.
+`rollout(history_mode="recompute")` now supplies an
+explicit block-causal reference for paired inference; its retained history stays at token
+timestep zero while global sigma tracks each denoise step. After eviction, recomputation also
+changes the old states' available context, so comparisons must split before and after eviction.
+
+**Impact.** The computational difference on real weights is measured on one view; its
+contribution to appearance jumps remains unmeasured. Teacher-forced cache history also differs
+from the displayed output by definition;
+that separate source mismatch is tested by dropping `--teacher-forcing`.
+
+**Acceptance.** Block-1 output and layerwise K/V checks are complete at 0.909375 and sigma 1.
+Compare boundary quality under both history policies and both forcing policies on held-out
+views. Select the continuation
+computation before training a new adapter or changing deployment semantics.
+
+**Status:** in progress. CPU tests, real-weight computation checks and the explicit diagnostic
+are present. A same-GPU eight-block raw-only control measured 77.12 s for recomputation versus
+26.23 s for caching, with only a small change in latent boundary residual on one view.
+The separate joint-window reference improved GT-history latent metrics on three actors, but
+generated-history boundary residual was mixed and its one measured full rollout cost 2.66×
+cached inference. Visual appearance, motion, additional seeds and broader latency comparisons
+are still owed. The
+one-view exploratory run is in the workspace
+[`expr/onestep_avatar/d1_diagnostic/REPORT.md`](../../../../expr/onestep_avatar/d1_diagnostic/REPORT.md).
 
 ---
 

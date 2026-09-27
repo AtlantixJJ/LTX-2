@@ -48,6 +48,10 @@ A fixed clip and fixed seeds make a sequence of checkpoints directly comparable.
 `--steps` visualizes several checkpoints from one run in a single call (e.g. `--steps 100 500
 1000`), reusing one shared frozen-base decode and GT panel across all of them.
 
+The shared `_run_chain` helper also accepts internal `history_mode` and `max_blocks` arguments
+for `visualize_d1.py`'s matched diagnostics. This CLI remains cached; explicit causal-prefix
+and joint-window modes are inference-only references in `causal_core.rollout`.
+
 `--base-only` removes the checkpoint requirement. With two or more sigma arms it also writes
 `capture | first sigma | second sigma`, plus an uncaptioned capture and uncaptioned individual
 base videos. `--block-latent-frames` and `--context-latent-frames` override the deployed
@@ -124,8 +128,8 @@ It is an **offline** probe: no VAE is resident while FSDP training is stepping.
   that is the whole reason this script exists rather than reusing a deployment renderer.
 - **`--teacher-forcing` must match how the checkpoint was trained, or the probe is measuring
   the wrong regime.** It threads straight into `causal_core.rollout`'s own `teacher_forcing`
-  flag — refresh is fed the D0 guide tokens (which *are* `z_y` for D0, so no separate target
-  tensor is needed) instead of the model's own denoised output. Off (the default) is the
+  flag — refresh is fed the explicit capture target `z_y` instead of the model's own denoised
+  output. Off (the default) is the
   self-forced regime deployment has to use; a run trained with `train.py --teacher-forcing`
   (check its `config.json`) never saw its own errors accumulate in the cache, so a self-forced
   probe of it evaluates an input distribution training never produced.
@@ -139,9 +143,8 @@ existing captioned `capture | base | LoRA` comparisons and raw checkpoint latent
 
 ## Gotchas
 
-- **σ = 0.0 is excluded from `PROBE_SIGMAS`.** `to_velocity` computes `(sample − denoised)/σ`
-  and raises "Sigma can't be 0.0", which once crashed this probe into a silent retry loop for
-  hours before it was caught.
+- **σ = 0.0 is excluded from `PROBE_SIGMAS`.** With no added noise it is not an informative
+  denoising point. The old `to_velocity` route also raised on zero and once crashed this probe.
 - The first attempt used the wrong σ grid entirely. The grid is the distilled model's own, not
   a sweep.
 
@@ -153,5 +156,5 @@ decoded frames; `_stamp` leaves every pixel below the band untouched.
 
 ## Owed
 
-**A D1 counterpart.** This is D0-only, and the arm comparison needs the same probe for the
-guide-conditioned arms.
+The D1 arm is available through `--guide-mode d1`; the paired frozen-base source comparison
+is `visualize_d1.py`. Checkpoint-condition enforcement remains [G3](known_gaps.md#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced).
