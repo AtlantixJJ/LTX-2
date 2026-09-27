@@ -1,3 +1,5 @@
+> Archived and superseded. Historical findings and proposals are retained as written; use [the current next-actions plan](../../d1-next-actions.md) for active work.
+
 # Does future noise affect earlier outputs during joint denoising?
 
 Date: 2026-09-26. Status: proposed experiment; no implementation or GPU execution performed.
@@ -6,7 +8,7 @@ Date: 2026-09-26. Status: proposed experiment; no implementation or GPU executio
 
 When eight new latent frames are denoised together with bidirectional attention, does changing only the noise in generated frames 3–8 change the output in generated frames 1–2?
 
-The previous [autoregressive prefix experiment](../../expr/onestep_avatar/base_distill_noise_prefixes_20260926/ar_incremental_8/REPORT.md) compares two executions of the same sequential block-causal algorithm. Its bit-exact prefixes establish reproducibility under that algorithm. It does not test influence between frames inside one jointly denoised block.
+The previous [autoregressive prefix experiment](../../../../expr/onestep_avatar/base_distill_noise_prefixes_20260926/ar_incremental_8/REPORT.md) compares two executions of the same sequential block-causal algorithm. Its bit-exact prefixes establish reproducibility under that algorithm. It does not test influence between frames inside one jointly denoised block.
 
 ## Fixed setup
 

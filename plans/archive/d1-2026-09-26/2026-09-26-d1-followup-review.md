@@ -1,3 +1,5 @@
+> Archived and superseded. Historical findings and proposals are retained as written; use [the current next-actions plan](../../d1-next-actions.md) for active work.
+
 # D1 continuation: review after decoding and grouping experiments
 
 Date: 2026-09-26. This supersedes the pending-work recommendations in the earlier [agent review](2026-09-26-d1-agent-review-next-step.md). Scope: current implementation, saved manifests/tensors, metric scripts, and selected visual contact sheets. No new GPU experiments were launched.
@@ -19,11 +21,11 @@ I checked model/prompt/source/epsilon provenance across each grouping, verified 
 
 Selected sheets inspected directly:
 
-- [Sigma 0.909375 clothing at frame 33](../../expr/onestep_avatar/d1_diagnostic/decoded_sigma0909_65f/sigma0909_boundary_33_clothing.jpg).
-- [Generated-history clothing at frame 65](../../expr/onestep_avatar/d1_diagnostic/decoded_review/0008_generated_boundary_65_clothing.jpg).
-- [Sigma 1 faces at frame 49](../../expr/onestep_avatar/d1_diagnostic/decoded_sigma1_65f/sigma1_boundary_49_face.jpg).
+- [Sigma 0.909375 clothing at frame 33](../../../../expr/onestep_avatar/d1_diagnostic/decoded_sigma0909_65f/sigma0909_boundary_33_clothing.jpg).
+- [Generated-history clothing at frame 65](../../../../expr/onestep_avatar/d1_diagnostic/decoded_review/0008_generated_boundary_65_clothing.jpg).
+- [Sigma 1 faces at frame 49](../../../../expr/onestep_avatar/d1_diagnostic/decoded_sigma1_65f/sigma1_boundary_49_face.jpg).
 
-These show different appearance trajectories between configurations; differences between rows are not themselves evidence of temporal jumps within a row. This review inspected still neighborhoods, not every full video at normal speed. The agent's broader playback observations are recorded in the [experiment report](../../expr/onestep_avatar/d1_diagnostic/REPORT.md).
+These show different appearance trajectories between configurations; differences between rows are not themselves evidence of temporal jumps within a row. This review inspected still neighborhoods, not every full video at normal speed. The agent's broader playback observations are recorded in the [experiment report](../../../../expr/onestep_avatar/d1_diagnostic/REPORT.md).
 
 ## Implementation findings
 

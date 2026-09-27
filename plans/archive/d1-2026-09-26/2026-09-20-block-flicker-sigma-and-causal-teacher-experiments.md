@@ -1,3 +1,5 @@
+> Archived and superseded. Historical findings and proposals are retained as written; use [the current next-actions plan](../../d1-next-actions.md) for active work.
+
 # Block-boundary flicker: noise level, cache behavior, and teacher supervision
 
 Date: 2026-09-20. Status: proposed experiment plan; no new GPU probe or training launched.
@@ -6,13 +8,13 @@ Date: 2026-09-20. Status: proposed experiment plan; no new GPU probe or training
 
 Determine why the unadapted distilled checkpoint is temporally coherent within a generated block but changes appearance across autoregressive block boundaries. Start with the user's proposed comparison: **sigma 0.909375 versus 1.0**, holding the original probe's other conditions fixed. Then distinguish teacher-forced history effects from cache implementation and causal adaptation issues. If a larger jointly generated span is coherent, evaluate using it to supervise a student that emits that span in two autoregressive calls.
 
-This plan belongs to `LTX-2/plans/`, as requested. It is an experiment proposal; implementation contracts remain in [the package docs](../scripts/onestep_avatar/doc/README.md).
+This plan belongs to `LTX-2/plans/`, as requested. It is an experiment proposal; implementation contracts remain in [the package docs](../../../scripts/onestep_avatar/doc/README.md).
 
 ## Evidence already inspected
 
-Reference video: [step 0, sigma 0.909375](../../expr/onestep_avatar/runs/white-d0-tf-c0-debug/probes/init/step_00000_sigma_0.909375.mp4).
+Reference video: [step 0, sigma 0.909375](../../../../expr/onestep_avatar/runs/white-d0-tf-c0-debug/probes/init/step_00000_sigma_0.909375.mp4).
 
-Its [manifest](../../expr/onestep_avatar/runs/white-d0-tf-c0-debug/probes/init/manifest.json) records:
+Its [manifest](../../../../expr/onestep_avatar/runs/white-d0-tf-c0-debug/probes/init/manifest.json) records:
 
 | Item | Reference setting |
 |---|---|

@@ -1,3 +1,5 @@
+> Archived and superseded. Historical findings and proposals are retained as written; use [the current next-actions plan](../../d1-next-actions.md) for active work.
+
 # Review of the D1 continuation implementation and experiments
 
 Date: 2026-09-26. Reviewed the current uncommitted implementation, saved manifests and raw artifacts under `../expr/onestep_avatar/d1_diagnostic`. This review launched CPU checks only; it did not change inference code or start new GPU experiments.
@@ -6,7 +8,7 @@ Date: 2026-09-26. Reviewed the current uncommitted implementation, saved manifes
 
 The agent has established a real cache-conditioning discrepancy, but has **not established a visual fix**. Keep the new modes as diagnostics. The next task is to decode the saved alternatives and complete the generated-history comparison before selecting an architecture or starting training.
 
-The [experiment report](../../expr/onestep_avatar/d1_diagnostic/REPORT.md) is appropriately cautious in its final decision. Its strongest result is computational: sigma-dependent prompt conditioning changes later-layer history K/V, including at sigma 1. Its quality evidence is weaker because it uses uncompensated latent differences, largely on one seed, and the full joint/recompute alternatives have not been decoded.
+The [experiment report](../../../../expr/onestep_avatar/d1_diagnostic/REPORT.md) is appropriately cautious in its final decision. Its strongest result is computational: sigma-dependent prompt conditioning changes later-layer history K/V, including at sigma 1. Its quality evidence is weaker because it uses uncompensated latent differences, largely on one seed, and the full joint/recompute alternatives have not been decoded.
 
 ## Implementation review
 
@@ -95,4 +97,4 @@ static; the guide-bearing 0.909375 joint result has slightly lower latent MSE on
 but changes the face and outfit trajectory and lacks full-clip continuation evidence. No
 training or deployment change was selected. Full measurements, normal-speed videos, boundary
 crops and decoded-pixel diagnostics are in
-[`expr/onestep_avatar/d1_diagnostic/REPORT.md`](../../expr/onestep_avatar/d1_diagnostic/REPORT.md).
+[`expr/onestep_avatar/d1_diagnostic/REPORT.md`](../../../../expr/onestep_avatar/d1_diagnostic/REPORT.md).

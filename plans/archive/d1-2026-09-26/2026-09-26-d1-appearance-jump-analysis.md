@@ -1,3 +1,5 @@
+> Archived and superseded. Historical findings and proposals are retained as written; use [the current next-actions plan](../../d1-next-actions.md) for active work.
+
 # D1 appearance jumps across autoregressive blocks
 
 Date: 2026-09-26. Scope: analysis of `../expr/onestep_avatar/d1_comparison`, current code inspection, saved-video measurements, and CPU diagnostics. No new GPU inference or training was launched; the fixes below are proposals.
@@ -16,7 +18,7 @@ My recommended order is: verify/fix the intended cache-conditioning semantics, c
 
 ## 1. What the saved experiment actually runs
 
-Evidence: the [comparison report](../../expr/onestep_avatar/d1_comparison/REPORT.md), [multistep launcher](../../expr/onestep_avatar/d1_comparison/run_official.sh), [example manifest](../../expr/onestep_avatar/d1_comparison/videos/official/gpu0/manifest.json), and [adapter config](../../expr/onestep_avatar/runs/causal-one-step-study-20260921/E2/lr_1e-4/config.json).
+Evidence: the [comparison report](../../../../expr/onestep_avatar/d1_comparison/REPORT.md), [multistep launcher](../../../../expr/onestep_avatar/d1_comparison/run_official.sh), [example manifest](../../../../expr/onestep_avatar/d1_comparison/videos/official/gpu0/manifest.json), and [adapter config](../../../../expr/onestep_avatar/runs/causal-one-step-study-20260921/E2/lr_1e-4/config.json).
 
 | Property | Saved setting / implication |
 |---|---|
@@ -36,7 +38,7 @@ Evidence: the [comparison report](../../expr/onestep_avatar/d1_comparison/REPORT
 
 The **intended** comparison changes only the schedule. However, `run.sh`, `high_noise/run.sh`, and the inspected one-step manifests still specify `lora_weights_step_00050.safetensors`. The corresponding multistep manifests specify `checkpoint: null`. Those particular saved one-step files cannot establish the same-base schedule comparison. Future matched runs must omit `--checkpoint` in both arms, record identical resolved base-model identities, and use fresh output directories. No existing files should be relabeled as base-only without rerunning or stronger provenance evidence.
 
-The September 26 `high_noise/` sweep has now completed and has a [report](../../expr/onestep_avatar/d1_comparison/high_noise/REPORT.md). The [sigma-1 multistep manifest](../../expr/onestep_avatar/d1_comparison/high_noise/videos/gpu6/official/manifest.json) records the frozen base, GT refresh, three views, and the full eight-step schedule `1 → 0.99375 → 0.9875 → 0.98125 → 0.975 → 0.909375 → 0.725 → 0.421875 → 0`. This supersedes the earlier observation that jobs were incomplete. Its reported D0 and D1 reconstruction means agree to the displayed precision: 19.564 dB PSNR and 0.9017 SSIM. Similar aggregate scores are compatible with source invariance but do not prove per-frame or latent equality.
+The September 26 `high_noise/` sweep has now completed and has a [report](../../../../expr/onestep_avatar/d1_comparison/high_noise/REPORT.md). The [sigma-1 multistep manifest](../../../../expr/onestep_avatar/d1_comparison/high_noise/videos/gpu6/official/manifest.json) records the frozen base, GT refresh, three views, and the full eight-step schedule `1 → 0.99375 → 0.9875 → 0.98125 → 0.975 → 0.909375 → 0.725 → 0.421875 → 0`. This supersedes the earlier observation that jobs were incomplete. Its reported D0 and D1 reconstruction means agree to the displayed precision: 19.564 dB PSNR and 0.9017 SSIM. Similar aggregate scores are compatible with source invariance but do not prove per-frame or latent equality.
 
 ### These are latent block boundaries
 
@@ -48,7 +50,7 @@ Global RoPE positions, the pinned clean `c0`, and the explicit GT refresh target
 
 ## 2. Evidence from the saved videos
 
-I inspected a [contact sheet](assets/2026-09-26-d1-boundaries/official_sigma0909375_contact.png) of `0008_01/view00_cam51` at frames 14/16/17/19, 30/32/33/35, and 46/48/49/51. Rows are GT, D0, and D1. Sleeve shape, clothing coverage, and texture change around the generated-block transitions; the GT row provides a smoother motion reference. The sheet supports the reported symptom, but is not an identity-recognition measurement.
+I inspected a [contact sheet](../../assets/2026-09-26-d1-boundaries/official_sigma0909375_contact.png) of `0008_01/view00_cam51` at frames 14/16/17/19, 30/32/33/35, and 46/48/49/51. Rows are GT, D0, and D1. Sleeve shape, clothing coverage, and texture change around the generated-block transitions; the GT row provides a smoother motion reference. The sheet supports the reported symptom, but is not an identity-recognition measurement.
 
 I also measured all nine views at sigma 0.909375 for both saved schedules. Each panel was downsampled to 256². A foreground mask was derived from the union of adjacent decoded-GT frames (`min RGB < 0.93`) and dilated by seven pixels. The boundary region comprises transitions within ±2 frames of each nominal boundary; the interior excludes them and transitions before frame 5. Each video contributes 35 boundary and 89 interior transitions; table entries average the per-view means.
 
@@ -67,7 +69,7 @@ This supports investigating boundary-localized error in **both** multistep arms.
 
 The existing full-frame reconstruction report gives multistep D1 PSNR/SSIM of **22.451 dB / 0.9381**, versus **24.375 dB / 0.9455** for D0 at 0.909375. These are reconstruction metrics, not seam metrics; the white background also dilutes subject errors.
 
-Artifacts: [per-video measurements](assets/2026-09-26-d1-boundaries/boundary_metrics.csv), [aggregates](assets/2026-09-26-d1-boundaries/summary.json), and [reproduction script](assets/2026-09-26-d1-boundaries/analyze_saved_videos.py).
+Artifacts: [per-video measurements](../../assets/2026-09-26-d1-boundaries/boundary_metrics.csv), [aggregates](../../assets/2026-09-26-d1-boundaries/summary.json), and [reproduction script](../../assets/2026-09-26-d1-boundaries/analyze_saved_videos.py).
 
 ## 3. Ranked causes and discriminating tests
 
@@ -116,7 +118,7 @@ The existing causal-core suite passes: **25 tests**. I then reused its explicit-
 | Disabled | 1.0 | 2.38e-7 | 3.73e-8 | Pass |
 | Enabled | 1.0 | 0.018322 | 0.003920 | Fail |
 
-Block 0 agrees exactly in both configurations. With the fixture's original smaller weight scale 0.05, both configurations passed the loose tolerance; that is why the diagnostic reports its changed initialization explicitly. These are synthetic-model values, **not an estimate of the 22B model's error**. See [CPU reproduction](assets/2026-09-26-d1-boundaries/probe_prompt_cache.py).
+Block 0 agrees exactly in both configurations. With the fixture's original smaller weight scale 0.05, both configurations passed the loose tolerance; that is why the diagnostic reports its changed initialization explicitly. These are synthetic-model values, **not an estimate of the 22B model's error**. See [CPU reproduction](../../assets/2026-09-26-d1-boundaries/probe_prompt_cache.py).
 
 This demonstrates a limitation of the claimed cached-versus-explicit equivalence, not necessarily a violation of an intentionally defined streaming model: a model can be trained to use zero-sigma history features. The current frozen-base comparison has not established that this choice preserves quality.
 
@@ -164,7 +166,7 @@ If the reported jump is from a direct `[1,0]` call, an excessively coarse sample
 
 With identical weights, schedule, geometry, text, epsilon, `c0`, and history policy, replacing `z_g` with any other **finite** tensor of the same shape at sigma 1 must not change the output beyond numerical repeatability. For teacher forcing the target history must also stay identical; for self forcing the histories should stay identical inductively from block 0 onward.
 
-I ran this through the existing `causal_core.rollout` using the small CPU model, two substantially different source tensors, and both one-step and eight-step schedules. **All four combinations of schedule and forcing policy produced exactly identical D0/D1 output latents (maximum difference 0), and preserved `c0` exactly.** [Script](assets/2026-09-26-d1-boundaries/probe_sigma1_invariance.py) · [results](assets/2026-09-26-d1-boundaries/sigma1_invariance.json).
+I ran this through the existing `causal_core.rollout` using the small CPU model, two substantially different source tensors, and both one-step and eight-step schedules. **All four combinations of schedule and forcing policy produced exactly identical D0/D1 output latents (maximum difference 0), and preserved `c0` exactly.** [Script](../../assets/2026-09-26-d1-boundaries/probe_sigma1_invariance.py) · [results](../../assets/2026-09-26-d1-boundaries/sigma1_invariance.json).
 
 This checks source removal and shared rollout plumbing on the small model; it does not test the 22B model's continuity. A material D0/D1 difference in a matched real sigma-1 run would reveal hidden source dependence, unequal noise/history/model settings, or a cache reset/leakage problem. Compare raw latents before decoding: separately compressed MP4 panels are not an exact equality test.
 
@@ -243,13 +245,13 @@ The prompt-cache script is an investigative reproduction: it catches and prints 
 
 Current checkout HEAD: `fdf80f59ecaa642226ca99655f9316828cedbc45`, with pre-existing uncommitted D1 probe files. Historical manifests do not pin a source revision; conclusions about implementation are from the current files and available logs, not a reconstructed historical checkout.
 
-- [D1 probe](../scripts/onestep_avatar/visualize_d1.py): schedule selection, weight loading, manifests, decoding.
-- [Shared probe](../scripts/onestep_avatar/visualize_d0.py): `_run_chain`, `_decode`, paired epsilon construction.
-- [Causal core](../scripts/onestep_avatar/causal_core.py): `ClipGrid`, `mix_block_noise`, `block_modality`, `refresh_block`, `rollout`.
-- [Transformer argument preparation](../packages/ltx-core/src/ltx_core/model/transformer/transformer_args.py): global sigma versus token timesteps.
-- [Transformer blocks](../packages/ltx-core/src/ltx_core/model/transformer/transformer.py): `apply_cross_attention_adaln`.
-- [Model configurator](../packages/ltx-core/src/ltx_core/model/transformer/model_configurator.py): prompt-AdaLN defaults.
-- [Training](../scripts/onestep_avatar/train.py): per-block MSE and refresh source.
+- [D1 probe](../../../scripts/onestep_avatar/visualize_d1.py): schedule selection, weight loading, manifests, decoding.
+- [Shared probe](../../../scripts/onestep_avatar/visualize_d0.py): `_run_chain`, `_decode`, paired epsilon construction.
+- [Causal core](../../../scripts/onestep_avatar/causal_core.py): `ClipGrid`, `mix_block_noise`, `block_modality`, `refresh_block`, `rollout`.
+- [Transformer argument preparation](../../../packages/ltx-core/src/ltx_core/model/transformer/transformer_args.py): global sigma versus token timesteps.
+- [Transformer blocks](../../../packages/ltx-core/src/ltx_core/model/transformer/transformer.py): `apply_cross_attention_adaln`.
+- [Model configurator](../../../packages/ltx-core/src/ltx_core/model/transformer/model_configurator.py): prompt-AdaLN defaults.
+- [Training](../../../scripts/onestep_avatar/train.py): per-block MSE and refresh source.
 
 ## Implementation follow-up (2026-09-26)
 
@@ -262,7 +264,7 @@ and `history_mode=joint` (the same tokens with bidirectional window attention); 
 deployment keep the existing cached mode. Permanent CPU tests cover prompt AdaLN, clean
 `c0`, eviction, geometry-invariant noise and joint-window information access.
 
-The [diagnostic report](../../expr/onestep_avatar/d1_diagnostic/REPORT.md) records one view
+The [diagnostic report](../../../../expr/onestep_avatar/d1_diagnostic/REPORT.md) records one view
 each from three actors, matched GT/generated-history runs, sigma-1 source invariance, real
 checkpoint layerwise K/V comparisons, and raw latent boundary/interior metrics. Cached and
 explicit block-1 outputs differ substantially before eviction, but recomputed causal prefix

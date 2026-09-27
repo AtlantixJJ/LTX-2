@@ -1,6 +1,8 @@
+> Archived and superseded. Historical findings and proposals are retained as written; use [the current next-actions plan](../../d1-next-actions.md) for active work.
+
 # Next steps after latent-prefix and decoder validation
 
-Date: 2026-09-26. Evidence: [noise-prefix report](../../expr/onestep_avatar/base_distill_noise_prefixes_20260926/REPORT.md), its verification scripts/JSON, and the [latest continuation dossier](../../expr/onestep_avatar/d1_diagnostic/HUMAN_REVIEW.md). No new GPU run or training was launched for this recommendation.
+Date: 2026-09-26. Evidence: [noise-prefix report](../../../../expr/onestep_avatar/base_distill_noise_prefixes_20260926/REPORT.md), its verification scripts/JSON, and the [latest continuation dossier](../../../../expr/onestep_avatar/d1_diagnostic/HUMAN_REVIEW.md). No new GPU run or training was launched for this recommendation.
 
 ## Decision
 
