@@ -29,7 +29,8 @@ What this measures, and why each part is here:
 * **T2** -- the sequential sliding-window rollout, run through ``refine_core`` at the
   DEPLOYED geometry: 25-frame windows with a 9-frame overlap, each window noised from
   its own VAE encode and continued from the previous window's refined carryover, then
-  cross-faded in pixel space. That is precisely what produced
+  stitched by keeping the earlier window's overlap in pixel space. That is
+  precisely what produced
   ``expr/sam3dgs_vae_refine/*/k2_longform_v3_carryover/decode_full.mp4``, and
   ``scripts/prune/method_parity.py`` is the gate that proves the two agree
   bit-for-bit. Chunk index is rollout depth: chunk *j* is native frames
@@ -55,14 +56,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from contextlib import nullcontext
 from pathlib import Path
 
 import decord
 import torch
+from safetensors import safe_open
 
 from ltx_core.components.diffusion_steps import EulerDiffusionStep
-from scripts.prune.core import artifacts, ltx_adapter, model_registry, refine_core, refine_task, session
+from scripts.prune.core import artifacts, ltx_adapter, model_registry, provenance, refine_core, refine_task, session
 from scripts.prune.core.model_registry import RefinerModel
 from scripts.prune.core.session import DTYPE
 from scripts.prune.data import chunk_states, corpus, records
@@ -72,13 +75,12 @@ from scripts.prune.score import hooks, losses
 decord.bridge.set_bridge("torch")
 
 
-def _load_head_masks(path: Path, device: torch.device) -> dict[str, torch.Tensor]:
-    """Load a runtime head mask from a ``head_scores.json`` iterative-pruning report."""
-    data = json.loads(path.read_text())
-    masks = data.get("iterative", {}).get("masks", data.get("masks"))
-    if masks is None:
-        raise SystemExit(f"{path}: no 'iterative.masks' (or top-level 'masks') found")
-    return {name: torch.tensor(values, device=device, dtype=torch.float32) for name, values in masks.items()}
+def _load_head_masks(path: Path, device: torch.device, transformer, *, model_key: str,
+                     fingerprint: str) -> tuple[dict[str, torch.Tensor], str]:
+    """Read an attributable, complete head mask for the loaded transformer."""
+    widths = {name: attention.heads for name, attention in hooks.iter_video_attention(transformer)}
+    masks, digest = hooks.read_mask_artifact(path, model_key=model_key, fingerprint=fingerprint, widths=widths)
+    return {name: torch.tensor(values, device=device, dtype=torch.float32) for name, values in masks.items()}, digest
 
 
 def _run_schedule(transformer, denoiser, state, sigmas: torch.Tensor, stepper) -> torch.Tensor:
@@ -137,7 +139,8 @@ def run_t0(model: RefinerModel, transformer, denoiser, device: torch.device, roo
         print(f"[t0] {path.name}: chunk rel_l2 {row['trajectory_rel_l2_chunk']:.4f}", flush=True)
 
     if not rows:
-        raise SystemExit(f"No on-policy step-0 records under {root}; run teacher --build-calibration first.")
+        raise SystemExit(f"No on-policy step-0 records under {root}; run "
+                         "python -m scripts.prune.data.source_target --build-calibration first.")
 
     def agg(key: str, subset: list[dict]) -> dict | None:
         vals = [r[key] for r in subset]
@@ -174,7 +177,12 @@ def _encode_windows(model: RefinerModel, clip_path: Path, windows: list[tuple[in
     covered = windows[-1][1]
     latents: list[torch.Tensor] = []
     with ltx_adapter.video_encoder(model.paths.video_vae(), DTYPE, device) as encoder:
-        source_px = refine_core.read_pixel_window(vr, 0, covered, device, DTYPE)[1]
+        # Keep the reference on CPU in bounded reads. A 200-window source can be
+        # thousands of frames; one get_batch over the whole video is too large.
+        source_px = torch.cat([
+            refine_core.read_pixel_window(vr, start, min(start + 64, covered), torch.device("cpu"), DTYPE)[1]
+            for start in range(0, covered, 64)
+        ])
         for start, stop in windows:
             norm, _ = refine_core.read_pixel_window(vr, start, stop, device, DTYPE)
             latents.append(encoder.tiled_encode(norm, None).cpu())
@@ -184,7 +192,8 @@ def _encode_windows(model: RefinerModel, clip_path: Path, windows: list[tuple[in
 
 
 def _rollout(transformer, denoiser, window_latents: list[torch.Tensor], geometry: refine_core.WindowGeometry,
-             sigmas_list: list[float], fps: float, *, seed: int, device: torch.device) -> list[torch.Tensor]:
+             sigmas_list: list[float], fps: float, *, seed: int, device: torch.device,
+             timing_rows: list[dict] | None = None) -> list[torch.Tensor]:
     """The deployed sliding-window rollout: window i+1 continues from window i's output.
 
     Exactly ``scripts/vae_refine_sliding_window.py``'s phase B, through the shared
@@ -205,9 +214,15 @@ def _rollout(transformer, denoiser, window_latents: list[torch.Tensor], geometry
     for index, encoded in enumerate(window_latents):
         l_init = encoded.to(device=device, dtype=DTYPE)
         tools = refine_core.build_tools(l_init, fps, geometry.scale_factors)
+        if timing_rows is not None:
+            torch.cuda.synchronize(device)
+            started = time.perf_counter()
         latent = refine_core.refine_window(
             transformer, denoiser, l_init, carry, sigmas, tools, seed, device, DTYPE, stepper
         )
+        if timing_rows is not None:
+            torch.cuda.synchronize(device)
+            timing_rows.append({"window_index": index, "refine_s": time.perf_counter() - started})
         carry = refine_core.carry_from(latent, geometry)
         refined.append(latent.cpu())
         if (index + 1) % 5 == 0:
@@ -216,31 +231,21 @@ def _rollout(transformer, denoiser, window_latents: list[torch.Tensor], geometry
 
 
 def _stitch(decoded: list[torch.Tensor], windows: list[tuple[int, int]]) -> torch.Tensor:
-    """Linear cross-fade over each overlap, exactly as the run script finalizes frames.
+    """Keep the first window's overlap, exactly as the deployed Stitcher does.
 
     ``decoded[i]`` is window i's decoded pixels ``[F, H, W, C]``; the result is the
     contiguous native-frame range ``[0, windows[-1][1])`` -- the same frames that end up
     in ``decode_full.mp4``.
     """
-    out: list[torch.Tensor] = []
-    pending_tail: torch.Tensor | None = None
-    for i, pixels in enumerate(decoded):
-        start, end = windows[i]
-        overlap_prev = max(0, windows[i - 1][1] - start) if i > 0 else 0
-        taken = 0
-        if overlap_prev > 0 and pending_tail is not None:
-            ov = min(overlap_prev, pending_tail.shape[0], pixels.shape[0])
-            w = torch.linspace(0.0, 1.0, ov).view(ov, 1, 1, 1)
-            out.append((1.0 - w) * pending_tail[:ov] + w * pixels[:ov])
-            taken = ov
-        overlap_next = max(0, end - windows[i + 1][0]) if i < len(windows) - 1 else 0
-        body_end = pixels.shape[0] - overlap_next
-        if body_end > taken:
-            out.append(pixels[taken:body_end])
-        pending_tail = pixels[body_end:] if overlap_next > 0 else None
-    if pending_tail is not None and pending_tail.numel():
-        out.append(pending_tail)
-    return torch.cat(out, dim=0)
+    if len(decoded) != len(windows) or not decoded:
+        raise ValueError("one decoded video is required per planned window")
+    kept = [decoded[0]]
+    for i in range(1, len(decoded)):
+        overlap = windows[i - 1][1] - windows[i][0]
+        if not 0 <= overlap < decoded[i].shape[0]:
+            raise ValueError(f"window {i} has invalid overlap {overlap}")
+        kept.append(decoded[i][overlap:])
+    return torch.cat(kept, dim=0)
 
 
 def main() -> int:
@@ -254,6 +259,8 @@ def main() -> int:
                     help="Apply a runtime head mask (a head_scores.json iterative-pruning report) for the whole run.")
     ap.add_argument("--output", type=Path, default=None,
                     help="JSON destination; defaults to the unpruned Phase-1 baseline path.")
+    ap.add_argument("--profile-output", type=Path, default=None,
+                    help="Matched per-window timing JSON; defaults beside --output.")
     ap.add_argument("--figures-dir", type=Path, default=None,
                     help="Where to write the T3 grid/video; defaults to <out_root>/figures. "
                          "Set this to a distinct directory for concurrent runs to avoid clobbering each other.")
@@ -266,9 +273,23 @@ def main() -> int:
                          "expr/sam3dgs_vae_refine/*/k2_longform_v3_carryover/decode_full.mp4.")
     ap.add_argument("--overlap-frames", type=int, default=refine_task.OVERLAP_FRAMES)
     ap.add_argument("--t2-clip", default=None, help="Clip directory name; defaults to the longest held-out clip.")
+    ap.add_argument("--t2-video", type=Path, default=None,
+                    help="Frame-aligned external long source video; requires --expected-source-sha256.")
+    ap.add_argument("--expected-source-sha256", default=None,
+                    help="Pin the exact external source bytes for a long-form comparison.")
     ap.add_argument("--skip-t2", action="store_true")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
+    if args.t2_video is not None:
+        if args.t2_clip is not None or not args.expected_source_sha256:
+            ap.error("--t2-video requires --expected-source-sha256 and cannot be combined with --t2-clip")
+        if not args.t2_video.is_file():
+            ap.error(f"source video does not exist: {args.t2_video}")
+        actual_sha256 = provenance.file_sha256(args.t2_video)
+        if actual_sha256 != args.expected_source_sha256:
+            ap.error(f"source SHA256 differs: {actual_sha256}")
+    elif args.expected_source_sha256 is not None:
+        ap.error("--expected-source-sha256 requires --t2-video")
 
     s = session.open_session(args, script="phase1_gates", transformer_path=args.transformer_path)
     model, device = s.model, s.device
@@ -286,16 +307,20 @@ def main() -> int:
     # --- pick and encode the T2 clip before the transformer is resident ---
     t2 = None
     if not args.skip_t2:
-        source = corpus.pick_clip(
+        source = args.t2_video or corpus.pick_clip(
             geometry, name=args.t2_clip, key=model.key, prefer="held_out", longest=True
         )
         pick = {"clip": source.parent.name, "source": str(source)}
         total = corpus.frame_count(source)
         windows = geometry.plan(total)
+        if args.rollout_windows is not None and args.rollout_windows > len(windows):
+            raise SystemExit(f"{source}: only {len(windows)} full windows, requested {args.rollout_windows}")
         if args.rollout_windows:
             windows = windows[: args.rollout_windows]
         latents, source_px, fps = _encode_windows(model, Path(pick["source"]), windows, device)
-        t2 = {"clip": pick["clip"], "windows": windows, "latents": latents, "source_px": source_px, "fps": fps}
+        t2 = {"clip": pick["clip"], "windows": windows, "latents": latents, "source_px": source_px,
+              "fps": fps, "source": str(source), "source_frames": total,
+              "source_sha256": actual_sha256 if args.t2_video is not None else provenance.file_sha256(source)}
         print(f"[t2] clip {pick['clip']}: {total} frames -> {len(windows)} windows of "
               f"{geometry.window_frames} (overlap {geometry.overlap_frames}, stride {geometry.stride_frames}) "
               f"at {fps} fps", flush=True)
@@ -307,22 +332,43 @@ def main() -> int:
         "target": "vae_encoded_source_latent",
         "geometry": geometry.as_dict(),
         "seed": args.seed,
+        "method_sources": provenance.method_source_hashes(),
     }
+    result["source_transformer_fingerprint"] = result["provenance"]["transformer_fingerprint"]
+    if args.transformer_path is not None:
+        with safe_open(args.transformer_path, framework="pt", device="cpu") as handle:
+            config = json.loads((handle.metadata() or {}).get("config", "{}"))
+        result["source_transformer_fingerprint"] = (
+            config.get("transformer", {}).get("pruning", {}).get("source_transformer_fingerprint")
+            or result["source_transformer_fingerprint"]
+        )
     refined: list[torch.Tensor] = []
+    timing_rows: list[dict] = []
     with s.transformer(args.transformer_path) as transformer:
-        mask_ctx = hooks.attach_head_masks(transformer, _load_head_masks(args.head_masks, device), requires_grad=False) \
-            if args.head_masks is not None else nullcontext()
+        mask_values, mask_digest = _load_head_masks(
+            args.head_masks, device, transformer, model_key=model.key,
+            fingerprint=result["provenance"]["transformer_fingerprint"]
+        ) if args.head_masks is not None else (None, None)
+        mask_ctx = hooks.attach_head_masks(transformer, mask_values, requires_grad=False) \
+            if mask_values is not None else nullcontext()
         with mask_ctx as masks:
             if masks is not None:
                 dropped = sum(int((v == 0).sum()) for v in masks.values())
                 total_heads = sum(v.numel() for v in masks.values())
-                result["head_masks"] = {"source": str(args.head_masks), "heads_dropped": dropped, "heads_total": total_heads}
+                result["head_masks"] = {"source": str(args.head_masks), "sha256": mask_digest,
+                                        "heads_dropped": dropped, "heads_total": total_heads}
                 print(f"[head-masks] {dropped}/{total_heads} heads zeroed from {args.head_masks}", flush=True)
             result["T0"] = run_t0(model, transformer, denoiser, device, states_root, args.t0_max_records)
             if t2 is not None:
                 refined = _rollout(transformer, denoiser, t2["latents"], geometry, student_sigmas, t2["fps"],
-                                   seed=args.seed, device=device)
-                result.setdefault("T2", {}).update({"windows": len(refined), "clip": t2["clip"], "fps": t2["fps"]})
+                                   seed=args.seed, device=device, timing_rows=timing_rows)
+                result.setdefault("T2", {}).update({
+                    "windows": len(refined), "clip": t2["clip"], "fps": t2["fps"],
+                    "source": t2["source"], "source_sha256": t2["source_sha256"],
+                    "source_frames": t2["source_frames"],
+                    "covered_frames": t2["windows"][-1][1],
+                    "source_frame_windows": t2["windows"],
+                })
                 print(f"[t2] rollout: {len(refined)} windows refined", flush=True)
 
     # --- decode-resident phase: T1, T2 pixel metrics, T3 artifacts ---
@@ -339,18 +385,21 @@ def main() -> int:
         pred = stitched[:n].permute(0, 3, 1, 2)
         source = source_px[:n].permute(0, 3, 1, 2)
 
-        # T2 chunk = one stride of finalized frames, so chunk index IS rollout depth:
-        # chunk j spans native frames [j*stride, (j+1)*stride), the span window j is the
-        # last (and, outside the cross-fade, only) window to touch.
+        # The first window finalizes all its frames; each later window finalizes
+        # only its non-overlapping tail, matching the deployed Stitcher.
         stride = geometry.stride_frames
         rollout_rows = []
+        finalized_spans = []
         for j in range(len(refined)):
-            lo, hi = j * stride, min((j + 1) * stride, n)
+            lo = 0 if j == 0 else t2["windows"][j - 1][1]
+            hi = min(t2["windows"][j][1], n)
             if lo >= hi:
                 break
+            finalized_spans.append([lo, hi])
             rollout_rows.append({"chunk": j, "pred": pred[lo:hi], "teacher": source[lo:hi]})
         result["T2"].update(metrics.t2(rollout_rows))
         result["T2"]["stride_frames"] = stride
+        result["T2"]["finalized_frame_spans"] = finalized_spans
 
         result["T1"] = metrics.t1(pred, source)
         result["T1"]["frames_compared"] = n
@@ -366,6 +415,15 @@ def main() -> int:
     path = args.output or artifacts.phase1(model.key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result, indent=2))
+    if timing_rows:
+        profile_path = args.profile_output or path.with_name(path.stem + "_profile.json")
+        profile = {"provenance": result["provenance"],
+                   "source_transformer_fingerprint": result["source_transformer_fingerprint"],
+                   "geometry": result["geometry"], "seed": result["seed"], "clip": result["T2"]["clip"],
+                   "gpu_name": torch.cuda.get_device_name(device), "gpu_index": device.index,
+                   "rows": timing_rows}
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        profile_path.write_text(json.dumps(profile, indent=2))
     print(json.dumps({k: v for k, v in result.items() if k != "T0"}, indent=2))
     print(f"Wrote {path}")
     return 0

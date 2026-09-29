@@ -487,6 +487,8 @@ class Attention(torch.nn.Module):
         rope_type: LTXRopeType = LTXRopeType.SPLIT,
         ops: AttentionOps | None = None,
         apply_gated_attention: bool = False,
+        qk_heads: int | None = None,
+        active_head_indices: list[int] | None = None,
     ) -> None:
         super().__init__()
         if ops is None:
@@ -498,16 +500,26 @@ class Attention(torch.nn.Module):
         self.gated_attention_function = ops.gated_attention_function
 
         inner_dim = dim_head * heads
+        qk_dim = dim_head * (qk_heads or heads)
         context_dim = query_dim if context_dim is None else context_dim
 
         self.heads = heads
         self.dim_head = dim_head
+        self.qk_heads = qk_heads or heads
+        if active_head_indices is not None and (
+            not active_head_indices or len(set(active_head_indices)) != len(active_head_indices)
+            or any(index < 0 or index >= heads for index in active_head_indices)
+        ):
+            raise ValueError("active head indices must be unique and within the original head width")
+        self.active_head_indices = (
+            active_head_indices if active_head_indices is not None and len(active_head_indices) < heads else None
+        )
 
-        self.q_norm = torch.nn.RMSNorm(inner_dim, eps=norm_eps)
-        self.k_norm = torch.nn.RMSNorm(inner_dim, eps=norm_eps)
+        self.q_norm = torch.nn.RMSNorm(qk_dim, eps=norm_eps)
+        self.k_norm = torch.nn.RMSNorm(qk_dim, eps=norm_eps)
 
-        self.to_q = torch.nn.Linear(query_dim, inner_dim, bias=True)
-        self.to_k = torch.nn.Linear(context_dim, inner_dim, bias=True)
+        self.to_q = torch.nn.Linear(query_dim, qk_dim, bias=True)
+        self.to_k = torch.nn.Linear(context_dim, qk_dim, bias=True)
         self.to_v = torch.nn.Linear(context_dim, inner_dim, bias=True)
 
         # Optional per-head gating
@@ -569,6 +581,8 @@ class Attention(torch.nn.Module):
             Output tensor of shape ``(B, T, query_dim)``.
         """
         context = x if context is None else context
+        if self.active_head_indices is not None and kv_cache is not None:
+            raise ValueError("sparse attention with a K/V cache is not implemented")
         use_attention = not all_perturbed
 
         v = self.to_v(context)
@@ -608,10 +622,24 @@ class Attention(torch.nn.Module):
             q = self.to_q(x)
             k = self.to_k(context)
             q, k = self.preattention_function(q, k, self, mask, pe, k_pe)
-            if mask is None:
-                out = self.attention_function(q, k, v, self.heads)  # (B, T, H*D)
+            if self.active_head_indices is None:
+                if mask is None:
+                    out = self.attention_function(q, k, v, self.heads)  # (B, T, H*D)
+                else:
+                    out = self.masked_attention_function(q, k, v, self.heads, mask)
             else:
-                out = self.masked_attention_function(q, k, v, self.heads, mask)
+                indices = self.active_head_indices
+                def select(value):
+                    return value.reshape(value.shape[0], value.shape[1], self.heads, self.dim_head)[:, :, indices, :].flatten(-2)
+                q_active, k_active, v_active = select(q), select(k), select(v)
+                active = (self.attention_function(q_active, k_active, v_active, len(indices))
+                          if mask is None else
+                          self.masked_attention_function(q_active, k_active, v_active, len(indices), mask))
+                out = torch.zeros((active.shape[0], active.shape[1], self.heads, self.dim_head),
+                                  device=active.device, dtype=active.dtype)
+                out = out.index_copy(2, torch.tensor(indices, device=active.device), active.reshape(
+                    active.shape[0], active.shape[1], len(indices), self.dim_head))
+                out = out.flatten(-2)
 
             if perturbation_mask is not None:
                 out = out * perturbation_mask + v * (1 - perturbation_mask)
@@ -620,4 +648,9 @@ class Attention(torch.nn.Module):
         if self.to_gate_logits is not None:
             out = self.gated_attention_function(x, out, self)
 
+        if self.active_head_indices is not None:
+            mask_heads = torch.zeros(self.heads, device=out.device, dtype=out.dtype)
+            mask_heads[self.active_head_indices] = 1
+            out = (out.reshape(out.shape[0], out.shape[1], self.heads, self.dim_head)
+                   * mask_heads.view(1, 1, self.heads, 1)).flatten(-2)
         return self.to_out(out)

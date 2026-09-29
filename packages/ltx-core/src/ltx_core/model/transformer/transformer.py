@@ -40,6 +40,10 @@ class TransformerConfig:
     ff_inner_dim: int | None = None
     attn1_rope_head_indices: list[int] | None = None
     attn2_rope_head_indices: list[int] | None = None
+    preserve_qk_norm: bool = False
+    attn1_active_head_indices: list[int] | None = None
+    attn2_active_head_indices: list[int] | None = None
+    ffn_active_channels: list[int] | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +118,8 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 norm_eps=norm_eps,
                 ops=ops.attention_ops,
                 apply_gated_attention=video.apply_gated_attention,
+                qk_heads=video.heads if video.preserve_qk_norm else None,
+                active_head_indices=video.attn1_active_head_indices,
             )
             self.attn1.rope_head_indices = video.attn1_rope_head_indices
             self.attn2 = Attention(
@@ -125,9 +131,12 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 norm_eps=norm_eps,
                 ops=ops.attention_ops,
                 apply_gated_attention=video.apply_gated_attention,
+                qk_heads=video.heads if video.preserve_qk_norm else None,
+                active_head_indices=video.attn2_active_head_indices,
             )
             self.attn2.rope_head_indices = video.attn2_rope_head_indices
-            self.ff = FeedForward(video.dim, dim_out=video.dim, bias=video.ff_bias, inner_dim=video.ff_inner_dim)
+            self.ff = FeedForward(video.dim, dim_out=video.dim, bias=video.ff_bias, inner_dim=video.ff_inner_dim,
+                                  active_channels=video.ffn_active_channels)
             video_sst_size = adaln_embedding_coefficient(video.cross_attention_adaln)
             self.scale_shift_table = torch.nn.Parameter(torch.empty(video_sst_size, video.dim))
 

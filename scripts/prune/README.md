@@ -1,5 +1,7 @@
 # `scripts/prune/` — training-free head + FFN pruning of the LTX refiner
 
+Per-module design docs and review findings: [`doc/README.md`](doc/README.md).
+
 Implements [`plans/2026-08-26-refiner-head-ffn-pruning.md`](../../plans/2026-08-26-refiner-head-ffn-pruning.md),
 refactored per [`plans/2026-08-28-prune-package-refactor.md`](../../plans/2026-08-28-prune-package-refactor.md).
 Everything here runs in the `ltx` conda env, from the **LTX-2 repo root**, as a module:
@@ -106,7 +108,7 @@ package-init time would cycle); import the specific module you need, e.g.
 | `head_scores.py` | Contribution / Michel / Gauss–Newton head-importance estimators, iterative pruning, leave-one-out validation (§7). |
 | `ffn_scores.py` | FFN-channel scoring and mask construction. |
 | `prune_schedule.py` | Iterative head-mask pruning to a target sparsity, re-scoring the currently masked model each round. |
-| `export_pruned.py` | Structural export: bakes a mask into a narrower checkpoint (Phase 4). |
+| `export_pruned.py` | Checkpoint export: sparse full-projection mode by default; experimental compact structural mode. Validate with `checks.export_parity` (Phase 4). |
 
 **`evaluate/`** — the T0–T3 gate metrics and the candidate gates themselves
 (`evaluate/`, not `eval/` — `eval` shadows the builtin and trips ruff's `A` rules):
@@ -115,20 +117,21 @@ package-init time would cycle); import the specific module you need, e.g.
 |---|---|
 | `metrics.py` | T0 latent, T1 decoded pixels, T2 sequential-rollout slopes, and T3 review grids (§6). |
 | `decode.py` | The one decoder implementation: `decode_latent` (a dense latent → `[F,H,W,C]` pixels, the `phase1_gates` rollout path) and `decode_token_latent` (a token-space x0 → `[F,C,H,W]` pixels, `head_ablation_eval`'s path, built on top of `decode_latent`). |
-| `phase1_gates.py` | Runs the **unpruned** student through T0/T1/T2/T3 — the §6 gate itself, and the reference level every pruned candidate is measured against. |
+| `phase1_gates.py` | Runs baseline, functional-mask, or exported student through T0/T1/T2/T3 with matched source and timing profiles. |
 | `head_ablation_eval.py` | Functionally removes selected heads (a zero mask at `to_out[0]`, equivalent to deletion) and compares against the unpruned result, plus a review MP4. |
 | `sampler_ab.py` | Reproducible 2.5 Euler/ancestral T0 comparison and recorded sampler decision (§4, §6). |
-| `gates.py` | The pass/fail verdict logic a pruned candidate is judged by (rollout-length floor, minimum speedup, T0 delta). |
+| `gates.py` | Fail-closed matched-provenance, quality, coverage, media, and speed verdict. |
 | `bench_refiner.py` | The Phase 0 baseline table: ms/step, peak memory, FLOPs per geometry, incl. the `torch.compile`/CUDA-graph and K/V-cache axes (§5.5). |
 | `timing.py` | `StageTimer` + FLOP counting (§5). |
 | `cross_kv_cache.py` | Per-sigma `attn2` K/V memoization, with a bit-exactness gate (§5.4). |
 
-**`checks/`** — the three bit-exactness gates:
+**`checks/`** — parity and compatibility gates:
 
 | File | What it owns |
 |---|---|
 | `parity_check.py` | The refactor-parity gate (§5.1): the model-registry refactor reproduces the pre-refactor script bit-for-bit. |
 | `method_parity.py` | **The gate that proves the harness rolls out the deployed method**: same clip, same geometry, same seed, `torch.equal` on the refined latents vs `scripts/vae_refine_sliding_window.py` run as a subprocess. |
+| `export_parity.py` | Compares a masked source and exported checkpoint on a frozen record and two-window rollout, recording timing and peak allocated GPU memory. |
 | `video_only_check.py` | The audio-branch-drop gate (§5.2): a video-only build matches an audio-video build within bf16 noise. |
 
 **`report/`** — collecting results:
@@ -158,6 +161,27 @@ python -m scripts.prune.report.plot_head_scores \
 python -m scripts.prune.evaluate.head_ablation_eval --model 2.5 --gpu-id N \
   --remove-head 7.attn2:14 --split held_out --max-records 8
 ```
+
+For an exported candidate, validate the mask report's checkpoint identity,
+export, and compare the sparse checkpoint with its functional mask:
+
+```bash
+python -m scripts.prune.score.export_pruned --model 2.5 --masks <head_scores.json> \
+  --output ../expr/refiner_prune/2.5/<candidate>.safetensors
+python -m scripts.prune.checks.export_parity --model 2.5 --gpu-id N \
+  --masks <head_scores.json> --exported-checkpoint ../expr/refiner_prune/2.5/<candidate>.safetensors
+```
+
+`phase1_gates` now writes a matching `*_profile.json` beside its evaluation
+JSON. `evaluate.gates` compares matched evaluation/profile pairs and exits
+nonzero if any quality, coverage, provenance, media, or speed criterion fails.
+The short-clip check uses `--mode short --rollout-chunks N`; the long-form
+check requires at least 200 windows from a frame-aligned source. To use such a
+source, pass `phase1_gates --t2-video <video> --expected-source-sha256 <sha256>
+--rollout-windows 200` to both baseline and candidate runs.
+The measured p05 sparse checkpoint passed export parity but failed the
+200-window quality and speed verdict; see the
+[implementation result](../../../plans/2026-09-29-refiner-prune-review-and-next-steps.md#implementation-and-measured-decision--2026-09-29).
 
 ## The deployed method, and why `method_parity.py` exists
 

@@ -7,9 +7,47 @@ loaded checkpoint remains immutable.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterator
+from pathlib import Path
 
 import torch
+
+
+def read_mask_artifact(path: str | Path, *, model_key: str, fingerprint: str,
+                       widths: dict[str, int]) -> tuple[dict[str, list[float]], str]:
+    """Validate a score report before applying its mask to a checkpoint.
+
+    A report may contain all attention masks, all FFN masks, or both. Omitted
+    kinds mean unpruned; a partial kind is an error rather than an implicit mask.
+    """
+    raw = Path(path).read_bytes()
+    report = json.loads(raw)
+    provenance = report.get("provenance")
+    if not isinstance(provenance, dict) or provenance.get("model_key") != model_key or (
+        provenance.get("transformer_fingerprint") != fingerprint
+    ):
+        raise ValueError(f"{path}: mask model key or transformer fingerprint differs from the active checkpoint")
+    iterative = report.get("iterative")
+    masks = iterative.get("masks") if isinstance(iterative, dict) and isinstance(iterative.get("masks"), dict) else report.get("masks")
+    if not isinstance(masks, dict) or not masks:
+        raise ValueError(f"{path}: no mask dictionary")
+    if set(masks) - set(widths):
+        raise ValueError(f"{path}: unknown mask keys {sorted(set(masks) - set(widths))[:4]}")
+    for suffixes in ((".attn1", ".attn2"), (".ff",)):
+        expected = {name for name in widths if name.endswith(suffixes)}
+        present = expected & set(masks)
+        if present and present != expected:
+            raise ValueError(f"{path}: incomplete mask family; missing {sorted(expected - present)[:4]}")
+    for name, values in masks.items():
+        if not isinstance(values, list) or len(values) != widths[name] or not values:
+            raise ValueError(f"{path}: {name} has wrong mask width")
+        if any(type(value) not in (int, float) or value not in (0, 1) for value in values):
+            raise ValueError(f"{path}: {name} must contain finite binary values")
+        if not any(values):
+            raise ValueError(f"{path}: {name} would remove the entire branch")
+    return masks, hashlib.sha256(raw).hexdigest()
 
 
 class MaskAttachments(dict[str, torch.Tensor]):

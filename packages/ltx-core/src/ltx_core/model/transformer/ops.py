@@ -31,12 +31,18 @@ class PytorchPreAttention(PreAttentionCallable):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         q = attn_module.q_norm(q)
         k = attn_module.k_norm(k)
+        indices = getattr(attn_module, "rope_head_indices", None)
+        if attn_module.qk_heads != attn_module.heads:
+            if indices is None or len(indices) != attn_module.heads:
+                raise ValueError("pruned Q/K normalization requires retained original head indices")
+            def retained(value):
+                return value.reshape(*value.shape[:-1], attn_module.qk_heads, attn_module.dim_head)[..., indices, :].flatten(-2)
+            q, k = retained(q), retained(k)
         if pe is not None:
             # A structurally pruned branch keeps arbitrary original heads. RoPE
             # frequencies are head-major, so retaining only the first H slices
             # would change positional encoding.  Select the recorded original
             # slices before applying RoPE; stock checkpoints leave this None.
-            indices = getattr(attn_module, "rope_head_indices", None)
             def select_heads(freqs):
                 if indices is None:
                     return freqs

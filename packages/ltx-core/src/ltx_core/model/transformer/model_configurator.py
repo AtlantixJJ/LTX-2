@@ -85,6 +85,10 @@ class LTXModelConfigurator(ModelConfigurator[LTXModel]):
             per_layer_ff_inner_dim=config.get("per_layer_ff_inner_dim"),
             per_layer_video_attn1_rope_head_indices=config.get("per_layer_video_attn1_rope_head_indices"),
             per_layer_video_attn2_rope_head_indices=config.get("per_layer_video_attn2_rope_head_indices"),
+            video_pruning_preserve_qk_norm=config.get("video_pruning_preserve_qk_norm", False),
+            per_layer_video_attn1_active_head_indices=config.get("per_layer_video_attn1_active_head_indices"),
+            per_layer_video_attn2_active_head_indices=config.get("per_layer_video_attn2_active_head_indices"),
+            per_layer_video_ffn_active_channels=config.get("per_layer_video_ffn_active_channels"),
         )
 
 
@@ -150,6 +154,10 @@ class LTXVideoOnlyModelConfigurator(ModelConfigurator[LTXModel]):
             per_layer_ff_inner_dim=config.get("per_layer_ff_inner_dim"),
             per_layer_video_attn1_rope_head_indices=config.get("per_layer_video_attn1_rope_head_indices"),
             per_layer_video_attn2_rope_head_indices=config.get("per_layer_video_attn2_rope_head_indices"),
+            video_pruning_preserve_qk_norm=config.get("video_pruning_preserve_qk_norm", False),
+            per_layer_video_attn1_active_head_indices=config.get("per_layer_video_attn1_active_head_indices"),
+            per_layer_video_attn2_active_head_indices=config.get("per_layer_video_attn2_active_head_indices"),
+            per_layer_video_ffn_active_channels=config.get("per_layer_video_ffn_active_channels"),
         )
 
 

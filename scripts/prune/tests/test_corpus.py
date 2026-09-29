@@ -9,29 +9,39 @@ from scripts.prune.core import refine_task
 from scripts.prune.data import corpus
 
 
+def _require_sources():
+    if not corpus.sources():
+        pytest.skip(f"historical source.mp4 corpus is absent from {corpus.CORPUS_DIR}")
+
+
 def test_fps_is_read_per_clip_and_not_uniform():
+    _require_sources()
     assert {corpus.fps(source) for source in corpus.sources()} == {24.0, 30.0}
 
 
 def test_pick_clip_skips_clip_shorter_than_window(model):
+    _require_sources()
     geometry = refine_task.deployed_geometry(model.scale_factors)
     picked = corpus.pick_clip(geometry, windows=6)
     assert corpus.frame_count(picked) >= geometry.window_frames + 5 * geometry.stride_frames
 
 
 def test_pick_clip_by_name_wins(model):
+    _require_sources()
     geometry = refine_task.deployed_geometry(model.scale_factors)
     picked = corpus.pick_clip(geometry, 1, name="2K2K_00052_0__man_dance_2_crop")
     assert picked.parent.name == "2K2K_00052_0__man_dance_2_crop"
 
 
 def test_pick_clip_prefers_held_out_split(model):
+    _require_sources()
     geometry = refine_task.deployed_geometry(model.scale_factors)
     picked = corpus.pick_clip(geometry, 1, key="2.5", prefer="held_out")
     assert corpus.split("2.5")[picked.parent.name] == "held_out"
 
 
 def test_pick_one_per_subject_returns_distinct_subjects():
+    _require_sources()
     picked = corpus.pick_one_per_subject(3, min_frames=25)
     assert len({corpus.subject_of(source.parent.name) for source in picked}) == 3
 

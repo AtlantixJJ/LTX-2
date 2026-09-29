@@ -100,6 +100,10 @@ class LTXModel(torch.nn.Module, Disposable):
         per_layer_ff_inner_dim: list[int] | None = None,
         per_layer_video_attn1_rope_head_indices: list[list[int]] | None = None,
         per_layer_video_attn2_rope_head_indices: list[list[int]] | None = None,
+        video_pruning_preserve_qk_norm: bool = False,
+        per_layer_video_attn1_active_head_indices: list[list[int]] | None = None,
+        per_layer_video_attn2_active_head_indices: list[list[int]] | None = None,
+        per_layer_video_ffn_active_channels: list[list[int]] | None = None,
     ):
         super().__init__()
         # Log the attention backends this transformer is built with. Reading the resolved
@@ -172,6 +176,10 @@ class LTXModel(torch.nn.Module, Disposable):
             per_layer_ff_inner_dim=per_layer_ff_inner_dim,
             per_layer_video_attn1_rope_head_indices=per_layer_video_attn1_rope_head_indices,
             per_layer_video_attn2_rope_head_indices=per_layer_video_attn2_rope_head_indices,
+            video_pruning_preserve_qk_norm=video_pruning_preserve_qk_norm,
+            per_layer_video_attn1_active_head_indices=per_layer_video_attn1_active_head_indices,
+            per_layer_video_attn2_active_head_indices=per_layer_video_attn2_active_head_indices,
+            per_layer_video_ffn_active_channels=per_layer_video_ffn_active_channels,
         )
         # Hook for per-block input prep. Compile transforms in `compiling.py`
         # wrap (not replace) this with a processor that also marks the seq dim
@@ -408,6 +416,10 @@ class LTXModel(torch.nn.Module, Disposable):
         per_layer_ff_inner_dim: list[int] | None = None,
         per_layer_video_attn1_rope_head_indices: list[list[int]] | None = None,
         per_layer_video_attn2_rope_head_indices: list[list[int]] | None = None,
+        video_pruning_preserve_qk_norm: bool = False,
+        per_layer_video_attn1_active_head_indices: list[list[int]] | None = None,
+        per_layer_video_attn2_active_head_indices: list[list[int]] | None = None,
+        per_layer_video_ffn_active_channels: list[list[int]] | None = None,
     ) -> None:
         """Initialize transformer blocks for LTX."""
         def layer_values(values, default, label):
@@ -421,6 +433,9 @@ class LTXModel(torch.nn.Module, Disposable):
         ffn = layer_values(per_layer_ff_inner_dim, self.inner_dim * 4, "per_layer_ff_inner_dim")
         a1_idx = layer_values(per_layer_video_attn1_rope_head_indices, None, "per_layer_video_attn1_rope_head_indices")
         a2_idx = layer_values(per_layer_video_attn2_rope_head_indices, None, "per_layer_video_attn2_rope_head_indices")
+        a1_active = layer_values(per_layer_video_attn1_active_head_indices, None, "per_layer_video_attn1_active_head_indices")
+        a2_active = layer_values(per_layer_video_attn2_active_head_indices, None, "per_layer_video_attn2_active_head_indices")
+        ffn_active = layer_values(per_layer_video_ffn_active_channels, None, "per_layer_video_ffn_active_channels")
         audio_config = (
             TransformerConfig(
                 dim=self.audio_inner_dim,
@@ -443,6 +458,9 @@ class LTXModel(torch.nn.Module, Disposable):
                         cross_attention_adaln=self.cross_attention_adaln, ff_bias=ff_bias,
                         attn1_heads=a1[i], attn2_heads=a2[i], ff_inner_dim=ffn[i],
                         attn1_rope_head_indices=a1_idx[i], attn2_rope_head_indices=a2_idx[i],
+                        preserve_qk_norm=video_pruning_preserve_qk_norm,
+                        attn1_active_head_indices=a1_active[i], attn2_active_head_indices=a2_active[i],
+                        ffn_active_channels=ffn_active[i],
                     ) if self.model_type.is_video_enabled() else None,
                     audio=audio_config,
                     rope_type=self.rope_type,

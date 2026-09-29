@@ -35,6 +35,23 @@ _SAMPLE_FRACTIONS = (0.25, 0.5, 0.75)
 REPO_ROOT = Path(__file__).resolve().parents[3]  # .../LTX-2 (scripts/prune/core/provenance.py)
 
 
+def method_source_hashes() -> dict[str, str]:
+    """Content pins for the deployed and measured rollout implementations."""
+    paths = (
+        "scripts/vae_refine_sliding_window.py",
+        "scripts/prune/core/refine_core.py",
+        "scripts/prune/core/refine_task.py",
+        "scripts/prune/evaluate/phase1_gates.py",
+        "packages/ltx-core/src/ltx_core/model/transformer/attention.py",
+        "packages/ltx-core/src/ltx_core/model/transformer/feed_forward.py",
+        "packages/ltx-core/src/ltx_core/model/transformer/ops.py",
+        "packages/ltx-core/src/ltx_core/model/transformer/transformer.py",
+        "packages/ltx-core/src/ltx_core/model/transformer/model.py",
+        "packages/ltx-core/src/ltx_core/model/transformer/model_configurator.py",
+    )
+    return {name: file_sha256(REPO_ROOT / name) for name in paths}
+
+
 def checkpoint_fingerprint(path: str | Path) -> str:
     """Stable short identifier for a safetensors checkpoint (see module docstring)."""
     p = Path(path)

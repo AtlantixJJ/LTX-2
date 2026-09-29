@@ -123,7 +123,8 @@ def load_record(path: str | Path, device: torch.device | str = "cpu") -> tuple[L
         raise ValueError(
             f"{path}: calibration record format {payload.get('format')!r}, expected {RECORD_FORMAT}. "
             "Format 1 caches were built at the pre-parity geometry (4 frozen latent frames, 24 fps) "
-            "and cannot be migrated -- rebuild with `teacher.py --build-calibration`."
+            "and cannot be migrated -- rebuild with "
+            "`python -m scripts.prune.data.source_target --model 2.5 --build-calibration`."
         )
     s = payload["state"]
     state = LatentState(

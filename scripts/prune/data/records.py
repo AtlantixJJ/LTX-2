@@ -18,7 +18,7 @@ def select(root: Path, *, split: str | None = None, limit: int | None = None, fa
     if not paths:
         raise SystemExit(
             f"no {split or 'any'}/{family or 'any'} records under {root}; build the Phase 1 cache with "
-            "`teacher --build-calibration` first"
+            "`python -m scripts.prune.data.source_target --build-calibration` first"
         )
     if limit is None or limit >= len(paths):
         return paths

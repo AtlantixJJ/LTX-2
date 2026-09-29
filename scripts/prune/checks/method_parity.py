@@ -39,7 +39,7 @@ from pathlib import Path
 
 import torch
 
-from scripts.prune.core import artifacts, preflight, refine_core, refine_task, session
+from scripts.prune.core import artifacts, preflight, provenance, refine_core, refine_task, session
 from scripts.prune.core.model_registry import REPO_ROOT
 from scripts.prune.data import corpus
 from scripts.prune.evaluate import phase1_gates
@@ -59,8 +59,8 @@ def run_reference(model, clip: Path, geometry: refine_core.WindowGeometry, windo
         "--k-step", refine_task.K_STEP,
         "--gpu-id", str(gpu_id),
         "--seed", str(seed),
-        "--window-frames", str(geometry.window_frames),
-        "--overlap-frames", str(geometry.overlap_frames),
+        "--window-latent-num", str(geometry.latent_frames - 1),
+        "--overlap-latent-num", str(geometry.context_latent_frames),
         "--max-windows", str(windows),
     ]
     print(f"[parity] reference: {' '.join(command)}", flush=True)
@@ -90,21 +90,31 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     session.add_model_args(ap)
     ap.add_argument("--clip", default=None, help="Corpus clip directory name; default: first long enough.")
+    ap.add_argument("--video", type=Path, help="Explicit source video when the historical corpus is unavailable.")
+    ap.add_argument("--expected-source-sha256", help="Required content pin for --video.")
     ap.add_argument("--windows", type=int, default=2, help="Windows to compare; >= 2 exercises the carryover.")
     ap.add_argument("--window-frames", type=int, default=refine_task.WINDOW_FRAMES)
     ap.add_argument("--overlap-frames", type=int, default=refine_task.OVERLAP_FRAMES)
     ap.add_argument("--keep-runs", action="store_true", help="Do not delete the reference run directory on PASS.")
     args = ap.parse_args()
+    if args.video is not None:
+        if args.clip or not args.expected_source_sha256 or not args.video.is_file():
+            ap.error("--video requires an existing file and --expected-source-sha256, and excludes --clip")
+        if provenance.file_sha256(args.video) != args.expected_source_sha256:
+            ap.error("external source SHA256 differs")
+    elif args.expected_source_sha256:
+        ap.error("--expected-source-sha256 requires --video")
 
     if args.windows < 2:
         raise SystemExit("--windows must be >= 2: a single window never exercises the latent carryover.")
 
     model = preflight.check(args.model, sampler="euler", gpu_id=args.gpu_id)
-    device = torch.device(f"cuda:{args.gpu_id}")
     geometry = refine_core.WindowGeometry(
         window_frames=args.window_frames, overlap_frames=args.overlap_frames, scale_factors=model.scale_factors
     )
-    clip = corpus.pick_clip(geometry, args.windows, name=args.clip)
+    clip = args.video or corpus.pick_clip(geometry, args.windows, name=args.clip)
+    if corpus.frame_count(clip) < geometry.window_frames + (args.windows - 1) * geometry.stride_frames:
+        ap.error(f"{clip} is too short for {args.windows} windows")
     out_root = artifacts.run_dir(model.key, "method-parity", script="method_parity", argv=sys.argv[1:])
     reference_dir = out_root / "reference"
     print(f"[parity] clip {clip.parent.name}, geometry {geometry.as_dict()}", flush=True)
@@ -131,12 +141,14 @@ def main() -> int:
     report = {
         "provenance": s.stamp(),
         "clip": str(clip),
+        "source_sha256": provenance.file_sha256(clip),
         "geometry": geometry.as_dict(),
         "windows_compared": len(rows),
         "seed": args.seed,
         "k_step": refine_task.K_STEP,
         "reference_script": str(SCRIPT.relative_to(REPO_ROOT)),
         "harness": "scripts.prune.evaluate.phase1_gates._encode_windows + _rollout",
+        "method_sources": provenance.method_source_hashes(),
         "windows": rows,
         "pass": bool(all_pass),
     }

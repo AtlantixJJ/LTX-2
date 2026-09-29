@@ -151,3 +151,9 @@ which is what a reader cannot reconstruct from one file, and what has actually g
 they disagree, that is a defect: record it in [known_gaps.md](known_gaps.md) with its evidence and
 keep both descriptions clear. Do not rewrite the intended contract to legitimize a bug, and do not
 describe a planned fix as shipped. See [`../CLAUDE.md`](../CLAUDE.md) for the full rule.
+
+## Saved-result presentation
+
+| Module | Design doc | Role |
+|---|---|---|
+| `decode_saved.py` | [decode_saved.md](decode_saved.md) | VAE-only rendering of hashed saved latent jobs and pixel differences |

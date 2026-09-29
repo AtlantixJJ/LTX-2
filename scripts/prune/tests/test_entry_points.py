@@ -4,7 +4,7 @@ import importlib
 import re
 from pathlib import Path
 
-from scripts.prune.core import artifacts
+from scripts.prune.core import artifacts, preflight
 
 
 def test_every_documented_entry_point_is_importable():
@@ -16,8 +16,11 @@ def test_every_documented_entry_point_is_importable():
         assert importlib.import_module(f"scripts.prune.{name}").main
 
 
-def test_the_sweep_scripts_two_hard_coded_paths_still_exist():
+def test_sweep_checks_named_artifacts_via_preflight():
     sh = Path("scripts/prune/run_head_sweep.sh").read_text()
-    assert "method_parity.json" in sh and "calibration/index.json" in sh
+    source = Path(preflight.__file__).read_text()
+    assert "--check-sweep-prereqs" in sh
+    assert 'artifacts.gate(model.key, "method_parity")' in source
+    assert "artifacts.calibration_index(model.key)" in source
     assert artifacts.gate("2.5", "method_parity").name == "method_parity.json"
     assert artifacts.calibration_index("2.5").name == "index.json"
