@@ -2,6 +2,8 @@
 
 ## Objective
 
+Native artifacts pin the full calibration manifest SHA256 and all model-facing distribution fields through `data.whole_clip.native_provenance`. Missing historical pins require fresh calibration; changing only metadata is not an accepted migration.
+
 Rank structural attention-head and FFN-channel pruning units under the actual one-step D0 whole-video input, rather than `k2` sliding-window calibration records. This is a **screening proxy**, not a measured per-unit ablation or a quality verdict.
 
 ## Data flow

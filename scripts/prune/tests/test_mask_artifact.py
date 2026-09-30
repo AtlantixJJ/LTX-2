@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
-from scripts.prune.score import hooks
 from scripts.prune.data import whole_clip
+from scripts.prune.score import hooks
 
 
 @pytest.fixture
@@ -46,7 +47,7 @@ def test_invalid_report_fails_before_mask_install(report, change):
                                  widths={"0.attn1": 2, "0.attn2": 2, "0.ff": 4})
 
 
-def test_native_consumer_requires_task_and_input_provenance(report, tmp_path):
+def test_native_consumer_requires_task_and_input_provenance(report: Path, tmp_path: Path) -> None:
     widths = {"0.attn1": 2, "0.attn2": 2, "0.ff": 4}
     with pytest.raises(ValueError, match="mask task"):
         hooks.read_mask_artifact(report, model_key="2.5", fingerprint="abc", widths=widths,
@@ -71,11 +72,14 @@ def test_native_consumer_requires_task_and_input_provenance(report, tmp_path):
         hooks.require_native_heldout_scope(report, view="subject/views/view01", sigmas=[0.5])
     with pytest.raises(ValueError, match="not included"):
         hooks.require_native_heldout_scope(report, view="heldout", sigmas=[0.75])
+    duplicate = {**manifest, "videos": [*manifest["videos"], {**manifest["videos"][0], "view": "renamed/views/view00"}]}
+    with pytest.raises(ValueError, match="capture source"):
+        hooks.require_native_heldout_scope(report, view="renamed/views/view00", sigmas=[.5], baseline=duplicate)
     for field in ("seed", "video_vae_fingerprint", "baseline_manifest_sha256"):
         broken = json.loads(json.dumps(payload))
         broken["provenance"].pop(field)
         report.write_text(json.dumps(broken))
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="native"):
             hooks.read_mask_artifact(report, model_key="2.5", fingerprint="abc", widths=widths,
                                      expected_task="whole_clip_d0")
     report.write_text(json.dumps(payload))

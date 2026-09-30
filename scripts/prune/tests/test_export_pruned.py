@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -8,13 +9,12 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from ltx_core.model.transformer.attention import Attention
-from ltx_core.model.transformer.feed_forward import FeedForward
-from ltx_core.model.transformer.feed_forward import ShapeFaithfulLinear
+from ltx_core.model.transformer.feed_forward import FeedForward, ShapeFaithfulLinear
 from scripts.prune.score import export_pruned
 
 
 @pytest.mark.parametrize("axis", [0, 1])
-def test_shape_faithful_linear_preserves_original_gemm_and_gradients(axis):
+def test_shape_faithful_linear_preserves_original_gemm_and_gradients(axis: int) -> None:
     torch.manual_seed(19)
     source = torch.nn.Linear(8, 12)
     indices = [1, 3, 5]
@@ -34,12 +34,14 @@ def test_shape_faithful_linear_preserves_original_gemm_and_gradients(axis):
         expected = source(x * mask)
     actual = candidate(x)
     assert torch.equal(actual, expected)
-    actual.sum().backward()
-    assert candidate.weight.grad is not None
+    actual_x, actual_weight = torch.autograd.grad(actual.sum(), (x, candidate.weight), retain_graph=True)
+    expected_x, expected_weight = torch.autograd.grad(expected.sum(), (x, source.weight))
+    assert torch.equal(actual_x, expected_x)
+    assert torch.equal(actual_weight, expected_weight[indices] if axis == 0 else expected_weight[:, indices])
     assert "retained_indices" not in candidate.state_dict()
 
 
-def test_shape_faithful_export_stores_compact_tensors_with_original_execution_geometry(tmp_path):
+def test_shape_faithful_export_stores_compact_tensors_with_original_execution_geometry(tmp_path: Path) -> None:
     source, output = tmp_path / "source.safetensors", tmp_path / "faithful.safetensors"
     _checkpoint(source)
     export_pruned.export(source, {"0.attn1": [1, 0], "0.attn2": [0, 1], "0.ff": [1, 0, 1]},
@@ -53,6 +55,16 @@ def test_shape_faithful_export_stores_compact_tensors_with_original_execution_ge
         assert config["video_pruning_select_active_heads"] is False
         assert handle.get_tensor(f"{export_pruned.PREFIX}.0.attn2.to_v.weight").shape == (2, 3)
         assert handle.get_tensor(f"{export_pruned.PREFIX}.0.ff.net.2.weight").shape == (3, 2)
+
+
+def test_shape_faithful_linear_materializes_from_meta() -> None:
+    resident = ShapeFaithfulLinear(8, 12, indices=[1, 3, 5], axis=0, bias=True)
+    with torch.device("meta"):
+        from_meta = ShapeFaithfulLinear(8, 12, indices=[1, 3, 5], axis=0, bias=True)
+    from_meta.load_state_dict(resident.state_dict(), assign=True)
+    from_meta.to("cpu")
+    x = torch.randn(2, 4, 8)
+    assert torch.equal(from_meta(x), resident(x))
 
 
 def _checkpoint(path):

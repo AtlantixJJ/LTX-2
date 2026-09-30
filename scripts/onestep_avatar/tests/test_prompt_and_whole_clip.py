@@ -152,3 +152,20 @@ def test_dev_flag_validation() -> None:
         visualize_d1.parse_args(["--view", "v", "--output", "o", "--steps", "8"])
     args = visualize_d1.parse_args(["--view", "v", "--output", "o", "--variant", "dev", "--steps", "8", "--cfg", "3"])
     assert visualize_d1._suffix(args) == "dev_n8_cfg3_stg0"
+
+
+@pytest.mark.parametrize("steps", [1, 2, 8, 30])
+def test_truncated_schedule(steps: int) -> None:
+    import torch
+    from ltx_core.components.schedulers import LTX2Scheduler
+
+    assert causal_core.truncated_schedule(1.0, steps) == pytest.approx(
+        tuple(LTX2Scheduler().execute(steps=steps).tolist()) if steps > 1 else (1.0, 0.0)
+    )
+    counts = []
+    for sigma in (0.421875, 0.725, 0.909375, 0.975, 1.0):
+        sched = causal_core.truncated_schedule(sigma, steps)
+        assert sched[0] == sigma and sched[-1] == 0.0
+        assert all(b < a for a, b in zip(sched, sched[1:]))
+        counts.append(len(sched) - 1)
+    assert counts == sorted(counts)  # lower start noise never takes more steps

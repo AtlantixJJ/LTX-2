@@ -137,7 +137,7 @@ def _native_main() -> int:  # noqa: PLR0915
         args.masks, model_key=baseline["model"]["model_key"], fingerprint=source_fingerprint,
         widths=export_pruned.checkpoint_mask_widths(source_path), expected_task=whole_clip.TASK, baseline=baseline,
     )
-    hooks.require_native_heldout_scope(args.masks, view=args.view, sigmas=args.sigmas)
+    hooks.require_native_heldout_scope(args.masks, view=args.view, sigmas=args.sigmas, baseline=baseline)
     with safe_open(args.exported_checkpoint, framework="pt", device="cpu") as handle:
         metadata = json.loads((handle.metadata() or {}).get("config", "{}"))
     pruning = metadata.get("transformer", {}).get("pruning", {})

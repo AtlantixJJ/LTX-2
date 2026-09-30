@@ -18,8 +18,8 @@ Attention masks sit before to_out[0]; FFN masks sit before net[2]. Match mask
 width to actual module width and never leak hooks between comparisons.
 `read_mask_artifact` checks model key, checkpoint fingerprint, complete mask
 families, exact widths, binary finite values, and nonempty branches before use. Active D0 consumers also require `candidate_format=whole_clip_d0_mask_v1`, task, bidirectional attention, clean-frame conditioning, calibration views, sigmas and baseline-manifest provenance. Historical readers opt out explicitly.
-`require_native_heldout_scope` rejects use of a calibration view as held-out
-validation and rejects sigma levels absent from the mask's calibration list.
+Native readers also call `data.whole_clip.validate_native_provenance`: seed, VAE, manifest content hash, guidance, geometry, dtype, text context and calibration inputs are mandatory and bound to the pinned calibration manifest. Parity and ablation additionally bind the selected baseline distribution.
+`require_native_heldout_scope` rejects use of any view of a calibration actor as held-out validation, resolving path aliases above `views/`. It also rejects identical capture content under another name using the selected baseline's capture hash, and rejects sigma levels absent from calibration.
 
 ## Verification
 

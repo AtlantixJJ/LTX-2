@@ -21,7 +21,8 @@ For a diagnostic before export, `--functional-mask <native-mask.json> --view <vi
 
 ## Invariants and gotchas
 
-- A saved epsilon's file SHA can change with serialization. Compare tensor values, not the `.pt` file bytes.
+- A saved epsilon's file SHA can change with serialization. Verify each file against its own recorded hash, then compare actual tensor values across the pair.
+- Candidate checkpoint fingerprint, export task, source and mask content must match. Native candidates require complete pinned calibration provenance. A historical k2 export needs `--historical-transfer`; the result is labeled `historical_k2_transfer` and cannot become native selection evidence.
 - Both manifests must say `whole_clip: true` and `attention: full_bidirectional`. The schedule for every row must be exactly `[sigma, 0]`.
 - A matching seed is insufficient proof of matching noise; verify the tensor values.
 - The direction metric excludes the clean keyframe and describes deviation from the baseline model. Capture MSE is a separate accuracy reference. Neither metric alone determines perceptual quality; inspect the synchronized decoded videos.

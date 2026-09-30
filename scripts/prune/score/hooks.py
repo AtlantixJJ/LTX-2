@@ -74,13 +74,19 @@ def read_mask_artifact(path: str | Path, *, model_key: str, fingerprint: str,
     return masks, hashlib.sha256(raw).hexdigest()
 
 
-def require_native_heldout_scope(path: str | Path, *, view: str, sigmas: list[float]) -> None:
+def require_native_heldout_scope(path: str | Path, *, view: str, sigmas: list[float],
+                                 baseline: dict | None = None) -> None:
     """Reject calibration-subject reuse and sigma substitution in D0 validation."""
     provenance = json.loads(Path(path).read_text())["provenance"]
     if provenance.get("task") != "whole_clip_d0":
         raise ValueError("held-out check requires a native D0 mask")
     if whole_clip.actor_identity(view) in {whole_clip.actor_identity(v) for v in provenance["calibration_views"]}:
         raise ValueError("held-out actor was used to calibrate this mask")
+    manifest = baseline or whole_clip.load_manifest(Path(provenance["baseline_manifest"]).parent)
+    calibration_sources = {item["capture_sha256"] for item in provenance["calibration_inputs"]}
+    if any(row["view"] == view and row["artifacts"]["capture_sha256"] in calibration_sources
+           for row in manifest["videos"]):
+        raise ValueError("held-out capture source was used to calibrate this mask")
     if any(sigma not in provenance["sigmas"] for sigma in sigmas):
         raise ValueError("held-out sigma was not included in mask calibration")
 

@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 import torch
+from safetensors.torch import save_file
 
+from scripts.prune.core import provenance
 from scripts.prune.data import whole_clip
 from scripts.prune.evaluate.whole_clip_d0 import _direction_metrics, _verify_pair
 
@@ -58,7 +63,7 @@ def test_saved_d0_manifest_rejects_wrong_schedule_and_duplicate_rows() -> None:
 
 
 @pytest.mark.parametrize("change", ["cfg", "stg", "rescale", "passes", "lora", "dtype", "sigma"])
-def test_unsupported_reconstruction_rejected(change) -> None:
+def test_unsupported_reconstruction_rejected(change: str) -> None:
     manifest = {"whole_clip": True, "trajectory_only": False, "attention": "full_bidirectional",
                 "objective": "white", "sigmas": [0.5], "videos": [], "seed": 42,
                 "latent_dtype": "torch.bfloat16",
@@ -73,13 +78,11 @@ def test_unsupported_reconstruction_rejected(change) -> None:
         manifest["latent_dtype"] = "torch.float32"
     else:
         manifest["sigmas"] = [-0.5]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="native D0"):
         whole_clip.validate_manifest(manifest)
 
 
-def test_saved_noise_content_mutation_rejected(tmp_path) -> None:
-    from scripts.prune.core import provenance
-
+def test_saved_noise_content_mutation_rejected(tmp_path: Path) -> None:
     path = tmp_path / "epsilon.pt"
     torch.save(torch.ones(1, 4, 2, dtype=torch.bfloat16), path)
     row = {"artifacts": {"epsilon": path.name, "epsilon_sha256": provenance.file_sha256(path)}}
@@ -87,3 +90,35 @@ def test_saved_noise_content_mutation_rejected(tmp_path) -> None:
     torch.save(torch.zeros(1, 4, 2, dtype=torch.bfloat16), path)
     with pytest.raises(ValueError, match="epsilon content changed"):
         whole_clip.load_epsilon(tmp_path, row)
+
+
+def test_transfer_candidate_requires_explicit_opt_in_and_pinned_export(tmp_path: Path) -> None:
+    mask = tmp_path / "historical.json"
+    source = tmp_path / "source.safetensors"
+    prefix = "model.diffusion_model.transformer_blocks.0"
+    save_file({f"{prefix}.attn1.to_q.weight": torch.zeros(4, 3),
+               f"{prefix}.attn2.to_q.weight": torch.zeros(4, 3),
+               f"{prefix}.ff.net.0.proj.weight": torch.zeros(3, 3)}, str(source),
+              metadata={"config": json.dumps({"transformer": {"num_layers": 1, "attention_head_dim": 2}})})
+    fingerprint = provenance.checkpoint_fingerprint(source)
+    mask.write_text(json.dumps({"provenance": {"model_key": "2.5", "transformer_fingerprint": fingerprint},
+                               "masks": {"0.attn1": [1, 0], "0.attn2": [0, 1]}}))
+    checkpoint = tmp_path / "candidate.safetensors"
+    stamp = {"task": "historical_k2", "model_key": "2.5", "source_transformer_fingerprint": fingerprint,
+             "masks": str(mask), "mask_sha256": provenance.file_sha256(mask)}
+    save_file({"weight": torch.zeros(1)}, str(checkpoint),
+              metadata={"config": json.dumps({"transformer": {"pruning": stamp}})})
+    base = {"whole_clip": True, "objective": "white", "sigmas": [.5], "seed": 42,
+            "trajectory_only": False, "geometry": {}, "attention": "full_bidirectional",
+            "latent_dtype": "torch.bfloat16", "text_context": {}, "videos": [],
+            "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1},
+            "model": {"model_key": "2.5", "video_vae_fingerprint": "vae", "transformer_fingerprint": fingerprint,
+                      "transformer_path": str(source)}}
+    candidate = {**base, "model": {**base["model"], "transformer_path": str(checkpoint),
+                                   "transformer_fingerprint": provenance.checkpoint_fingerprint(checkpoint)}}
+    with pytest.raises(ValueError, match="historical transfer requires"):
+        whole_clip.verify_candidate(base, candidate)
+    assert whole_clip.verify_candidate(base, candidate, historical_transfer=True) == stamp
+    mask.write_text('{"mutated": true}')
+    with pytest.raises(ValueError, match="mask content"):
+        whole_clip.verify_candidate(base, candidate, historical_transfer=True)

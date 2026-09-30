@@ -235,6 +235,7 @@ post-eviction effect. These synthetic weights do not estimate the 22B checkpoint
 
 ## Dev-model helpers (2026-09-29)
 
+- `truncated_schedule(sigma_start, steps)` — the stock N-step curve entered at `sigma_start`: start there, then every stock level below it; lower start noise → fewer steps. The dev default.
 - `rescaled_schedule(sigma_start, steps)` — the stock `LTX2Scheduler().execute(steps=N)` curve (4096-token anchor, exactly what the pipelines run; the real-latent token count over-shifts and broke dev sampling) scaled to start at `sigma_start`, so step count is independent of start σ; `steps == 1` returns `(σ, 0)` because the terminal stretch is undefined for one step. Validated by `validate_schedule` without a grid (the dev model has none).
 - `guided_denoised_from_x0_model(model, guider, negative_context)` — a `denoise_fn` for `rollout` that adds CFG / STG / rescale using the pipelines' `MultiModalGuider.calculate`. Passes are sequential and see the same modality; only the text context or the STG perturbation differs. With `cfg=1, stg=0` it is one conditional forward. It does not add a second rollout path: `rollout` is unchanged and receives it like any other `denoise_fn`.
 

@@ -155,7 +155,7 @@ def functional_ablation(baseline: Path, masks_path: Path, output: Path, *, view:
         masks_path, model_key=base["model"]["model_key"], fingerprint=fingerprint,
         widths=export_pruned.checkpoint_mask_widths(checkpoint), expected_task=whole_clip.TASK, baseline=base,
     )
-    hooks.require_native_heldout_scope(masks_path, view=view, sigmas=sigmas)
+    hooks.require_native_heldout_scope(masks_path, view=view, sigmas=sigmas, baseline=base)
     args = argparse.Namespace(model="2.5", gpu_id=gpu_id, seed=base["seed"])
     current = session.open_session(args, script="prune.evaluate.whole_clip_d0.functional_ablation",
                                    prompt=base["text_context"]["prompt"])

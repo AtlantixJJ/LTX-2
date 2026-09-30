@@ -14,6 +14,8 @@ compact mode also accepts fitted FFN projections. All modes update metadata.
 
 ## Organization
 
+`--mode compact_faithful` slices the same stored V, gate, output and FFN tensors as compact mode, while metadata retains the original execution widths and active indices. `ShapeFaithfulLinear` in the transformer feed-forward module restores zero-filled original weight shapes for each GEMM. Attention runs all original heads and masks removed heads at the original boundary. This compresses persistent parameters and disk storage; temporary padded weights and full-width activations remain. It is a fidelity option, not a throughput optimization. Fitted reconstruction is intentionally supported only by the reduced `compact` mode. Stock and earlier exports retain their existing behavior because the new metadata flag defaults off.
+
 Full-width modes record active attention head IDs and FFN channel IDs. They
 leave Q/K/V/output/FFN GEMM shapes unchanged and apply the mask before the
 original output projection. `sparse` skips masked heads in attention;

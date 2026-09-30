@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import math
 from pathlib import Path
 
@@ -26,7 +26,7 @@ def load_manifest(root: Path) -> dict:
     return manifest
 
 
-def validate_manifest(manifest: dict) -> None:
+def validate_manifest(manifest: dict) -> None:  # noqa: PLR0912
     if not manifest.get("whole_clip") or manifest.get("trajectory_only"):
         raise ValueError("expected a whole-clip D0 rollout with saved predictions")
     if manifest.get("attention") != "full_bidirectional":
@@ -157,6 +157,9 @@ def verify_pair(base: dict, candidate: dict) -> None:
 
 def verify_candidate(base: dict, candidate: dict, *, historical_transfer: bool = False) -> dict:
     """Bind a paired candidate to its actual export, source and mask content."""
+    # Hooks consume this input contract; defer this validation-only dependency.
+    from scripts.prune.score import export_pruned, hooks  # noqa: PLC0415
+
     verify_pair(base, candidate)
     path = Path(candidate["model"]["transformer_path"])
     if provenance.checkpoint_fingerprint(path) != candidate["model"]["transformer_fingerprint"]:
@@ -172,8 +175,11 @@ def verify_candidate(base: dict, candidate: dict, *, historical_transfer: bool =
     mask_path = Path(pruning.get("masks", ""))
     if not mask_path.is_file() or provenance.file_sha256(mask_path) != pruning.get("mask_sha256"):
         raise ValueError("candidate export mask content differs or is unavailable")
-    if not historical_transfer:
-        validate_native_provenance(json.loads(mask_path.read_text())["provenance"], base)
+    hooks.read_mask_artifact(
+        mask_path, model_key=base["model"]["model_key"], fingerprint=base["model"]["transformer_fingerprint"],
+        widths=export_pruned.checkpoint_mask_widths(base["model"]["transformer_path"]),
+        expected_task=None if historical_transfer else TASK, baseline=None if historical_transfer else base,
+    )
     return pruning
 
 
@@ -201,6 +207,10 @@ def build_input(root: Path, manifest: dict, *, view: str, sigma: float,
     if provenance.file_sha256(capture_path) != row["artifacts"]["capture_sha256"]:
         raise ValueError("capture changed since saved baseline rollout")
     capture, fps = _load_training_master(capture_path)
+    if capture.dtype != session.DTYPE or capture.ndim != 4 or not torch.isfinite(capture).all():
+        raise ValueError("capture must be a finite BF16 C,T,H,W latent")
+    if provenance.checkpoint_fingerprint(current.model.paths.video_vae()) != manifest["model"]["video_vae_fingerprint"]:
+        raise ValueError("session VAE differs from saved baseline")
     if fps != row["artifacts"]["fps"]:
         raise ValueError("capture fps changed since saved rollout")
     epsilon = load_epsilon(root, row)
@@ -221,7 +231,8 @@ def build_input(root: Path, manifest: dict, *, view: str, sigma: float,
         raise ValueError("saved block plan does not cover the complete capture exactly once")
     source = grid.patchify(capture.unsqueeze(0).to(device=current.device, dtype=session.DTYPE))
     prompt_hash = hashlib.sha256(manifest["text_context"]["prompt"].encode()).hexdigest()
-    context = hashlib.sha256(current.context.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()).hexdigest()
+    context_bytes = current.context.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()
+    context = hashlib.sha256(context_bytes).hexdigest()
     if prompt_hash != manifest["text_context"]["prompt_sha256"] or context != manifest["text_context"]["sha256"]:
         raise ValueError("session text context differs from saved baseline")
     if epsilon.shape != source.shape:

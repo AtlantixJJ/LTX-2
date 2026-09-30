@@ -18,12 +18,15 @@ Run from `LTX-2` in the `ltx` environment after checking `nvidia-smi`:
 python -m scripts.prune.evaluate.bench_whole_clip_d0 \
   --baseline ../expr/onestep_avatar/d1_diagnostic/ar_sigma_rollouts/runs/s1d_prompts_20260929/P1_3actors \
   --candidate ../expr/refiner_prune/2.5/whole_clip_d0/p05_compact \
+  --historical-transfer \
   --view /data1/datasets/AnimatableHuman/DNARenderingVideo/Part_1/0008_01/views/view00_cam51 \
   --sigma 0.909375 --gpu-id 3 --warmup 2 --repeats 5 \
   --output ../expr/refiner_prune/2.5/whole_clip_d0/benchmark_0008_01_s0909375.json
 ```
 
 ## Invariants and gotchas
+
+- Candidate provenance is checked before GPU model loading. Historical k2 exports require `--historical-transfer`. `compact_faithful` stores compact parameters but pads GEMMs at execution; report its measured cost rather than assuming reduced dense work.
 
 - A free A6000 needs at least 44 GiB available for the 1024-pixel, 18-latent-frame modality plus the 22B transformer. Do not share its GPU with a training run.
 - The same saved capture, epsilon, sigma, empty prompt, attention mask and clean keyframe are used for both checkpoint loads. The single block has no history or K/V cache.

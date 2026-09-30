@@ -611,6 +611,27 @@ def guided_denoised_from_x0_model(model, guider, negative_context: torch.Tensor 
     return call
 
 
+def truncated_schedule(sigma_start: float, steps: int) -> tuple[float, ...]:
+    """The stock ``LTX2Scheduler().execute(steps=N)`` curve, entered at ``sigma_start``.
+
+    Start exactly at ``sigma_start``, then take every stock level strictly below it, down to 0.
+    This is what the stock pipeline would do from a partially noised input: a lower start noise
+    walks fewer of the N levels, so step count falls with the start sigma (at N 30: 4 steps
+    from .421875, 9 from .725, 18 from .909375, 26 from .975, 30 from 1). ``sigma_start == 1``
+    is the stock schedule exactly. Compare :func:`rescaled_schedule`, which keeps N steps at
+    every start.
+    """
+    from ltx_core.components.schedulers import LTX2Scheduler
+
+    if not 0.0 < sigma_start <= 1.0:
+        raise ValueError(f"sigma_start must be in (0, 1], got {sigma_start}")
+    if steps < 1:
+        raise ValueError(f"steps must be >= 1, got {steps}")
+    stock = [float(v) for v in LTX2Scheduler().execute(steps=steps)] if steps > 1 else [1.0, 0.0]
+    below = [v for v in stock[1:-1] if v < sigma_start - 1e-9]
+    return validate_schedule([float(sigma_start)] + below + [0.0])
+
+
 def rescaled_schedule(sigma_start: float, steps: int) -> tuple[float, ...]:
     """The stock ``LTX2Scheduler`` curve for ``steps`` steps, scaled to start at ``sigma_start``.
 

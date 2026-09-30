@@ -106,6 +106,8 @@ PrecomputedDataset  (.precomputed/ latents + text/embeddings written once by
 
 ### Model Class Hierarchy
 
+Pruning exports may set `video_pruning_shape_faithful=true`. In that case `Attention` and `FeedForward` use `ShapeFaithfulLinear` (defined in `feed_forward.py`) for sliced V/gate/output/FFN parameters. Stored parameters remain compact, but each forward scatters them into zero-filled original weight shapes before `functional.linear`; attention and RoPE retain original head geometry. Retained indices are Python metadata, materialized on the weight's device during execution, so meta-device checkpoint construction leaves no unmaterialized buffers. They do not add checkpoint keys. The flag defaults false for stock checkpoints. This preserves BF16 reduction geometry at the cost of temporary padded weights; it does not imply fewer executed GEMM FLOPs.
+
 ```
 torch.nn.Module
 ├── LTXModel                         (packages/ltx-core/src/ltx_core/model/transformer/model.py:41)   -- the transformer

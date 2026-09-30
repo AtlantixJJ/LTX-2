@@ -20,3 +20,5 @@ python -m scripts.prune.checks.export_parity \
 ## Invariants and checks
 
 Both models see the same saved noise, capture hash, fps, geometry, clean first frame, context and sigma. One 22B transformer is resident at a time. A no-prune export should match the baseline control; compact BF16 shapes may exceed the tolerance. A passing parity check does not imply good decoded quality or speed. Focused CPU tests cover manifest and mask rejection; a real D0 parity run validates the model execution path.
+
+Native mask distribution is bound to both a content-pinned calibration manifest and the selected baseline. Holdout excludes the actor across views. `compact_faithful` is a separate compact-storage mode that restores the original GEMM and attention geometry at execution to avoid the reduced-shape BF16 discrepancy; it uses the same 0.02 gate and does not claim reduced execution FLOPs.

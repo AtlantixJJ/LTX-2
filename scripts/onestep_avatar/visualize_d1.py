@@ -66,7 +66,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="dev loads the base transformer and samples each sigma with a rescaled --steps schedule.",
     )
     parser.add_argument("--transformer", type=Path, default=None, help="Explicit transformer checkpoint path.")
-    parser.add_argument("--steps", type=int, default=None, help="dev only: steps per start sigma (rescaled schedule).")
+    parser.add_argument("--steps", type=int, default=None, help="dev only: N of the stock N-step schedule.")
+    parser.add_argument(
+        "--dev-schedule",
+        choices=("truncated", "rescaled"),
+        default="truncated",
+        help="dev only: enter the stock N-step curve at the start sigma (fewer steps for lower sigma), "
+        "or scale the whole curve to start there (always N steps).",
+    )
     parser.add_argument("--cfg", type=float, default=1.0, help="CFG scale; 1 disables the negative-prompt pass.")
     parser.add_argument("--stg", type=float, default=0.0, help="STG scale; 0 disables the perturbed pass.")
     parser.add_argument("--stg-blocks", type=int, nargs="+", default=[28])
@@ -241,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
         "whole_clip": args.whole_clip,
         "model_variant": args.variant,
         "steps": args.steps,
-        "schedule_policy": "rescaled_ltx2_scheduler" if args.variant == "dev" else "distilled_grid",
+        "schedule_policy": f"{args.dev_schedule}_ltx2_scheduler" if args.variant == "dev" else "distilled_grid",
         "guidance": {
             "cfg": args.cfg,
             "stg": args.stg,
@@ -298,9 +305,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
             for sigma in sigmas:
                 schedule = None
                 if args.variant == "dev":
-                    schedule = list(
-                        causal_core.rescaled_schedule(sigma, args.steps)
-                    )
+                    make = causal_core.truncated_schedule if args.dev_schedule == "truncated" else causal_core.rescaled_schedule
+                    schedule = list(make(sigma, args.steps))
                 elif args.trajectory_only:
                     schedule = [float(level) for level in session.model.sigmas if level <= sigma + 1e-9]
                     causal_core.validate_schedule(schedule, session.model.sigmas)
