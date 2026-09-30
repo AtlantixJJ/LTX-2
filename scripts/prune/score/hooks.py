@@ -9,14 +9,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Iterator
 from pathlib import Path
 
 import torch
 
+from scripts.prune.data import whole_clip
+
 
 def read_mask_artifact(path: str | Path, *, model_key: str, fingerprint: str,
-                       widths: dict[str, int]) -> tuple[dict[str, list[float]], str]:
+                       widths: dict[str, int], expected_task: str | None = None,
+                       baseline: dict | None = None) -> tuple[dict[str, list[float]], str]:
     """Validate a score report before applying its mask to a checkpoint.
 
     A report may contain all attention masks, all FFN masks, or both. Omitted
@@ -29,8 +33,28 @@ def read_mask_artifact(path: str | Path, *, model_key: str, fingerprint: str,
         provenance.get("transformer_fingerprint") != fingerprint
     ):
         raise ValueError(f"{path}: mask model key or transformer fingerprint differs from the active checkpoint")
+    if expected_task is not None and provenance.get("task") != expected_task:
+        raise ValueError(f"{path}: mask task {provenance.get('task')!r} != {expected_task!r}")
+    if expected_task == "whole_clip_d0":
+        views = provenance.get("calibration_views")
+        sigmas = provenance.get("sigmas")
+        if (report.get("candidate_format") != "whole_clip_d0_mask_v1" or
+                provenance.get("attention") != "full_bidirectional" or
+                provenance.get("objective") != "white" or
+                provenance.get("conditioning") != "clean_capture_frame_0" or
+                not isinstance(views, list) or not views or
+                any(not isinstance(view, str) or not view for view in views) or
+                not isinstance(sigmas, list) or not sigmas or
+                any(type(sigma) not in (int, float) or not math.isfinite(sigma) or not 0 < sigma <= 1
+                    for sigma in sigmas) or
+                not isinstance(provenance.get("baseline_manifest"), str) or
+                not provenance.get("baseline_manifest") or
+                not isinstance(provenance.get("text_context"), dict)):
+            raise ValueError(f"{path}: incomplete native D0 mask provenance")
+        whole_clip.validate_native_provenance(provenance, baseline)
     iterative = report.get("iterative")
-    masks = iterative.get("masks") if isinstance(iterative, dict) and isinstance(iterative.get("masks"), dict) else report.get("masks")
+    masks = (iterative.get("masks") if isinstance(iterative, dict) and isinstance(iterative.get("masks"), dict)
+             else report.get("masks"))
     if not isinstance(masks, dict) or not masks:
         raise ValueError(f"{path}: no mask dictionary")
     if set(masks) - set(widths):
@@ -48,6 +72,17 @@ def read_mask_artifact(path: str | Path, *, model_key: str, fingerprint: str,
         if not any(values):
             raise ValueError(f"{path}: {name} would remove the entire branch")
     return masks, hashlib.sha256(raw).hexdigest()
+
+
+def require_native_heldout_scope(path: str | Path, *, view: str, sigmas: list[float]) -> None:
+    """Reject calibration-subject reuse and sigma substitution in D0 validation."""
+    provenance = json.loads(Path(path).read_text())["provenance"]
+    if provenance.get("task") != "whole_clip_d0":
+        raise ValueError("held-out check requires a native D0 mask")
+    if whole_clip.actor_identity(view) in {whole_clip.actor_identity(v) for v in provenance["calibration_views"]}:
+        raise ValueError("held-out actor was used to calibrate this mask")
+    if any(sigma not in provenance["sigmas"] for sigma in sigmas):
+        raise ValueError("held-out sigma was not included in mask calibration")
 
 
 class MaskAttachments(dict[str, torch.Tensor]):

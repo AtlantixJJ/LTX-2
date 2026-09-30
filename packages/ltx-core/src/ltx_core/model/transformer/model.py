@@ -104,6 +104,8 @@ class LTXModel(torch.nn.Module, Disposable):
         per_layer_video_attn1_active_head_indices: list[list[int]] | None = None,
         per_layer_video_attn2_active_head_indices: list[list[int]] | None = None,
         per_layer_video_ffn_active_channels: list[list[int]] | None = None,
+        video_pruning_select_active_heads: bool = True,
+        video_pruning_shape_faithful: bool = False,
     ):
         super().__init__()
         # Log the attention backends this transformer is built with. Reading the resolved
@@ -180,6 +182,8 @@ class LTXModel(torch.nn.Module, Disposable):
             per_layer_video_attn1_active_head_indices=per_layer_video_attn1_active_head_indices,
             per_layer_video_attn2_active_head_indices=per_layer_video_attn2_active_head_indices,
             per_layer_video_ffn_active_channels=per_layer_video_ffn_active_channels,
+            video_pruning_select_active_heads=video_pruning_select_active_heads,
+            video_pruning_shape_faithful=video_pruning_shape_faithful,
         )
         # Hook for per-block input prep. Compile transforms in `compiling.py`
         # wrap (not replace) this with a processor that also marks the seq dim
@@ -420,6 +424,8 @@ class LTXModel(torch.nn.Module, Disposable):
         per_layer_video_attn1_active_head_indices: list[list[int]] | None = None,
         per_layer_video_attn2_active_head_indices: list[list[int]] | None = None,
         per_layer_video_ffn_active_channels: list[list[int]] | None = None,
+        video_pruning_select_active_heads: bool = True,
+        video_pruning_shape_faithful: bool = False,
     ) -> None:
         """Initialize transformer blocks for LTX."""
         def layer_values(values, default, label):
@@ -461,6 +467,8 @@ class LTXModel(torch.nn.Module, Disposable):
                         preserve_qk_norm=video_pruning_preserve_qk_norm,
                         attn1_active_head_indices=a1_active[i], attn2_active_head_indices=a2_active[i],
                         ffn_active_channels=ffn_active[i],
+                        select_active_heads=video_pruning_select_active_heads,
+                        shape_faithful=video_pruning_shape_faithful,
                     ) if self.model_type.is_video_enabled() else None,
                     audio=audio_config,
                     rope_type=self.rope_type,

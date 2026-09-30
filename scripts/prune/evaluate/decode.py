@@ -66,8 +66,8 @@ def decode_token_latent(
 ) -> torch.Tensor:
     """Token-space x0 -> ``[F,C,H,W]`` float pixels in ``[0,1]``, conditioning restored.
 
-    head_ablation_eval's channel-first convention; ``decode_latent``'s is
-    channel-last. ``metrics._as_bchw`` accepts either layout, so the two are
+    This helper uses channel-first output; ``decode_latent`` uses
+    channel-last output. ``metrics._as_bchw`` accepts either layout, so the two are
     free to keep their own rather than being forced to agree.
     """
     restored = post_process_latent(token_latent, state.denoise_mask, state.clean_latent)

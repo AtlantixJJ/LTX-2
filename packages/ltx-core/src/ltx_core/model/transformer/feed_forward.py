@@ -3,10 +3,36 @@ import torch
 from ltx_core.model.transformer.gelu_approx import GELUApprox
 
 
+class ShapeFaithfulLinear(torch.nn.Linear):
+    """Store retained rows/columns, restoring the original GEMM shape at execution.
+
+    This preserves BF16 reduction geometry. It compresses parameters rather than
+    claiming less matrix-multiply work; the temporary padded weight is deliberate.
+    """
+
+    def __init__(self, in_features: int, out_features: int, *, indices: list[int], axis: int, bias: bool) -> None:
+        width = out_features if axis == 0 else in_features
+        if axis not in (0, 1) or not indices or sorted(set(indices)) != indices or indices[-1] >= width or indices[0] < 0:
+            raise ValueError("retained linear indices must be sorted, unique and within the original width")
+        super().__init__(in_features if axis == 0 else len(indices),
+                         len(indices) if axis == 0 else out_features, bias=bias)
+        self.original_shape = (out_features, in_features)
+        self.axis = axis
+        self.register_buffer("retained_indices", torch.tensor(indices, dtype=torch.long), persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        weight = self.weight.new_zeros(self.original_shape).index_copy(self.axis, self.retained_indices, self.weight)
+        bias = self.bias
+        if bias is not None and self.axis == 0:
+            bias = bias.new_zeros(self.original_shape[0]).index_copy(0, self.retained_indices, bias)
+        return torch.nn.functional.linear(x, weight, bias)
+
+
 class FeedForward(torch.nn.Module):
     def __init__(
         self, dim: int, dim_out: int, mult: int = 4, bias: bool = True, inner_dim: int | None = None,
         active_channels: list[int] | None = None,
+        shape_faithful: bool = False,
     ) -> None:
         super().__init__()
         # ``mult`` remains the checkpoint-compatible default.  Refiner-pruned
@@ -23,6 +49,9 @@ class FeedForward(torch.nn.Module):
         ):
             raise ValueError("active FFN channels must be unique and within the original width")
         self.active_channels = active_channels if active_channels is not None and len(active_channels) < inner_dim else None
+        if shape_faithful and self.active_channels is not None:
+            project_in.proj = ShapeFaithfulLinear(dim, inner_dim, indices=self.active_channels, axis=0, bias=bias)
+            self.net[2] = ShapeFaithfulLinear(inner_dim, dim_out, indices=self.active_channels, axis=1, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.active_channels is not None:

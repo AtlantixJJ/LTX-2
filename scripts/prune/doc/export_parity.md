@@ -1,33 +1,22 @@
-# `checks/export_parity.py`
+# `checks/export_parity.py` — functional mask versus export
 
 ## Objective
 
-Prove that a checkpoint export computes the same function as the
-source checkpoint with its masks attached.
+Test whether an exported native D0 checkpoint computes the same one-step whole-video output as the source checkpoint with its mask attached. This is separate from baseline-versus-candidate quality and from runtime measurement.
 
 ## Data flow
 
-An attributable mask report, exported checkpoint, one held-out frozen record,
-and one held-out two-window source produce `export_parity.json`. The check
-compares the frozen-state denoiser output and both sequential rollout latents,
-and records timed window refinements and peak allocated GPU memory for both models.
+The default CLI takes a saved baseline D0 directory, native mask artifact, exported checkpoint, held-out view and exact sigma list. `data.whole_clip.build_input` reconstructs each input from the baseline alone. The source transformer runs with functional head/FFN hooks; the exported transformer loads sequentially and runs without hooks. A `source` checkpoint fingerprint, mask SHA256 and `task=whole_clip_d0` in export metadata must match. Each output is compared by maximum absolute difference and relative L2; default maximum absolute tolerance is 0.02. The command writes `export_parity.json` through `core.artifacts` and exits nonzero on a failed numerical comparison.
 
-## Organization
+```bash
+python -m scripts.prune.checks.export_parity \
+  --baseline ../expr/onestep_avatar/d1_diagnostic/ar_sigma_rollouts/runs/s1d_prompts_20260929/P1_3actors \
+  --masks <native-d0-mask.json> --exported-checkpoint <export.safetensors> \
+  --view <held-out-view-path> --sigmas 0.725 0.909375 --gpu-id N
+```
 
-The source and exported transformers load sequentially so only one 22B model is
-resident. The source uses `hooks`; the exported model has no runtime masks.
-Both paths use `phase1_gates._rollout` and the same encoded windows and sigmas.
+`--historical-k2` explicitly selects the older frozen-record and two-window check, with its original `--model`, `--states`, `--video` and source-hash arguments. It remains available for deployed-refiner regression work, but is not native D0 evidence.
 
-## Invariants and gotchas
+## Invariants and checks
 
-The mask must match the source checkpoint fingerprint. A compact bf16 export
-can differ numerically from its full-width masked counterpart; the sparse p05
-export matched exactly on the tested record and two windows. The default
-maximum absolute tolerance is explicit in the artifact. This is an executable
-parity check, not a perceptual quality gate.
-
-## Verification
-
-Run from LTX-2 in the `ltx` env with `--model 2.5 --gpu-id N --masks
-<head_scores.json> --exported-checkpoint <checkpoint>`. Inspect every
-comparison and the recorded source/export window times.
+Both models see the same saved noise, capture hash, fps, geometry, clean first frame, context and sigma. One 22B transformer is resident at a time. A no-prune export should match the baseline control; compact BF16 shapes may exceed the tolerance. A passing parity check does not imply good decoded quality or speed. Focused CPU tests cover manifest and mask rejection; a real D0 parity run validates the model execution path.

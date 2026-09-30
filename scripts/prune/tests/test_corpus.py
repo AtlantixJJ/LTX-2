@@ -55,10 +55,8 @@ def test_impossible_request_names_corpus_and_need(model):
 def test_no_module_builds_latent_tools_at_a_hardcoded_frame_rate():
     """fps is RoPE (VideoLatentTools: positions[:,0] /= fps), never a literal.
 
-    Two defaults are deliberately allowed and are asserted by name, so adding a
-    THIRD is a test failure rather than a silent regression:
-      metrics.t3_video(fps=24.0)  -- an ffmpeg display rate, not a model input
-      bench_refiner --fps 24.0    -- a synthetic benchmark that never opens a clip
+    Only metrics.t3_video(fps=24.0) is allowed: an ffmpeg display rate,
+    not a model input. Adding a second default is a regression.
     """
     subpackages = ("core", "data", "score", "evaluate", "checks", "report")
     offenders = set()
@@ -68,7 +66,7 @@ def test_no_module_builds_latent_tools_at_a_hardcoded_frame_rate():
                 if "fps" in line and re.search(r"=\s*24(\.0)?\b", line):
                     offenders.add(f.name)
                     break
-    assert offenders == {"metrics.py", "bench_refiner.py"}
+    assert offenders == {"metrics.py"}
 
 
 def test_the_allowed_defaults_are_not_on_a_model_input_path():

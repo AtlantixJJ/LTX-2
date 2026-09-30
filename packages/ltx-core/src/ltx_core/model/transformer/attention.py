@@ -7,6 +7,7 @@ from typing import Protocol
 import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from ltx_core.model.transformer.feed_forward import ShapeFaithfulLinear
 from ltx_core.model.transformer.kv_cache import LayerKVCache
 from ltx_core.model.transformer.ops import (
     GatedAttentionCallable,
@@ -489,6 +490,8 @@ class Attention(torch.nn.Module):
         apply_gated_attention: bool = False,
         qk_heads: int | None = None,
         active_head_indices: list[int] | None = None,
+        select_active_heads: bool = True,
+        shape_faithful: bool = False,
     ) -> None:
         super().__init__()
         if ops is None:
@@ -514,6 +517,7 @@ class Attention(torch.nn.Module):
         self.active_head_indices = (
             active_head_indices if active_head_indices is not None and len(active_head_indices) < heads else None
         )
+        self.select_active_heads = select_active_heads
 
         self.q_norm = torch.nn.RMSNorm(qk_dim, eps=norm_eps)
         self.k_norm = torch.nn.RMSNorm(qk_dim, eps=norm_eps)
@@ -529,6 +533,15 @@ class Attention(torch.nn.Module):
             self.to_gate_logits = None
 
         self.to_out = torch.nn.Sequential(torch.nn.Linear(inner_dim, query_dim, bias=True), torch.nn.Identity())
+        if shape_faithful and self.active_head_indices is not None:
+            if select_active_heads or self.qk_heads != heads:
+                raise ValueError("shape-faithful attention requires the original full attention geometry")
+            channels = [head * dim_head + channel for head in self.active_head_indices for channel in range(dim_head)]
+            self.to_v = ShapeFaithfulLinear(context_dim, inner_dim, indices=channels, axis=0, bias=True)
+            self.to_out[0] = ShapeFaithfulLinear(inner_dim, query_dim, indices=channels, axis=1, bias=True)
+            if apply_gated_attention:
+                self.to_gate_logits = ShapeFaithfulLinear(query_dim, heads, indices=self.active_head_indices,
+                                                         axis=0, bias=True)
 
     def forward(
         self,
@@ -622,7 +635,7 @@ class Attention(torch.nn.Module):
             q = self.to_q(x)
             k = self.to_k(context)
             q, k = self.preattention_function(q, k, self, mask, pe, k_pe)
-            if self.active_head_indices is None:
+            if self.active_head_indices is None or not self.select_active_heads:
                 if mask is None:
                     out = self.attention_function(q, k, v, self.heads)  # (B, T, H*D)
                 else:

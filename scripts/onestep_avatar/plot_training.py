@@ -4,8 +4,7 @@
 anchor, lr, grad_norm, elapsed_s, and the chain's source -- and does no aggregation and no
 plotting of its own (see its ``main()``). This turns one or more run directories into the
 curves a training review actually needs, plus a ``training_summary.json`` with the numbers a
-plan write-up would quote, following the same figures + JSON + ``INDEX.md`` convention as
-``scripts/prune/report/plot_head_scores.py``.
+plan write-up would quote, following the same figures + JSON + ``INDEX.md`` reporting convention.
 
 **Why the mean-across-ranks loss is "the" loss curve.** Ranks are sharded over DIFFERENT
 chains (``train.py``'s deterministic per-rank stride, not a ``DataLoader``), and FSDP

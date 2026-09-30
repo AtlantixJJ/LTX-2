@@ -118,6 +118,8 @@ def main() -> int:
     ap.add_argument("--target-sparsity", type=float, default=0.5)
     ap.add_argument("--evaluate-sparsities", type=float, nargs="*", default=(),
                     help="Real masked T0 sweep, performed before any structural export.")
+    ap.add_argument("--held-out-max-records", type=int, default=0,
+                    help="Also evaluate the same masks against this many held-out frozen records.")
     ap.add_argument("--iterative-rounds", type=int, default=0,
                     help="Run iterative masked recollection/pruning and persist its mask history.")
     ap.add_argument("--reconstruct-layers", type=int, nargs="*", default=(),
@@ -134,8 +136,14 @@ def main() -> int:
         rms = channel_rms(transformer, paths, s.denoiser, s.sigmas, s.device)
         scores = channel_scores(transformer, rms)
         masks = masks_from_scores(scores, args.target_sparsity)
+        evaluated_sparsities = sorted({0.0, *args.evaluate_sparsities})
         evaluation = {str(sparsity): masked_t0(transformer, masks_from_scores(scores, sparsity), paths, s.denoiser, s.sigmas, s.device)
-                      for sparsity in args.evaluate_sparsities}
+                      for sparsity in evaluated_sparsities}
+        held_out_paths = (records.select(root, split="held_out", limit=args.held_out_max_records)
+                          if args.held_out_max_records else [])
+        held_out_evaluation = {str(sparsity): masked_t0(transformer, masks_from_scores(scores, sparsity),
+                                                         held_out_paths, s.denoiser, s.sigmas, s.device)
+                               for sparsity in evaluated_sparsities} if held_out_paths else None
         iterative = None
         if args.iterative_rounds:
             def rescore(active):
@@ -165,6 +173,8 @@ def main() -> int:
     report = {"provenance": s.stamp(), "records": [x.name for x in paths],
               "target_sparsity": args.target_sparsity, "scores": {k: v.tolist() for k,v in scores.items()}, "masks": {k: v.tolist() for k,v in masks.items()},
               "kept": {k: int(v.sum()) for k,v in masks.items()}, "masked_t0_rel_l2": evaluation, "iterative": iterative,
+              "held_out_records": [x.name for x in held_out_paths],
+              "held_out_masked_t0_rel_l2": held_out_evaluation,
               "reconstruction": reconstruction}
     if args.save_reconstruction:
         if not reconstruction_tensors:

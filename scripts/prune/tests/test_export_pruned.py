@@ -9,7 +9,50 @@ from safetensors.torch import save_file
 
 from ltx_core.model.transformer.attention import Attention
 from ltx_core.model.transformer.feed_forward import FeedForward
+from ltx_core.model.transformer.feed_forward import ShapeFaithfulLinear
 from scripts.prune.score import export_pruned
+
+
+@pytest.mark.parametrize("axis", [0, 1])
+def test_shape_faithful_linear_preserves_original_gemm_and_gradients(axis):
+    torch.manual_seed(19)
+    source = torch.nn.Linear(8, 12)
+    indices = [1, 3, 5]
+    candidate = ShapeFaithfulLinear(8, 12, indices=indices, axis=axis, bias=True)
+    with torch.no_grad():
+        candidate.weight.copy_(source.weight[indices] if axis == 0 else source.weight[:, indices])
+        candidate.bias.copy_(source.bias[indices] if axis == 0 else source.bias)
+    x = torch.randn(2, 7, 8, requires_grad=True)
+    if axis == 0:
+        expected = source(x)
+        mask = torch.zeros(12)
+        mask[indices] = 1
+        expected = expected * mask
+    else:
+        mask = torch.zeros(8)
+        mask[indices] = 1
+        expected = source(x * mask)
+    actual = candidate(x)
+    assert torch.equal(actual, expected)
+    actual.sum().backward()
+    assert candidate.weight.grad is not None
+    assert "retained_indices" not in candidate.state_dict()
+
+
+def test_shape_faithful_export_stores_compact_tensors_with_original_execution_geometry(tmp_path):
+    source, output = tmp_path / "source.safetensors", tmp_path / "faithful.safetensors"
+    _checkpoint(source)
+    export_pruned.export(source, {"0.attn1": [1, 0], "0.attn2": [0, 1], "0.ff": [1, 0, 1]},
+                         output, model_key="2.5", mode="compact_faithful")
+    with safe_open(output, framework="pt") as handle:
+        config = json.loads(handle.metadata()["config"])["transformer"]
+        assert config["video_pruning_shape_faithful"] is True
+        assert config["per_layer_video_attn1_heads"] == [2]
+        assert config["per_layer_ff_inner_dim"] == [3]
+        assert config["per_layer_video_attn2_rope_head_indices"] == [None]
+        assert config["video_pruning_select_active_heads"] is False
+        assert handle.get_tensor(f"{export_pruned.PREFIX}.0.attn2.to_v.weight").shape == (2, 3)
+        assert handle.get_tensor(f"{export_pruned.PREFIX}.0.ff.net.2.weight").shape == (3, 2)
 
 
 def _checkpoint(path):
@@ -86,12 +129,27 @@ def test_sparse_export_preserves_full_tensors_and_records_active_units(tmp_path)
                          output, model_key="2.5")
     with safe_open(output, framework="pt") as handle:
         config = json.loads(handle.metadata()["config"])["transformer"]
-        assert config["pruning"]["mode"] == "sparse"
+        assert config["pruning"]["mode"] == "masked_full"
+        assert config["video_pruning_select_active_heads"] is False
+        assert config["per_layer_video_attn1_rope_head_indices"] == [None]
+        assert config["per_layer_video_attn2_rope_head_indices"] == [None]
         assert config["per_layer_video_attn1_active_head_indices"] == [[0]]
         assert config["per_layer_video_attn2_active_head_indices"] == [[1]]
         assert config["per_layer_video_ffn_active_channels"] == [[0, 2]]
         assert handle.get_tensor(f"{export_pruned.PREFIX}.0.attn2.to_v.weight").shape == (4, 3)
         assert handle.get_tensor(f"{export_pruned.PREFIX}.0.ff.net.2.weight").shape == (3, 3)
+
+
+def test_compact_ffn_only_does_not_gather_identity_rope_heads(tmp_path):
+    source, output = tmp_path / "source.safetensors", tmp_path / "compact_ffn.safetensors"
+    _checkpoint(source)
+    export_pruned.export(source, {"0.ff": [1, 0, 1]}, output, model_key="2.5", mode="compact")
+    with safe_open(output, framework="pt") as handle:
+        config = json.loads(handle.metadata()["config"])["transformer"]
+        assert config["per_layer_video_attn1_rope_head_indices"] == [None]
+        assert config["per_layer_video_attn2_rope_head_indices"] == [None]
+        assert handle.get_tensor(f"{export_pruned.PREFIX}.0.attn2.to_v.weight").shape == (4, 3)
+        assert handle.get_tensor(f"{export_pruned.PREFIX}.0.ff.net.2.weight").shape == (3, 2)
 
 
 def test_sparse_attention_matches_functional_mask():
@@ -108,6 +166,23 @@ def test_sparse_attention_matches_functional_mask():
     finally:
         handle.remove()
     assert torch.allclose(sparse(x), expected, atol=1e-5, rtol=1e-5)
+
+
+def test_masked_full_attention_matches_functional_mask():
+    torch.manual_seed(7)
+    source = Attention(query_dim=8, context_dim=8, heads=2, dim_head=4)
+    exported = Attention(query_dim=8, context_dim=8, heads=2, dim_head=4,
+                         active_head_indices=[1], select_active_heads=False)
+    exported.load_state_dict(source.state_dict())
+    x = torch.randn(2, 3, 8)
+    handle = source.to_out[0].register_forward_pre_hook(
+        lambda _module, args: (torch.cat([torch.zeros_like(args[0][..., :4]), args[0][..., 4:]], dim=-1),)
+    )
+    try:
+        expected = source(x)
+    finally:
+        handle.remove()
+    assert torch.equal(exported(x), expected)
 
 
 def test_sparse_ffn_matches_functional_mask():

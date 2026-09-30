@@ -29,7 +29,7 @@ def test_decoded_record_target_resembles_the_source_clip(record_paths):
 @pytest.mark.gpu
 def test_both_decode_paths_agree_on_the_same_dense_latent(record_paths):
     """decode_latent (phase1_gates' rollout path) and decode_token_latent
-    (head_ablation_eval's path) must produce the same pixels for the same
+    (the historical token-latent path) must produce the same pixels for the same
     latent, up to the channel layout decode_token_latent documents -- these
     used to be two separately-maintained decode implementations.
     """

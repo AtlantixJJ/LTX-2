@@ -69,9 +69,49 @@ def _summarize(profiler) -> dict:
     return {"groups_device_ms": dict(sorted(groups.items())), "ranges": rows}
 
 
-def _run(current, path, state, meta, masks=None, repeats=5):
+def _bench_attentions(transformer, inputs, device, repeats=10):
+    """Compare head selection with full attention plus the identical output mask."""
+    attention = dict(hooks.iter_video_attention(transformer))
+    results = {}
+    for name, (args, kwargs) in inputs.items():
+        module = attention[name]
+        active = module.active_head_indices
+        original_selection = module.select_active_heads
+
+        def bench(sparse):
+            module.select_active_heads = sparse
+            try:
+                for _ in range(2):
+                    result = module(*args, **kwargs)
+                torch.cuda.synchronize(device)
+                times = []
+                for _ in range(repeats):
+                    start = time.perf_counter()
+                    result = module(*args, **kwargs)
+                    torch.cuda.synchronize(device)
+                    times.append((time.perf_counter() - start) * 1000)
+                return result.detach(), sorted(times)[len(times) // 2]
+            finally:
+                module.select_active_heads = original_selection
+
+        sparse_result, sparse_ms = bench(True)
+        full_result, full_ms = bench(False)
+        results[name] = {"active_heads": len(active), "sparse_ms": sparse_ms, "masked_full_ms": full_ms,
+                         "max_abs": float((sparse_result.float() - full_result.float()).abs().max())}
+    return results
+
+
+def _run(current, path, state, meta, masks=None, repeats=5, microbench=False):
     with current.transformer(path) as transformer:
         with ExitStack() as stack:
+            captured = {}
+            capture_handles = []
+            if microbench:
+                for name, attention in hooks.iter_video_attention(transformer):
+                    if attention.active_head_indices is not None:
+                        def capture(_module, values, kwargs, *, name=name):
+                            captured.setdefault(name, (values, kwargs))
+                        capture_handles.append(attention.register_forward_pre_hook(capture, with_kwargs=True))
             if masks:
                 head = {name: torch.tensor(values, device=current.device) for name, values in masks.items()
                         if not name.endswith(".ff")}
@@ -85,6 +125,8 @@ def _run(current, path, state, meta, masks=None, repeats=5):
                 return current.denoiser(transformer, state, None, current.sigmas, meta.step_index)[0].denoised
 
             forward()
+            for handle in capture_handles:
+                handle.remove()
             torch.cuda.synchronize(current.device)
             wall = []
             for _ in range(repeats):
@@ -95,7 +137,9 @@ def _run(current, path, state, meta, masks=None, repeats=5):
             with _ranges(transformer), profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as profiler:
                 output = forward().detach().cpu()
                 torch.cuda.synchronize(current.device)
-    return output, {"wall_ms": wall, "median_wall_ms": sorted(wall)[len(wall) // 2], **_summarize(profiler)}
+            microbench_results = _bench_attentions(transformer, captured, current.device) if microbench else None
+    return output, {"wall_ms": wall, "median_wall_ms": sorted(wall)[len(wall) // 2],
+                    "masked_attention_microbench": microbench_results, **_summarize(profiler)}
 
 
 def main() -> int:
@@ -119,7 +163,7 @@ def main() -> int:
         widths=checkpoint_mask_widths(source.model.paths.transformer())
     )
     original, baseline = _run(source, None, state, meta, masks=masks, repeats=args.repeats)
-    compact, candidate = _run(exported, args.exported_checkpoint, state, meta, repeats=args.repeats)
+    compact, candidate = _run(exported, args.exported_checkpoint, state, meta, repeats=args.repeats, microbench=True)
     max_abs = float((original.float() - compact.float()).abs().max())
     report = {"provenance": source.stamp(), "exported_fingerprint": provenance.checkpoint_fingerprint(
         args.exported_checkpoint), "mask_sha256": mask_sha256, "record": record.name,

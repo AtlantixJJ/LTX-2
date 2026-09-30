@@ -1,128 +1,21 @@
-# CLAUDE.md — `scripts/prune/`
+# `scripts/prune/` working rules
 
-Guidance for Claude Code when working inside `LTX-2/scripts/prune/`. Read this before
-editing; read [`README.md`](README.md) for the per-file module table, the Phase 0/1/2 run
-order, and the post-mortems behind the invariants below.
+## Active task and separate deployed regression
 
-## What this package is
+Pruning selection and acceptance use native whole-video D0: an original capture, one clean conditioning latent frame, exact saved noise at each sigma, one full bidirectional forward, and comparison of generated-frame noise direction plus VAE-decoded output. The k2 sliding-window refiner is a separate deployed method; its old pruning experiments are historical for this decision. Keep `checks.method_parity` for any tensor-affecting change to `core.refine_core` or the deployed `vae_refine_sliding_window.py` path.
 
-A training-free head + FFN pruning harness for the **LTX refiner** — the k2 sliding-window
-denoise that `scripts/vae_refine_sliding_window.py` runs. 29 modules across 6 subpackages,
-5.7k production lines, 17 CLI entry points, 0.8k lines of tests.
+Run from the LTX-2 root in the `ltx` conda environment, using `python -m scripts.prune.<subpackage>.<module>`. Check `nvidia-smi` before loading the 22B model. `scripts/` and `scripts/prune/` are PEP 420 namespace packages: do not add `__init__.py` there.
 
-**The binding constraint:** every number this package produces is a *delta* against
-`scripts/vae_refine_sliding_window.py` (which produced everything under
-`expr/sam3dgs_vae_refine/`). If the harness rolls out something else, the deltas describe a
-model nobody ships — that has already happened once (see README § "The deployed method").
-So: **any change that can move a tensor is not done until `checks.method_parity` passes
-again.**
+## Invariants
 
-## Running anything here
+- `data.whole_clip` owns saved native D0 inputs. Calibration uses only the baseline manifest and checkpoint; pairwise evaluation separately verifies candidate setup and actual epsilon equality. Do not rebuild a different noise draw, fps, clean prefix, attention mask or geometry.
+- `core.session` owns model lifetime and the one `DTYPE = torch.bfloat16` declaration. Model forwards use `torch.no_grad()` except explicit VJP estimators. `core.artifacts` owns standard `expr/refiner_prune/<model>` names and attributable run directories; explicit output arguments are allowed for matched D0 experiment directories.
+- `score.hooks` validates model identity, mask widths and native D0 task provenance. Active export rejects historical/missing task stamps. `score.export_pruned` records mask hash and source fingerprint. Parity compares the functional mask with the export **before** output quality is interpreted.
+- `core.ltx_adapter` contains private upstream API access. `core.refine_core` is the single k2 sliding-window rollout imported by deployment and its regression gate; do not duplicate it.
+- The avatar package and deployed refiner use some shared prune utilities. Audit external imports before moving or deleting modules. Retain one `doc/<module>.md` design page per production module, updating it with interface, data-flow or invariant changes.
 
-```bash
-conda activate ltx                      # never base, never `uv run`, never another env
-cd LTX-2                                # the repo root, not scripts/prune
-python -m scripts.prune.<subpackage>.<module> --model 2.5 --gpu-id N
-```
+## Validation
 
-`-m` from the repo root is mandatory: modules import each other as `scripts.prune.*` and do
-not touch `sys.path`. `scripts/` and `scripts/prune/` are deliberately `__init__.py`-free
-PEP 420 namespace packages — **do not add an `__init__.py` to either**; the six subpackages
-each have one, and it is a docstring only (no eager `from . import x`, which would cycle:
-`core.session` → `data.prompt_cache`, `data.source_target` → `core.session`).
+Run focused CPU tests, Ruff on changed D0 modules, and saved-baseline forward parity for changes to D0 input construction or scoring. Use the D0 export parity command with a held-out capture and the documented 0.02 maximum absolute default. For deployed k2 tensor changes, run `python -m scripts.prune.checks.method_parity --model 2.5 --gpu-id N --windows 3`. Inspect synchronized VAE-decoded comparisons and benchmark drift before claiming quality or speed.
 
-Before any GPU run, check `nvidia-smi`; `--gpu-id` is checked for free memory by
-`core.preflight` and fails in ~1 s rather than 25 s into a load.
-
-## Where code goes
-
-| | |
-|---|---|
-| `core/` | bootstrap (`session`), paths (`artifacts`), the deployed task constants (`refine_task`), the one window implementation (`refine_core`), the registry, the private-API quarantine (`ltx_adapter`) |
-| `data/` | corpus, record selection, the on-disk calibration cache, the prompt-context cache |
-| `score/` | Phase 2/3: mask hooks, losses, head/FFN estimators, iterative schedule, checkpoint export |
-| `evaluate/` | T0–T3 metrics, decode, the Phase 1 gate, the latency/FLOP baseline, K/V cache |
-| `checks/` | the three bit-exactness gates |
-| `report/` | `analysis_summary.json` + figures |
-
-Prefer adding a function to an existing module over adding a module. The package already
-has more files than concepts; a new file needs to own something none of the above does.
-
-## Rules that must not be broken
-
-1. **One rollout implementation.** `core/refine_core.py` owns "refine one sliding window"
-   (geometry, tools, state, k-step loop). `vae_refine_sliding_window.py` *and* the gates
-   both import it. Never write a second noise/step/carryover loop — that is exactly the
-   drift `checks/method_parity.py` exists to catch.
-2. **`core/artifacts.py` is the only source of paths** under `expr/refiner_prune/<key>/`.
-   No path literal at a call site, ever — writer and reader have silently diverged here
-   before. A new stable gate file means a new name in `artifacts.GATES`.
-3. **`core/ltx_adapter.py` is the only place that may touch an underscore-prefixed
-   `ltx_core`/`ltx_pipelines` symbol.** `tests/test_ltx_adapter.py` enforces it. When the
-   LTX-2 submodule pin moves, this is the one file to re-check.
-4. **`DTYPE = torch.bfloat16` is declared exactly once**, in `core/session.py`
-   (`tests/test_session.py` enforces it). Import it; do not re-declare `torch.bfloat16`.
-5. **Every model forward runs inside `torch.no_grad()`** unless the estimator genuinely
-   needs a VJP (`score/head_scores.py` re-opens it with `torch.enable_grad()` and says
-   why). An unwrapped `PromptEncoder`/transformer call OOMs at ~45 GB vs ~25 GB —
-   `.eval()` does *not* clear `requires_grad` on parameters.
-6. **fps is RoPE, not metadata.** `VideoLatentTools` does `positions[:, 0] /= fps`. Never
-   default it; pass the clip's own `corpus.fps(source)`. 41 of the 44 corpus clips are
-   30 fps, 3 are 24. The two surviving `24.0` literals (`metrics.t3_video`'s display-rate
-   default, `bench_refiner --fps` on a synthetic latent) are documented as inert — leave
-   them and their comments alone.
-7. **`chunk_states.RECORD_FORMAT == 2`.** Format-1 caches were built at a wrong geometry;
-   they are refused, not migrated. Bumping the format invalidates the 528-record cache.
-8. **Score the chunk, not `denoise_mask`.** `chunk_states.chunk_token_mask(state, meta)` is
-   the set the deployed AR refiner predicts; `state.denoise_mask` also includes the index-0
-   keyframe (half the fresh-token mass at `n_new=1`).
-
-## Writing a new entry point
-
-Start from `core/session.py`, never from another script's preamble:
-
-```python
-ap = argparse.ArgumentParser(description=__doc__)
-session.add_model_args(ap)                 # --model / --gpu-id / --seed
-session.add_record_args(ap)                # --states / --split / --max-records
-args = ap.parse_args()
-
-s = session.open_session(args, script="my_thing")   # preflight + device + prompt ctx + sigmas
-paths = records.select(s.states_root(args.states), split=args.split, limit=args.max_records)
-with s.transformer() as transformer:       # video-only build, no_grad, freed on exit
-    ...
-out = artifacts.run_dir(s.key, "my-thing", script="my_thing", argv=sys.argv[1:])
-(out / "my_thing.json").write_text(json.dumps({"provenance": s.stamp(), ...}, indent=2))
-```
-
-Stable one-per-generation gate files go to `artifacts.gate(s.key, "<name>")` instead, and
-a gate `main()` returns `0`/`1` on pass/fail. Every artifact carries `s.stamp()` —
-artifacts are per checkpoint and head index spaces are not comparable across generations.
-
-## Tests and lint
-
-```bash
-python -m pytest scripts/prune/tests -q            # Tier A: CPU, < 30 s
-python -m pytest scripts/prune/tests -q -m gpu     # Tier B: real 22B model, ~10 min
-uv run ruff check scripts/prune                    # ruff is NOT in the ltx env
-```
-
-No mocks: Tier A runs the real classes at small dimensions against the real checkpoint
-headers and the real calibration cache, and **skips** (never fails) when an artifact is
-missing from disk — so `-rs` and an empty skip list is the real signal on this host.
-Tier C is the regression gate: `checks.method_parity --windows 3` must say `"pass": true`.
-
-## Gotchas that have cost time before
-
-- `conda run` appends a blank line to stdout, so `$(... | tail -1)` captures `""` → a
-  `Path("")` downstream. `run_head_sweep.sh` greps for the filename instead.
-- `provenance.run_id()` carries a PID because two jobs finishing in the same second landed
-  in one directory and clobbered each other's `head_scores.json`. Twice.
-- `source_target --build-calibration --max-clips 2` takes the manifest's *first* two clips,
-  which are both held-out → **zero** calibration records. Check
-  `summarize_phase0`'s `usable_for_phase2` before trusting a cache.
-- `checks.parity_check` is 2.3-only (2.5 has no pre-refactor baseline);
-  `checks.method_parity` is the one that matters for 2.5.
-- `bench_refiner --sampler ancestral` raises on purpose — the ancestral step needs a
-  per-step noise draw the bench loop does not supply.
-- LTX-2.5 is the default and preferred checkpoint; 2.3 is only for reproducing old results.
+The [README](README.md) gives active commands. [METHODS](doc/METHODS.md), [ARCHITECTURE](doc/ARCHITECTURE.md), [VALIDATION](doc/VALIDATION.md), and [HISTORY](doc/HISTORY.md) explain the design; the [module index](doc/README.md) maps each implementation file.

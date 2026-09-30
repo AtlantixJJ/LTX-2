@@ -7,16 +7,18 @@ the numerical meaning of the functional mask.
 
 ## Data flow
 
-Source checkpoint and binary masks produce a full-width sparse checkpoint by
-default. `--mode compact` slices V, output, gate, and FFN tensors; it also
-accepts fitted FFN projections. Both modes update per-layer metadata.
+A native D0 mask with complete task provenance and a source checkpoint produce a full-width `masked_full`
+checkpoint by default. Older k2 masks require `--historical-k2-mask`; the export metadata records which task produced the mask. `--mode sparse` selects retained heads before the
+attention kernel, and `--mode compact` slices V, output, gate, and FFN tensors;
+compact mode also accepts fitted FFN projections. All modes update metadata.
 
 ## Organization
 
-Sparse mode records active attention head IDs and FFN channel IDs. It leaves
-Q/K/V/output/FFN GEMM shapes unchanged, skips masked heads in attention, and
-applies the mask before the original output projection. Compact mode preserves
-retained RoPE head identities. Both record pruning provenance in metadata.
+Full-width modes record active attention head IDs and FFN channel IDs. They
+leave Q/K/V/output/FFN GEMM shapes unchanged and apply the mask before the
+original output projection. `sparse` skips masked heads in attention;
+`masked_full` runs full attention. Compact mode preserves retained RoPE head
+identities. All modes record pruning provenance in metadata.
 
 ## Invariants and gotchas
 
@@ -25,8 +27,14 @@ safetensors headers before materializing weights. It records the mask SHA256,
 source fingerprint, and peak RSS. Export still materializes the checkpoint in
 RAM; use `checks.export_parity` before deployment. Compact export changes bf16
 GEMM reduction shapes, and the p05 compact experiment failed two-window
-parity. Sparse mode avoids that source of difference but may offer little
-speedup because projection GEMMs remain full width.
+parity. The p05 direct benchmark found all 14 pruned attention branches faster
+with full attention than with head selection. Full-width exports therefore
+default to `masked_full`, and omit identity RoPE head lists to avoid an
+unnecessary frequency gather in every layer. This preserves exact parity but
+cannot remove projection GEMM work.
+An FFN-only compact export omits identity RoPE indices in unpruned attention
+branches. The measured 10% compact FFN candidate used less GPU memory, but
+changed bf16 results beyond the export-parity tolerance and is not deployable.
 
 ## Verification
 

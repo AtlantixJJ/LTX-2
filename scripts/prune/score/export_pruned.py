@@ -82,12 +82,12 @@ def _slice_ffn(sd: dict[str, torch.Tensor], layer: int, keep: list[int], fitted:
 
 def export(source: str | Path, masks: dict, output: str | Path, *, model_key: str,
            reconstruction: dict[str, torch.Tensor] | None = None, provenance_block: dict | None = None,
-           mode: str = "sparse") -> Path:
+           mode: str = "masked_full") -> Path:
     """Perform checkpoint-space surgery; masks are keyed ``'0.attn1'`` / ``'0.ff'``."""
     source, output = Path(source), Path(output)
-    if mode not in ("sparse", "compact"):
+    if mode not in ("masked_full", "sparse", "compact", "compact_faithful"):
         raise ValueError(f"unknown export mode: {mode}")
-    if reconstruction and mode == "sparse":
+    if reconstruction and mode != "compact":
         raise ValueError("reconstruction requires compact export")
     widths = checkpoint_mask_widths(source)
     if set(masks) - set(widths):
@@ -117,20 +117,27 @@ def export(source: str | Path, masks: dict, output: str | Path, *, model_key: st
             key = f"{layer}.{kind}"
             original = sd[f"{PREFIX}.{layer}.{kind}.to_q.weight"].shape[0] // d
             keep = _keep(masks.get(key, [1.0] * original), key)
-            if mode == "compact":
-                _slice_heads(sd, layer, kind, keep, d)
-                widths.append(len(keep))
-                identities.append(keep)
+            if mode in ("compact", "compact_faithful"):
+                if len(keep) < original:
+                    _slice_heads(sd, layer, kind, keep, d)
+                widths.append(len(keep) if mode == "compact" else original)
+                identities.append(keep if mode == "compact" and len(keep) < original else None)
+                if mode == "compact_faithful":
+                    (a1_active if kind == "attn1" else a2_active).append(keep)
             else:
                 widths.append(original)
-                identities.append(list(range(original)))
+                # Full-width Q/K already use the original RoPE order. An
+                # identity list would gather frequencies in every layer.
+                identities.append(None)
                 (a1_active if kind == "attn1" else a2_active).append(keep)
         key = f"{layer}.ff"
         original = sd[f"{PREFIX}.{layer}.ff.net.0.proj.weight"].shape[0]
         keep = _keep(masks.get(key, [1.0] * original), key)
-        if mode == "compact":
+        if mode in ("compact", "compact_faithful"):
             _slice_ffn(sd, layer, keep, None if reconstruction is None else reconstruction.get(key))
-            ffn.append(len(keep))
+            ffn.append(len(keep) if mode == "compact" else original)
+            if mode == "compact_faithful":
+                ffn_active.append(keep)
         else:
             ffn.append(original)
             ffn_active.append(keep)
@@ -138,12 +145,14 @@ def export(source: str | Path, masks: dict, output: str | Path, *, model_key: st
                    "per_layer_ff_inner_dim": ffn, "per_layer_video_attn1_rope_head_indices": a1_indices,
                    "per_layer_video_attn2_rope_head_indices": a2_indices,
                    "video_pruning_preserve_qk_norm": True,
+                   "video_pruning_shape_faithful": mode == "compact_faithful",
                    "pruning": {"task": "vae-refiner", "model_key": model_key, "mode": mode,
                                **(provenance_block or {})}})
-    if mode == "sparse":
+    if mode != "compact":
         config.update({"per_layer_video_attn1_active_head_indices": a1_active,
                        "per_layer_video_attn2_active_head_indices": a2_active,
-                       "per_layer_video_ffn_active_channels": ffn_active})
+                       "per_layer_video_ffn_active_channels": ffn_active,
+                       "video_pruning_select_active_heads": mode == "sparse"})
     metadata["config"] = json.dumps(config_all)
     output.parent.mkdir(parents=True, exist_ok=True)
     save_file(sd, str(output), metadata=metadata)
@@ -156,7 +165,9 @@ def main() -> None:
     p.add_argument("--masks", required=True)
     p.add_argument("--output", required=True)
     p.add_argument("--transformer-path")
-    p.add_argument("--mode", choices=("sparse", "compact"), default="sparse")
+    p.add_argument("--mode", choices=("masked_full", "sparse", "compact", "compact_faithful"), default="masked_full")
+    p.add_argument("--historical-k2-mask", action="store_true",
+                   help="Explicitly accept an older mask without native D0 task provenance")
     p.add_argument("--reconstruction-state", type=Path,
                    help="torch.save mapping '<layer>.ff' -> fitted fp32 (4096, kept_channels) projection.")
     args = p.parse_args()
@@ -166,13 +177,17 @@ def main() -> None:
     masks, mask_sha256 = hooks.read_mask_artifact(
         args.masks, model_key=model.key, fingerprint=stamp["transformer_fingerprint"],
         widths=checkpoint_mask_widths(source),
+        expected_task=None if args.historical_k2_mask else "whole_clip_d0",
     )
-    reconstruction = torch.load(args.reconstruction_state, map_location="cpu", weights_only=True) if args.reconstruction_state else None
+    reconstruction = (torch.load(args.reconstruction_state, map_location="cpu", weights_only=True)
+                      if args.reconstruction_state else None)
     path = export(source, masks, args.output, model_key=model.key, reconstruction=reconstruction,
                   mode=args.mode,
-                  provenance_block={**stamp, "source_transformer_fingerprint": stamp["transformer_fingerprint"],
+                  provenance_block={**stamp, "task": "historical_k2" if args.historical_k2_mask else "whole_clip_d0",
+                                    "source_transformer_fingerprint": stamp["transformer_fingerprint"],
                                     "mask_sha256": mask_sha256, "masks": str(args.masks),
-                                    "reconstruction_state": str(args.reconstruction_state) if args.reconstruction_state else None})
+                                    "reconstruction_state": (str(args.reconstruction_state)
+                                                             if args.reconstruction_state else None)})
     print(json.dumps({"checkpoint": str(path), "fingerprint": provenance.checkpoint_fingerprint(path),
                       "peak_rss_gib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 ** 2)}))
 

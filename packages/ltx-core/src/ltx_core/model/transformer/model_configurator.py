@@ -89,6 +89,8 @@ class LTXModelConfigurator(ModelConfigurator[LTXModel]):
             per_layer_video_attn1_active_head_indices=config.get("per_layer_video_attn1_active_head_indices"),
             per_layer_video_attn2_active_head_indices=config.get("per_layer_video_attn2_active_head_indices"),
             per_layer_video_ffn_active_channels=config.get("per_layer_video_ffn_active_channels"),
+            video_pruning_select_active_heads=config.get("video_pruning_select_active_heads", True),
+            video_pruning_shape_faithful=config.get("video_pruning_shape_faithful", False),
         )
 
 
@@ -158,6 +160,8 @@ class LTXVideoOnlyModelConfigurator(ModelConfigurator[LTXModel]):
             per_layer_video_attn1_active_head_indices=config.get("per_layer_video_attn1_active_head_indices"),
             per_layer_video_attn2_active_head_indices=config.get("per_layer_video_attn2_active_head_indices"),
             per_layer_video_ffn_active_channels=config.get("per_layer_video_ffn_active_channels"),
+            video_pruning_select_active_heads=config.get("video_pruning_select_active_heads", True),
+            video_pruning_shape_faithful=config.get("video_pruning_shape_faithful", False),
         )
 
 

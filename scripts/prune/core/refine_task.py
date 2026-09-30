@@ -22,7 +22,7 @@ from __future__ import annotations
 # scene-agnostic and every result in expr/sam3dgs_vae_refine/ was produced with this
 # text, so calibrating against anything else would score the model on conditioning it
 # is not deployed under. It is duplicated rather than imported because that script is a
-# run script, not a library; scripts/prune/parity_check.py is what keeps the two honest.
+# run script, not a library; checks/method_parity.py keeps the deployed path honest.
 # Changing this string changes the prompt-context cache key (scripts/prune/
 # prompt_cache.py hashes it), so pin it here rather than letting each script default
 # its own text.
