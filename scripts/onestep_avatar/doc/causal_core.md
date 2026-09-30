@@ -232,3 +232,10 @@ spies on every forward's first latent frame for that reason.
 test covers a model without prompt AdaLN. The recomputed-history test enables the 2.5
 capability and checks the pre-eviction discrepancy at sigma 0.725 and 1, plus the separate
 post-eviction effect. These synthetic weights do not estimate the 22B checkpoint's error.
+
+## Dev-model helpers (2026-09-29)
+
+- `rescaled_schedule(sigma_start, steps)` — the stock `LTX2Scheduler().execute(steps=N)` curve (4096-token anchor, exactly what the pipelines run; the real-latent token count over-shifts and broke dev sampling) scaled to start at `sigma_start`, so step count is independent of start σ; `steps == 1` returns `(σ, 0)` because the terminal stretch is undefined for one step. Validated by `validate_schedule` without a grid (the dev model has none).
+- `guided_denoised_from_x0_model(model, guider, negative_context)` — a `denoise_fn` for `rollout` that adds CFG / STG / rescale using the pipelines' `MultiModalGuider.calculate`. Passes are sequential and see the same modality; only the text context or the STG perturbation differs. With `cfg=1, stg=0` it is one conditional forward. It does not add a second rollout path: `rollout` is unchanged and receives it like any other `denoise_fn`.
+
+Tests: `tests/test_prompt_and_whole_clip.py`.

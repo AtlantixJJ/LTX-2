@@ -19,6 +19,8 @@ The explicit view list permits a small diagnostic set without freezing a trainin
 - The manifest reports `block_causal` attention for cache/recompute and `bidirectional_clean_history_window` for joint. Joint only sees the current noisy block and retained clean history; future generation blocks are absent.
 - The intended same-base schedule comparison omits `--checkpoint` in both runs and uses separate fresh output directories. Historical LoRA one-step videos do not satisfy that comparison.
 - LoRA fusion occurs once for both arms, so panel differences measure the noising source.
+- `--whole-clip` sets the block to `T − 1` latent frames so block 0 is `[0, T)`, and runs it through the explicit-history path with an empty prefix: no `BlockCache` is allocated (the single-block cache run peaked at 43 GB) and no refresh pass runs. Every generated token attends to every other; `c0` stays clean at timestep 0. The manifest records `whole_clip: true`, `attention: full_bidirectional` and `history_policy: none_single_block` so the report never infers the mode from geometry. It refuses `--history-mode`, `--block-latent-frames` and `--max-blocks`, and all `--view`s must share `T`.
+- The prompt is chosen with `--prompt` / `--prompt-file` (shared `session.add_prompt_args`) and defaults to `refine_task.REFINE_PROMPT`, so saved runs reproduce. The manifest's `text_context` records the prompt text, `prompt_sha256` (UTF-8 text), `is_default_prompt` and `sha256` (the encoded context bytes). `--prompt ""` is a valid empty-prompt control.
 - The output is an offline comparison. A teacher-forced run must pass `--teacher-forcing` explicitly.
 
 ## Gotchas
@@ -27,4 +29,10 @@ The tool does not yet enforce checkpoint metadata against flags (known gap G3). 
 
 ## Tests
 
-Run `conda run -n ltx python -m scripts.onestep_avatar.visualize_d1 --help` for CLI validation; `tests/test_causal_core.py` checks recomputed-history behavior on a real small transformer. Inspect the manifest, raw latents and MP4s from a real run.
+`tests/test_prompt_and_whole_clip.py` (CPU) pins the default prompt, prompt-file reading, flag exclusivity, the one-block whole-clip plan and the flag conflicts. Run `conda run -n ltx python -m scripts.onestep_avatar.visualize_d1 --help` for CLI validation; `tests/test_causal_core.py` checks recomputed-history behavior on a real small transformer. Inspect the manifest, raw latents and MP4s from a real run.
+
+## Dev model and guidance
+
+`--variant dev` loads `ltx-2.5-22b-dev-transformer-bf16.safetensors` beside the distilled file (or `--transformer PATH`) and needs `--steps N`. Each start σ in (0, 1] then runs `causal_core.rescaled_schedule(σ, N)`: the stock pipelines' `LTX2Scheduler().execute(steps=N)` curve (4096-token anchor shift, no latent passed; terminal stretch included), multiplied by σ. Passing the real ~18k-token latent instead over-shifts the schedule and the dev model degenerates — a bug found against `ti2vid_one_stage` on 2026-09-29. Truncating the stock curve would tie step count to σ; rescaling keeps N independent, and σ = 1 reproduces the stock schedule. `--trajectory-only` is refused for dev and `--steps` for distilled.
+
+`--cfg`, `--stg`, `--stg-blocks`, `--rescale` and `--negative-prompt` (default `DEFAULT_NEGATIVE_PROMPT`) build a pipelines `MultiModalGuider`; `causal_core.guided_denoised_from_x0_model` runs its passes **sequentially** (conditional, negative-prompt, STG with video self-attention skipped on the named blocks) and combines them with the guider's own `calculate`, so there is no second guidance formula. Guidance works for either variant and for every history mode. Nothing is detected from checkpoint metadata: the 2.5 dev defaults (30 steps, CFG 3, STG 1 on block 28, rescale 0.7) are unverified, so pass them explicitly. The manifest records `model_variant`, `steps`, `schedule_policy`, the full `guidance` block (values, negative-prompt hash, passes per step) and, per rollout, the exact `schedule` and `forward_passes`. Output files carry `dev_n{N}_cfg{c}_stg{s}` instead of `one_step`/`official`.

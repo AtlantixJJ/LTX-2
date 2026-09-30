@@ -569,6 +569,76 @@ def denoised_from_x0_model(model):  # noqa: ANN001, ANN201 -- the X0Model the se
     return call
 
 
+def guided_denoised_from_x0_model(model, guider, negative_context: torch.Tensor | None = None):  # noqa: ANN001, ANN201
+    """``denoised_from_x0_model`` with CFG / STG / rescale from a pipeline ``MultiModalGuider``.
+
+    The guider's ``calculate`` is the pipelines' own combination rule, so there is no second
+    guidance formula here -- only the pass bookkeeping. Passes run **sequentially**, not as a
+    batch, so the peak memory is one forward's: conditional, then the negative-prompt pass when
+    CFG is on, then the STG pass (video self-attention skipped on ``stg_blocks``) when STG is on.
+    Every pass sees the identical modality (tokens, timesteps, positions, masks, clean ``c0``);
+    only the text context or the perturbation differs. A ``cfg=1, stg=0`` guider is exactly one
+    conditional forward, the same as ``denoised_from_x0_model``.
+    """
+    from dataclasses import replace
+
+    from ltx_core.guidance.perturbations import (
+        BatchedPerturbationConfig,
+        Perturbation,
+        PerturbationConfig,
+        PerturbationType,
+    )
+
+    if guider.do_unconditional_generation() and negative_context is None:
+        raise ValueError("CFG needs a negative-prompt context")
+
+    def call(modality: Modality) -> torch.Tensor:
+        cond, _ = model(video=modality, audio=None, perturbations=None)
+        uncond = perturbed = 0.0
+        if guider.do_unconditional_generation():
+            uncond, _ = model(video=replace(modality, context=negative_context), audio=None, perturbations=None)
+        if guider.do_perturbed_generation():
+            skip = Perturbation(type=PerturbationType.SKIP_VIDEO_SELF_ATTN, blocks=list(guider.params.stg_blocks))
+            config = BatchedPerturbationConfig(
+                [PerturbationConfig([skip])] * cond.shape[0],
+                num_blocks=model.num_blocks,
+                device=cond.device,
+                dtype=cond.dtype,
+            )
+            perturbed, _ = model(video=modality, audio=None, perturbations=config)
+        return guider.calculate(cond, uncond, perturbed, 1.0)
+
+    return call
+
+
+def rescaled_schedule(sigma_start: float, steps: int) -> tuple[float, ...]:
+    """The stock ``LTX2Scheduler`` curve for ``steps`` steps, scaled to start at ``sigma_start``.
+
+    "Stock" means what the pipelines actually run: ``LTX2Scheduler().execute(steps=N)`` with
+    **no latent**, i.e. the shift at the 4096-token anchor. Passing the real latent (~18k tokens
+    at 18x32x32) shifts far harder -- 15 of 30 levels above 0.97, then a jump -- and the dev model
+    sampled on that schedule degenerates (background texture, hard cuts) where the stock pipeline
+    is clean; that was a real bug here, found by comparing against ``ti2vid_one_stage``.
+
+    Truncating the stock schedule would tie step count to the start sigma (a 0.725 start keeps 8
+    of 30 levels). Multiplying every level by ``sigma_start`` keeps the curve's shape and makes
+    ``steps`` an independent axis; at ``sigma_start == 1`` it is the stock schedule exactly.
+    """
+    from ltx_core.components.schedulers import LTX2Scheduler
+
+    if not 0.0 < sigma_start <= 1.0:
+        raise ValueError(f"sigma_start must be in (0, 1], got {sigma_start}")
+    if steps < 1:
+        raise ValueError(f"steps must be >= 1, got {steps}")
+    if steps == 1:
+        # The terminal stretch divides by (1 - last nonzero level), which is 0 for [1.0, 0].
+        return (float(sigma_start), 0.0)
+    stock = LTX2Scheduler().execute(steps=steps)
+    # The first level is set exactly: float32 stock[0] * sigma is not bit-equal to sigma, and
+    # rollout requires the schedule to start at exactly the sigma the source was noised to.
+    return validate_schedule([float(sigma_start)] + [float(level) * sigma_start for level in stock[1:-1]] + [0.0])
+
+
 def prime_cache(
     denoise_fn,  # noqa: ANN001
     grid: ClipGrid,

@@ -25,6 +25,22 @@ def add_model_args(parser) -> None:
     parser.add_argument("--seed", type=int, default=42)
 
 
+def add_prompt_args(parser) -> None:
+    """Text prompt selection; the default keeps every saved run reproducible."""
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--prompt", default=None, help="Prompt text; default refine_task.REFINE_PROMPT.")
+    group.add_argument("--prompt-file", type=Path, default=None, help="UTF-8 file holding the prompt text.")
+
+
+def resolve_prompt(args) -> str:
+    """The prompt text selected by ``add_prompt_args`` (``REFINE_PROMPT`` when neither flag is set)."""
+    if getattr(args, "prompt_file", None) is not None:
+        return args.prompt_file.read_text(encoding="utf-8").strip()
+    if getattr(args, "prompt", None) is not None:
+        return args.prompt
+    return refine_task.REFINE_PROMPT
+
+
 def add_record_args(parser, *, default_split: str = "calibration") -> None:
     parser.add_argument("--states", type=Path, default=None, help="Calibration cache root; default is model calibration/.")
     parser.add_argument("--split", choices=("calibration", "held_out"), default=default_split)
@@ -105,10 +121,17 @@ class Session:
         return provenance.stamp(self.model, self.device, script=self.script, **extra)
 
 
-def open_session(args, *, script: str, sampler: str = "euler", transformer_path: Path | None = None) -> Session:
+def open_session(
+    args,
+    *,
+    script: str,
+    sampler: str = "euler",
+    transformer_path: Path | None = None,
+    prompt: str | None = None,
+) -> Session:
     model = preflight.check(args.model, sampler=sampler, gpu_id=args.gpu_id, transformer_path=transformer_path)
     device = torch.device(f"cuda:{args.gpu_id}")
-    context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
+    context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT if prompt is None else prompt, DTYPE, device)
     sigmas = torch.tensor(refine_task.schedule_for(model.sigmas, refine_task.K_STEP), dtype=torch.float32, device=device)
     return Session(
         model=model,

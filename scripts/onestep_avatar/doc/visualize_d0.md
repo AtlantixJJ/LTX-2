@@ -154,6 +154,9 @@ existing captioned `capture | base | LoRA` comparisons and raw checkpoint latent
 chain` only the chain's blocks; captions follow the VAE's frame mapping and cover exactly the
 decoded frames; `_stamp` leaves every pixel below the band untouched.
 
+`--prompt` / `--prompt-file` select the text (default `REFINE_PROMPT`); the manifest's
+`conditioning` records the prompt and its SHA-256. Covered by `tests/test_prompt_and_whole_clip.py`.
+
 ## Owed
 
 The D1 arm is available through `--guide-mode d1`; the paired frozen-base source comparison

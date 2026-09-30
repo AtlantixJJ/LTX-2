@@ -71,6 +71,7 @@ the self-forced one a real deployment (and the default here) has to use.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -83,7 +84,7 @@ from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDO
 from ltx_trainer.video_utils import save_video
 from scripts.onestep_avatar import causal_core, dataset
 from scripts.onestep_avatar.train import Chain, ChainStore, clip_grid_for
-from scripts.prune.core.session import DTYPE, add_model_args, open_session
+from scripts.prune.core.session import DTYPE, add_model_args, add_prompt_args, open_session, resolve_prompt
 from scripts.prune.evaluate.decode import decode_latent
 from scripts.prune.evaluate.metrics import t3_video
 
@@ -169,6 +170,8 @@ def _run_chain(  # noqa: ANN202, PLR0913
     block_epsilons: list[torch.Tensor] | None = None,
     history_mode: str = "cache",
     max_blocks: int | None = None,
+    guider=None,  # noqa: ANN001
+    negative_context=None,  # noqa: ANN001
 ):
     """One AR rollout of the selected arm; ``z_y`` is the target reference in both.
 
@@ -210,8 +213,13 @@ def _run_chain(  # noqa: ANN202, PLR0913
         if not 1 <= max_blocks <= len(plan):
             raise ValueError(f"max_blocks must be within [1, {len(plan)}], got {max_blocks}")
         plan = plan[:max_blocks]
+    denoise_fn = (
+        causal_core.denoised_from_x0_model(transformer)
+        if guider is None
+        else causal_core.guided_denoised_from_x0_model(transformer, guider, negative_context)
+    )
     tokens, _ = causal_core.rollout(
-        causal_core.denoised_from_x0_model(transformer),
+        denoise_fn,
         grid,
         geometry,
         cache,
@@ -358,7 +366,7 @@ def _block_epsilons(tokens: torch.Tensor, grid, plan: list[tuple[int, int]], see
 def generate_checkpoint(args: argparse.Namespace, checkpoint: Path | None, chain: Chain):  # noqa: ANN201
     ckpt_name = "frozen base" if checkpoint is None else checkpoint.name
     print(f"--> Generating rollouts for {ckpt_name}...", flush=True)  # noqa: T201
-    session = open_session(args, script="onestep_avatar.visualize_d0")
+    session = open_session(args, script="onestep_avatar.visualize_d0", prompt=resolve_prompt(args))
     geometry = causal_core.deployed_geometry(
         session.model.scale_factors,
         block_latent_frames=args.block_latent_frames,
@@ -540,6 +548,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Do not burn the per-frame 'latent N · rollout step M' caption into the video.",
     )
     add_model_args(parser)
+    add_prompt_args(parser)
     return parser.parse_args(argv)
 
 
@@ -674,7 +683,12 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915
                 "refresh_forwards_per_block": 1 if args.kv_source == "refresh" else 0,
                 "teacher_forcing": args.teacher_forcing,
                 "history_policy": "real_capture" if args.teacher_forcing else "generated_output",
-                "conditioning": {"first_frame": "clean capture latent frame 0", "text": "session prompt cache"},
+                "conditioning": {
+                    "first_frame": "clean capture latent frame 0",
+                    "text": "session prompt cache",
+                    "prompt": resolve_prompt(args),
+                    "prompt_sha256": hashlib.sha256(resolve_prompt(args).encode("utf-8")).hexdigest(),
+                },
                 "model": session.stamp(dtype=str(DTYPE)),
                 "noise": {
                     "path": noise_path.name,
