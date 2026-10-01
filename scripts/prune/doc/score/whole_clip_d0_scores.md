@@ -18,7 +18,7 @@ New results use `candidate_format=whole_clip_d0_mask_v1` and stamp task, full-bi
 
 - Scoring only observes the D0 capture one-step forward. It does not backpropagate, reconstruct weights or alter the baseline checkpoint.
 - Saved epsilon values and the original capture hash are checked through the shared `build_input` builder. The model's first output at every calibration point is compared with the saved baseline.
-- Sampling spans time and space uniformly; it is not a full-token exact contribution calculation. RMS times output-weight norm ignores cancellation and downstream effects. The compact checkpoint must be evaluated directly after export.
+- Sampling covers every generated frame using a stride over flattened spatial indices; it is not a balanced two-dimensional or full-token contribution calculation. On a 32×32 grid, stride 16 selects columns 0 and 16 in every row. Treat this lattice as a calibration limitation; the forward and held-out metrics still cover the complete clip. RMS times output-weight norm ignores cancellation and downstream effects. The compact checkpoint must be evaluated directly after export.
 
 ## Verification
 

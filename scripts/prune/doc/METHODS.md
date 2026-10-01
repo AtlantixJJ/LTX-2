@@ -402,11 +402,21 @@ pruning generally. Coverage is one held-out actor/view, one seed, three sigmas.
 
 ## 7. Methods we plan to test
 
-This is a proposed agenda. **Only the RMS screen, uniform allocator, functional
-masks, export controls and matched evaluation are wired into today's workflow.**
-Exact projected head energy exists as a helper. The other selection,
-compensation, gradient and recovery methods below are not implemented or measured
-here. Documenting the agenda does not launch experiments.
+The production workflow supports RMS scoring, uniform allocation, functional
+masks, export controls and matched evaluation; exact projected head energy also
+exists as a helper. The broader agenda below separates production capabilities
+from study-specific implementations. Gradient, reconstruction/rotation and recovery
+training methods remain unmeasured; results from a training-free screen do not
+establish their performance.
+
+The [1 October experiment plan](../../../../plans/2026-10-01-prune-method-comparison.md)
+executes a bounded training-free comparison of rankings, compensation,
+allocation and static block removal using isolated calibration, validation and
+blind-test actors. Its study helpers live under ignored `expr/`; they do not
+change the production workflow. Gradient learning and recovery remain follow-on
+studies, conditional on those results. The [method-comparison report](../../../../expr/refiner_prune/2.5/method_screen_20261001/REPORT.md)
+records the fresh measured outcomes, frozen blind split, export parity and
+same-GPU timing checks. These experiment helpers do not add production CLI modes.
 
 ### 7.1. First establish executable dense savings
 
