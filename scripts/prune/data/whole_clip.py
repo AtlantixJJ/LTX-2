@@ -239,11 +239,13 @@ def build_input(root: Path, manifest: dict, *, view: str, sigma: float,
     noisy = causal_core.mix_block_noise(source, epsilon.to(current.device), sigma)
     c0 = source[:, :grid.tokens_per_latent_frame]
     state = causal_core.with_clean_prefix(noisy, c0)
-    ids = causal_core.block_ids_for([(0, latent_frames, 0)], grid.tokens_per_latent_frame).to(current.device)
     modality = causal_core.block_modality(
         grid, state, current.context, sigma,
         token_slices=[grid.token_span(0, latent_frames)],
-        attention_mask=causal_core.block_causal_mask(ids),
+        # The entire clip is one bidirectional block. None expresses full visibility
+        # without allocating and converting a quadratic all-ones mask.
+        attention_mask=None,
         clean_prefix_tokens=grid.tokens_per_latent_frame,
+        sigma_dtype=torch.float32,
     )
     return grid, modality, c0, row

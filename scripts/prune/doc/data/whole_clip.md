@@ -15,3 +15,9 @@ Reconstruct exactly the noised whole-video input used in a saved baseline D0 run
 ## Invariants and checks
 
 Frame 0 is conditioning, not a predicted frame. Sigmas have exact `[sigma, 0]` schedules. Do not derive fps from defaults or replace the saved epsilon with a new draw. The module has no dependence on a particular candidate checkpoint. `test_whole_clip_d0.py` covers manifest rejection; real forward equality to the saved baseline checks the model-facing tensor contract after changes.
+
+Whole-clip attention uses `attention_mask=None`: every token is visible. Do not
+materialize an all-ones token-by-token mask; its conversion to attention bias
+allocates quadratic temporary tensors and can exhaust a 48 GB device at 145 frames.
+Sigma and per-token timesteps remain float32, matching the stock pipeline schedule;
+BF16 describes the weights and latent tensors, not a rounded schedule.

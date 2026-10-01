@@ -13,6 +13,8 @@ loading the transformer.
 1. Save a baseline with `python -m scripts.onestep_avatar.visualize_d1 --whole-clip`.
    Use the original capture, unguided BF16 inference, one step at each sigma, and
    saved epsilon and output latents. Fix prompt, geometry, fps and seed.
+   Whole-clip attention uses no dense mask. Keep sigma and token timesteps in
+   float32 as in the stock pipeline; BF16 applies to the weights and latents.
 2. Calibrate on selected actors and exact sigma levels:
    `python -m scripts.prune.score.whole_clip_d0_scores --baseline <baseline-dir> --view <calibration-view> --sigmas 0.725 0.909375 1.0 --head-fraction 0.10 --ffn-fraction 0.10 --gpu-id N --output <mask.json>`.
    Every calibration forward must reproduce its saved baseline.

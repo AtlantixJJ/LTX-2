@@ -35,6 +35,13 @@ speed/quality trade — it would silently compute a different function.
 retained clean history and current block at every denoising level, sets history-token timesteps
 to zero, applies the current global sigma to prompt conditioning, and emits only current-block
 predictions. `rollout(history_mode="recompute")` uses it without allocating or writing K/V.
+When there is no retained history, the one current block is fully bidirectional and
+uses `attention_mask=None`; constructing an all-visible dense mask wastes quadratic
+memory. Later blocks retain their causal history mask.
+For a single span covering the whole clip, `block_modality` receives
+`sigma_dtype=torch.float32`, keeping global sigma and token timesteps at the stock
+pipeline precision with BF16 weights/latents. Other block calls retain their existing
+dtype convention. Do not round a whole-clip `[sigma, 0]` schedule to BF16.
 It requires contiguous blocks from clip start. At eviction, recomputing the truncated prefix
 also changes older states that originally attended to now-evicted context; compare block 1
 before eviction to isolate prompt-sigma effects.

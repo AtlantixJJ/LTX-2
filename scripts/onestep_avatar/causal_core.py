@@ -481,6 +481,7 @@ def block_modality(
     kv_write: bool = False,
     attention_mask: torch.Tensor | None = None,
     clean_prefix_tokens: int = 0,
+    sigma_dtype: torch.dtype | None = None,
 ) -> Modality:
     """One forward's ``Modality``, assembled from slices of the clip grid.
 
@@ -494,11 +495,13 @@ def block_modality(
     denoise = torch.cat([grid.denoise_mask[:, lo:hi] for lo, hi in token_slices], dim=1)
     if not 0 <= clean_prefix_tokens <= tokens.shape[1]:
         raise ValueError("clean_prefix_tokens must be within this modality's token span")
-    timesteps = denoise * sigma
+    # Whole-clip probes match stock pipelines, which retain float32 schedule
+    # precision even when weights and noisy latents are BF16.
+    timesteps = denoise.to(sigma_dtype or denoise.dtype) * sigma
     if clean_prefix_tokens:
         timesteps = timesteps.clone()
         timesteps[:, :clean_prefix_tokens] = 0
-    sigma_tensor = torch.tensor([sigma], device=device, dtype=tokens.dtype)
+    sigma_tensor = torch.tensor([sigma], device=device, dtype=sigma_dtype or tokens.dtype)
     return Modality(
         latent=tokens,
         sigma=sigma_tensor,
@@ -811,8 +814,11 @@ def denoise_with_clean_history(
         context,
         sigma,
         token_slices=slices,
-        attention_mask=None if joint_window else block_causal_mask(ids),
+        # With no history, this is a single bidirectional block. An all-visible
+        # dense mask wastes quadratic memory and can OOM a whole-clip forward.
+        attention_mask=None if joint_window or not history_spans else block_causal_mask(ids),
         clean_prefix_tokens=prefix_length + clean_prefix_tokens,
+        sigma_dtype=torch.float32 if span == (0, grid.latent_frames) else None,
     )
     return denoise_fn(modality)[:, prefix_length:]
 

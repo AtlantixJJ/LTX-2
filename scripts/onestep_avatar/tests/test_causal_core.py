@@ -214,6 +214,49 @@ def test_global_probe_noise_is_independent_of_block_geometry() -> None:
     torch.testing.assert_close(masters[0], masters[1], rtol=0, atol=0)
 
 
+def test_explicit_history_uses_no_dense_mask_for_first_block() -> None:
+    """Whole-clip visibility must not require a quadratic all-ones allocation."""
+    geometry = _geometry()
+    grid = _grid(geometry)
+    source = torch.zeros(1, grid.latent_frames * grid.tokens_per_latent_frame, CHANNELS)
+    seen = []
+
+    def denoise(modality):
+        seen.append(modality.attention_mask)
+        return modality.latent
+
+    for span in geometry.plan(grid.latent_frames)[:2]:
+        lo, hi = grid.token_span(*span)
+        causal_core.denoise_with_clean_history(
+            denoise, grid, geometry, source, source[:, lo:hi], _context(), SIGMA0, span,
+        )
+    assert seen[0] is None
+    assert seen[1] is not None
+    assert not bool(seen[1].all())
+
+
+def test_whole_clip_keeps_stock_sigma_precision_with_bf16_latents() -> None:
+    geometry = CausalGeometry(SCALE, block_latent_frames=LATENT_FRAMES - 1, context_latent_frames=8)
+    grid = _grid(geometry)
+    source = torch.zeros(1, grid.latent_frames * grid.tokens_per_latent_frame, CHANNELS, dtype=torch.bfloat16)
+    seen = []
+
+    def denoise(modality):
+        seen.append(modality)
+        return modality.latent
+
+    causal_core.denoise_with_clean_history(
+        denoise, grid, geometry, source, source, _context(), 0.909375,
+        (0, grid.latent_frames), clean_prefix_tokens=grid.tokens_per_latent_frame,
+    )
+    modality = seen[0]
+    assert modality.attention_mask is None
+    assert modality.sigma.dtype == torch.float32
+    assert modality.timesteps.dtype == torch.float32
+    assert float(modality.sigma[0]) == pytest.approx(0.909375, abs=1e-7)
+    assert bool((modality.timesteps[:, :grid.tokens_per_latent_frame] == 0).all())
+
+
 def test_joint_window_changes_information_access_only_after_block_zero() -> None:
     """Clean history may respond to the current block only in the joint diagnostic."""
     geometry = _geometry()

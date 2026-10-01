@@ -22,7 +22,7 @@ models. Keep `scripts/` and `scripts/prune/` as PEP 420 namespace packages.
   parameters; distinguish storage savings from reduced GEMM work in `compact`.
 - `core.ltx_adapter` owns private upstream access. Avatar consumers also use model,
   prompt and media utilities: check their imports before changing shared interfaces.
-- Every production module has `doc/<module>.md`; update its interface, data flow
+- Every production module has `doc/<area>/<module>.md`, mirroring its source path; update its interface, data flow
   and invariants with the code.
 
 ## Verification
