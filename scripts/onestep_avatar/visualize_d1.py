@@ -17,8 +17,15 @@ from ltx_core.model.transformer.attention import attention_label
 from ltx_core.model.transformer.transformer import DEFAULT_TRANSFORMER_OPS
 from scripts.onestep_avatar import causal_core, dataset, visualize_d0
 from scripts.onestep_avatar.train import Chain, _load_training_master, clip_grid_for
-from scripts.prune.core import provenance, refine_task
-from scripts.prune.core.session import DTYPE, add_model_args, add_prompt_args, open_session, resolve_prompt
+from scripts.prune.core import provenance
+from scripts.prune.core.session import (
+    DEFAULT_PROMPT,
+    DTYPE,
+    add_model_args,
+    add_prompt_args,
+    open_session,
+    resolve_prompt,
+)
 from scripts.prune.evaluate.metrics import t3_video
 
 
@@ -63,10 +70,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--variant",
         choices=("distilled", "dev"),
         default="distilled",
-        help="dev loads the base transformer and samples each sigma with a rescaled --steps schedule.",
+        help="dev loads the base transformer and enters the stock --steps schedule at each sigma.",
     )
     parser.add_argument("--transformer", type=Path, default=None, help="Explicit transformer checkpoint path.")
     parser.add_argument("--steps", type=int, default=None, help="dev only: N of the stock N-step schedule.")
+    parser.add_argument(
+        "--dev-denoising-steps", type=int, default=None,
+        help="dev truncated only: actual calls selected at evenly spaced indices from the fixed stock tail.",
+    )
     parser.add_argument(
         "--dev-schedule",
         choices=("truncated", "rescaled"),
@@ -95,8 +106,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             parser.error("--variant dev needs --steps N")
         if args.trajectory_only:
             parser.error("--trajectory-only walks the distilled grid; dev uses --steps instead")
+        if args.dev_denoising_steps is not None:
+            if args.dev_schedule != "truncated":
+                parser.error("--dev-denoising-steps requires --dev-schedule truncated")
+            for sigma in args.sigmas:
+                try:
+                    causal_core.thinned_truncated_schedule(sigma, args.steps, args.dev_denoising_steps)
+                except ValueError as error:
+                    parser.error(str(error))
     elif args.steps is not None:
         parser.error("--steps is dev only; the distilled model uses its own grid (--trajectory-only)")
+    elif args.dev_denoising_steps is not None:
+        parser.error("--dev-denoising-steps is dev only")
     return args
 
 
@@ -105,7 +126,8 @@ DEV_TRANSFORMER = "ltx-2.5-22b-dev-transformer-bf16.safetensors"
 
 def _suffix(args: argparse.Namespace) -> str:
     if args.variant == "dev":
-        return f"dev_n{args.steps}_cfg{args.cfg:g}_stg{args.stg:g}"
+        calls = "" if args.dev_denoising_steps is None else f"_k{args.dev_denoising_steps}"
+        return f"dev_n{args.steps}{calls}_cfg{args.cfg:g}_stg{args.stg:g}"
     return "official" if args.trajectory_only else "one_step"
 
 
@@ -238,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
         "text_context": {
             "prompt": prompt,
             "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
-            "is_default_prompt": prompt == refine_task.REFINE_PROMPT,
+            "is_default_prompt": prompt == DEFAULT_PROMPT,
             "sha256": hashlib.sha256(context_bytes).hexdigest(),
             "shape": list(session.context.shape),
             "dtype": str(session.context.dtype),
@@ -248,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
         "whole_clip": args.whole_clip,
         "model_variant": args.variant,
         "steps": args.steps,
+        "denoising_steps_requested": args.dev_denoising_steps,
         "schedule_policy": f"{args.dev_schedule}_ltx2_scheduler" if args.variant == "dev" else "distilled_grid",
         "guidance": {
             "cfg": args.cfg,
@@ -305,8 +328,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
             for sigma in sigmas:
                 schedule = None
                 if args.variant == "dev":
-                    make = causal_core.truncated_schedule if args.dev_schedule == "truncated" else causal_core.rescaled_schedule
-                    schedule = list(make(sigma, args.steps))
+                    if args.dev_denoising_steps is not None:
+                        schedule = list(causal_core.thinned_truncated_schedule(sigma, args.steps, args.dev_denoising_steps))
+                    else:
+                        make = causal_core.truncated_schedule if args.dev_schedule == "truncated" else causal_core.rescaled_schedule
+                        schedule = list(make(sigma, args.steps))
                 elif args.trajectory_only:
                     schedule = [float(level) for level in session.model.sigmas if level <= sigma + 1e-9]
                     causal_core.validate_schedule(schedule, session.model.sigmas)

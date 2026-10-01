@@ -18,4 +18,4 @@ Head counts and widths come from checkpoint metadata, not plan tables. Model key
 
 ## Verification
 
-Check the package CPU suite and the relevant phase gate. Run `python -m pytest scripts/prune/tests -q` from the LTX-2 root in the `ltx` conda environment for the CPU suite. For any change that can alter rollout tensors, rerun `python -m scripts.prune.checks.method_parity --model 2.5 --gpu-id N --windows 3` on a free GPU.
+Run the package CPU suite and native export parity when model-facing behavior changes. Run `python -m pytest scripts/prune/tests -q -m 'not gpu'` from the LTX-2 root in the `ltx` conda environment for the CPU suite. For model-facing changes, run the native checks in [VALIDATION](VALIDATION.md).

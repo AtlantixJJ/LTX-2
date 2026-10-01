@@ -10,12 +10,11 @@ The default CLI takes a saved baseline D0 directory, native mask artifact, expor
 
 ```bash
 python -m scripts.prune.checks.export_parity \
-  --baseline ../expr/onestep_avatar/d1_diagnostic/ar_sigma_rollouts/runs/s1d_prompts_20260929/P1_3actors \
+  --baseline <fresh-baseline-dir> \
   --masks <native-d0-mask.json> --exported-checkpoint <export.safetensors> \
   --view <held-out-view-path> --sigmas 0.725 0.909375 --gpu-id N
 ```
 
-`--historical-k2` explicitly selects the older frozen-record and two-window check, with its original `--model`, `--states`, `--video` and source-hash arguments. It remains available for deployed-refiner regression work, but is not native D0 evidence.
 
 ## Invariants and checks
 

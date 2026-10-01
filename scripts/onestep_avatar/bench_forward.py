@@ -1,27 +1,6 @@
-"""Wall-clock cost per finalized chunk: the causal one-step rollout against the `k2` window.
+"""Measure causal denoising and cache-refresh cost per finalized block at each cache depth.
 
-Plan 2026-09-10 §2 claims "one forward instead of two, at half the transformer compute". §4.4's
-causal scheme (2026-09-14) changes what has to be measured for that claim to mean anything, in
-two ways that push in opposite directions:
-
-* the denoising forward now covers only the **block** (2 latent frames), not a whole 4-latent-
-  frame window -- half the query tokens;
-* but the cache has to be refreshed with the block's clean latents, which is a **second**
-  forward, and every block's queries attend over a longer key sequence (the pinned frame-0
-  sink plus the retained context) than the old self-contained window did.
-
-So the honest unit is **cost per finalized chunk of 16 pixel frames**: `k2`'s two window
-forwards against the causal path's denoise + refresh. A FLOP count will not settle it --
-attention-backend selection, kernel occupancy at these shapes, and memory-bandwidth-bound
-layers do not scale with FLOPs -- and the predecessor of this script already caught one
-FLOP-plausible arm (the extra-token hybrid at 2T) being *slower* than the baseline it was
-meant to replace. Content is synthetic; only the geometry and the checkpoint's attention
-layers are real.
-
-Run from LTX-2, ltx env, ONE free GPU (~28 GB for the video-only transformer, no LoRA/FSDP):
-
-    conda run -n ltx python -m scripts.onestep_avatar.bench_forward --gpu-id 2
-"""
+Run from LTX-2 in the ltx environment on a free GPU."""
 
 from __future__ import annotations
 
@@ -35,7 +14,8 @@ import torch
 
 from scripts.onestep_avatar import causal_core
 from scripts.onestep_avatar.causal_core import BlockCache, CausalGeometry, ClipGrid
-from scripts.prune.core import model_registry, refine_core, refine_task
+from scripts.prune.core import model_registry
+from scripts.prune.core.session import DEFAULT_PROMPT
 from scripts.prune.data import prompt_cache
 
 DTYPE = torch.bfloat16
@@ -66,7 +46,7 @@ def _stats(times: list[float], tokens: int) -> dict[str, float]:
     }
 
 
-def main() -> int:  # noqa: PLR0915 -- one linear benchmark script.
+def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--model", choices=model_registry.SUPPORTED_MODELS, default="2.5")
     p.add_argument("--gpu-id", type=int, default=0)
@@ -76,52 +56,30 @@ def main() -> int:  # noqa: PLR0915 -- one linear benchmark script.
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(
         "--context-latent-frames", type=int, nargs="+", default=[causal_core.CONTEXT_LATENT_FRAMES],
-        help="Sweep the cache depth: it is the compute/quality knob of §4.4's scheme, and the "
-        "whole point of measuring is to price each setting against k2.",
+        help="Sweep the cache depth: it is the compute/quality knob; "
+        "measure denoising and cache refresh separately at each depth.",
     )
     p.add_argument("--latent-frames", type=int, default=18, help="Clip length; the corpus's 150-frame tier.")
     p.add_argument("--out", type=Path, default=None)
     args = p.parse_args()
 
+    torch.manual_seed(args.seed)
     model = model_registry.resolve(args.model)
     device = torch.device(f"cuda:{args.gpu_id}")
-    window = refine_task.deployed_geometry(model.scale_factors)
-    context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
+    context = prompt_cache.get_or_build(model, DEFAULT_PROMPT, DTYPE, device)
     latent_channels = model.caps.latent_channels
 
-    from ltx_pipelines.utils.denoisers import SimpleDenoiser  # noqa: PLC0415 -- torch-heavy, imported late
     from scripts.prune.core.session import Session  # noqa: PLC0415 -- torch-heavy, imported late
 
-    sigmas = torch.tensor([args.sigma0, 0.0], dtype=torch.float32, device=device)
     session = Session(
         model=model, device=device, script="onestep_avatar.bench_forward",
-        context=context, denoiser=SimpleDenoiser(context, None), sigmas=sigmas,
+        context=context,
     )
 
     results: dict[str, dict[str, float]] = {}
     with session.transformer() as transformer:
         base = causal_core.base_model(transformer)
         denoise_fn = causal_core.denoised_from_x0_model(transformer)
-
-        # --- The k2 baseline: one bidirectional forward over a whole 4-latent-frame window.
-        # Timed through refine_core, the module that produced every frozen k2 number, so the
-        # comparison is against the deployed method rather than a re-implementation of it.
-        window_tools = refine_core.tools_for_window(
-            window, EDGE, EDGE, 25.0, latent_channels=latent_channels
-        )
-        z_window = torch.randn(
-            1, latent_channels, window.latent_frames, EDGE // 32, EDGE // 32, dtype=DTYPE, device=device
-        )
-        window_state = refine_core.make_window_state(
-            z_window, None, args.sigma0, window_tools, args.seed, device, DTYPE
-        )
-        window_times = _time(
-            lambda: refine_core.run_schedule(transformer, session.denoiser, window_state, sigmas),
-            reps=args.reps, warmup=args.warmup, device=device,
-        )
-        # run_schedule at a 2-point sigma list is ONE forward; k2 is two.
-        results["k2_window_single_forward"] = _stats(window_times, int(window_state.latent.shape[1]))
-        k2_per_chunk = 2 * statistics.median(window_times)
 
         # --- The causal path, per cache depth.
         for depth in args.context_latent_frames:
@@ -172,14 +130,12 @@ def main() -> int:  # noqa: PLR0915 -- one linear benchmark script.
             results[f"causal_refresh_ctx{depth}"] = _stats(refresh_times, int(tokens.shape[1]))
             results[f"causal_total_ctx{depth}"] = {
                 "per_chunk_s": per_chunk,
-                "over_k2_ratio": per_chunk / k2_per_chunk,
                 "cached_key_tokens": cached_start,
                 "cache_gib": 2 * len(base.transformer_blocks) * cache.caches[0].capacity * base.inner_dim * 2 / 2**30,
             }
             print(  # noqa: T201 -- CLI progress.
                 f"ctx={depth}: denoise {statistics.median(denoise_times) * 1000:.0f}ms + refresh "
                 f"{statistics.median(refresh_times) * 1000:.0f}ms = {per_chunk * 1000:.0f}ms/chunk, "
-                f"{per_chunk / k2_per_chunk:.2f}x k2"
             )
 
     summary = {
@@ -188,7 +144,6 @@ def main() -> int:  # noqa: PLR0915 -- one linear benchmark script.
             "latent_frames": args.latent_frames,
             "block_latent_frames": causal_core.BLOCK_LATENT_FRAMES,
         },
-        "k2_per_chunk_s": k2_per_chunk,
         **results,
     }
     print(json.dumps(summary, indent=2))  # noqa: T201 -- CLI completion summary.

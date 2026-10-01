@@ -13,7 +13,7 @@
 
 The whole causal scheme, in one file: block-causal attention, a clean-latent K/V cache, and
 master latents. It replaces the sliding-window-with-a-frozen-carryover construction that
-`refine_core` still owns for the `k2` baseline.
+the package no longer supports.
 
 Three changes that are **one** change:
 
@@ -104,7 +104,7 @@ during training.
 
 | | |
 |---|---|
-| `BLOCK_LATENT_FRAMES = 2` | 16 pixel frames = the deployed stride, so an adapter finalizes per step exactly the span `k2` does |
+| `BLOCK_LATENT_FRAMES = 2` | 16 pixel frames per complete causal block at the default VAE scale |
 | `CONTEXT_LATENT_FRAMES = 8` | clean frames retained besides the sink — a **retained history of 9 latent frames**; set by what fits on 4×49 GB, not by what would help |
 | `MAX_CONTEXT_LATENT_FRAMES = 16` | the supported ceiling, in *context* frames — OOMs in `backward` at rank 32 on 4×49 GB |
 | `SINK_LATENT_FRAMES = 1` | latent frame 0, pinned, never evicted |
@@ -236,6 +236,7 @@ post-eviction effect. These synthetic weights do not estimate the 22B checkpoint
 ## Dev-model helpers (2026-09-29)
 
 - `truncated_schedule(sigma_start, steps)` — the stock N-step curve entered at `sigma_start`: start there, then every stock level below it; lower start noise → fewer steps. The dev default.
+- `thinned_truncated_schedule(sigma_start, stock_steps, denoising_steps)` selects evenly spaced indices from that same tail, including the exact start σ and terminal zero. It refuses counts above the tail's sigma-specific maximum. The maximum reproduces the complete tail; one call uses `[σ, 0]`. This changes the number of calls without constructing a different stock curve.
 - `rescaled_schedule(sigma_start, steps)` — the stock `LTX2Scheduler().execute(steps=N)` curve (4096-token anchor, exactly what the pipelines run; the real-latent token count over-shifts and broke dev sampling) scaled to start at `sigma_start`, so step count is independent of start σ; `steps == 1` returns `(σ, 0)` because the terminal stretch is undefined for one step. Validated by `validate_schedule` without a grid (the dev model has none).
 - `guided_denoised_from_x0_model(model, guider, negative_context)` — a `denoise_fn` for `rollout` that adds CFG / STG / rescale using the pipelines' `MultiModalGuider.calculate`. Passes are sequential and see the same modality; only the text context or the STG perturbation differs. With `cfg=1, stg=0` it is one conditional forward. It does not add a second rollout path: `rollout` is unchanged and receives it like any other `denoise_fn`.
 

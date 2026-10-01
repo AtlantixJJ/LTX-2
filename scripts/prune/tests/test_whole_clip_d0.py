@@ -92,7 +92,7 @@ def test_saved_noise_content_mutation_rejected(tmp_path: Path) -> None:
         whole_clip.load_epsilon(tmp_path, row)
 
 
-def test_transfer_candidate_requires_explicit_opt_in_and_pinned_export(tmp_path: Path) -> None:
+def test_candidate_rejects_cross_task_export(tmp_path: Path) -> None:
     mask = tmp_path / "historical.json"
     source = tmp_path / "source.safetensors"
     prefix = "model.diffusion_model.transformer_blocks.0"
@@ -116,9 +116,5 @@ def test_transfer_candidate_requires_explicit_opt_in_and_pinned_export(tmp_path:
                       "transformer_path": str(source)}}
     candidate = {**base, "model": {**base["model"], "transformer_path": str(checkpoint),
                                    "transformer_fingerprint": provenance.checkpoint_fingerprint(checkpoint)}}
-    with pytest.raises(ValueError, match="historical transfer requires"):
+    with pytest.raises(ValueError, match="native whole-clip D0"):
         whole_clip.verify_candidate(base, candidate)
-    assert whole_clip.verify_candidate(base, candidate, historical_transfer=True) == stamp
-    mask.write_text('{"mutated": true}')
-    with pytest.raises(ValueError, match="mask content"):
-        whole_clip.verify_candidate(base, candidate, historical_transfer=True)

@@ -86,8 +86,8 @@ flowchart TD
 ## Organization logic
 
 **One continuous encode per source, and the master is what is stored.** “Source” here means
-the planned prefix through the last complete fixed-stride window; trailing frames that cannot
-form a complete window are not encoded. A genuine causal
+the complete VAE-aligned prefix: `time * floor((F-1)/time) + 1` pixel frames.
+Only the incomplete trailing VAE block is dropped; there is no window/overlap setting. A genuine causal
 keyframe only exists at latent frame 0 of a truly continuous encode, and nothing re-keys
 mid-rollout. Encoding each window independently *manufactured* a fresh keyframe at every
 window's local frame 0 — measured: window 0 sliced vs. independently encoded differs ~0.1 %
@@ -162,7 +162,7 @@ max 2e-3 of a cell's coverage, far below the mismatch it removes.
 single producer; the arithmetic was transcribed here until 2026-09-15, and the two were
 verified identical over all 3,360 corpus views before the copy went. Note the module is
 imported as `crop_geometry`: `geometry` is already this module's parameter name for a
-`WindowGeometry` (the `k2` window plan — a different thing entirely).
+`CaptureGeometry` (whole-clip VAE alignment, separate from spatial cropping).
 
 **Cropping runs in worker processes, the VAE in this one.** The pool is entered *before* the
 encoder so workers never fork after this process has touched CUDA.

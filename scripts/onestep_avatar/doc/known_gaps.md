@@ -65,7 +65,7 @@ one-view exploratory run is in the workspace
 ## G1 — the supplied first frame is not a model condition
 
 The workspace tracks this as **F2 / Stage C** of
-[the September 18 audit](../../../../plans/2026-09-18-onestep-avatar-audit-and-fix-plan.md).
+the September 18 audit.
 
 ### Required
 
@@ -174,7 +174,7 @@ objective, guide mode, anchor weight, teacher forcing, LoRA rank/alpha/target, s
 and sigma overrides and records them, but still takes those values and `--teacher-forcing` from
 the command line rather than the adapter. It checks probe sigmas against the selected base
 model's schedule, not the adapter metadata. `onestep_core.rollout` checks only that σ₀ is on the
-model grid and the schedule is one step. `refine_task.assert_one_step_conditions` has no
+model grid and the schedule is one step. `sampling.assert_one_step_conditions` has no
 production call site.
 Related enforcement gaps: LoRA `alpha/rank` scaling is stamped but not folded into the exported
 factors nor applied at fusion (safe only at the default `alpha == rank`); `dataset.load_master`

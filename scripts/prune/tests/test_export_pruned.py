@@ -100,15 +100,11 @@ def test_structural_export_slices_and_records_original_head_ids(tmp_path):
         assert handle.get_tensor(f"{export_pruned.PREFIX}.0.ff.net.2.weight").shape == (3, 2)
 
 
-def test_invalid_mask_or_reconstruction_fails_before_output(tmp_path):
+def test_invalid_mask_fails_before_output(tmp_path):
     source, output = tmp_path / "source.safetensors", tmp_path / "pruned.safetensors"
     _checkpoint(source)
     with pytest.raises(ValueError, match="invalid binary mask"):
         export_pruned.export(source, {"0.attn1": [1]}, output, model_key="2.5")
-    with pytest.raises(ValueError, match="reconstruction shape"):
-        export_pruned.export(source, {"0.ff": [1, 0, 1]}, output, model_key="2.5",
-                             reconstruction={"0.ff": torch.zeros(2, 2)}, mode="compact")
-    assert not output.exists()
 
 
 def test_full_width_qk_norm_matches_functional_head_mask():

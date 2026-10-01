@@ -155,7 +155,7 @@ def verify_pair(base: dict, candidate: dict) -> None:
                 raise ValueError(f"unmatched {field} for {key}")
 
 
-def verify_candidate(base: dict, candidate: dict, *, historical_transfer: bool = False) -> dict:
+def verify_candidate(base: dict, candidate: dict) -> dict:
     """Bind a paired candidate to its actual export, source and mask content."""
     # Hooks consume this input contract; defer this validation-only dependency.
     from scripts.prune.score import export_pruned, hooks  # noqa: PLC0415
@@ -167,18 +167,17 @@ def verify_candidate(base: dict, candidate: dict, *, historical_transfer: bool =
     with safe_open(path, framework="pt", device="cpu") as handle:
         config = json.loads((handle.metadata() or {}).get("config", "{}"))
     pruning = config.get("transformer", {}).get("pruning", {})
-    task = "historical_k2" if historical_transfer else TASK
-    if (pruning.get("task") != task or
+    if (pruning.get("task") != TASK or
             pruning.get("source_transformer_fingerprint") != base["model"]["transformer_fingerprint"] or
             pruning.get("model_key") != base["model"]["model_key"]):
-        raise ValueError("candidate export task/source differs; historical transfer requires explicit opt-in")
+        raise ValueError("candidate export task/source differs from native whole-clip D0")
     mask_path = Path(pruning.get("masks", ""))
     if not mask_path.is_file() or provenance.file_sha256(mask_path) != pruning.get("mask_sha256"):
         raise ValueError("candidate export mask content differs or is unavailable")
     hooks.read_mask_artifact(
         mask_path, model_key=base["model"]["model_key"], fingerprint=base["model"]["transformer_fingerprint"],
         widths=export_pruned.checkpoint_mask_widths(base["model"]["transformer_path"]),
-        expected_task=None if historical_transfer else TASK, baseline=None if historical_transfer else base,
+        expected_task=TASK, baseline=base,
     )
     return pruning
 

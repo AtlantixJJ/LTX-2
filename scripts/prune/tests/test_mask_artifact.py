@@ -11,11 +11,19 @@ from scripts.prune.score import hooks
 
 @pytest.fixture
 def report(tmp_path):
-    path = tmp_path / "head_scores.json"
-    path.write_text(json.dumps({
-        "provenance": {"model_key": "2.5", "transformer_fingerprint": "abc"},
-        "iterative": {"masks": {"0.attn1": [1, 0], "0.attn2": [0, 1]}},
-    }))
+    path = tmp_path / "native_mask.json"
+    manifest = {"whole_clip": True, "trajectory_only": False, "attention": "full_bidirectional",
+                "objective": "white", "text_context": {}, "geometry": {}, "seed": 42,
+                "latent_dtype": "torch.bfloat16", "sigmas": [0.5],
+                "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1},
+                "model": {"model_key": "2.5", "transformer_fingerprint": "abc", "video_vae_fingerprint": "vae"},
+                "videos": [{"view": "subject/views/view00", "sigma": 0.5, "schedule": [0.5, 0],
+                            "artifacts": {"capture_sha256": "capture", "epsilon_sha256": "epsilon",
+                                          "fps": 30, "blocks": [[0, 2]]}}]}
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    path.write_text(json.dumps({"candidate_format": "whole_clip_d0_mask_v1",
+        "provenance": whole_clip.native_provenance(tmp_path, manifest, ["subject/views/view00"], [0.5]),
+        "masks": {"0.attn1": [1, 0], "0.attn2": [0, 1]}}))
     return path
 
 
@@ -30,7 +38,7 @@ def test_valid_report_has_content_identity(report):
 @pytest.mark.parametrize("change", ["fingerprint", "partial", "nonbinary", "empty", "wrong_width"])
 def test_invalid_report_fails_before_mask_install(report, change):
     payload = json.loads(report.read_text())
-    masks = payload["iterative"]["masks"]
+    masks = payload["masks"]
     if change == "fingerprint":
         payload["provenance"]["transformer_fingerprint"] = "other"
     elif change == "partial":
@@ -49,6 +57,9 @@ def test_invalid_report_fails_before_mask_install(report, change):
 
 def test_native_consumer_requires_task_and_input_provenance(report: Path, tmp_path: Path) -> None:
     widths = {"0.attn1": 2, "0.attn2": 2, "0.ff": 4}
+    missing_task = json.loads(report.read_text())
+    missing_task["provenance"].pop("task")
+    report.write_text(json.dumps(missing_task))
     with pytest.raises(ValueError, match="mask task"):
         hooks.read_mask_artifact(report, model_key="2.5", fingerprint="abc", widths=widths,
                                  expected_task="whole_clip_d0")

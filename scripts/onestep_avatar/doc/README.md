@@ -128,9 +128,10 @@ refresh → evict, all four in `causal_core`, with `c0` taken from the `z_y` mas
 | [causal_core.md](causal_core.md) | `causal_core.py` | **the** rollout: block plan, clip grid, causal mask, K/V cache, the three calls |
 | [precompute.md](precompute.md) | `precompute.py` | one continuous VAE encode per view, per objective, resumable |
 | [train.md](train.md) | `train.py` | the AR LoRA loop, the loss rule, the checkpoint contract |
+| [sampling.md](sampling.md) | `sampling.py` | one-step sigma-grid and checkpoint-condition validation |
 | [onestep_core.md](onestep_core.md) | `onestep_core.py` | deployment rollout — the same three calls, one schedule |
 | [stats.md](stats.md) | `stats.py` | measurement only: the excursion `a`, the gap `r`, latent moments |
-| [bench_forward.md](bench_forward.md) | `bench_forward.py` | wall clock per finalized chunk, causal vs `k2` |
+| [bench_forward.md](bench_forward.md) | `bench_forward.py` | causal denoising and cache-refresh wall clock per finalized block |
 | [plot_training.md](plot_training.md) | `plot_training.py` | per-rank JSONL → training figures + summary |
 | [visualize_d0.md](visualize_d0.md) | `visualize_d0.py` | decoded `capture │ base │ LoRA` probe: one whole-clip rollout per sigma, frames captioned with latent/rollout-step |
 | [visualize_d1.md](visualize_d1.md) | `visualize_d1.py` | paired `capture │ D0 │ D1` rollout comparison, optionally with the same LoRA in both arms |

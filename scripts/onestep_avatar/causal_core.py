@@ -1,8 +1,8 @@
 """The ONE implementation of "roll a causal block forward", training and deployment alike.
 
 ``plans/2026-09-10-ltx25-one-step-argavatar-lora.md`` §4.4 (revised 2026-09-14). This module
-replaces the sliding-window-with-a-frozen-carryover construction that ``refine_core`` owns for
-the `k2` refiner. Three things change together, and they are one change, not three:
+uses block-causal attention, a clean-latent cache and continuous master latents.
+Three things work together:
 
 1. **Attention is block-causal.** A token attends to its own block and every earlier one,
    never to a later one. Within a block it stays bidirectional -- the block is denoised in
@@ -59,7 +59,6 @@ from ltx_core.types import (
     VideoPixelShape,
 )
 from ltx_core.utils import to_denoised
-from scripts.prune.core import refine_core
 
 # §4.4: the deployed stride is 16 pixel frames, which is 2 latent frames at the VAE's
 # temporal scale of 8. Keeping the block at the stride means a trained adapter denoises
@@ -632,6 +631,20 @@ def truncated_schedule(sigma_start: float, steps: int) -> tuple[float, ...]:
     return validate_schedule([float(sigma_start)] + below + [0.0])
 
 
+def thinned_truncated_schedule(sigma_start: float, stock_steps: int, denoising_steps: int) -> tuple[float, ...]:
+    """Use fewer calls from one fixed stock tail, retaining both endpoints.
+
+    Select evenly spaced indices, rather than generating a new stock curve with
+    different spacing. The complete tail is the sigma-specific upper bound.
+    """
+    tail = truncated_schedule(sigma_start, stock_steps)
+    maximum = len(tail) - 1
+    if not 1 <= denoising_steps <= maximum:
+        raise ValueError(f"denoising_steps must be within [1, {maximum}] at sigma={sigma_start}")
+    indices = [round(i * maximum / denoising_steps) for i in range(denoising_steps + 1)]
+    return validate_schedule([tail[i] for i in indices])
+
+
 def rescaled_schedule(sigma_start: float, steps: int) -> tuple[float, ...]:
     """The stock ``LTX2Scheduler`` curve for ``steps`` steps, scaled to start at ``sigma_start``.
 
@@ -1034,13 +1047,7 @@ def rollout(  # noqa: PLR0912, PLR0913, PLR0915 -- one AR block loop; every bran
 def deployed_geometry(scale_factors: SpatioTemporalScaleFactors, **overrides: int) -> CausalGeometry:
     """The geometry every caller should use unless it is explicitly sweeping one.
 
-    Cross-checked against ``refine_task.deployed_geometry`` by ``tests/test_causal_core.py``:
-    the block is the `k2` rollout's own stride, so an adapter trained here finalizes the same
-    span per step that the baseline it is measured against does.
+    Shared by training, deployment, probes and benchmarks. Block size and cache
+    depth are explicit avatar settings, independent of pruning.
     """
     return CausalGeometry(scale_factors=scale_factors, **overrides)
-
-
-def matches_deployed_stride(geometry: CausalGeometry, window: refine_core.WindowGeometry) -> bool:
-    """Whether a causal block finalizes the same pixel span the `k2` window did."""
-    return geometry.block_latent_frames * geometry.scale_factors.time == window.stride_frames

@@ -1,20 +1,4 @@
-"""Run provenance stamped into every scripts/prune/* artifact.
-
-plans/2026-08-26-refiner-head-ffn-pruning.md §4: "stamp the model key **and the
-transformer file hash** into provenance, and refuse to load a mask whose key does
-not match." Scores, masks and pruned checkpoints are per generation and head index
-spaces are not comparable across them, so an artifact that does not say which
-checkpoint produced it is not usable evidence.
-
-Why a *fingerprint* and not a full-file sha256: the 2.5 transformer is 42 GB, so
-hashing it end-to-end costs ~90 s per script start-up -- enough that it would get
-skipped. ``checkpoint_fingerprint`` instead hashes the safetensors header (every
-tensor's name, dtype, shape and byte offsets -- so any structural change, including
-a pruned export, changes it) together with the file size and three 1 MiB samples
-drawn at fixed fractions of the data section (so a same-shape re-train or a
-fine-tune changes it too). It is a collision-resistant *identifier*, not an
-integrity check against a deliberate forgery, which is all provenance needs here.
-"""
+"""Checkpoint fingerprints, content hashes and attributable run metadata."""
 
 from __future__ import annotations
 
@@ -33,23 +17,6 @@ _SAMPLE_BYTES = 1 << 20  # 1 MiB per sampled region
 _SAMPLE_FRACTIONS = (0.25, 0.5, 0.75)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]  # .../LTX-2 (scripts/prune/core/provenance.py)
-
-
-def method_source_hashes() -> dict[str, str]:
-    """Content pins for the deployed and measured rollout implementations."""
-    paths = (
-        "scripts/vae_refine_sliding_window.py",
-        "scripts/prune/core/refine_core.py",
-        "scripts/prune/core/refine_task.py",
-        "scripts/prune/evaluate/phase1_gates.py",
-        "packages/ltx-core/src/ltx_core/model/transformer/attention.py",
-        "packages/ltx-core/src/ltx_core/model/transformer/feed_forward.py",
-        "packages/ltx-core/src/ltx_core/model/transformer/ops.py",
-        "packages/ltx-core/src/ltx_core/model/transformer/transformer.py",
-        "packages/ltx-core/src/ltx_core/model/transformer/model.py",
-        "packages/ltx-core/src/ltx_core/model/transformer/model_configurator.py",
-    )
-    return {name: file_sha256(REPO_ROOT / name) for name in paths}
 
 
 def checkpoint_fingerprint(path: str | Path) -> str:
@@ -131,7 +98,6 @@ def stamp(model, device: torch.device | None = None, **extra: object) -> dict:
         "transformer_path": model.paths.transformer(),
         "transformer_fingerprint": checkpoint_fingerprint(model.paths.transformer()),
         "video_vae_path": model.paths.video_vae_path,
-        "sampler": model.stepper_kind,
         "scale_factors": list(model.scale_factors),
         "scale_factors_source": model.scale_factors_source,
         "git_rev": _git_rev(),

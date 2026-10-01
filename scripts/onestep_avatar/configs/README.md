@@ -235,6 +235,16 @@ a probe or a deployment from off-condition use (G3). A run directory name is not
 
 ## 4. Sanity and probe commands
 
+### Fixed stock dev schedule and fewer-call comparison
+
+For whole-clip dev diagnostics use `--variant dev --steps 30 --dev-schedule truncated
+--whole-clip --cfg 3 --stg 1 --stg-blocks 28 --rescale 0.7`. Each initial σ uses the
+remaining stock levels, rather than 30 calls at every σ. To compare K actual calls,
+add `--dev-denoising-steps K`; this selects evenly spaced indices from the same tail.
+Use the prefix of `1, 2, 4, 6, 8, 10, 12, 16, 20, 25, 30` that does not exceed the
+sigma-specific maximum, with the exact maximum as the reference. At σ .97 the maximum
+is 25. This is distinct from changing `--steps N`, which constructs a different curve.
+
 ```bash
 # Zero-init check: step 0's LoRA B must export as exactly zero; step 1 is the first update.
 #   ... --guide-mode d0 --save-initial --save-every 1 --steps 1
@@ -282,3 +292,11 @@ adapter's recorded conditions against the flags it is given (G3) — nothing sto
 adapter with `--guide-mode d1`. Its defaults are the deployed geometry and three `PROBE_SIGMAS`;
 explicit geometry and sigma overrides are recorded but remain off-condition when they differ
 from adapter training.
+
+### Whole-clip corpus coverage
+
+`precompute` encodes one continuous prefix of `time * floor((F-1)/time) + 1`
+pixel frames. It has no `--window-frames` or `--overlap-frames` options.
+Old window-geometry manifests fail the current coverage check and require fresh
+corpus preprocessing. `bench_forward` reports causal denoising and cache refresh
+cost only, without a k2 arm or ratio.

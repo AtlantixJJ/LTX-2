@@ -96,7 +96,7 @@ from scripts.prune.evaluate.metrics import t3_video
 # noise, so the "denoised" state IS the input and there is nothing to measure -- the same reason
 # train.py's `training_sigmas` refuses to train that level. Historically it also *crashed* here,
 # in a silent retry loop for hours, because the old probe went through
-# `refine_core.run_schedule`, whose `to_velocity(sample, sigma, denoised)` = `(sample -
+# The stock Euler conversion `to_velocity(sample, sigma, denoised)` = `(sample -
 # denoised)/sigma` raises "Sigma can't be 0.0". The causal rollout has no stepper and no such
 # conversion, so that particular crash is gone -- but the level still says nothing.
 PROBE_SIGMAS = (0.909375, 0.725, 0.421875)

@@ -98,10 +98,10 @@ def _comparison_video(base_video: Path, candidate_video: Path, output: Path) -> 
     )
 
 
-def compare(baseline: Path, candidate: Path, output: Path, *, historical_transfer: bool = False) -> dict:
+def compare(baseline: Path, candidate: Path, output: Path) -> dict:
     base = whole_clip.load_manifest(baseline)
     pruned = whole_clip.load_manifest(candidate)
-    whole_clip.verify_candidate(base, pruned, historical_transfer=historical_transfer)
+    whole_clip.verify_candidate(base, pruned)
     base_rows, candidate_rows = _records(base), _records(pruned)
     output.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -131,7 +131,7 @@ def compare(baseline: Path, candidate: Path, output: Path, *, historical_transfe
                      "candidate_latent": str(_latent_path(candidate, p)),
                      "comparison_video": str(video) if video else None})
     result = {"baseline": str(baseline), "candidate": str(candidate),
-              "task": "historical_k2_transfer" if historical_transfer else whole_clip.TASK,
+              "task": whole_clip.TASK,
               "baseline_fingerprint": base["model"]["transformer_fingerprint"],
               "candidate_fingerprint": pruned["model"]["transformer_fingerprint"],
               "noise": "matched saved epsilon; same capture, prompt, seed, geometry, and schedule",
@@ -221,8 +221,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--candidate", type=Path)
-    parser.add_argument("--historical-transfer", action="store_true",
-                        help="Explicitly evaluate a historical k2 mask as a cross-task transfer control")
     parser.add_argument("--functional-mask", type=Path,
                         help="Run head-only, FFN-only and combined diagnostics on a native mask")
     parser.add_argument("--view", help="Capture view for --functional-mask")
@@ -231,7 +229,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.functional_mask:
-        if args.candidate or args.historical_transfer or args.view is None or not args.sigmas or args.gpu_id is None:
+        if args.candidate or args.view is None or not args.sigmas or args.gpu_id is None:
             parser.error("--functional-mask needs --view, --sigmas and --gpu-id, without --candidate")
         result = functional_ablation(args.baseline, args.functional_mask, args.output,
                                      view=args.view, sigmas=args.sigmas, gpu_id=args.gpu_id)
@@ -239,7 +237,7 @@ def main() -> None:
         return
     if args.candidate is None:
         parser.error("--candidate is required for a checkpoint comparison")
-    result = compare(args.baseline, args.candidate, args.output, historical_transfer=args.historical_transfer)
+    result = compare(args.baseline, args.candidate, args.output)
     print(json.dumps({"output": str(args.output / "comparison.json"), "rows": len(result["rows"])}, indent=2))
 
 

@@ -15,7 +15,7 @@ There is also a top-level `scripts/` directory of standalone analysis/research s
 
 Two directories under `scripts/` are real packages with their own rules, and each has a `CLAUDE.md` to read **before** editing inside it:
 
-* **`scripts/prune/`** -- the training-free head/FFN pruning harness for the `k2` refiner. See `scripts/prune/CLAUDE.md` (its binding rule: any change that can move a tensor is not done until `checks.method_parity` passes again).
+* **`scripts/prune/`** -- training-free head/FFN pruning calibrated and evaluated with whole-clip bidirectional D0 forwards. See `scripts/prune/CLAUDE.md` for saved-input and native export-parity requirements.
 * **`scripts/onestep_avatar/`** -- the one-step LTX-2.5 avatar renderer: corpus tooling *and* model training, consolidated into one package on 2026-09-15 (its corpus half previously lived at the workspace root). See `scripts/onestep_avatar/CLAUDE.md` and its `doc/` folder. Two things to know before editing: it runs in **two conda envs** (`argavatar` for `build_guidance.py` alone, `ltx` for everything else), and **it carries a documentation contract** -- every module has a design doc at `doc/<module>.md` covering objective, data flow, organization logic and invariants, and updating that doc is part of any change to those things, not a write-up afterwards. Much of it is workspace-specific corpus plumbing rather than anything upstream would want, so corpus-side changes move this submodule's pin.
 
 For a deep technical reference covering the data-flow spine, model class hierarchy, tensor

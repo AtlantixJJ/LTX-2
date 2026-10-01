@@ -779,7 +779,7 @@ def _fake_model() -> model_registry.RefinerModel:
     """A ``RefinerModel`` with no checkpoint behind it -- ``checkpoint_metadata`` only reads
     ``.scale_factors`` and ``.key``, so the rest can be placeholders rather than real paths."""
     return model_registry.RefinerModel(
-        key="test", version=(0,), paths=None, sigmas=[], stepper_kind="euler", caps=None,
+        key="test", version=(0,), paths=None, sigmas=[], caps=None,
         scale_factors=SCALE, scale_factors_source="test",
     )
 

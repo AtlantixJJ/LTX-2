@@ -11,21 +11,8 @@ from scripts.prune.core import session
 from scripts.prune.score import hooks
 
 
-def test_record_args_default_split_is_overridable():
-    parser = argparse.ArgumentParser()
-    session.add_record_args(parser, default_split="held_out")
-    assert parser.parse_args([]).split == "held_out"
-    assert parser.parse_args(["--split", "calibration"]).split == "calibration"
-
-
-def test_max_records_defaults_to_all():
-    parser = argparse.ArgumentParser()
-    session.add_record_args(parser)
-    assert parser.parse_args([]).max_records is None
-
-
 def test_dtype_is_declared_exactly_once():
-    subpackages = ("core", "data", "score", "evaluate", "checks", "report")
+    subpackages = ("core", "data", "score", "evaluate", "checks")
     hits = [
         f.relative_to("scripts/prune").as_posix()
         for sub in subpackages
@@ -33,17 +20,6 @@ def test_dtype_is_declared_exactly_once():
         if re.search(r"^DTYPE\s*=", f.read_text(), re.M)
     ]
     assert hits == ["core/session.py"]
-
-
-@pytest.mark.gpu
-def test_open_session_yields_the_deployed_schedule_on_the_requested_device():
-    args = argparse.Namespace(model="2.5", gpu_id=0, seed=42)
-    s = session.open_session(args, script="test")
-    assert s.sigmas.dtype == torch.float32 and s.sigmas.device.index == 0
-    # approx, not ==: 0.725 is not exactly representable in float32, so the tensor's
-    # round-trip through .tolist() is 0.7250000238418579, not the raw Python float.
-    assert s.sigmas.tolist() == pytest.approx([0.725, 0.421875, 0.0])
-    assert s.geometry().as_dict()["chunk_latent_frames"] == 2
 
 
 @pytest.mark.gpu

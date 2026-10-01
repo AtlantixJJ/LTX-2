@@ -1,21 +1,15 @@
 # `core/session.py`
 
-## Objective
+## Objective and data flow
 
-Give CLI entry points one bootstrap path for model, prompt context, sigmas, and transformer/decoder lifetime.
+Bootstrap the model, selected prompt and context, then own resident transformer
+and decoder lifetimes. `DTYPE` and `DEFAULT_PROMPT` are defined here. Avatar and
+whole-clip consumers use the same argument helpers and context managers.
 
-## Data flow
+## Invariants and verification
 
-CLI args -> preflighted Session -> no-grad resident transformer or decoder.
-
-## Organization
-
-Shared argument helpers, DTYPE, open_session, and context managers prevent per-script setup drift.
-
-## Invariants and gotchas
-
-DTYPE is declared here once. Model forwards normally run in no_grad; gradient estimators open grad explicitly. Empty LoRA tuple preserves the baseline path.
-
-## Verification
-
-Check [`tests/test_session.py`](../tests/test_session.py). Run `python -m pytest scripts/prune/tests -q` from the LTX-2 root in the `ltx` conda environment for the CPU suite. For any change that can alter rollout tensors, rerun `python -m scripts.prune.checks.method_parity --model 2.5 --gpu-id N --windows 3` on a free GPU.
+A Session has no default sampling schedule, AR record root or window geometry.
+Callers supply model-facing inputs and schedules. Forwards normally run under
+`no_grad`; explicit gradient estimators must reopen autograd. LoRAs fuse at load.
+`tests/test_session.py` checks dtype ownership and optional GPU lifetime behavior;
+`onestep_avatar/tests/test_prompt_and_whole_clip.py` checks prompt selection.

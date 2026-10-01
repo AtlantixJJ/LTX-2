@@ -10,7 +10,6 @@ the cache/RoPE/mask interaction is right, which is the only thing in doubt.
 The rest pin the properties a wrong number would otherwise be blamed on the model for:
 
 * the noise formula is ``GaussianNoiser``'s, not a lookalike;
-* a causal block finalizes the same pixel span the `k2` window did;
 * eviction keeps the pinned sink and the newest context, not an arbitrary window;
 * only latent frame 0 is marked a keyframe -- the bug the per-window tools had, where every
   window past a clip's first claimed a single-pixel keyframe it did not have;
@@ -27,7 +26,6 @@ from ltx_core.model.transformer.model import LTXModel, LTXModelType
 from ltx_core.types import LatentState, SpatioTemporalScaleFactors
 from scripts.onestep_avatar import causal_core, visualize_d1
 from scripts.onestep_avatar.causal_core import BlockCache, CausalGeometry, ClipGrid
-from scripts.prune.core import refine_task
 
 SCALE = SpatioTemporalScaleFactors(time=8, height=32, width=32)
 CHANNELS = 8
@@ -436,19 +434,6 @@ def test_noise_block_matches_the_gaussian_noiser() -> None:
     )
     theirs = GaussianNoiser(generator=torch.Generator(device="cpu").manual_seed(seed))(state, SIGMA0)
     torch.testing.assert_close(ours, theirs.latent)
-
-
-def test_block_finalizes_the_deployed_stride() -> None:
-    """A causal block covers the same pixel span the `k2` sliding window finalized per step.
-
-    Not cosmetic: every §8 table compares the one-step adapter against a `k2` baseline
-    measured at that stride, and a block of a different length would silently be a different
-    task with a different per-step cost.
-    """
-    geometry = causal_core.deployed_geometry(SCALE)
-    window = refine_task.deployed_geometry(SCALE)
-    assert causal_core.matches_deployed_stride(geometry, window)
-    assert geometry.block_latent_frames * SCALE.time == window.stride_frames
 
 
 def test_block_plan_absorbs_the_keyframe_into_block_zero() -> None:

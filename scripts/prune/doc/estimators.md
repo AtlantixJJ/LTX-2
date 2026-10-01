@@ -2,7 +2,7 @@
 
 ## Objective
 
-Keep reusable scoring mathematics independent of the old k2 record format. The caller specifies native prediction tokens and owns model forwards and task loss.
+Keep reusable scoring mathematics independent of model and input construction. The caller specifies native prediction tokens and owns model forwards and task loss.
 
 ## Data flow
 
@@ -10,4 +10,4 @@ Keep reusable scoring mathematics independent of the old k2 record format. The c
 
 ## Invariants and checks
 
-The clean conditioning frame is excluded by the D0 caller's token indices. Do not import AR records, carryover geometry or k2 loss targets here. `test_estimators.py` checks local energy, score scaling, stable ties and malformed scores. A new estimator needs held-out D0 comparison before it becomes the default.
+The clean conditioning frame is excluded by the D0 caller's token indices. The caller owns token selection and model forwards. `test_estimators.py` checks local energy, score scaling, stable ties and malformed scores. A new estimator needs held-out D0 comparison before it becomes the default.

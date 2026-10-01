@@ -95,7 +95,8 @@ from safetensors.torch import save_file
 from ltx_trainer.model_loader import load_transformer
 from scripts.onestep_avatar import causal_core, dataset
 from scripts.onestep_avatar.causal_core import BlockCache, CausalGeometry, ClipGrid
-from scripts.prune.core import model_registry, refine_task
+from scripts.prune.core import model_registry
+from scripts.prune.core.session import DEFAULT_PROMPT
 from scripts.prune.data import prompt_cache
 
 LOGGER = logging.getLogger("onestep_avatar.train")
@@ -709,7 +710,7 @@ def checkpoint_metadata(
 ) -> dict[str, str]:
     """SS7.1 / SS9 risk 13: a fixed-sigma adapter must not be loadable off-condition.
 
-    sigma_0, ``K`` and now the **causal geometry** are recorded so ``refine_task``'s ``ONE_STEP``
+    sigma_0, ``K`` and now the **causal geometry** are recorded so ``sampling``'s ``ONE_STEP``
     schedule can refuse a checkpoint whose sigma disagrees, a multi-step run, or a rollout at a
     different block/cache depth -- all of which would otherwise fail silently. The cache depth
     belongs here for the same reason sigma does: an adapter trained with two frames of cached
@@ -1115,9 +1116,6 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                     "chains": len(store),
                     "chain_length": subset["chain_length"],
                     "geometry": geometry.as_dict(),
-                    "deployed_stride_match": causal_core.matches_deployed_stride(
-                        geometry, refine_task.deployed_geometry(model.scale_factors)
-                    ),
                     "first_chain": {
                         "source": chain.source,
                         "actor": chain.actor,
@@ -1145,7 +1143,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     world, rank = accelerator.num_processes, accelerator.process_index
 
     with timed("prompt cache (text encoder)"):
-        context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
+        context = prompt_cache.get_or_build(model, DEFAULT_PROMPT, DTYPE, device)
 
     with timed("transformer load + LoRA injection"):
         transformer = build_transformer(model, args, accelerator)

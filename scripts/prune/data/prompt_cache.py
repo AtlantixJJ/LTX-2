@@ -1,18 +1,4 @@
-"""Precompute + cache the refiner's constant text conditioning to disk.
-
-The refine task uses exactly one prompt (``refine_task.REFINE_PROMPT``), so
-encoding it once per (model, prompt) and caching the tensor removes the text
-encoder -- 26 GB on 2.5 -- and the embeddings connector from every calibration
-run and from deployment entirely. See plans/2026-08-26-refiner-head-ffn-pruning.md
-§5 item 3.
-
-    conda run -n ltx python -m scripts.prune.data.prompt_cache --model 2.5 --gpu-id 0 --verify
-
-Cache key is (model key, prompt hash): the model key because video-encoding
-dim/values differ across generations (gemma3 vs gemma4, different connector),
-the prompt hash so changing ``REFINE_PROMPT`` invalidates stale caches instead
-of silently reusing them.
-"""
+"""Cache text conditioning by model and prompt; verify cached tensors on request."""
 
 from __future__ import annotations
 
@@ -25,7 +11,7 @@ from pathlib import Path
 import torch
 
 from ltx_pipelines.utils.blocks import PromptEncoder
-from scripts.prune.core import artifacts, model_registry, preflight, provenance, refine_task
+from scripts.prune.core import artifacts, model_registry, preflight, provenance
 from scripts.prune.core.model_registry import RefinerModel
 
 DEFAULT_CACHE_DIR = artifacts.OUT_ROOT / "prompt_cache"
@@ -75,12 +61,8 @@ def verify(
 ) -> dict:
     """Assert the on-disk cache is bit-for-bit what the text encoder produces.
 
-    The Phase 0 gate (plan §5) asks for exactly this: the cache is only a free win
-    if it is *indistinguishable* from running the encoder, and the whole point of
-    the cache is that the encoder is never loaded again to notice otherwise. Loads
-    the 26 GB text encoder once, re-encodes, and compares with ``torch.equal`` --
-    a tolerance would be the wrong test, since a deterministic re-encode of a
-    constant string on the same device must reproduce identical bits.
+    Re-encode the selected prompt and compare with ``torch.equal``. A tolerance
+    would hide changed conditioning bytes in a supposedly identical cached input.
     """
     path = cache_path(model.key, prompt, cache_dir)
     if not path.exists():
@@ -108,13 +90,15 @@ def main() -> int:
     model = preflight.check(args.model, gpu_id=args.gpu_id)
     device = torch.device(f"cuda:{args.gpu_id}")
 
-    ctx = get_or_build(model, refine_task.REFINE_PROMPT, torch.bfloat16, device)
-    print(f"prompt context {tuple(ctx.shape)} {ctx.dtype} -> {cache_path(model.key, refine_task.REFINE_PROMPT)}")
+    from scripts.prune.core.session import DEFAULT_PROMPT, DTYPE
+
+    ctx = get_or_build(model, DEFAULT_PROMPT, DTYPE, device)
+    print(f"prompt context {tuple(ctx.shape)} {ctx.dtype} -> {cache_path(model.key, DEFAULT_PROMPT)}")
 
     if not args.verify:
         return 0
 
-    report = verify(model, refine_task.REFINE_PROMPT, torch.bfloat16, device)
+    report = verify(model, DEFAULT_PROMPT, torch.bfloat16, device)
     out_path = artifacts.gate(model.key, "prompt_cache_check")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps({**report, "provenance": provenance.stamp(model, device)}, indent=2))

@@ -42,13 +42,13 @@ from pathlib import Path
 import torch
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import dataset, mask_video
+from scripts.onestep_avatar import causal_core, dataset, mask_video
 from scripts.onestep_avatar.precompute import (
     VideoReader,
     atomic_json_save,
 )
-from scripts.prune.core import ltx_adapter, model_registry, refine_core, refine_task
-from scripts.prune.core.session import DTYPE
+from scripts.prune.core import ltx_adapter, model_registry
+from scripts.prune.core.session import DEFAULT_PROMPT, DTYPE
 from scripts.prune.data import prompt_cache
 
 DEFAULT_SIGMA0 = 0.725
@@ -216,29 +216,22 @@ def measure_map(
 ) -> dict:
     """(a) and (b): one step at sigma_0 from a guide, repeated over eps, on unpaired renders.
 
-    Deliberately runs through ``refine_core.make_window_state`` / ``run_schedule`` -- the same
-    calls the deployed refiner makes -- with a two-point schedule ``[sigma_0, 0]``. That is
-    what "one step" means operationally, and reproducing it here rather than hand-rolling a
-    forward is what makes ``a`` comparable with the numbers ``k2`` is measured at.
+    Each guide is encoded once over its complete VAE-aligned prefix. One full
+    bidirectional forward predicts the clip at [sigma_0, 0], keeping frame 0 clean.
     """
     device = torch.device(f"cuda:{gpu_id}")
-    geometry = refine_task.deployed_geometry(model.scale_factors)
-    context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT, DTYPE, device)
-    sigmas = torch.tensor([sigma0, 0.0], dtype=torch.float32, device=device)
+    context = prompt_cache.get_or_build(model, DEFAULT_PROMPT, DTYPE, device)
 
-    from ltx_pipelines.utils.denoisers import SimpleDenoiser  # noqa: PLC0415 -- torch-heavy, imported late
-
-    denoiser = SimpleDenoiser(context, None)
     excursions, spreads, per_video = [], [], {}
 
     with ltx_adapter.video_encoder(model.paths.video_vae(), DTYPE, device) as encoder:
         encoded: list[tuple[Path, torch.Tensor, float, int, int]] = []
         for path in videos:
             reader = VideoReader(path)
-            frames = min(len(reader), geometry.window_frames)
-            if frames < geometry.window_frames:
+            frames = (len(reader) - 1) // model.scale_factors.time * model.scale_factors.time + 1
+            if frames < 1:
                 continue
-            batch = reader.get_batch(range(geometry.window_frames))
+            batch = reader.get_batch(range(frames))
             _, height, width, _ = batch.shape
             height, width = (height // 32) * 32, (width // 32) * 32
             video = batch[:, :height, :width].permute(3, 0, 1, 2).unsqueeze(0).to(device=device, dtype=DTYPE)
@@ -249,18 +242,28 @@ def measure_map(
     from scripts.prune.core.session import Session  # noqa: PLC0415 -- torch-heavy, imported late.
 
     session = Session(
-        model=model, device=device, script="onestep_avatar.stats", context=context, denoiser=denoiser, sigmas=sigmas
+        model=model, device=device, script="onestep_avatar.stats", context=context
     )
     with session.transformer() as transformer:
         for path, z_g, fps, height, width in encoded:
-            tools = refine_core.tools_for_window(
-                geometry, height, width, fps, latent_channels=model.caps.latent_channels
+            grid = causal_core.ClipGrid.build(
+                z_g.shape[2], height, width, fps, causal_core.CausalGeometry(model.scale_factors),
+                device=device, dtype=DTYPE, latent_channels=model.caps.latent_channels,
             )
+            clean = grid.patchify(z_g)
+            c0 = clean[:, :grid.tokens_per_latent_frame]
             outputs = []
             for k in range(eps_samples):
-                state = refine_core.make_window_state(z_g, None, sigma0, tools, seed + k, device, DTYPE)
-                final = refine_core.run_schedule(transformer, denoiser, state, sigmas)
-                outputs.append(refine_core.finalize(final, tools))
+                epsilon = torch.randn(clean.shape, generator=torch.Generator(device=device).manual_seed(seed + k),
+                                      device=device, dtype=DTYPE)
+                initial = torch.lerp(clean, epsilon, sigma0)
+                modality = causal_core.block_modality(
+                    grid, causal_core.with_clean_prefix(initial, c0), context, sigma0,
+                    token_slices=[grid.token_span(0, grid.latent_frames)],
+                    clean_prefix_tokens=grid.tokens_per_latent_frame,
+                )
+                prediction, _ = transformer(video=modality, audio=None, perturbations=None)
+                outputs.append(grid.unpatchify_block(causal_core.with_clean_prefix(prediction, c0), grid.latent_frames))
             excursion = sum(rms_gap(out, z_g) for out in outputs) / len(outputs)
             # Spread is the mean pairwise distance between the N outputs, in the SAME units as
             # the excursion -- so "does eps matter" is answerable by comparing two numbers.

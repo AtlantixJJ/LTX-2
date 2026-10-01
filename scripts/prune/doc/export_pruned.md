@@ -1,43 +1,25 @@
 # `score/export_pruned.py`
 
-## Objective
+## Objective and data flow
 
-Export score masks as a self-describing safetensors checkpoint and preserve
-the numerical meaning of the functional mask.
+Validate a native mask against checkpoint header widths, slice supported tensors,
+write execution metadata and pin task/source/mask identity in safetensors.
+The CLI reports the output fingerprint and peak process RSS.
 
-## Data flow
+## Organization and invariants
 
-A native D0 mask with complete task provenance and a source checkpoint produce a full-width `masked_full`
-checkpoint by default. Older k2 masks require `--historical-k2-mask`; the export metadata records which task produced the mask. `--mode sparse` selects retained heads before the
-attention kernel, and `--mode compact` slices V, output, gate, and FFN tensors;
-compact mode also accepts fitted FFN projections. All modes update metadata.
+`masked_full` is the default control. `sparse` selects attention heads with
+full-width projections. `compact` slices V, gate, output and FFN dimensions while
+preserving full Q/K normalization and retained RoPE identity. `compact_faithful`
+stores compact tensors with original execution geometry. It saves persistent
+parameter storage; padded temporary weights and full activations still cost memory.
 
-## Organization
-
-`--mode compact_faithful` slices the same stored V, gate, output and FFN tensors as compact mode, while metadata retains the original execution widths and active indices. `ShapeFaithfulLinear` in the transformer feed-forward module restores zero-filled original weight shapes for each GEMM. Attention runs all original heads and masks removed heads at the original boundary. This compresses persistent parameters and disk storage; temporary padded weights and full-width activations remain. It is a fidelity option, not a throughput optimization. Fitted reconstruction is intentionally supported only by the reduced `compact` mode. Stock and earlier exports retain their existing behavior because the new metadata flag defaults off.
-
-Full-width modes record active attention head IDs and FFN channel IDs. They
-leave Q/K/V/output/FFN GEMM shapes unchanged and apply the mask before the
-original output projection. `sparse` skips masked heads in attention;
-`masked_full` runs full attention. Compact mode preserves retained RoPE head
-identities. All modes record pruning provenance in metadata.
-
-## Invariants and gotchas
-
-The CLI validates mask provenance, lengths, and fitted FFN shapes using
-safetensors headers before materializing weights. It records the mask SHA256,
-source fingerprint, and peak RSS. Export still materializes the checkpoint in
-RAM; use `checks.export_parity` before deployment. Compact export changes bf16
-GEMM reduction shapes, and the p05 compact experiment failed two-window
-parity. The p05 direct benchmark found all 14 pruned attention branches faster
-with full attention than with head selection. Full-width exports therefore
-default to `masked_full`, and omit identity RoPE head lists to avoid an
-unnecessary frequency gather in every layer. This preserves exact parity but
-cannot remove projection GEMM work.
-An FFN-only compact export omits identity RoPE indices in unpruned attention
-branches. The measured 10% compact FFN candidate used less GPU memory, but
-changed bf16 results beyond the export-parity tolerance and is not deployable.
+All CLI masks require native whole-clip D0 provenance. No record-derived mask or
+reconstruction-state interface is supported. Export materializes weights in host
+RAM. Passing numerical parity does not establish quality or speed.
 
 ## Verification
 
-Check the package CPU suite and the relevant phase gate. Run `python -m pytest scripts/prune/tests -q` from the LTX-2 root in the `ltx` conda environment for the CPU suite. For any change that can alter rollout tensors, rerun `python -m scripts.prune.checks.method_parity --model 2.5 --gpu-id N --windows 3` on a free GPU.
+`tests/test_export_pruned.py` checks structural metadata, faithful linear behavior,
+mask validation and numerical controls. Run `checks.export_parity` on fresh held-out
+whole-clip inputs before interpreting an export's results.

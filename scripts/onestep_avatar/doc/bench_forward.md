@@ -1,58 +1,22 @@
-# `bench_forward.py` — cost per finalized chunk
+# `bench_forward.py`
 
 ## Objective
 
-Measure the project's headline compute claim ("one-step at roughly half `k2`'s transformer compute"), honestly. The causal scheme moved that number in
-both directions at once:
+Measure causal avatar denoising and cache-refresh latency per finalized block.
 
-- the denoising forward covers only the **block** (2 latent frames), not a 4-latent-frame
-  window — half the query tokens;
-- but the cache refresh is a **second** forward, and every block's queries attend over a
-  longer key sequence (the pinned sink plus retained context) than a self-contained window.
+## Data flow and organization logic
 
-So the honest unit is **wall clock per finalized chunk of 16 pixel frames**: `k2`'s two window
-forwards against the causal path's denoise + refresh, sweeping `--context-latent-frames`.
+Synthetic tokens at the checkpoint's real geometry populate a steady-state cache.
+For each cache depth, warmed synchronized repetitions time `denoise_block` and
+`refresh_block` separately. JSON records samples, medians, cache capacity and the
+sum of the two medians per block. It makes no comparison against a window renderer.
 
-## Data flow
+## Invariants and gotchas
 
-```mermaid
-flowchart TD
-  MODEL[("model")]
-  K2["refine_core window forward × 2"]
-  CAUSAL["causal denoise + refresh<br/>per cache depth"]
-  R1(["k2 baseline seconds/chunk"])
-  R2(["causal seconds/chunk + ratio vs k2"])
+Re-pin cache lengths around repeated refreshes so timed calls see identical cache
+coverage. Content is synthetic: this benchmark establishes cost, not quality.
+Check `nvidia-smi` and use the `ltx` environment before running.
 
-  MODEL --> K2 --> R1
-  MODEL --> CAUSAL --> R2
+## Tests
 
-  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
-  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
-  classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
-  class K2,CAUSAL proc;
-  class MODEL disk;
-  class R1,R2 out;
-```
-
-`k2` is timed **through `refine_core`** — the module every frozen `k2` number came from — so
-the comparison is against the real baseline, not a reimplementation of it.
-
-## Organization logic
-
-**It times a steady-state block, never block 0.** Block 0's empty cache would flatter the
-causal path by exactly the attention the cache adds.
-
-**A FLOP count does not settle this**, which is why the script exists: the predecessor
-benchmark already caught a FLOP-plausible arm (extra reference tokens) being *slower* than
-the baseline it was meant to replace — 1.05× `k2` measured, against a 1.09× estimate.
-
-## Status
-
-The estimate to replace: 0.53× `k2` at `context=2`, 0.59× at `context=4`. **Not yet run under
-the causal scheme**, so "roughly half the compute" is currently an estimate, not a measurement.
-
-| | query tokens | key tokens | forwards |
-|---|---|---|---|
-| `k2` window | 4096 | 4096 | 2 |
-| causal, `context=2` | 2048 + 2048 | ≤ 5120 | 2 |
-| causal, `context=4` | 2048 + 2048 | ≤ 7168 | 2 |
+Import/CLI checks verify the interface. Timing needs a free GPU and real model.

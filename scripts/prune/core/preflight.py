@@ -1,16 +1,4 @@
-"""Path/caps/GPU validation, called by every scripts/prune/* script at start-up.
-
-Fails in ~1s on a wrong env or half-downloaded checkpoint pack instead of ~25s
-into a real run. See plans/2026-08-26-refiner-head-ffn-pruning.md §3.
-
-    conda run -n ltx python -m scripts.prune.core.preflight --model 2.5
-    conda run -n ltx python -m scripts.prune.core.preflight --model 2.5 --dump-caps
-
-``--dump-caps`` writes ``expr/refiner_prune/<key>/caps.json`` -- the Phase 0 gate's
-"``ModelCaps`` dumped to JSON per generation" (plan §5). Printing to stdout is not
-the same thing: later phases key budgets off ``num_heads`` / ``ff_inner_dim``, and
-those have to be on disk next to the scores that used them.
-"""
+"""Validate checkpoint paths, model capabilities and GPU headroom before model loading."""
 
 from __future__ import annotations
 
@@ -22,40 +10,8 @@ from pathlib import Path
 
 import torch
 
-from scripts.prune.core import artifacts, model_registry, provenance, refine_core, refine_task
+from scripts.prune.core import artifacts, model_registry, provenance
 from scripts.prune.core.model_registry import RefinerModel
-
-
-def check_sweep_inputs(model: RefinerModel, *, parity_path: Path | None = None,
-                       index_path: Path | None = None, baseline_path: Path | None = None) -> dict:
-    """Bind a sweep to this checkpoint, rollout source, and usable frozen records."""
-    parity_path = parity_path or artifacts.gate(model.key, "method_parity")
-    index_path = index_path or artifacts.calibration_index(model.key)
-    baseline_path = baseline_path or artifacts.phase1(model.key)
-    parity, index, baseline = (json.loads(path.read_text()) for path in (parity_path, index_path, baseline_path))
-    fingerprint = provenance.checkpoint_fingerprint(model.paths.transformer())
-    sources = provenance.method_source_hashes()
-    expected_geometry = refine_core.WindowGeometry(
-        refine_task.WINDOW_FRAMES, refine_task.OVERLAP_FRAMES, model.scale_factors
-    ).as_dict()
-    if not parity.get("pass") or parity.get("provenance", {}).get("model_key") != model.key or (
-        parity.get("provenance", {}).get("transformer_fingerprint") != fingerprint
-    ) or parity.get("geometry") != expected_geometry or parity.get("method_sources") != sources:
-        raise ValueError("method parity is missing, stale, or for another checkpoint/geometry")
-    rows = index.get("records", [])
-    if index.get("format") != 2 or index.get("provenance", {}).get("transformer_fingerprint") != fingerprint or not (
-        any(row.get("split") == "calibration" for row in rows)
-        and any(row.get("split") == "held_out" for row in rows)
-    ):
-        raise ValueError("calibration index is not a usable format-2 split for this checkpoint")
-    if baseline.get("provenance", {}).get("transformer_fingerprint") != fingerprint or (
-        baseline.get("geometry") != expected_geometry or baseline.get("method_sources") != sources
-    ) or not baseline.get("T0") or not baseline.get("T2"):
-        raise ValueError("unpruned Phase-1 baseline is missing or stale")
-    return {"model_key": model.key, "transformer_fingerprint": fingerprint,
-            "geometry": expected_geometry, "method_sources": sources,
-            "calibration_records": sum(row.get("split") == "calibration" for row in rows),
-            "held_out_records": sum(row.get("split") == "held_out" for row in rows)}
 
 
 def free_gpus(min_free_gb: float = 4.0) -> list[dict]:
@@ -77,7 +33,6 @@ def free_gpus(min_free_gb: float = 4.0) -> list[dict]:
 def check(
     key: str,
     *,
-    sampler: str = "euler",
     min_free_gb: float = 4.0,
     gpu_id: int | None = None,
     transformer_path: str | Path | None = None,
@@ -96,7 +51,6 @@ def check(
     """
     model = model_registry.resolve(
         key,
-        sampler=sampler,
         transformer_path=transformer_path,
         text_encoder_path=text_encoder_path,
         video_vae_path=video_vae_path,
@@ -145,7 +99,6 @@ def dump_caps(model: RefinerModel) -> Path:
             {
                 "caps": dataclasses.asdict(model.caps),
                 "sigmas": model.sigmas,
-                "stepper_kind": model.stepper_kind,
                 "provenance": provenance.stamp(model),
             },
             indent=2,
@@ -157,24 +110,17 @@ def dump_caps(model: RefinerModel) -> Path:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", default="2.5", choices=model_registry.SUPPORTED_MODELS)
-    ap.add_argument("--sampler", default="euler", choices=model_registry.SAMPLER_CHOICES)
     ap.add_argument("--min-free-gb", type=float, default=4.0)
     ap.add_argument("--gpu-id", type=int, default=None)
     ap.add_argument("--dump-caps", action="store_true", help="Write expr/refiner_prune/<key>/caps.json.")
-    ap.add_argument("--check-sweep-prereqs", action="store_true", help="Validate parity, cache, and baseline before a sweep.")
     args = ap.parse_args()
 
-    model = check(args.model, sampler=args.sampler, min_free_gb=args.min_free_gb, gpu_id=args.gpu_id)
-
-    if args.check_sweep_prereqs:
-        print(json.dumps(check_sweep_inputs(model), indent=2))
-        return 0
+    model = check(args.model, min_free_gb=args.min_free_gb, gpu_id=args.gpu_id)
 
     print(f"model:            {model.key} (version {model.version})")
     print(f"transformer:      {model.paths.transformer()}")
     print(f"text_encoder:     {model.paths.text_encoder_path}")
     print(f"video_vae:        {model.paths.video_vae()}")
-    print(f"stepper:          {model.stepper_kind}")
     print(f"scale_factors:    {tuple(model.scale_factors)} (from {model.scale_factors_source})")
     print(f"sigmas:           {model.sigmas}")
     print("caps:")

@@ -1,1 +1,1 @@
-"""Native D0 export parity and separate deployed-refiner compatibility checks."""
+"""Whole-clip functional-mask versus checkpoint-export parity."""

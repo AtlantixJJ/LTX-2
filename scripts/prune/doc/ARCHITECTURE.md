@@ -1,7 +1,21 @@
-# Pruning architecture
+# Whole-clip pruning architecture
 
-The active experiment is native bidirectional, whole-video D0. `data/whole_clip.py` reads the saved baseline capture, epsilon and manifest and constructs the one-step model input. The scorer consumes that input without a candidate. `score/hooks.py` owns functional masks and validates the native mask format. `score/export_pruned.py` writes a checkpoint with mask and source provenance. `checks/export_parity.py` compares the functional mask with that export on saved D0 inputs. `evaluate/whole_clip_d0.py` compares baseline and candidate directions and makes synchronized VAE-decoded media. `evaluate/bench_whole_clip_d0.py` times the matched forward on one device.
+`data.whole_clip` validates baseline manifests, reconstructs capture/noise/context
+inputs and verifies paired candidates. `score.whole_clip_d0_scores` observes
+native forwards through `score.hooks`, computes `score.estimators` statistics and
+writes a pinned mask. `score.export_pruned` turns that mask into a checkpoint.
 
-`core/session.py` owns model lifetime, dtype and prompt context; `core/artifacts.py` owns experiment output paths. The deployed sliding-window refiner still uses `core/refine_core.py`, and `checks/method_parity.py` guards it. The avatar scripts import `data/prompt_cache.py`, `evaluate/decode.py` and `evaluate/metrics.py`; the deployed refiner imports `evaluate/timing.py`. Keep those imports stable.
+`checks.export_parity` compares functional masking with checkpoint execution.
+`evaluate.whole_clip_d0` compares baseline and candidate directions, capture
+fidelity and decoded media. `evaluate.bench_whole_clip_d0` measures warmed,
+synchronized full-transformer latency and memory with bracketed baseline arms.
 
-Historical k2 modules remain in the tree while their call sites and behavior are audited. They cannot supply native D0 masks without new D0 calibration. Each production module retains its design page in this folder.
+`core.session` owns model and decoder lifetime, dtype and prompt selection;
+`core.artifacts` owns output paths; `core.provenance` owns content identity.
+`core.model_registry`, `geometry` and `ltx_adapter` own checkpoint resolution,
+VAE scales and private upstream access. `data.prompt_cache` owns cached text.
+
+Avatar scripts share bootstrap, checkpoint, prompt, dense decoding and video
+utilities. Avatar one-step schedule validation lives in
+`onestep_avatar.sampling`; corpus coverage lives in `precompute.CaptureGeometry`.
+Prune imposes no avatar block geometry or schedule.

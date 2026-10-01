@@ -10,7 +10,7 @@ Reconstruct exactly the noised whole-video input used in a saved baseline D0 run
 
 `native_provenance` stamps the full calibration-manifest SHA256, seed, VAE, context, guidance, geometry, dtype and calibration capture/noise identities. `validate_native_provenance` checks the pinned manifest content and all distribution fields against that manifest and, when supplied, the selected baseline. Older native masks without these pins need recalibration; they are not silently upgraded. `actor_identity` resolves a DNARendering actor above `views/` so another view of that actor cannot serve as held-out validation.
 
-`verify_candidate` checks the saved checkpoint fingerprint and actual safetensors export task, source identity and mask hash. Historical k2 transfer evaluation requires explicit opt-in. It validates provenance, not numerical parity: run the separate export gate before accepting output quality or deployment.
+`verify_candidate` checks the saved checkpoint fingerprint and actual safetensors export task, source identity and mask hash. It validates provenance, not numerical parity: run the separate export gate before accepting output quality or deployment.
 
 ## Invariants and checks
 

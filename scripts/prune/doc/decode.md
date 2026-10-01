@@ -1,21 +1,12 @@
 # `evaluate/decode.py`
 
-## Objective
+## Objective and data flow
 
-Decode dense or token-space video latents through the shared video VAE path.
+Decode dense `[B,C,F,H,W]` latents with the session-owned video VAE. Return
+channel-last `[F,H,W,C]` float pixels in `[0,1]` on CPU. Avatar probes consume it.
 
-## Data flow
+## Invariants and verification
 
-Dense latent or positioned token latent -> RGB frames.
-
-## Organization
-
-Token decoding reconstructs a dense frame grid and calls the dense decoder.
-
-## Invariants and gotchas
-
-Position grids must cover every token; decode shape conventions differ between dense and token entry points.
-
-## Verification
-
-Check [`tests/test_decode.py`](../tests/test_decode.py). Run `python -m pytest scripts/prune/tests -q` from the LTX-2 root in the `ltx` conda environment for the CPU suite. For any change that can alter rollout tensors, rerun `python -m scripts.prune.checks.method_parity --model 2.5 --gpu-id N --windows 3` on a free GPU.
+Use session device and dtype. Accept an explicit generator for reproducible VAE
+decoding. Token-record reconstruction is not part of this interface. Verify a
+real dense decode on a free GPU when changing decoding behavior.

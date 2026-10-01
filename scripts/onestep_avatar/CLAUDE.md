@@ -146,7 +146,7 @@ at them.
   flag or a loadable config file; `train.py` is CLI-driven.
 - **Verification matches the change.** For docs-only changes: check links, cited symbols, and that
   each recipe matches `train.parse_args`. For behavior changes: the focused and full test runs
-  below, plus `scripts/prune`'s `checks.method_parity` where a tensor on the `k2` path can move.
+  below, plus native saved-input/export checks when changing shared whole-clip inputs.
   Passing cache-parity tests never establishes a missing first-frame condition.
 
 ## The invariants that are not obvious from one file
@@ -180,5 +180,4 @@ at them.
 
 - `conda run -n ltx python -m pytest scripts/onestep_avatar/tests -q` passes;
 - the touched modules' `doc/*.md` reflect the change;
-- if the change can move a tensor on the `k2` path, `scripts/prune`'s own rule applies —
-  see [`../prune/CLAUDE.md`](../prune/CLAUDE.md).
+- shared whole-clip input or export changes follow [`../prune/CLAUDE.md`](../prune/CLAUDE.md).

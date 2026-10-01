@@ -1,21 +1,13 @@
 # `evaluate/metrics.py`
 
-## Objective
+## Objective and data flow
 
-Provide common T0 latent, T1 pixel, T2 rollout, and T3 visual metrics.
+Normalize video layouts, compute PSNR/global SSIM, and write synchronized
+source/reference/candidate MP4 panels. Avatar probes share the media functions.
 
-## Data flow
+## Invariants and verification
 
-Predictions, teacher/source tensors, rollout rows -> numeric summaries, grids, and synchronized MP4.
-
-## Organization
-
-No model loading here; callers own lifecycle and pass tensors.
-
-## Invariants and gotchas
-
-T3 fps is display metadata. Match shapes and source-frame alignment before interpreting image/video deltas.
-
-## Verification
-
-Check [`tests/test_metrics.py`](../tests/test_metrics.py). Run `python -m pytest scripts/prune/tests -q` from the LTX-2 root in the `ltx` conda environment for the CPU suite. For any change that can alter rollout tensors, rerun `python -m scripts.prune.checks.method_parity --model 2.5 --gpu-id N --windows 3` on a free GPU.
+PSNR requires matching shapes; identical pixels produce infinity. Global SSIM
+is not local-window SSIM. Video panels share frame geometry and playback rate;
+coverage is the common frame prefix. `tests/test_metrics.py` covers layout and
+closed-form pixel metrics. Inspect generated media after presentation changes.

@@ -1,22 +1,4 @@
-"""``--model {2.3,2.5}`` -> ``ModelPaths`` + sigmas + sampler + probed ``ModelCaps``.
-
-Single place that turns a generation key into everything downstream needs, so
-every scripts/prune/* script and vae_refine_sliding_window.py agree on what
-"2.3" and "2.5" mean. See plans/2026-08-26-refiner-head-ffn-pruning.md §4.
-
-Downstream code should always go through :func:`resolve` and its accessors
-(``RefinerModel.paths.transformer()`` etc.), never a bare checkpoint string --
-that is what lets one script serve both generations without a version branch.
-
-``ModelCaps`` fields are read straight from the checkpoint's own metadata with
-the *same* defaults ``LTXModelConfigurator``/``LTXVideoOnlyModelConfigurator``
-use (packages/ltx-core/src/ltx_core/model/transformer/model_configurator.py),
-so ``ModelCaps`` always describes the model that would actually be built --
-never a value asserted from the plan's own tables. That distinction already
-caught one wrong assumption in the plan: LTX-2.3's checkpoint declares
-``frequencies_precision=float64`` too (not float32 as originally assumed), so
-``double_precision_rope`` is True on both generations, not just 2.5.
-"""
+"""Resolve checkpoint paths, sigma grids and probed model capabilities."""
 
 from __future__ import annotations
 
@@ -30,14 +12,13 @@ from safetensors import safe_open
 from ltx_core.types import SpatioTemporalScaleFactors
 from ltx_pipelines.utils.constants import DISTILLED_SIGMA_VALUES, detect_model_version
 from ltx_pipelines.utils.model_paths import ModelPaths
-from scripts.prune.core import geometry, ltx_adapter
+from scripts.prune.core import geometry
 
 REPO_ROOT = Path(__file__).resolve().parents[3]  # .../LTX-2 (scripts/prune/core/model_registry.py)
 WORKSPACE_ROOT = REPO_ROOT.parent
 CKPT_ROOT = Path(os.environ.get("LTX_CHECKPOINTS", WORKSPACE_ROOT / "checkpoints"))
 
 SUPPORTED_MODELS = ("2.3", "2.5")
-SAMPLER_CHOICES = ("euler", "ancestral", "auto")
 
 
 @dataclass(frozen=True)
@@ -97,7 +78,6 @@ class RefinerModel:
     version: tuple[int, ...]
     paths: ModelPaths
     sigmas: list[float]
-    stepper_kind: str  # "euler" | "ancestral"
     caps: ModelCaps
     # Probed from the VAE block list, never the literal (8, 32, 32) -- see
     # scripts/prune/geometry.py and plan §4 decision 2. Pass to every
@@ -158,7 +138,6 @@ def _require_files(key: str, paths: ModelPaths) -> None:
 def resolve(
     key: str = "2.5",
     *,
-    sampler: str = "euler",
     transformer_path: str | Path | None = None,
     text_encoder_path: str | Path | None = None,
     video_vae_path: str | Path | None = None,
@@ -171,8 +150,6 @@ def resolve(
     """
     if key not in SUPPORTED_MODELS:
         raise ValueError(f"unknown --model {key!r}; expected one of {SUPPORTED_MODELS}")
-    if sampler not in SAMPLER_CHOICES:
-        raise ValueError(f"unknown --sampler {sampler!r}; expected one of {SAMPLER_CHOICES}")
 
     defaults = _default_paths(key)
     transformer = str(transformer_path) if transformer_path is not None else str(defaults["transformer"])
@@ -189,16 +166,11 @@ def resolve(
     _require_files(key, paths)
     probed = geometry.probe_scale_factors(paths.video_vae(), paths.transformer())
     version = detect_model_version(paths.transformer())
-    if sampler == "auto":
-        kind = "ancestral" if ltx_adapter.ancestral_default(paths.transformer()) else "euler"
-    else:
-        kind = sampler
     return RefinerModel(
         key=key,
         version=version,
         paths=paths,
         sigmas=[float(v) for v in DISTILLED_SIGMA_VALUES],
-        stepper_kind=kind,
         caps=probe_caps(paths.transformer()),
         scale_factors=probed.factors,
         scale_factors_source=probed.source,

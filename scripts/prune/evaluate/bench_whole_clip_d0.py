@@ -65,7 +65,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--candidate", type=Path, required=True)
-    parser.add_argument("--historical-transfer", action="store_true")
     parser.add_argument("--view", required=True)
     parser.add_argument("--sigma", type=float, default=0.909375)
     parser.add_argument("--gpu-id", type=int, required=True)
@@ -79,7 +78,7 @@ def main() -> None:
         parser.error("use at least one warmup and three timed repetitions")
     base = whole_clip.load_manifest(args.baseline)
     pruned = whole_clip.load_manifest(args.candidate)
-    whole_clip.verify_candidate(base, pruned, historical_transfer=args.historical_transfer)
+    whole_clip.verify_candidate(base, pruned)
     if (args.view, args.sigma) not in whole_clip.records(base):
         parser.error("view/sigma pair is absent from the matched manifests")
     if args.gpu_id >= torch.cuda.device_count():
@@ -116,7 +115,7 @@ def main() -> None:
     baseline_ms = statistics.mean(row["median_ms"] for row in arms if row["arm"].startswith("baseline"))
     candidate_ms = statistics.mean(row["median_ms"] for row in arms if row["arm"].startswith("candidate"))
     result = {
-        "task": "historical_k2_transfer" if args.historical_transfer else whole_clip.TASK,
+        "task": whole_clip.TASK,
         "method": "same-GPU wall-clock, synchronized around one transformer forward; excludes load, noising, VAE",
         "view": args.view, "sigma": args.sigma, "schedule": [args.sigma, 0.0],
         "seed": base["seed"], "prompt_sha256": base["text_context"]["prompt_sha256"],

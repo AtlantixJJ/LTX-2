@@ -10,8 +10,8 @@ The deployed counterpart of `train.py`'s loop: one denoise plus one clean cache 
 block, over the clip's **master** latent, at σ₀.
 
 Built **on** `causal_core`, never a copy of it. What differs from training is only the
-schedule — one forward instead of `k2`'s two — and that the guide enters as the init rather
-than the block being re-encoded from its own pixels.
+forcing policy: deployment uses generated history and noises the guide master,
+while teacher-forced training refreshes from the capture target.
 
 ## Data flow
 
@@ -47,22 +47,17 @@ It is literally the same three calls in the same order the training loop makes. 
 point: a train/deploy mismatch would have to be an edit to `causal_core`, not a divergence
 between two implementations that were supposed to agree.
 
-Since the causal rewrite this path **stopped calling `refine_core` entirely** — the sliding
-window with a frozen carryover at latent index 1 is gone, and with it
-`make_window_state`/`run_schedule` on this path. `refine_core` remains the `k2` baseline's
-implementation and the source of every frozen `k2` number.
+Deployment calls `causal_core` directly; it has no sliding-window renderer dependency.
 
 ## Invariants
 
 - **`RolloutResult.forwards` counts BOTH passes per block** — the denoise and the refresh. A
-  compute number quoted from it is therefore comparable with `k2`'s two and is not flattered
-  by omitting the refresh.
+  compute number includes cache maintenance, which cannot be omitted from deployed cost.
 - **`guide_conditionings` refuses `d0`.** D0 noises the capture latent, and there is no `z_y`
   at inference; a deployable path must not be able to express it.
-- **The frame-0 sink retains generated content, not a supplied real-image condition.**
-  The current API takes the guide master only. Frame 0 is noised and predicted with the
-  first block, then cached. A keyframe marker and a pinned cache slot do not keep an input
-  image clean; explicit first-frame conditioning remains an unimplemented product contract.
+- **The caller supplies a real first-frame latent.** It remains clean at timestep
+  zero in block 0 and is retained as the pinned cache sink. The guide's frame 0
+  cannot substitute for that capture condition.
 - A causal rollout writes one latent covering the whole chain, so there is **no per-window
   overlap to stitch** and no seam to get wrong.
 

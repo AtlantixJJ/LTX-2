@@ -1,8 +1,4 @@
-"""The single source of truth for paths under ``expr/refiner_prune/<key>``.
-
-The source-target manifest used to be written and read through different string
-literals.  Keep names here so a writer and reader cannot silently drift again.
-"""
+"""Paths and attributable run directories for whole-clip pruning artifacts."""
 
 from __future__ import annotations
 
@@ -13,42 +9,11 @@ from pathlib import Path
 from scripts.prune.core.model_registry import WORKSPACE_ROOT
 
 OUT_ROOT = WORKSPACE_ROOT / "expr" / "refiner_prune"
-GATES = (
-    "caps", "prompt_cache_check", "kv_cache_check", "video_only_check",
-    "parity_check", "method_parity", "sampler_ab", "analysis_summary",
-)
+GATES = ("caps", "prompt_cache_check")
 
 
 def root(key: str) -> Path:
     return OUT_ROOT / key
-
-
-def manifest(key: str) -> Path:
-    return root(key) / "source_target" / "manifest.json"
-
-
-def calibration(key: str) -> Path:
-    return root(key) / "calibration"
-
-
-def calibration_index(key: str) -> Path:
-    return calibration(key) / "index.json"
-
-
-def figures(key: str) -> Path:
-    return root(key) / "figures"
-
-
-def prompt_cache(key: str) -> Path:
-    return OUT_ROOT / "prompt_cache" / key
-
-
-def bench(key: str, tag: str) -> Path:
-    return root(key) / f"bench_{tag}.json"
-
-
-def phase1(key: str, tag: str | None = None) -> Path:
-    return root(key) / (f"phase1_gates_{tag}.json" if tag else "phase1_gates.json")
 
 
 def gate(key: str, name: str) -> Path:

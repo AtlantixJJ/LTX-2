@@ -1,11 +1,19 @@
-# Native D0 validation
+# Whole-clip validation
 
-1. **Saved input identity:** use the baseline manifest, source SHA256, source fps, original epsilon tensor, geometry, seed, text context, clean first frame, one-step sigma schedule and full bidirectional attention. A reconstructed baseline forward must match its saved D0 latent (currently maximum absolute difference zero on the calibration cases).
-2. **Mask identity:** native masks use `candidate_format=whole_clip_d0_mask_v1` and pin the full calibration-manifest SHA256, task, checkpoint/VAE fingerprints, attention, conditioning, seed, dtype, context, guidance, geometry, calibration inputs and exact sigmas. Active export and parity reject absent, mutable or historical native provenance. Parity and ablation bind the selected baseline distribution and reject any view of a calibration actor or an uncalibrated sigma before model loading. Historical k2 export requires an explicit flag, as do paired transfer evaluation and timing.
-3. **Export parity:** compare a functional mask with the exported checkpoint on the *same* D0 inputs before claiming that the export implements that mask. `checks/export_parity.py` defaults to a maximum absolute tolerance of 0.02 and exits nonzero when exceeded. A no-prune export is the control; it matched exactly on held-out `0025_11` at sigma 0.725 in the [recorded gate](../../../../expr/refiner_prune/2.5/20260930-000132-3815899-d0-export-parity/export_parity.json). Compare baseline against the exported model separately for quality.
-4. **Held-out quality:** for each actor and exact sigma, report generated-frame noise-direction relative L2 and cosine, latent MSE to the capture, and synchronized GT-capture VAE, baseline D0 VAE and pruned D0 VAE video. Calibration and held-out actors must be distinct.
-5. **Speed and memory:** time repeated warmed, synchronized forwards on one GPU with baseline/candidate/baseline or reversed bracketing. A speed claim requires an effect larger than observed arm drift. Record peak allocated memory separately from latency. Neither parameter count nor sparse-hook timing substitutes for a dense-export forward.
+1. Reconstruct each saved baseline input: capture, VAE, fps, geometry, prompt
+   bytes, seed, original epsilon, clean frame 0 and exact `[sigma, 0]` schedule.
+   Calibration checks the direct output against the saved D0 latent.
+2. Require `candidate_format=whole_clip_d0_mask_v1`, native task/attention,
+   checkpoint/VAE identity and content-pinned calibration distribution.
+   Reject calibration actors across views and uncalibrated held-out sigmas.
+3. Compare functional mask against exported checkpoint on identical inputs using
+   `checks.export_parity`. The default maximum absolute tolerance is 0.02.
+   Include a no-prune export control. Compare baseline against candidate separately.
+4. Report generated-frame direction relative L2 and cosine, latent capture MSE
+   and synchronized capture/baseline/candidate VAE videos on held-out actors.
+5. Measure repeated warmed, synchronized forwards on one GPU with ABA/BAB
+   bracketing. A speed claim must exceed baseline-arm drift. Report allocated
+   memory separately; parameter count alone cannot establish a speed gain.
 
-The current [findings](../../../../expr/refiner_prune/2.5/FINDINGS.md) separate the reduced-shape compact failure from the exact faithful-storage export. The combined 10% mask still changes outputs substantially and does not establish a speed gain. A code reorganization needs focused tests and saved-output checks; tensor-affecting changes to the deployed k2 rollout also need `checks.method_parity`.
-
-`compact_faithful` is a separate storage-compression mode with original execution geometry. It uses the unchanged native 0.02 parity gate, a no-prune control, matched quality and both-order cost measurements. Passing its gate does not retroactively validate the earlier reduced-shape compact export or the pruning selection's perceptual quality.
+Run CPU tests with `-m 'not gpu'` and check changed code with Ruff. Fresh GPU
+baseline/export checks are required before interpreting new experimental results.

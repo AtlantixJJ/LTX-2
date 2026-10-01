@@ -423,7 +423,7 @@ flowchart TD
   CKPT[("LoRA safetensors + metadata<br/>σ₀, K, geometry, objective, arm, loss, c0 version")]
   CKPT --> VIS(["visualize_d0.py<br/>decoded D0 probe"])
   CKPT --> DEP(["onestep_core.rollout<br/>deployment"])
-  CKPT --> BENCH(["bench_forward.py<br/>cost vs k2"])
+  CKPT --> BENCH(["bench_forward.py<br/>denoise + cache refresh cost"])
 
   classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
   classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;

@@ -1,21 +1,12 @@
 # `core/geometry.py`
 
-## Objective
+## Objective and data flow
 
-Derive video VAE spatial and temporal scales from checkpoint metadata.
+Read checkpoint metadata to probe VAE spatial/temporal scales and their source.
+Convert aligned latent counts to pixel/latent shapes with round-trip validation.
 
-## Data flow
+## Invariants and verification
 
-VAE and transformer safetensors headers -> scale factors and source label; dimensions -> checked latent geometry.
-
-## Organization
-
-Prefer the VAE block list, fall back to transformer metadata, then report the default explicitly.
-
-## Invariants and gotchas
-
-A default scale is a reported fallback, not proof of the installed VAE geometry. Validate F % time == 1 and overlap alignment before a rollout.
-
-## Verification
-
-Check [`tests/test_geometry.py`](../tests/test_geometry.py). Run `python -m pytest scripts/prune/tests -q` from the LTX-2 root in the `ltx` conda environment for the CPU suite. For any change that can alter rollout tensors, rerun `python -m scripts.prune.checks.method_parity --model 2.5 --gpu-id N --windows 3` on a free GPU.
+A reported default scale is a visible fallback, not a measured encoder layout.
+Pixel counts follow `time * (latent_frames - 1) + 1`. No overlap or sliding-window
+validation lives here. `tests/test_geometry.py` checks shape round trips.

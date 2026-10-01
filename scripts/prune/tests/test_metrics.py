@@ -20,10 +20,3 @@ def test_psnr_matches_closed_form_for_known_mse():
 def test_as_bchw_accepts_every_decoder_layout():
     assert metrics._as_bchw(torch.rand(1, 3, 5, 8, 8)).shape == (5, 3, 8, 8)
     assert metrics._as_bchw(torch.rand(5, 8, 8, 3)).shape == (5, 3, 8, 8)
-
-
-def test_t2_slope_is_negative_for_degrading_rollout():
-    # Start away from an exact match: PSNR(identical) is intentionally infinity,
-    # which has no finite regression slope.
-    rows = [{"chunk": index, "pred": torch.full((1, 3, 8, 8), 0.51 + 0.02 * index), "teacher": torch.full((1, 3, 8, 8), 0.5)} for index in range(6)]
-    assert metrics.t2(rows)["psnr_slope_db_per_100_chunks"] < 0

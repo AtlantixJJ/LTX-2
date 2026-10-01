@@ -123,7 +123,7 @@ to train whole clips (`windows.py --chain-length` covering the clip), which need
 | `d2` extra reference tokens | **dropped** 2026-09-13; not expressible under causal attention |
 | Anchor loss (`--anchor-weight`) | **disabled** — only `0.0` is accepted; no `base_denoised.pt` producer exists and one frozen per-view tensor cannot represent the anchor across chains/σ/history |
 | Masked, subject-weighted or disagreement-weighted loss | **superseded** — the binding decision is unweighted full-frame latent MSE |
-| Sliding windows with a frozen carryover | **historical** — replaced by block-causal attention + K/V cache (2026-09-14). `refine_core` keeps it for the `k2` baseline only |
+| Sliding windows with a frozen carryover | **historical** — replaced by block-causal attention + K/V cache (2026-09-14). removed; there is no retained window baseline |
 | Pre-causal D0/D1 results, `runs/prelim/` | **historical evidence only.** `runs/prelim/` is an incomplete D1/`bg` causal run with merged launches and duplicate steps — not an experimental control. No `.safetensors` checkpoints exist under the current runs tree |
 
 Old measurements made under masked loss or the pre-causal scheme are historical. They must not be

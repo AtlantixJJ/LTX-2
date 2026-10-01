@@ -47,14 +47,15 @@ import cv2
 import numpy as np
 import torch
 
+from ltx_core.types import SpatioTemporalScaleFactors
+
 # Aliased: `geometry` is already the parameter name this module uses throughout for a
-# WindowGeometry instance -- a different thing entirely (the k2 window plan, not the crop
+# CaptureGeometry instance -- a different thing entirely (whole-clip VAE coverage, not the crop
 # box). Importing it bare would shadow that on every function that takes one.
 from scripts.onestep_avatar import dataset, mask_video
 from scripts.onestep_avatar import geometry as crop_geometry
 from scripts.onestep_avatar.hashing import sha256
-from scripts.prune.core import ltx_adapter, model_registry, refine_task
-from scripts.prune.core.refine_core import WindowGeometry
+from scripts.prune.core import ltx_adapter, model_registry
 from scripts.prune.core.session import DTYPE
 
 SCHEMA_VERSION = 1
@@ -95,6 +96,22 @@ T = TypeVar("T")
 def rank_slice(items: list[T], rank: int, n_rank: int) -> list[T]:
     """Deterministic disjoint ownership used by both capture and paired passes."""
     return items[rank::n_rank]
+
+
+@dataclass(frozen=True)
+class CaptureGeometry:
+    """One continuous capture prefix on the VAE temporal grid."""
+
+    scale_factors: SpatioTemporalScaleFactors
+
+    def plan(self, total_frames: int) -> list[tuple[int, int]]:
+        if total_frames < 1:
+            return []
+        frames = (total_frames - 1) // self.scale_factors.time * self.scale_factors.time + 1
+        return [(0, frames)]
+
+    def as_dict(self) -> dict:
+        return {"coverage": "vae_aligned_whole_clip", "scale_factors": list(self.scale_factors)}
 
 
 @dataclass(frozen=True)
@@ -180,7 +197,7 @@ class VideoReader:
 
     The checked-in ``ltx`` environment has OpenCV but not decord, so this adapter avoids a
     hidden preprocessing-only dependency. Frames come back as ``[F, H, W, C]`` uint8 RGB; the
-    ``/127.5 - 1`` normalization is the caller's, matching ``refine_core``'s.
+    ``/127.5 - 1`` normalization is the caller's, matching the VAE input contract.
 
     **``get_batch`` seeks, and every caller here starts at frame 0 for that reason.** These
     sources have extremely sparse keyframes, so ``CAP_PROP_POS_FRAMES`` to a later start
@@ -250,7 +267,7 @@ def atomic_json_save(value: object, destination: Path) -> None:
 def is_capture_manifest_valid(
     manifest: dict | None,
     *,
-    geometry: WindowGeometry,
+    geometry: CaptureGeometry,
     resolution: int,
     pad_factor: float,
 ) -> bool:
@@ -265,11 +282,7 @@ def is_capture_manifest_valid(
         geom = manifest.get("geometry")
         if not isinstance(geom, dict):
             return False
-        if int(geom["window_frames"]) != int(geometry.window_frames):
-            return False
-        if int(geom["overlap_frames"]) != int(geometry.overlap_frames):
-            return False
-        if "scale_factors" in geom and list(geom["scale_factors"]) != list(geometry.scale_factors):
+        if geom != geometry.as_dict():
             return False
 
         recorded_resolution = manifest.get("resolution")
@@ -482,8 +495,8 @@ def _capture_box(
         raise ValueError(f"{source.relative_dir}: {exc}") from exc
 
 
-def plan_source(source: CaptureSource, geometry: WindowGeometry, pad_factor: float) -> list[CaptureJob]:
-    """Plan one source's windows directly from original RGB and bbox coordinates.
+def plan_source(source: CaptureSource, geometry: CaptureGeometry, pad_factor: float) -> list[CaptureJob]:
+    """Plan one continuous VAE-aligned source prefix from RGB and bbox coordinates.
 
     A module-level function so it can run in a worker process: one ``cv2.VideoCapture``
     open plus a single-frame decode per source, which is cheap in isolation but was
@@ -500,8 +513,8 @@ def plan_source(source: CaptureSource, geometry: WindowGeometry, pad_factor: flo
     ]
 
 
-def _plan_cache_key(pad_factor: float, geometry: WindowGeometry) -> str:
-    return f"{geometry.window_frames}:{geometry.overlap_frames}:{pad_factor}"
+def _plan_cache_key(pad_factor: float, geometry: CaptureGeometry) -> str:
+    return f"whole_clip:{list(geometry.scale_factors)}:{pad_factor}"
 
 
 def _load_plan_cache(path: Path) -> dict[str, dict]:
@@ -542,13 +555,13 @@ def _cache_entry_from_jobs(source: CaptureSource, jobs: list[CaptureJob], key: s
 
 def enumerate_capture_jobs(
     sources: list[CaptureSource],
-    geometry: WindowGeometry,
+    geometry: CaptureGeometry,
     pad_factor: float,
     *,
     max_workers: int | None = None,
     cache_path: Path | None = None,
 ) -> list[CaptureJob]:
-    """Plan target windows for every source, in parallel, reusing a fresh on-disk plan cache.
+    """Plan whole-clip target prefixes in parallel, reusing a fresh on-disk plan cache.
 
     Each source only needs one frame decoded to plan its windows, but there can be
     hundreds of sources; running them one at a time serializes hundreds of small
@@ -690,7 +703,6 @@ def _video_info(path: Path) -> tuple[int, float, int, int]:
     return len(reader), float(reader.get_avg_fps()), int(height), int(width)
 
 
-
 def load_capture_master(pair: Pair) -> dict:
     """Read the capture master bundle, requiring regeneration of obsolete per-window bundles.
 
@@ -739,7 +751,7 @@ def master_record(
     }
 
 
-def check_pair_alignment(pair: Pair, geometry: WindowGeometry) -> dict[str, object]:
+def check_pair_alignment(pair: Pair, geometry: CaptureGeometry) -> dict[str, object]:
     """Check that a guide render and its capture master cover the same frames, and say how many.
 
     The window-by-window plan comparison this replaces existed to catch a render that had
@@ -775,7 +787,7 @@ def check_pair_alignment(pair: Pair, geometry: WindowGeometry) -> dict[str, obje
 
 
 def manifest(
-    model: model_registry.RefinerModel, geometry: WindowGeometry, pairs: list[Pair]
+    model: model_registry.RefinerModel, geometry: CaptureGeometry, pairs: list[Pair]
 ) -> dict[str, object]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -840,7 +852,7 @@ def encode_pairs(
     *,
     gpu_id: int,
     overwrite: bool,
-    geometry: WindowGeometry,
+    geometry: CaptureGeometry,
     boxes: dict[str, tuple[float, float, float, float]],
     objective: str = dataset.DEFAULT_OBJECTIVE,
 ) -> tuple[int, int, list[str]]:
@@ -1142,8 +1154,6 @@ def build_parser() -> argparse.ArgumentParser:
         "is tracked per (source, objective), so re-running only encodes what is missing and "
         "adding an objective later never re-encodes the one already on disk.",
     )
-    parser.add_argument("--window-frames", type=int, default=refine_task.WINDOW_FRAMES)
-    parser.add_argument("--overlap-frames", type=int, default=refine_task.OVERLAP_FRAMES)
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
         "--process_gt_latent",
@@ -1214,7 +1224,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- two
         parser.error("--mask-qa-only requires --process_gt_latent")
 
     model = model_registry.resolve(args.model)
-    geometry = WindowGeometry(args.window_frames, args.overlap_frames, model.scale_factors)
+    geometry = CaptureGeometry(model.scale_factors)
     if args.process_gt_latent:
         sources = discover_capture_sources(args.corpus_root)
         if not sources:

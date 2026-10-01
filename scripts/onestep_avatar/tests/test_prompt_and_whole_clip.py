@@ -13,8 +13,7 @@ import argparse
 import pytest
 
 from scripts.onestep_avatar import causal_core, visualize_d1
-from scripts.prune.core import refine_task
-from scripts.prune.core.session import add_prompt_args, resolve_prompt
+from scripts.prune.core.session import DEFAULT_PROMPT, add_prompt_args, resolve_prompt
 
 SCALE = causal_core.SpatioTemporalScaleFactors(8, 32, 32)
 
@@ -26,7 +25,7 @@ def _parse(argv: list[str]) -> argparse.Namespace:
 
 
 def test_default_prompt_is_refine_prompt() -> None:
-    assert resolve_prompt(_parse([])) == refine_task.REFINE_PROMPT
+    assert resolve_prompt(_parse([])) == DEFAULT_PROMPT
 
 
 def test_prompt_text_and_file(tmp_path) -> None:  # noqa: ANN001
@@ -75,7 +74,6 @@ def test_rescaled_schedule_shape(sigma: float, steps: int) -> None:
 
 
 def test_rescaled_schedule_at_one_is_stock() -> None:
-    import torch
     from ltx_core.components.schedulers import LTX2Scheduler
 
     stock = LTX2Scheduler().execute(steps=30).tolist()
@@ -114,6 +112,7 @@ class _FakeX0:
 
 def _modality(context):  # noqa: ANN001, ANN202
     import torch
+
     from ltx_core.model.transformer.modality import Modality
 
     return Modality(
@@ -124,6 +123,7 @@ def _modality(context):  # noqa: ANN001, ANN202
 
 def test_guided_denoise_combines_passes() -> None:
     import torch
+
     from ltx_core.components.guiders import MultiModalGuider, MultiModalGuiderParams
 
     model = _FakeX0()
@@ -137,6 +137,7 @@ def test_guided_denoise_combines_passes() -> None:
 
 def test_unguided_is_one_conditional_pass() -> None:
     import torch
+
     from ltx_core.components.guiders import MultiModalGuider, MultiModalGuiderParams
 
     model = _FakeX0()
@@ -156,7 +157,6 @@ def test_dev_flag_validation() -> None:
 
 @pytest.mark.parametrize("steps", [1, 2, 8, 30])
 def test_truncated_schedule(steps: int) -> None:
-    import torch
     from ltx_core.components.schedulers import LTX2Scheduler
 
     assert causal_core.truncated_schedule(1.0, steps) == pytest.approx(

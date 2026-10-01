@@ -12,25 +12,25 @@ from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar.precompute import (
     BUNDLE_SCHEMA_VERSION,
     CAPTURE_MANIFEST_NAME,
+    DEFAULT_CORPUS_ROOT,
     ENCODE_CONTRACT_VERSION,
     BundleExpectation,
+    CaptureGeometry,
     CaptureSource,
     Pair,
     VideoReader,
     _master_bundle_is_current,
-    is_capture_manifest_valid,
+    build_parser,
     check_pair_alignment,
     discover_pairs,
     enumerate_capture_jobs,
     guide_bundle_path,
+    is_capture_manifest_valid,
+    main,
     master_record,
     rank_slice,
     write_capture_mask_qa,
-    build_parser,
-    main,
-    DEFAULT_CORPUS_ROOT,
 )
-from scripts.prune.core.refine_core import WindowGeometry
 
 
 def test_master_record_stores_the_whole_clip_not_a_window() -> None:
@@ -240,7 +240,7 @@ def test_video_reader_and_pair_alignment_agree_on_the_frame_range(tmp_path: Path
     reader = VideoReader(pair.guide)
     assert len(reader) == 25
     assert reader.get_batch(range(2)).shape == (2, 32, 32, 3)
-    info = check_pair_alignment(pair, WindowGeometry(25, 9, SpatioTemporalScaleFactors.default()))
+    info = check_pair_alignment(pair, CaptureGeometry(SpatioTemporalScaleFactors.default()))
     assert (info["pixel_frames"], info["latent_frames"], info["fps"]) == (25, 4, 30.0)
 
 
@@ -255,7 +255,7 @@ def test_pair_alignment_rejects_a_guide_shorter_than_its_capture(tmp_path: Path)
 
     pair = discover_pairs(tmp_path)[0]
     with pytest.raises(ValueError, match="different frame ranges"):
-        check_pair_alignment(pair, WindowGeometry(25, 9, SpatioTemporalScaleFactors.default()))
+        check_pair_alignment(pair, CaptureGeometry(SpatioTemporalScaleFactors.default()))
 
 
 def _write_capture_source(
@@ -282,7 +282,7 @@ def _write_capture_source(
     )
 
 
-_GEOMETRY = WindowGeometry(25, 9, SpatioTemporalScaleFactors.default())
+_GEOMETRY = CaptureGeometry(SpatioTemporalScaleFactors.default())
 
 
 def test_enumerate_capture_jobs_reuses_a_fresh_plan_cache(tmp_path: Path) -> None:
@@ -311,11 +311,11 @@ def test_enumerate_capture_jobs_replans_a_changed_source(tmp_path: Path) -> None
     cache_path = tmp_path / "plan_cache.json"
     enumerate_capture_jobs([source], _GEOMETRY, 1.2, max_workers=1, cache_path=cache_path)
 
-    changed = _write_capture_source(view, frames=41)  # rewrites rgb.mp4 -> new fingerprint, a 2nd window
+    changed = _write_capture_source(view, frames=41)  # new content fingerprint and longer coverage
     assert changed.rgb_fingerprint != source.rgb_fingerprint
     jobs = enumerate_capture_jobs([changed], _GEOMETRY, 1.2, max_workers=1, cache_path=cache_path)
-    # A cache hit on the stale (25-frame) entry would yield exactly 1 window, not 2.
-    assert [(job.start, job.end) for job in jobs] == [(0, 25), (16, 41)]
+    # A stale cache hit would cover only 25 frames.
+    assert [(job.start, job.end) for job in jobs] == [(0, 41)]
 
     # A pad-factor change must also miss the cache even with the same source file.
     repadded = enumerate_capture_jobs([changed], _GEOMETRY, 1.5, max_workers=1, cache_path=cache_path)
@@ -349,7 +349,7 @@ def test_enumerate_capture_jobs_replans_a_bbox_change_with_rgb_untouched(tmp_pat
     assert second[0].box_xyxy != first[0].box_xyxy
 
 
-_GEOM_DICT = {"window_frames": 25, "overlap_frames": 9}
+_GEOM_DICT = _GEOMETRY.as_dict()
 
 
 def _manifest(*, views: list[int], sources: list[dict], windows: list[dict], edge: int = 1024, pad_factor: float = 1.2) -> dict:
@@ -367,7 +367,7 @@ def test_is_capture_manifest_valid_true_for_matching_manifest() -> None:
 
 def test_is_capture_manifest_valid_false_for_mismatched_geometry() -> None:
     manifest = _manifest(views=[0, 1], sources=[], windows=[], edge=1024, pad_factor=1.2)
-    diff_geom = WindowGeometry(window_frames=33, overlap_frames=9, scale_factors=SpatioTemporalScaleFactors.default())
+    diff_geom = CaptureGeometry(SpatioTemporalScaleFactors(time=4, height=32, width=32))
     assert not is_capture_manifest_valid(manifest, geometry=diff_geom, resolution=1024, pad_factor=1.2)
 
 
@@ -400,7 +400,6 @@ def test_is_capture_manifest_valid_false_for_none_or_malformed() -> None:
 
 
 def test_cli_requires_either_gt_or_syn_latent() -> None:
-    parser = build_parser()
     with pytest.raises(SystemExit):
         main([])
 
@@ -459,3 +458,12 @@ def test_manifest_root_defaults_to_corpus_root() -> None:
     assert args.manifest_root == DEFAULT_CORPUS_ROOT
 
 
+@pytest.mark.parametrize(("frames", "coverage"), [(0, []), (1, [(0, 1)]), (150, [(0, 145)]), (153, [(0, 153)])])
+def test_capture_geometry_keeps_the_complete_vae_aligned_prefix(frames, coverage) -> None:
+    assert _GEOMETRY.plan(frames) == coverage
+
+
+def test_capture_geometry_rejects_window_manifest() -> None:
+    old = _manifest(views=[0], sources=[], windows=[])
+    old["geometry"] = {"window_frames": 25, "overlap_frames": 9}
+    assert not is_capture_manifest_valid(old, geometry=_GEOMETRY, resolution=1024, pad_factor=1.2)

@@ -23,4 +23,4 @@ Native readers also call `data.whole_clip.validate_native_provenance`: seed, VAE
 
 ## Verification
 
-Check [`tests/test_hooks.py`](../tests/test_hooks.py). Run `python -m pytest scripts/prune/tests -q` from the LTX-2 root in the `ltx` conda environment for the CPU suite. For any change that can alter rollout tensors, rerun `python -m scripts.prune.checks.method_parity --model 2.5 --gpu-id N --windows 3` on a free GPU.
+Check [`tests/test_hooks.py`](../tests/test_hooks.py). Run `python -m pytest scripts/prune/tests -q -m 'not gpu'` from the LTX-2 root in the `ltx` conda environment for the CPU suite. For model-facing changes, run the native checks in [VALIDATION](VALIDATION.md).

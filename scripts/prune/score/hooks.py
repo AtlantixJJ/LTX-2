@@ -19,7 +19,7 @@ from scripts.prune.data import whole_clip
 
 
 def read_mask_artifact(path: str | Path, *, model_key: str, fingerprint: str,
-                       widths: dict[str, int], expected_task: str | None = None,
+                       widths: dict[str, int], expected_task: str = whole_clip.TASK,
                        baseline: dict | None = None) -> tuple[dict[str, list[float]], str]:
     """Validate a score report before applying its mask to a checkpoint.
 
@@ -33,7 +33,7 @@ def read_mask_artifact(path: str | Path, *, model_key: str, fingerprint: str,
         provenance.get("transformer_fingerprint") != fingerprint
     ):
         raise ValueError(f"{path}: mask model key or transformer fingerprint differs from the active checkpoint")
-    if expected_task is not None and provenance.get("task") != expected_task:
+    if expected_task != whole_clip.TASK or provenance.get("task") != whole_clip.TASK:
         raise ValueError(f"{path}: mask task {provenance.get('task')!r} != {expected_task!r}")
     if expected_task == "whole_clip_d0":
         views = provenance.get("calibration_views")
@@ -52,9 +52,7 @@ def read_mask_artifact(path: str | Path, *, model_key: str, fingerprint: str,
                 not isinstance(provenance.get("text_context"), dict)):
             raise ValueError(f"{path}: incomplete native D0 mask provenance")
         whole_clip.validate_native_provenance(provenance, baseline)
-    iterative = report.get("iterative")
-    masks = (iterative.get("masks") if isinstance(iterative, dict) and isinstance(iterative.get("masks"), dict)
-             else report.get("masks"))
+    masks = report.get("masks")
     if not isinstance(masks, dict) or not masks:
         raise ValueError(f"{path}: no mask dictionary")
     if set(masks) - set(widths):

@@ -11,12 +11,12 @@ import torch
 from ltx_core.loader.primitives import LoraPathStrengthAndSDOps
 from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
 from ltx_pipelines.utils.blocks import DiffusionStage
-from ltx_pipelines.utils.denoisers import SimpleDenoiser
-from scripts.prune.core import artifacts, ltx_adapter, preflight, refine_core, refine_task
+from scripts.prune.core import artifacts, ltx_adapter, preflight
 from scripts.prune.core.model_registry import SUPPORTED_MODELS, RefinerModel
 from scripts.prune.data import prompt_cache
 
 DTYPE = torch.bfloat16
+DEFAULT_PROMPT = "a high quality, sharp, detailed video with fine texture and natural lighting"
 
 
 def add_model_args(parser) -> None:
@@ -28,7 +28,7 @@ def add_model_args(parser) -> None:
 def add_prompt_args(parser) -> None:
     """Text prompt selection; the default keeps every saved run reproducible."""
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--prompt", default=None, help="Prompt text; default refine_task.REFINE_PROMPT.")
+    group.add_argument("--prompt", default=None, help="Prompt text; default DEFAULT_PROMPT.")
     group.add_argument("--prompt-file", type=Path, default=None, help="UTF-8 file holding the prompt text.")
 
 
@@ -38,18 +38,7 @@ def resolve_prompt(args) -> str:
         return args.prompt_file.read_text(encoding="utf-8").strip()
     if getattr(args, "prompt", None) is not None:
         return args.prompt
-    return refine_task.REFINE_PROMPT
-
-
-def add_record_args(parser, *, default_split: str = "calibration") -> None:
-    parser.add_argument("--states", type=Path, default=None, help="Calibration cache root; default is model calibration/.")
-    parser.add_argument("--split", choices=("calibration", "held_out"), default=default_split)
-    parser.add_argument("--max-records", type=int, default=None, help="Cap to a balanced, strided sample; omit for all.")
-
-
-def add_geometry_args(parser) -> None:
-    parser.add_argument("--window-frames", type=int, default=refine_task.WINDOW_FRAMES)
-    parser.add_argument("--overlap-frames", type=int, default=refine_task.OVERLAP_FRAMES)
+    return DEFAULT_PROMPT
 
 
 @dataclass(frozen=True)
@@ -58,8 +47,6 @@ class Session:
     device: torch.device
     script: str
     context: object
-    denoiser: object
-    sigmas: torch.Tensor
 
     @property
     def key(self) -> str:
@@ -69,15 +56,6 @@ class Session:
     def out_root(self) -> Path:
         return artifacts.root(self.key)
 
-    def states_root(self, override: Path | None = None) -> Path:
-        return override or artifacts.calibration(self.key)
-
-    def geometry(self, window_frames: int | None = None, overlap_frames: int | None = None) -> refine_core.WindowGeometry:
-        return refine_core.WindowGeometry(
-            window_frames=window_frames or refine_task.WINDOW_FRAMES,
-            overlap_frames=overlap_frames or refine_task.OVERLAP_FRAMES,
-            scale_factors=self.model.scale_factors,
-        )
 
     @contextmanager
     def transformer(
@@ -91,9 +69,8 @@ class Session:
 
         LoRAs fuse at load (``loader/fuse_loras.py``), so the built transformer is an ordinary
         one -- there is no adapter left at inference and nothing downstream needs to know. An
-        empty tuple is the default and takes the exact code path the checkpoint always took,
-        which is why ``checks/method_parity.py`` still passing is this change's acceptance
-        test rather than a separate gate (plan 2026-09-10 SS7.3).
+        empty tuple uses the unmodified checkpoint loading path. Sampling schedules
+        are supplied by the caller; a Session has no window geometry or default schedule.
         """
         stage = DiffusionStage.from_checkpoint(
             str(transformer_path or self.model.paths.transformer()),
@@ -125,19 +102,15 @@ def open_session(
     args,
     *,
     script: str,
-    sampler: str = "euler",
     transformer_path: Path | None = None,
     prompt: str | None = None,
 ) -> Session:
-    model = preflight.check(args.model, sampler=sampler, gpu_id=args.gpu_id, transformer_path=transformer_path)
+    model = preflight.check(args.model, gpu_id=args.gpu_id, transformer_path=transformer_path)
     device = torch.device(f"cuda:{args.gpu_id}")
-    context = prompt_cache.get_or_build(model, refine_task.REFINE_PROMPT if prompt is None else prompt, DTYPE, device)
-    sigmas = torch.tensor(refine_task.schedule_for(model.sigmas, refine_task.K_STEP), dtype=torch.float32, device=device)
+    context = prompt_cache.get_or_build(model, DEFAULT_PROMPT if prompt is None else prompt, DTYPE, device)
     return Session(
         model=model,
         device=device,
         script=script,
         context=context,
-        denoiser=SimpleDenoiser(context, None),
-        sigmas=sigmas,
     )

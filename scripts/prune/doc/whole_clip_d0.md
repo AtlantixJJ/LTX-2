@@ -2,7 +2,7 @@
 
 ## Objective
 
-Compare a compact or sparse pruned transformer with the unpruned LTX-2.5 transformer on the actual requested diagnostic: one bidirectional block covering each original DNARendering capture, with one denoising step from several start noise levels. This is an offline D0 capacity probe, not the `k2` sliding-window deployment gate.
+Compare a compact or sparse pruned transformer with the unpruned LTX-2.5 transformer on the actual requested diagnostic: one bidirectional block covering each original DNARendering capture, with one denoising step from several start noise levels. This is an offline D0 capacity probe, evaluated with native bidirectional inputs.
 
 Paired manifest validation, saved-noise equality and D0 latent path resolution are shared through `data.whole_clip`; the evaluator owns direction metrics and media assembly.
 
@@ -22,7 +22,7 @@ For a diagnostic before export, `--functional-mask <native-mask.json> --view <vi
 ## Invariants and gotchas
 
 - A saved epsilon's file SHA can change with serialization. Verify each file against its own recorded hash, then compare actual tensor values across the pair.
-- Candidate checkpoint fingerprint, export task, source and mask content must match. Native candidates require complete pinned calibration provenance. A historical k2 export needs `--historical-transfer`; the result is labeled `historical_k2_transfer` and cannot become native selection evidence.
+- Candidate checkpoint fingerprint, export task, source and mask content must match. Native candidates require complete pinned calibration provenance. Every candidate requires pinned native D0 provenance.
 - Both manifests must say `whole_clip: true` and `attention: full_bidirectional`. The schedule for every row must be exactly `[sigma, 0]`.
 - A matching seed is insufficient proof of matching noise; verify the tensor values.
 - The direction metric excludes the clean keyframe and describes deviation from the baseline model. Capture MSE is a separate accuracy reference. Neither metric alone determines perceptual quality; inspect the synchronized decoded videos.

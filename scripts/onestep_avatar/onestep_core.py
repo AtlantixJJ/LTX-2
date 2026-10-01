@@ -1,44 +1,17 @@
-"""The one-step causal AR rollout -- the deployment counterpart of ``train.py``'s loop.
+"""One-step avatar deployment through the same causal_core rollout used by training.
 
-Built **on** ``causal_core``, never a copy of it (plan 2026-09-10 §7.2, and
-``scripts/prune/CLAUDE.md`` rule 1: one implementation of the rollout). What is different
-here is only the schedule -- one forward instead of `k2`'s two -- and the guide, which enters
-as the init rather than the block being re-encoded from its own pixels.
-
-**Revised 2026-09-14 (§4.4).** The sliding window with a frozen carryover at latent index 1 is
-gone, and with it ``refine_core.make_window_state``/``run_schedule`` on this path. Deployment
-is now block-causal attention plus a clean-latent K/V cache, exactly as training is:
-
-* a block's queries attend over ``[cached clean context | this block]`` and nothing later;
-* after a block is denoised, one clean no-grad ``refresh`` forward puts its keys and values in
-  the cache, so no later block ever forwards that content again;
-* the pinned frame-0 sink stays in the cache after the first refresh. In this self-forced
-  rollout it contains the generated frame 0: the supplied-real-image condition intended by
-  §2.0 is not implemented, and frame 0 is currently noised along with the first block.
-
-`k2` is untouched: it still runs ``refine_core``'s window step, which is what every frozen
-number under ``expr/refiner_prune/2.5/`` was measured with. The two schemes coexist rather
-than one replacing the other in place, because the baseline has to stay reproducible.
-
-:func:`rollout` takes the clip's **master** latent and slices, so it does not inherit
-``K_STEP``'s per-window re-encode -- the §4.4 rule, and the one thing here that would
-silently mismatch training.
-
-The LoRA is fused at load rather than applied as an adapter: pass
-``session.transformer(loras=...)``. There is no adapter left at inference, which is why
-``checks/method_parity.py`` is unaffected by an empty tuple.
-"""
+The capture first frame stays clean, blocks attend to cached history, and generated
+blocks refresh the cache. LoRA weights are fused by the shared model session."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import torch
-from ltx_pipelines.utils.constants import DISTILLED_SIGMA_VALUES
 
-from scripts.onestep_avatar import causal_core
+from ltx_pipelines.utils.constants import DISTILLED_SIGMA_VALUES
+from scripts.onestep_avatar import causal_core, sampling
 from scripts.onestep_avatar.causal_core import BlockCache, CausalGeometry, ClipGrid
-from scripts.prune.core import refine_task
 
 
 def guide_conditionings(z_g: torch.Tensor, guide_mode: str) -> tuple:  # noqa: ARG001
@@ -68,8 +41,8 @@ class RolloutResult:
     """The rolled-out latent plus what it cost, in the units §6 reports.
 
     ``forwards`` counts **both** passes per block -- the denoise and the cache refresh -- so
-    it is directly comparable with `k2`'s two forwards per window. Reporting only the denoise
-    pass would flatter the compute claim by exactly the factor the refresh costs.
+    the total includes the cache maintenance needed for later blocks. Reporting only
+    denoising omits part of the deployed compute cost.
     """
 
     latent: torch.Tensor
@@ -79,16 +52,16 @@ class RolloutResult:
     refresh_forwards: int
 
 
-def one_step_sigma(model_sigmas: list[float], sigma0: float = refine_task.ONE_STEP_SIGMA0) -> float:
-    """``refine_task.one_step_schedule``'s single non-zero sigma, with its on-grid check.
+def one_step_sigma(model_sigmas: list[float], sigma0: float = sampling.ONE_STEP_SIGMA0) -> float:
+    """``sampling.one_step_schedule``'s single non-zero sigma, with its on-grid check.
 
-    The schedule is still built and checked through ``refine_task`` -- the causal loop has no
+    The schedule is still built and checked through ``sampling`` -- the causal loop has no
     stepper, so it consumes the sigma rather than the pair, but the guard that rejects an
     off-grid sigma0 or a multi-step schedule must not be bypassed. Called from :func:`rollout`
     against the distilled model's fixed 9-point grid, so an off-grid sigma0 raises there instead
     of deploying silently.
     """
-    schedule = refine_task.one_step_schedule(model_sigmas, sigma0)
+    schedule = sampling.one_step_schedule(model_sigmas, sigma0)
     if len(schedule) != 2 or schedule[-1] != 0.0:
         raise ValueError(f"one_step_schedule returned {schedule}, expected [sigma0, 0.0]")
     return float(schedule[0])
@@ -119,7 +92,7 @@ def rollout(  # noqa: PLR0913 -- a rollout is defined by its geometry, schedule,
     nothing is re-encoded and nothing is re-forwarded that the cache already holds.
 
     ``context`` is passed in rather than defaulted because the refiner runs on ONE constant
-    prompt (``refine_task.REFINE_PROMPT``): a rollout that silently conditioned on something
+    prompt (``DEFAULT_PROMPT``): a rollout that silently conditioned on something
     else would change every number in §8 without changing a call site. Build it with
     ``scripts.prune.data.prompt_cache.get_or_build``, the same call ``train.py`` makes.
 

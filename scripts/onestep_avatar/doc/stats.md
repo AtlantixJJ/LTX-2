@@ -57,3 +57,11 @@ windows that double-counted every second latent frame.
   the wrong one overstates what compositing bought.
 - The per-channel moment stats are computed from a **single** window (`inits[0]`) while the
   global ones span every window. Widen that before relying on the tail.
+
+## Whole-clip map measurement
+
+`measure_map` encodes the complete VAE-aligned guide prefix, keeps its first latent
+frame clean, and executes one full-bidirectional `[sigma0, 0]` forward per saved
+seed. Excursion and epsilon spread cover that complete clip. There is no 25-frame
+window baseline; numbers must be regenerated under this coverage before comparing
+with newly encoded capture/guide pairs.
