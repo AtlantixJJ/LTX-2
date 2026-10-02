@@ -93,7 +93,7 @@ from peft.utils.other import fsdp_auto_wrap_policy
 from safetensors.torch import save_file
 
 from ltx_trainer.model_loader import load_transformer
-from scripts.onestep_avatar import causal_core, dataset
+from scripts.onestep_avatar import backbone, causal_core, dataset, windows
 from scripts.onestep_avatar.causal_core import BlockCache, CausalGeometry, ClipGrid
 from scripts.prune.core import model_registry
 from scripts.prune.core.session import DEFAULT_PROMPT
@@ -498,6 +498,7 @@ def train_chain(  # noqa: PLR0913, PLR0915 -- one AR training step is defined by
     guide_mode: str = "d1",
     teacher_forcing: bool = False,
     timing: bool = False,
+    accumulation: int = 1,
 ) -> dict[str, float]:
     """SS4.4's chain: ``K`` denoise forwards, ``K`` backwards, ``K`` refreshes, one optimizer step.
 
@@ -632,7 +633,9 @@ def train_chain(  # noqa: PLR0913, PLR0915 -- one AR training step is defined by
             anchor = full_frame_mse(z0, base_tokens[:, lo:hi])
             loss = loss + anchor_weight * anchor
 
-        accelerator.backward(loss / k)
+        # Block-averaged, and averaged over the step's ``accumulation`` chains per rank, so an
+        # update is the mean over every chain it saw regardless of how they were distributed.
+        accelerator.backward(loss / (k * accumulation))
         backward_at = time.time()
         totals["loss"] += float(loss.detach()) / k
         totals["mse"] += float(mse.detach()) / k
@@ -678,6 +681,9 @@ def build_transformer(
         checkpoint_path=model.paths.transformer(), device=init_device, dtype=DTYPE, video_only=True
     )
     transformer.requires_grad_(False)
+    # PEFT draws lora_A from the global RNG. Seeding it identically on every rank makes the
+    # initialization one reproducible function of --init-seed instead of a per-rank mixture.
+    torch.manual_seed(args.init_seed)
     transformer = get_peft_model(
         transformer,
         LoraConfig(
@@ -688,6 +694,8 @@ def build_transformer(
             init_lora_weights=True,
         ),
     )
+    if args.init_adapter is not None:
+        load_stage_init(transformer, args.init_adapter)
     if accelerator.distributed_type == DistributedType.FSDP:
         # FSDP needs one dtype per flat parameter, and PEFT makes the adapters fp32 against a
         # bf16 base. This policy wraps the trainable leaves separately, which is what lets the
@@ -695,6 +703,25 @@ def build_transformer(
         accelerator.state.fsdp_plugin.auto_wrap_policy = fsdp_auto_wrap_policy(transformer)
     transformer.get_base_model().set_gradient_checkpointing(not args.no_gradient_checkpointing)
     return transformer
+
+
+def load_stage_init(transformer: torch.nn.Module, path: Path) -> None:
+    """Initialize a NEW training stage from a parent adapter's weights -- not a resume.
+
+    Only the LoRA tensors are loaded; the optimizer, scheduler, step counter and RNG start
+    fresh, and the parent is recorded in this run's metadata. An exact resume would need all
+    of those and is not implemented. Keys are the exported ComfyUI layout ``save_lora`` writes.
+    """
+    from peft import set_peft_model_state_dict  # noqa: PLC0415
+    from safetensors.torch import load_file  # noqa: PLC0415
+
+    exported = load_file(str(path))
+    state = {k.replace("diffusion_model.", "base_model.model.", 1): v for k, v in exported.items()}
+    result = set_peft_model_state_dict(transformer, state)
+    unexpected = list(getattr(result, "unexpected_keys", []) or [])
+    if unexpected:
+        raise SystemExit(f"--init-adapter {path}: {len(unexpected)} keys do not match this LoRA, e.g. {unexpected[:3]}")
+    LOGGER.info("initialized LoRA from parent adapter %s (%d tensors)", path, len(exported))
 
 
 def causal_geometry(args: argparse.Namespace, model: model_registry.RefinerModel) -> CausalGeometry:
@@ -724,7 +751,20 @@ def checkpoint_metadata(
     """
     sigma_levels = training_sigmas(args)
     geometry = causal_geometry(args, model)
+    base = args.base_identity
     return {
+        "onestep_avatar_base_variant": base["base_variant"],
+        "onestep_avatar_base_transformer_file": base["base_transformer_file"],
+        "onestep_avatar_base_transformer_fingerprint": base["base_transformer_fingerprint"],
+        # How history K/V are computed: the cached clean refresh at global sigma zero (G7).
+        "onestep_avatar_history_computation": "cached_refresh_global_sigma0",
+        "onestep_avatar_subset_full_sha256": windows.subset_sha256(subset),
+        "onestep_avatar_noise_policy": args.noise_policy,
+        "onestep_avatar_init_seed": str(args.init_seed),
+        "onestep_avatar_data_seed": str(args.data_seed),
+        "onestep_avatar_noise_seed": str(args.noise_seed),
+        "onestep_avatar_chains_per_update": str(args.chains_per_rank * args.world_size),
+        "onestep_avatar_parent_adapter": "" if args.init_adapter is None else str(args.init_adapter),
         # ``mixed`` deliberately prevents a fixed-sigma deployment loader from accepting a
         # multi-level adapter as though it were calibrated for just one noise level.
         "onestep_avatar_loss": FULL_FRAME_X0_MSE,
@@ -771,6 +811,20 @@ def training_sigmas(args: argparse.Namespace) -> tuple[float, ...]:
     if len(set(values)) != len(values):
         raise SystemExit("--sigma-levels must not repeat a noise level")
     return values
+
+
+def training_noise_seed(args: argparse.Namespace, *, step: int, rank: int, slot: int, chain_index: int) -> int:
+    """The base seed of one chain visit's epsilon; ``train_chain`` adds the block index.
+
+    ``fresh``: a function of (noise seed, update, rank, accumulation slot) only -- so a chain
+    revisited in a later epoch gets new noise, and two candidates launched with the same seeds
+    and topology draw the identical stream whatever their sigma or arm. ``fixed_per_chain`` is
+    the historical rule (one epsilon per chain for the whole run), kept as the debug control
+    that separates memorising a noise draw from learning the correction.
+    """
+    if args.noise_policy == "fixed_per_chain":
+        return args.noise_seed * 100003 + chain_index * 101
+    return ((args.noise_seed * 1_000_003 + step) * 1009 + rank) * 131 + slot * 17
 
 
 def sigma_for_rank(sigmas: tuple[float, ...], rank: int, step: int) -> float:
@@ -919,6 +973,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "always restarts at 0 -- so a used --output is otherwise refused outright.",
     )
     p.add_argument("--model", choices=model_registry.SUPPORTED_MODELS, default="2.5")
+    p.add_argument(
+        "--variant", choices=backbone.VARIANTS, default=backbone.DEFAULT_VARIANT,
+        help="Backbone weights: the distilled transformer (default, the historical recipes) or "
+        "dev. Resolved by backbone.py and stamped by file fingerprint, so a dev adapter is "
+        "refused on distilled weights at probe time.",
+    )
     p.add_argument("--sigma0", type=float, default=DEFAULT_SIGMA0)
     p.add_argument(
         "--sigma-levels", type=float, nargs="+", default=None,
@@ -944,14 +1004,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         f"depth a K=3, 2-frame-block chain never evicts at all. Recorded in the checkpoint "
         f"metadata: an adapter trained at one depth is a different function at another.",
     )
-    p.add_argument("--split", choices=("train", "held_out"), default="train")
+    p.add_argument("--split", choices=("train", "held_out", "validation", "test"), default="train")
     p.add_argument("--lora-rank", type=int, default=8, help="2-3 GPU preliminary runs drop this, never K")
     p.add_argument("--lora-alpha", type=int, default=None, help="default: equal to --lora-rank")
     p.add_argument("--lora-target", choices=sorted(LORA_TARGETS), default="attn")
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--warmup-steps", type=int, default=20)
     p.add_argument("--steps", type=int, default=200)
-    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--seed", type=int, default=42, help="default for the three seeds below")
+    p.add_argument("--init-seed", type=int, default=None, help="LoRA initialization seed (default --seed)")
+    p.add_argument("--data-seed", type=int, default=None, help="chain-order seed (default --seed)")
+    p.add_argument("--noise-seed", type=int, default=None, help="training-epsilon stream seed (default --seed)")
+    p.add_argument(
+        "--noise-policy", choices=("fresh", "fixed_per_chain"), default="fresh",
+        help="fresh (default): epsilon depends on (noise seed, update, rank, slot), so a chain "
+        "revisited in a later epoch gets new noise and matched candidates share one stream. "
+        "fixed_per_chain: the historical rule -- every visit to a chain reuses one epsilon; "
+        "kept only as the overfit debug control.",
+    )
+    p.add_argument(
+        "--chains-per-rank", type=int, default=1,
+        help="Chains each rank accumulates into one optimizer update (chains per update = this x "
+        "world size). Lets a 2-GPU run match a 4-chain update without changing K.",
+    )
+    p.add_argument(
+        "--init-adapter", type=Path, default=None,
+        help="Start a NEW stage from this adapter's LoRA weights (fresh optimizer/scheduler/RNG, "
+        "parent recorded). Not a resume.",
+    )
     p.add_argument(
         "--objective",
         choices=dataset.OBJECTIVES,
@@ -1023,6 +1103,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "does not make a stale subset trainable; it moves failures to chain loading, after "
         "the 42 GB checkpoint load.",
     )
+    p.add_argument(
+        "--reserve-gpu-gib", type=float, default=0.0,
+        help="Operational: reserve this much GPU memory per rank at start-up (allocate+free into the "
+        "caching allocator) so a shared machine's other schedulers do not claim the card during load. "
+        "Requires PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, or the reservation fragments the allocator.",
+    )
     p.add_argument("--dry-run", action="store_true", help="report the plan and the data shapes, load no model")
     return p.parse_args(argv)
 
@@ -1031,6 +1117,13 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     args = parse_args(argv)
     if args.lora_alpha is None:
         args.lora_alpha = args.lora_rank
+    for name in ("init_seed", "data_seed", "noise_seed"):
+        if getattr(args, name) is None:
+            setattr(args, name, args.seed)
+    if args.chains_per_rank < 1:
+        raise SystemExit("--chains-per-rank must be >= 1")
+    if args.init_adapter is not None and not args.init_adapter.is_file():
+        raise SystemExit(f"--init-adapter does not exist: {args.init_adapter}")
     sigmas = training_sigmas(args)
     if args.anchor_weight != 0.0:
         # 2026-09-18 audit F8: no `base_denoised.pt` producer exists anywhere in the corpus,
@@ -1085,7 +1178,16 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
             f"{args.subset} was frozen against objective {subset_objective!r} but this run asks "
             f"for {args.objective!r}. Re-freeze with `windows.py --objective {args.objective}`"
         )
-    model = model_registry.resolve(args.model)
+    model = backbone.resolve(args.model, args.variant)
+    args.base_identity = backbone.identity(model.paths.transformer(), args.variant, args.model)
+    if args.init_adapter is not None:
+        from scripts.onestep_avatar import sampling  # noqa: PLC0415
+
+        parent = sampling.read_adapter_metadata(args.init_adapter)
+        if parent.get("onestep_avatar_base_transformer_fingerprint") != args.base_identity["base_transformer_fingerprint"]:
+            raise SystemExit(f"--init-adapter {args.init_adapter} was trained on different base weights")
+        if (parent.get("lora_rank"), parent.get("lora_target")) != (str(args.lora_rank), args.lora_target):
+            raise SystemExit(f"--init-adapter {args.init_adapter} has a different LoRA rank/target")
     geometry = causal_geometry(args, model)
     corpus_root = args.corpus_root or Path(subset["corpus_root"])
     store = ChainStore(
@@ -1127,6 +1229,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                     },
                     "sigma0": args.sigma0,
                     "sigma_levels": list(sigmas),
+                    "base": args.base_identity,
+                    "subset_full_sha256": windows.subset_sha256(subset),
+                    "noise_policy": args.noise_policy,
+                    "seeds": {"init": args.init_seed, "data": args.data_seed, "noise": args.noise_seed},
                     "lora": {"rank": args.lora_rank, "alpha": args.lora_alpha, "target": args.lora_target},
                 },
                 indent=2,
@@ -1134,6 +1240,16 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
         )
         return 0
 
+    if args.reserve_gpu_gib > 0:
+        # Operational, not experimental: on a shared machine another job's scheduler can see
+        # this card as free during the minutes-long 42 GB load and claim it, OOM-ing this rank
+        # at start-up. Allocating and freeing a block leaves it RESERVED in PyTorch's caching
+        # allocator (nothing here calls empty_cache), so the card reads as taken from the first
+        # second; the load and training then reuse that reserved memory.
+        local = int(os.environ.get("LOCAL_RANK", "0"))
+        torch.cuda.set_device(local)
+        reserve = torch.empty(int(args.reserve_gpu_gib * 2**30), dtype=torch.uint8, device=f"cuda:{local}")
+        del reserve
     # No explicit mixed_precision: the accelerate config decides, and the 2/3-GPU configs are
     # copies of the trainer's own, so this loop runs under the same policy the shipped trainer
     # does rather than a second one of its own.
@@ -1141,6 +1257,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
         accelerator = Accelerator()
     device = accelerator.device
     world, rank = accelerator.num_processes, accelerator.process_index
+    args.world_size = world
 
     with timed("prompt cache (text encoder)"):
         context = prompt_cache.get_or_build(model, DEFAULT_PROMPT, DTYPE, device)
@@ -1148,12 +1265,21 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     with timed("transformer load + LoRA injection"):
         transformer = build_transformer(model, args, accelerator)
     trainable = [p for p in transformer.parameters() if p.requires_grad]
+    # Log what LoRA actually attached to: a video-only model whose target names silently
+    # missed a projection would otherwise train a smaller adapter than the run claims.
+    lora_modules = sorted(
+        {name.rsplit(".lora_", 1)[0] for name, p in transformer.named_parameters() if p.requires_grad}
+    )
+    target_counts = {
+        target: sum(1 for name in lora_modules if name.endswith(target)) for target in LORA_TARGETS[args.lora_target]
+    }
     # Counted BEFORE `prepare`: FSDP with `use_orig_params=True` reshapes each parameter to
     # this rank's shard in place, so the same expression afterwards reports total/world_size
     # and reads like a model half the size.
     trainable_total = sum(p.numel() for p in trainable)
     num_blocks, inner_dim = _num_blocks(transformer), _inner_dim(transformer)
-    optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.0)
+    # Stated explicitly rather than inherited from the library defaults (they coincide today).
+    optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.0, betas=(0.9, 0.999), eps=1e-8)
     with timed("accelerator.prepare (FSDP shard)"):
         transformer, optimizer = accelerator.prepare(transformer, optimizer)
     if accelerator.is_main_process:
@@ -1167,15 +1293,25 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
             args.lora_alpha,
         )
         LOGGER.info("causal geometry: %s", json.dumps(geometry.as_dict()))
+        LOGGER.info("LoRA modules: %d (%s)", len(lora_modules), json.dumps(target_counts))
+        LOGGER.info("base: %s", json.dumps(args.base_identity))
 
     # Chains are sharded by rank rather than by an accelerate DataLoader: a sample here is a
     # variable-length chain of tensors, not a collatable batch, and FSDP is data-parallel over
     # ranks, so a deterministic stride is both simpler and reproducible with no sampler state.
     # Every rank runs the SAME number of steps, so the shard is truncated to the common length.
-    per_rank = len(store) // world
+    # Small tiers (the two-pair overfit control) can have fewer chains than one update needs.
+    # Tile the chain list so every rank gets a chain: under the fresh noise policy each copy
+    # still draws its own epsilon (the rank is in the seed), so a tiled update is several
+    # noise draws of the same chains, not duplicated samples. Recorded as `chain_tiling`.
+    tiling = max(1, math.ceil(world * args.chains_per_rank / len(store)))
+    per_rank = len(store) * tiling // world
+    per_rank -= per_rank % args.chains_per_rank
     if per_rank == 0:
-        raise SystemExit(f"{len(store)} chains cannot be split across {world} ranks")
-    order = list(range(len(store)))
+        raise SystemExit(
+            f"{len(store)} chains cannot be split across {world} ranks x {args.chains_per_rank} chains per rank"
+        )
+    order = list(range(len(store))) * tiling
 
     if needs_archive:
         # F6: archiving (not deleting) happens here rather than at argument-parsing time, for
@@ -1202,6 +1338,13 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                     "world_size": world,
                     "causal_geometry": geometry.as_dict(),
                     "loss": FULL_FRAME_X0_MSE,
+                    "subset_full_sha256": windows.subset_sha256(subset),
+                    "lora_modules": len(lora_modules),
+                    "lora_target_counts": target_counts,
+                    "trainable_params": trainable_total,
+                    "chains_per_update": world * args.chains_per_rank,
+                    "chain_tiling": tiling,
+                    "optimizer": {"name": "AdamW", "betas": [0.9, 0.999], "eps": 1e-8, "weight_decay": 0.0},
                 },
                 indent=2,
                 default=str,
@@ -1230,7 +1373,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
         if path is not None:
             LOGGER.info("saved initial (untrained) checkpoint %s", path)
 
-    generator = torch.Generator().manual_seed(args.seed)
+    generator = torch.Generator().manual_seed(args.data_seed)
     # One cache allocation for the whole run: capacity depends only on the geometry and the
     # (fixed) 1024**2 crop, so reallocating per chain would just churn ~2 GB of VRAM.
     cache: BlockCache | None = None
@@ -1239,7 +1382,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     while step < args.steps:
         epoch_order = [order[i] for i in torch.randperm(len(order), generator=generator).tolist()]
         shard = epoch_order[rank * per_rank : (rank + 1) * per_rank]
-        for chain_index in shard:
+        groups = [shard[i : i + args.chains_per_rank] for i in range(0, len(shard), args.chains_per_rank)]
+        for group_indices in groups:
             if step >= args.steps:
                 break
             lr = args.lr * min(1.0, (step + 1) / max(args.warmup_steps, 1))
@@ -1248,48 +1392,54 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
             sigma0 = sigma_for_rank(sigmas, rank, step)
 
             step_started = time.time()
-            # Unconditional for the FIRST chain only: it is the one that pays the corpus read
-            # and the ~2 GB cache allocation, so "the run printed the geometry and then went
-            # quiet" -- what the 09-15 4-GPU launch log looks like -- is decided here, before
-            # any --timing opt-in could have been remembered.
-            first_chain = step == 0
-            verbose = args.timing or first_chain
-            label = "chain load (first: corpus read + cache alloc)" if first_chain else f"chain load {chain_index}"
-            with timed(label) if verbose else contextlib.nullcontext():
-                chain = store[chain_index]
-                if cache is None:
-                    grid = clip_grid_for(
-                        chain, geometry, device=device, latent_channels=model.caps.latent_channels
-                    )
-                    cache = BlockCache.allocate(
-                        grid, geometry, num_layers=num_blocks, inner_dim=inner_dim, device=device,
-                        dtype=DTYPE,
-                        # The subset's longest clip, not this chain's: one allocation serves
-                        # every chain in the run, so a capacity capped by the first clip drawn
-                        # would overflow on a longer one at a deep --context-latent-frames.
-                        capacity_latent_frames=store.max_latent_frames,
-                    )
-            loaded_at = time.time()
-            # 1 prime + K denoise + K refresh. Checked here, before any of them run.
-            assert_rank_lockstep(accelerator, 1 + 2 * len(chain.blocks), chain.source)
-            totals = train_chain(
-                transformer,
-                context,
-                chain,
-                geometry,
-                cache,
-                accelerator,
-                sigma0=sigma0,
-                # Seeded per (run, block) so eps is reproducible and the same block always
-                # gets the same noise -- which is also what makes a cached frozen-base output
-                # (the anchor term) correspond to this exact input.
-                seed=args.seed * 100003 + chain_index * 101,
-                anchor_weight=args.anchor_weight,
-                latent_channels=model.caps.latent_channels,
-                guide_mode=args.guide_mode,
-                teacher_forcing=args.teacher_forcing,
-                timing=verbose,
-            )
+            step_totals: dict[str, float] = {"loss": 0.0, "mse": 0.0, "anchor": 0.0}
+            per_block: list[dict[str, float]] = []
+            sources: list[str] = []
+            for slot, chain_index in enumerate(group_indices):
+                # Unconditional for the FIRST chain only: it is the one that pays the corpus read
+                # and the ~2 GB cache allocation, so "the run printed the geometry and then went
+                # quiet" -- what the 09-15 4-GPU launch log looks like -- is decided here, before
+                # any --timing opt-in could have been remembered.
+                first_chain = step == 0 and slot == 0
+                verbose = args.timing or first_chain
+                label = "chain load (first: corpus read + cache alloc)" if first_chain else f"chain load {chain_index}"
+                with timed(label) if verbose else contextlib.nullcontext():
+                    chain = store[chain_index]
+                    if cache is None:
+                        grid = clip_grid_for(
+                            chain, geometry, device=device, latent_channels=model.caps.latent_channels
+                        )
+                        cache = BlockCache.allocate(
+                            grid, geometry, num_layers=num_blocks, inner_dim=inner_dim, device=device,
+                            dtype=DTYPE,
+                            # The subset's longest clip, not this chain's: one allocation serves
+                            # every chain in the run, so a capacity capped by the first clip drawn
+                            # would overflow on a longer one at a deep --context-latent-frames.
+                            capacity_latent_frames=store.max_latent_frames,
+                        )
+                loaded_at = time.time()
+                # 1 prime + K denoise + K refresh. Checked here, before any of them run.
+                assert_rank_lockstep(accelerator, 1 + 2 * len(chain.blocks), chain.source)
+                totals = train_chain(
+                    transformer,
+                    context,
+                    chain,
+                    geometry,
+                    cache,
+                    accelerator,
+                    sigma0=sigma0,
+                    seed=training_noise_seed(args, step=step, rank=rank, slot=slot, chain_index=chain_index),
+                    anchor_weight=args.anchor_weight,
+                    latent_channels=model.caps.latent_channels,
+                    guide_mode=args.guide_mode,
+                    teacher_forcing=args.teacher_forcing,
+                    timing=verbose,
+                    accumulation=len(group_indices),
+                )
+                for key in step_totals:
+                    step_totals[key] += totals[key] / len(group_indices)
+                per_block.extend(totals["per_block"])
+                sources.append(chain.source)
             chained_at = time.time()
             grad_norm = accelerator.clip_grad_norm_(transformer.parameters(), args.max_grad_norm)
             optimizer.step()
@@ -1303,6 +1453,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                     step, loaded_at - step_started, chained_at - loaded_at,
                     time.time() - chained_at, time.time() - step_started,
                 )
+            totals = {**step_totals, "per_block": per_block}
 
             if step % args.log_every == 0:
                 per_block = totals.pop("per_block")
@@ -1313,7 +1464,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                     "sigma0": sigma0,
                     "grad_norm": float(grad_norm) if grad_norm is not None else None,
                     "elapsed_s": round(time.time() - started, 1),
-                    "source": chain.source,
+                    "source": chain.source if len(sources) == 1 else sources,
                     **{k: round(v, 6) for k, v in totals.items()},
                     # SS7.4(a): one entry per block IN THIS CHAIN, in order, so a reader can
                     # plot loss against position without re-deriving it from the chain-mean.

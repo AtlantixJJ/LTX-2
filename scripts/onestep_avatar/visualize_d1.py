@@ -15,7 +15,7 @@ import torch
 from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
 from ltx_core.model.transformer.attention import attention_label
 from ltx_core.model.transformer.transformer import DEFAULT_TRANSFORMER_OPS
-from scripts.onestep_avatar import causal_core, dataset, visualize_d0
+from scripts.onestep_avatar import backbone, causal_core, dataset, sampling, visualize_d0
 from scripts.onestep_avatar.train import Chain, _load_training_master, clip_grid_for
 from scripts.prune.core import provenance
 from scripts.prune.core.session import (
@@ -91,6 +91,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--rescale", type=float, default=0.0, help="Guidance rescale (pipelines use 0.7 with CFG).")
     parser.add_argument("--negative-prompt", default=None, help="Default: ltx_pipelines DEFAULT_NEGATIVE_PROMPT.")
     parser.add_argument("--raw-only", action="store_true", help="Save raw latents and manifest without VAE decoding.")
+    parser.add_argument("--seeds", type=int, nargs="+", default=None, help="Several rollout seeds in one load.")
+    parser.add_argument(
+        "--arms", nargs="+", choices=("d0", "d1"), default=["d0", "d1"],
+        help="Arms to roll out. A trained D1 adapter is in-condition only for d1.",
+    )
+    parser.add_argument(
+        "--off-condition-override", action="store_true",
+        help="Run a --checkpoint whose recorded conditions disagree with this probe; the problems "
+        "are recorded in the manifest so the output is labelled off-condition.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     add_model_args(parser)
     add_prompt_args(parser)
@@ -101,6 +111,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         or args.max_blocks is not None
     ):
         parser.error("--whole-clip sets the block and history itself; drop --history-mode/--block-latent-frames/--max-blocks")
+    if sorted(args.arms) != ["d0", "d1"] and not args.raw_only:
+        parser.error("a single --arms value needs --raw-only (the decoded panel video is capture | D0 | D1)")
     if args.variant == "dev":
         if args.steps is None or args.steps < 1:
             parser.error("--variant dev needs --steps N")
@@ -119,9 +131,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     elif args.dev_denoising_steps is not None:
         parser.error("--dev-denoising-steps is dev only")
     return args
-
-
-DEV_TRANSFORMER = "ltx-2.5-22b-dev-transformer-bf16.safetensors"
 
 
 def _suffix(args: argparse.Namespace) -> str:
@@ -170,6 +179,11 @@ def _global_epsilons(
 
 def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
     args = parse_args(argv)
+    # Several noise seeds share one 22B load; each seed's global epsilon and latents are saved
+    # under a seed-suffixed stem. Decoding stays one-seed (--raw-only for several).
+    seeds = [args.seed] if args.seeds is None else list(args.seeds)
+    if args.seeds is not None and len(seeds) > 1 and not args.raw_only:
+        raise SystemExit("--seeds with more than one seed needs --raw-only")
     if args.output.exists() and any(args.output.iterdir()):
         raise SystemExit(f"output directory must be fresh and empty: {args.output}")
     if args.checkpoint is not None and not args.checkpoint.is_file():
@@ -183,11 +197,44 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
     prompt = resolve_prompt(args)
     transformer_path = args.transformer
     if transformer_path is None and args.variant == "dev":
-        from scripts.prune.core.model_registry import resolve
-
-        transformer_path = Path(resolve(args.model).paths.transformer()).with_name(DEV_TRANSFORMER)
+        transformer_path = backbone.transformer_path(args.model, "dev")
     if transformer_path is not None and not Path(transformer_path).is_file():
         raise SystemExit(f"transformer checkpoint does not exist: {transformer_path}")
+    condition_problems: list[str] = []
+    if args.checkpoint is not None:
+        # G3: validate the adapter's recorded conditions before paying for the 22B load.
+        base = backbone.identity(
+            transformer_path or backbone.transformer_path(args.model, args.variant), args.variant, args.model
+        )
+        probe_geometry = {
+            "block_latent_frames": args.block_latent_frames,
+            "context_latent_frames": args.context_latent_frames,
+            "sink_latent_frames": causal_core.SINK_LATENT_FRAMES,
+        }
+        metadata = sampling.read_adapter_metadata(args.checkpoint)
+        for sigma in args.sigmas:
+            if args.variant == "dev":
+                schedule = (
+                    list(causal_core.thinned_truncated_schedule(sigma, args.steps, args.dev_denoising_steps))
+                    if args.dev_denoising_steps is not None
+                    else list(causal_core.truncated_schedule(sigma, args.steps))
+                )
+            else:
+                schedule = [sigma, 0.0]
+            for arm in args.arms:
+                condition_problems += [
+                    f"sigma={sigma} arm={arm}: {problem}"
+                    for problem in sampling.check_adapter_conditions(
+                        metadata,
+                        override=args.off_condition_override,
+                        base=base,
+                        objective=args.objective,
+                        guide_mode=arm,
+                        schedule=schedule,
+                        geometry=probe_geometry,
+                        teacher_forcing=args.teacher_forcing,
+                    )
+                ]
     session = open_session(
         args, script="onestep_avatar.visualize_d1", prompt=prompt, transformer_path=transformer_path
     )
@@ -244,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
         "sigmas": list(sigmas),
         "trajectory_only": args.trajectory_only,
         "seed": args.seed,
+        "seeds": seeds,
         "teacher_forcing": args.teacher_forcing,
         # A single whole-clip block has no history, so the teacher-forcing flag cannot act.
         "history_policy": "none_single_block"
@@ -296,10 +344,13 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
         "latent_dtype": str(DTYPE),
         "max_blocks": args.max_blocks,
         "raw_only": args.raw_only,
+        "arms": list(args.arms),
+        "adapter_condition_problems": condition_problems,
+        "off_condition": bool(condition_problems),
         "videos": [],
     }
     with session.transformer(loras=loras) as transformer:
-        for view, chain in chains:
+        for seed, (view, chain) in [(seed, item) for seed in seeds for item in chains]:
             grid = clip_grid_for(
                 chain, geometry, device=session.device, latent_channels=session.model.caps.latent_channels
             )
@@ -309,12 +360,13 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
                     raise SystemExit(f"--max-blocks must be within [1, {len(plan)}]")
                 plan = plan[: args.max_blocks]
             source = grid.patchify(chain.z_y.unsqueeze(0).to(device=session.device, dtype=DTYPE))
-            global_epsilon, epsilons = _global_epsilons(source, grid, plan, args.seed)
-            stem = f"{view.parent.parent.name}_{view.name}"
+            global_epsilon, epsilons = _global_epsilons(source, grid, plan, seed)
+            stem = f"{view.parent.parent.name}_{view.name}" + ("" if args.seeds is None else f"_seed{seed}")
             noise_path = args.output / f"{stem}_epsilon.pt"
             torch.save(global_epsilon.cpu(), noise_path)
             view_record = {
                 "view": str(view.resolve()),
+                "seed": seed,
                 "fps": chain.fps,
                 "capture": str((view / dataset.capture_bundle_name(args.objective)).resolve()),
                 "guide": str((view / dataset.guide_bundle_name(args.objective)).resolve()),
@@ -339,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
                     if len(schedule) == 2:
                         continue  # the final grid level already has a one-step trajectory
                 arms[sigma] = {}
-                for mode in ("d0", "d1"):
+                for mode in args.arms:
                     if session.device.type == "cuda":
                         torch.cuda.synchronize(session.device)
                         torch.cuda.reset_peak_memory_stats(session.device)
@@ -352,7 +404,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
                         sigma,
                         device=session.device,
                         latent_channels=session.model.caps.latent_channels,
-                        seed=args.seed,
+                        seed=seed,
                         guide_mode=mode,
                         teacher_forcing=args.teacher_forcing,
                         block_epsilons=epsilons,
@@ -403,7 +455,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
                 output = None
                 if decoder is not None:
                     panels = [target_pixels] + [
-                        visualize_d0._decode(session, arms[sigma][mode], decoder, args.seed) for mode in ("d0", "d1")
+                        visualize_d0._decode(session, arms[sigma][mode], decoder, args.seed) for mode in args.arms
                     ]
                     output = args.output / f"{view.parent.parent.name}_{view.name}_sigma_{sigma:.6f}_{suffix}.mp4"
                     t3_video(*panels, output, fps=chain.fps)
@@ -416,7 +468,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
                             t["schedule"] for t in view_record["rollout_timing"] if t["sigma"] == sigma
                         ),
                         "output": str(output) if output is not None else None,
-                        "panels": ["ground_truth", "gt_latent_rollout", "rgb_render_latent_rollout"],
+                        "panels": ["ground_truth"]
+                        + [{"d0": "gt_latent_rollout", "d1": "rgb_render_latent_rollout"}[mode] for mode in args.arms],
                         "blocks": [list(block) for block in plan],
                         "artifacts": view_record,
                     }

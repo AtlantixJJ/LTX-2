@@ -53,6 +53,29 @@ Four jobs that must not be left to the training loop:
 3. **The content pin**, so a subset keeps describing what is on disk.
 4. **Exclusions** (`clipped_subject`), recorded rather than silently dropped.
 
+### Study freezes (2026-10-02)
+
+Five options turn a hashed two-way tier into a predeclared study split, all recorded in the
+subset so `train.py` and the probe read them rather than re-deriving them:
+
+- `--train-actors/--validation-actors/--test-actors` (together) replace the hashed split with
+  explicit lists, frozen before any candidate output exists. Chains carry `split` ∈
+  {train, validation, test}; sources of other actors are excluded as `actor_not_in_split`.
+- `--clip-start-only` keeps only each source's block-0 chain, so no chain needs GT priming.
+- `--span-latent-frames N` freezes one common span: shorter sources are excluded
+  (`shorter_than_span`), never padded; each record keeps `span_latent_frames` and
+  `unused_tail_latent_frames`. Loss, evaluation, decode and noise all use that span.
+- `--require-guide-latent` (D1 readiness, G6): the guide **latent** must exist and its render
+  sidecar must carry the current `GUIDE_COMPOSITING_VERSION`.
+- `--max-views-per-clip N` keeps the lowest-index views; `--clips` restricts to named clips
+  (the overfit tier).
+
+Hashing now also pins `capture_latent_sha256`, `guide_latent_sha256` and
+`guide_sidecar_sha256` (the masters the trainer actually reads), and `--verify` re-checks
+them. `subset_sha256(subset)` is the one spelling of the whole subset's identity (objective,
+sources, chains, splits, span, clip-start flag, `K`); `train.py` stamps it as
+`onestep_avatar_subset_full_sha256`.
+
 The subset also records its **objective**, and `train.py` refuses a mismatch: a subset is
 surveyed and hashed against one objective's artifacts, so training the other against it would
 read bundles the freeze never saw.
@@ -98,12 +121,16 @@ read bundles the freeze never saw.
   `max(round(n × fraction), min(min_holdout, n − 1))`. At 8 actors the default holds out
   **7**, leaving 1 for training, silently defeating the tier's purpose. Pass it explicitly
   (e.g. `--min-holdout-actors 2`) for any small freeze. This was hit for real.
+- **Re-encoding a guide changes its latent hash.** `precompute --process_syn_latent` with a
+  fresh `--manifest-root` re-encodes existing guide latents, and the re-encode is not
+  bit-identical; freeze only after every encode has finished, and `--verify` before a launch.
 - Hashing is the expensive part (a 4096×3000 h264 source is hundreds of MB); it runs over the
   *selected* subset only, after actor selection has shrunk it.
 
 ## Tests
 
-`tests/test_windows.py` — the split, the chaining, the content pin, and a **golden** test on
+`tests/test_windows.py` — the split, the chaining, the content pin, the full-subset hash,
+the 17-frame span, and a **golden** test on
 exact block bounds for every clip length the corpus has. Golden rather than a comparison
 against `causal_core`, which would now be tautological: a frozen subset indexes blocks that
 `train.py` slices out of a master latent, so shifting the plan would silently re-point every

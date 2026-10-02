@@ -163,6 +163,41 @@ records the verified fix.
 #   ... --guide-mode d1          (no --teacher-forcing)
 ```
 
+### R5 — `d1_self_forced_dev` (LTX-2.5 dev backbone, 2026-10-02)
+
+R4 on the **dev** transformer, the recipe of the dev-training study
+(`plans/2026-10-01-ltx25-dev-onestep-avatar-training.md`). Freeze the study subset first —
+three-way explicit split, clip-start chains only, one common 17-latent-frame span, guide
+**latents** required:
+
+```bash
+conda run -n ltx python -m scripts.onestep_avatar.windows \
+  --name pilot_white_k8 --output-root ../expr/onestep_avatar/dev_training_20261001/subsets \
+  --objective white --require-guide --require-guide-latent --clip-start-only \
+  --span-latent-frames 17 --chain-length 8 --max-views-per-clip 2 \
+  --train-actors 7 11 14 16 --validation-actors 13 17 --test-actors 10 97 128 206
+conda run -n ltx python -m scripts.onestep_avatar.windows --verify <SUBSET>   # 0 problems before launch
+
+CUDA_VISIBLE_DEVICES=<4 GPUS> accelerate launch \
+  --config_file scripts/onestep_avatar/configs/fsdp_4gpu.yaml --main_process_port <PORT> \
+  -m scripts.onestep_avatar.train \
+  --subset <SUBSET> --output <OUT> \
+  --model 2.5 --variant dev --objective white --guide-mode d1 \
+  --sigma0 0.421875 --block-latent-frames 2 --context-latent-frames 8 \
+  --lora-rank 16 --lora-alpha 16 --lora-target attn \
+  --lr 5e-5 --warmup-steps 20 --steps 200 --seed 42 --noise-policy fresh \
+  --save-initial --save-every 25 --anchor-weight 0.0 --no-wandb
+```
+
+Measured 2026-10-02 on 4× RTX A6000 (47.4 GiB): **two ranks OOM** in the block-0 denoise
+forward; four ranks peak at ~44.8 GiB (≈2.6 GiB headroom). Each update (four chains, K=8, one
+priming + 16 forwards + 8 backwards per chain) is all-gather-bound — see the study report for
+the measured seconds per update by GPU placement. Probe a dev adapter only through
+`visualize_d1.py --variant dev --steps 30 --dev-denoising-steps 1 --sigmas <its σ> --arms d1
+--raw-only --checkpoint <ADAPTER>`, which refuses it on any other base, σ, geometry or schedule.
+The C2 variant changes only `--sigma0 0.725`; mixed noise is `--sigma-levels 0.421875 0.725`
+followed by a calibration stage `--init-adapter <mixed checkpoint> --sigma0 <σ>`.
+
 ### The `bg` / `white` substitution
 
 Change **two** things together and nothing else:
@@ -177,7 +212,7 @@ Subset requirements per combination:
 | `d0` + `white` | capture masters only | **yes** — 3,360 white captures exist |
 | `d0` + `bg` | capture masters only | yes |
 | `d1` + `bg` | capture **and** guide masters, current under `dataset.GUIDE_COMPOSITING_VERSION` | **no** — 18 of 19 guide pairs are stale under v2 ([G6](../doc/known_gaps.md#g6--guide-artifacts-on-disk-predate-the-compositing-fix)) |
-| `d1` + `white` | same | **no** — zero white guide renders exist |
+| `d1` + `white` | same | **yes, 30 → 51 pairs (2026-10-02)** — 51 white guide latents current under v2; freeze with `--require-guide-latent` |
 
 ---
 
@@ -188,6 +223,11 @@ Subset requirements per combination:
 | Flag | Default in `parse_args` | In the recipes |
 |---|---|---|
 | `--model` | `2.5` | **checked default**, stated explicitly |
+| `--variant` | `distilled` | **experiment choice**; R5 passes `dev` |
+| `--noise-policy` | `fresh` | default since 2026-10-02; `fixed_per_chain` only for the overfit debug control |
+| `--init-seed` / `--data-seed` / `--noise-seed` | `--seed` | recorded separately in metadata |
+| `--chains-per-rank` | `1` | operational; chains per update = this × ranks |
+| `--init-adapter` | none | a new stage from a parent adapter, not a resume |
 | `--sigma0` | `0.725` | **checked default** — the deployed operating point |
 | `--block-latent-frames` | `2` (`causal_core.BLOCK_LATENT_FRAMES`) | **checked default** — the deployed 16-pixel-frame stride |
 | `--context-latent-frames` | `8` (`causal_core.CONTEXT_LATENT_FRAMES`, max 16) | **checked default**; a retained history of 9 latent frames including the pinned sink. Memory-bound: depth 15 OOMs in `backward` at rank 32 on 4×49 GB, depth 7 measured flat at ~45.1 GB |

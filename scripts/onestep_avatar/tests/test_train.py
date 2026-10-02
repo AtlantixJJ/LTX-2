@@ -779,7 +779,7 @@ def _fake_model() -> model_registry.RefinerModel:
     """A ``RefinerModel`` with no checkpoint behind it -- ``checkpoint_metadata`` only reads
     ``.scale_factors`` and ``.key``, so the rest can be placeholders rather than real paths."""
     return model_registry.RefinerModel(
-        key="test", version=(0,), paths=None, sigmas=[], caps=None,
+        key="test", version=(0,), paths=SimpleNamespace(transformer=lambda: "fake.safetensors"), sigmas=[], caps=None,
         scale_factors=SCALE, scale_factors_source="test",
     )
 
@@ -800,7 +800,15 @@ def cli_subset(tmp_path, monkeypatch):  # noqa: ANN001, ANN201
     }
     path = tmp_path / "subset.json"
     path.write_text(json.dumps(subset))
-    monkeypatch.setattr(model_registry, "resolve", lambda _: _fake_model())
+    # Training resolves its backbone through backbone.py (variant -> transformer file).
+    monkeypatch.setattr(train.backbone, "resolve", lambda *_args, **_kw: _fake_model())
+    monkeypatch.setattr(
+        train.backbone, "identity",
+        lambda _path, variant, key: {
+            "model_key": key, "base_variant": variant,
+            "base_transformer_file": "fake.safetensors", "base_transformer_fingerprint": "0" * 16,
+        },
+    )
     return path
 
 
@@ -907,11 +915,97 @@ def test_checkpoint_metadata_stamps_the_loss_identifier() -> None:
     args = argparse.Namespace(
         sigma0=SIGMA0, sigma_levels=None, block_latent_frames=2, context_latent_frames=2,
         objective="bg", guide_mode="d1", anchor_weight=0.0, teacher_forcing=False,
-        lora_rank=8, lora_alpha=8, lora_target="attn",
+        lora_rank=8, lora_alpha=8, lora_target="attn", **_PROVENANCE_ARGS,
     )
     subset = {"chain_length": 3, "sources": []}
     metadata = train.checkpoint_metadata(args, subset, _fake_model(), step=0)
     assert metadata["onestep_avatar_loss"] == train.FULL_FRAME_X0_MSE == "full_frame_x0_mse"
+
+
+_BASE = {
+    "model_key": "2.5", "base_variant": "dev",
+    "base_transformer_file": "dev.safetensors", "base_transformer_fingerprint": "abcd" * 4,
+}
+_PROVENANCE_ARGS = {
+    "base_identity": _BASE, "noise_policy": "fresh", "init_seed": 42, "data_seed": 42,
+    "noise_seed": 42, "chains_per_rank": 2, "world_size": 2, "init_adapter": None,
+}
+
+
+def _metadata_args(**overrides) -> argparse.Namespace:  # noqa: ANN003
+    values = {
+        "sigma0": 0.421875, "sigma_levels": None, "block_latent_frames": 2, "context_latent_frames": 8,
+        "objective": "white", "guide_mode": "d1", "anchor_weight": 0.0, "teacher_forcing": False,
+        "lora_rank": 16, "lora_alpha": 16, "lora_target": "attn", **_PROVENANCE_ARGS,
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def test_checkpoint_metadata_stamps_base_identity_and_full_subset_hash() -> None:
+    """A dev adapter records WHICH weights it was trained on, and the whole subset's identity.
+
+    The old ``subset_sha256`` covers sources only, so two subsets differing only in chains
+    or splits shared one "identity" (G3); the full hash must tell them apart.
+    """
+    subset = {"chain_length": 8, "sources": [{"relative_dir": "a"}], "chains": [{"blocks": [0]}],
+              "splits": {"train": ["1"]}}
+    other = {**subset, "splits": {"train": ["2"]}}
+    meta = train.checkpoint_metadata(_metadata_args(), subset, _fake_model(), step=0)
+    assert meta["onestep_avatar_base_variant"] == "dev"
+    assert meta["onestep_avatar_base_transformer_fingerprint"] == _BASE["base_transformer_fingerprint"]
+    assert meta["onestep_avatar_history_computation"] == "cached_refresh_global_sigma0"
+    assert meta["onestep_avatar_chains_per_update"] == "4"
+    other_meta = train.checkpoint_metadata(_metadata_args(), other, _fake_model(), step=0)
+    assert meta["onestep_avatar_subset_sha256"] == other_meta["onestep_avatar_subset_sha256"]
+    assert meta["onestep_avatar_subset_full_sha256"] != other_meta["onestep_avatar_subset_full_sha256"]
+
+
+def test_fresh_noise_changes_per_visit_and_is_shared_across_candidates() -> None:
+    """Fresh: a revisited chain gets new epsilon; the stream ignores sigma/arm, so matched
+    candidates share it. fixed_per_chain is the historical one-epsilon-per-chain rule."""
+    fresh = _metadata_args()
+    seeds = {
+        train.training_noise_seed(fresh, step=step, rank=rank, slot=slot, chain_index=0)
+        for step in range(50) for rank in range(4) for slot in range(2)
+    }
+    assert len(seeds) == 50 * 4 * 2
+    other_candidate = _metadata_args(sigma0=0.725, guide_mode="d0")
+    assert train.training_noise_seed(fresh, step=7, rank=1, slot=0, chain_index=3) == train.training_noise_seed(
+        other_candidate, step=7, rank=1, slot=0, chain_index=5
+    )
+    fixed = _metadata_args(noise_policy="fixed_per_chain")
+    assert train.training_noise_seed(fixed, step=0, rank=0, slot=0, chain_index=3) == train.training_noise_seed(
+        fixed, step=99, rank=1, slot=1, chain_index=3
+    ) == 42 * 100003 + 3 * 101
+
+
+def test_condition_reader_refuses_a_dev_adapter_on_distilled_weights() -> None:
+    """G3: the probe must refuse a dev adapter on distilled weights, at another sigma, or as
+    a multi-step model -- and accept the matching condition."""
+    from scripts.onestep_avatar import sampling
+
+    meta = train.checkpoint_metadata(
+        _metadata_args(), {"chain_length": 8, "sources": []}, _fake_model(), step=1
+    )
+    meta["model_key"] = "2.5"
+    ok = {
+        "base": _BASE, "objective": "white", "guide_mode": "d1", "schedule": [0.421875, 0.0],
+        "geometry": {"block_latent_frames": 2, "context_latent_frames": 8, "sink_latent_frames": 1},
+        "teacher_forcing": False,
+    }
+    assert sampling.adapter_condition_problems(meta, **ok) == []
+    distilled = {**_BASE, "base_variant": "distilled", "base_transformer_fingerprint": "ffff" * 4}
+    problems = sampling.adapter_condition_problems(meta, **{**ok, "base": distilled})
+    assert any("base variant" in p for p in problems) and any("base weights" in p for p in problems)
+    assert any("sigma" in p for p in sampling.adapter_condition_problems(meta, **{**ok, "schedule": [0.725, 0.0]}))
+    assert any(
+        "schedule" in p
+        for p in sampling.adapter_condition_problems(meta, **{**ok, "schedule": [0.421875, 0.2, 0.0]})
+    )
+    with pytest.raises(SystemExit):
+        sampling.check_adapter_conditions(meta, **{**ok, "base": distilled})
+    assert sampling.check_adapter_conditions(meta, override=True, **{**ok, "base": distilled})
 
 
 # --- onestep_core: the deployment counterpart of the training loop -----------------------

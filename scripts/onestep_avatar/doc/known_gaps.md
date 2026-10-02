@@ -12,11 +12,36 @@ Status vocabulary: **open** (no fix), **in progress** (a fix is partially landed
 |---|---|---|---|
 | [G1](#g1--the-supplied-first-frame-is-not-a-model-condition) | The supplied first frame is not a model condition | blocks the product contract | **verified** |
 | [G2](#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target) | Generic teacher-forced rollout refreshes from the guide, not the target | wrong outside D0 | **verified** |
-| [G3](#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced) | Checkpoint/artifact conditions are recorded but not enforced | silent off-condition evaluation | **open** |
+| [G3](#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced) | Checkpoint/artifact conditions are recorded but not enforced | silent off-condition evaluation | **in progress** |
 | [G4](#g4--no-d1-probe) | No D1 probe | D1 checkpoints cannot be looked at | **in progress** |
 | [G5](#g5--training-and-deployment-disagree-about-valid-sigma) | Training and deployment disagree about valid sigma (σ) | a trained adapter its own API refuses | **open** |
 | [G6](#g6--guide-artifacts-on-disk-predate-the-compositing-fix) | 18 of 19 guide renders predate the v2 compositing fix | D1 data readiness | **in progress** |
 | [G7](#g7--cached-history-can-disagree-with-a-causal-prefix) | Cached history can disagree with an explicit causal prefix | continuation quality is unmeasured | **in progress** |
+| [G8](#g8--bf16-lora-fusion-weakens-the-trained-adapter) | bf16 LoRA fusion weakens the trained adapter | probe/deploy run a smaller correction than training learned | **open** |
+
+---
+
+## G8 — bf16 LoRA fusion weakens the trained adapter
+
+**Required.** The adapter that probe and deployment run is the function training optimised,
+within bf16 rounding of the *delta*, not just of the weights.
+
+**Current.** Training runs the LoRA unmerged (PEFT, fp32 adapter weights against the bf16
+base). `Session.transformer(loras=...)` fuses `W + BA` into bf16 weights at load. Measured
+2026-10-02 on a real dev D1 adapter (60 updates, block 0, σ .421875, clip 0013_07): with no
+adapter the two paths are bit-identical, but the adapter's effect on the block is relative
+L2 0.136 unmerged and 0.119 fused, the two effects differ by 16%, and the raw outputs by 2.2%
+(`expr/onestep_avatar/dev_training_20261001/analysis/setup/fusion_parity_q0d1_step60.json`).
+A small `BA` added to a large bf16 `W` loses low-order bits, so fusion shrinks and perturbs the
+learned correction.
+
+**Impact.** Every fused evaluation slightly understates (and perturbs) what the adapter learned;
+the effect is largest for small, early adapters.
+
+**Acceptance.** Fuse in fp32 and round once, or run the probe with the adapter unmerged; then
+re-measure the effect gap (target well under 5%).
+
+**Status.** Open.
 
 ---
 
@@ -189,7 +214,16 @@ those produces a plausible video and a wrong conclusion.
 expensive loading; geometry and allowed σ derived from metadata; model/objective/arm validated;
 off-condition research allowed only through an explicit recorded override.
 
-**Status.** Open (audit F3/F4/F7, Stage C/D).
+**Status.** **In progress (2026-10-02).** `sampling.check_adapter_conditions` is the one
+package-owned reader: base variant and weights fingerprint (`backbone.identity`), model key,
+objective, arm, `clean_c0_v1`, loss, attention, history computation, geometry, forcing policy,
+`alpha == rank`, calibrated σ and schedule. `visualize_d1.py` calls it before loading and refuses
+off-condition use unless `--off-condition-override` is passed, which the manifest records. The
+trainer now stamps the base identity, the history computation and the **full** subset hash
+(`windows.subset_sha256`: sources, chains, splits, span); `windows.py` pins capture/guide latent
+and sidecar hashes. Still open: `visualize_d0.py` and `onestep_core.rollout` do not call the
+reader; LoRA `alpha/rank` is refused rather than applied at fusion; `dataset.load_master` still
+checks schema, not encode provenance.
 
 ---
 
@@ -206,7 +240,10 @@ off-condition research allowed only through an explicit recorded override.
 **Acceptance.** A D1-capable probe sharing the evaluation code with an explicit source choice —
 not a second rollout implementation — plus a refusal path in the D0 tool until it exists.
 
-**Status.** **In progress (2026-09-21).** `visualize_d0.py --guide-mode d1` exists and shares
+**Status.** **In progress (2026-09-21; exercised 2026-10-02).** Real dev D1 adapters from the
+dev-training study (`expr/onestep_avatar/dev_training_20261001/`) were exported, loaded fused
+into the dev base by `visualize_d1.py --arms d1 --checkpoint`, and rolled out in-condition; the
+step-0 adapter reproduces the bare base bit for bit. `visualize_d0.py --guide-mode d1` exists and shares
 one `causal_core.rollout` with D0, changing only the noising source (`_source_master`); the
 refusal path is moot for the arm itself. Two things keep this open rather than verified: the D1
 path has **not yet been exercised against a real D1 adapter on a GPU** (none exists — no D1 run
@@ -230,7 +267,10 @@ own deployment API refuses.
 **Acceptance.** A shared validator against the selected model's grid, with adapter calibration
 checked separately, and an explicit research override for deliberate off-grid work.
 
-**Status.** Open (audit F12).
+**Status.** Open (audit F12). Note since 2026-10-02: the dev backbone has no grid at all (any
+start in `(0, 1]`), so "on-grid" is a property of the distilled base only; the condition reader
+checks an adapter's *calibrated* σ separately from what the base supports, but
+`onestep_core.one_step_sigma` still applies the distilled grid to every base.
 
 ---
 
@@ -251,7 +291,12 @@ it reads no guide artifact.
 **Acceptance.** All guides required by a subset rebuilt under v2 before that subset is used for a
 D1 run; the subset's readiness checked against guide *latents*, not just render MP4s.
 
-**Status.** In progress (audit F1/F5, Stage B).
+**Status.** In progress (audit F1/F5, Stage B). **White objective, 2026-10-02:** 51 white guide
+renders carry `compositing_version` 2 and all 51 now have guide latents (21 newly encoded; 21
+existing ones were re-encoded by a fresh-manifest `precompute --process_syn_latent` pass, not
+bit-identically, list in `expr/onestep_avatar/dev_training_20261001/provenance/`).
+`windows.py --require-guide-latent` gates a subset on the latent and the sidecar's version. The
+`bg` guides are unchanged: 18 of 19 stale.
 
 ---
 

@@ -128,7 +128,8 @@ refresh → evict, all four in `causal_core`, with `c0` taken from the `z_y` mas
 | [causal_core.md](causal_core.md) | `causal_core.py` | **the** rollout: block plan, clip grid, causal mask, K/V cache, the three calls |
 | [precompute.md](precompute.md) | `precompute.py` | one continuous VAE encode per view, per objective, resumable |
 | [train.md](train.md) | `train.py` | the AR LoRA loop, the loss rule, the checkpoint contract |
-| [sampling.md](sampling.md) | `sampling.py` | one-step sigma-grid and checkpoint-condition validation |
+| [backbone.md](backbone.md) | `backbone.py` | which transformer file (distilled / dev) a run loads, and its fingerprint identity |
+| [sampling.md](sampling.md) | `sampling.py` | one-step sigma-grid validation and the **adapter condition reader** |
 | [onestep_core.md](onestep_core.md) | `onestep_core.py` | deployment rollout — the same three calls, one schedule |
 | [stats.md](stats.md) | `stats.py` | measurement only: the excursion `a`, the gap `r`, latent moments |
 | [bench_forward.md](bench_forward.md) | `bench_forward.py` | causal denoising and cache-refresh wall clock per finalized block |

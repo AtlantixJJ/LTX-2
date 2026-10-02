@@ -112,11 +112,21 @@ attention kind, **block and cache geometry**, the subset hash, the **objective**
 anchor weight, teacher forcing, LoRA rank/alpha/target. `--output/config.json` and the W&B run
 config carry the same `loss` field.
 
-**Nothing reads this metadata back at load time** — neither the probe nor deployment validates
-an adapter's σ, geometry, arm or objective
+Since 2026-10-02 it also stamps the **base identity** (`onestep_avatar_base_variant`,
+`_base_transformer_file`, `_base_transformer_fingerprint`, from `backbone.identity`), the
+**history computation** (`cached_refresh_global_sigma0`), the **full subset hash**
+(`onestep_avatar_subset_full_sha256` = `windows.subset_sha256`: sources, chains, splits, span —
+the older `onestep_avatar_subset_sha256` covers sources only and is kept for continuity), the
+noise policy, the init/data/noise seeds, chains per update and the parent adapter of a staged
+run. `config.json` adds the resolved LoRA module count per target, trainable parameters and the
+explicit optimizer settings.
+
+**`visualize_d1.py` reads this metadata back before loading** (`sampling.check_adapter_conditions`)
+and refuses an off-condition adapter unless `--off-condition-override` is recorded.
+`visualize_d0.py` and `onestep_core.rollout` still do not
 ([G3](known_gaps.md#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced)), and
 the exported LoRA does not carry its `alpha/rank` scale into fusion, so keep `--lora-alpha` equal
-to `--lora-rank`. Stamping is a record, not an enforcement.
+to `--lora-rank`.
 
 Cache depth belongs there for the same reason σ does: an adapter trained with two frames of
 cached context is a different function from one trained with sixteen, and nothing downstream
@@ -140,7 +150,15 @@ exactly zero; failure refuses to create a misleading baseline artifact. This mak
 | `--sigma-levels` | one adapter across several operating points |
 | `--teacher-forcing` | ablation: the refresh is fed `z_y[i]` instead of `ẑ₀[i].detach()`. **This loop feeds the target**; the generic `causal_core.rollout` feeds the *guide*, which agrees only for D0 ([G2](known_gaps.md#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target)) |
 | `--anchor-weight` | **disabled** (2026-09-18 audit F8) — only `0.0` is accepted; no `base_denoised.pt` producer exists and a fixed per-view tensor cannot represent the anchor across chains/sigma/history |
+| `--variant {distilled,dev}` | backbone weights, resolved by `backbone.py`; default `distilled` keeps the historical recipes |
+| `--noise-policy {fresh,fixed_per_chain}` | `fresh` (default since 2026-10-02): ε seeded by (noise seed, update, rank, slot), so a revisited chain gets new noise and matched candidates share one stream; `fixed_per_chain` is the historical one-ε-per-chain rule, kept as the overfit debug control |
+| `--init-seed` / `--data-seed` / `--noise-seed` | LoRA A initialization (`torch.manual_seed` before PEFT, identical on every rank), chain order, ε stream; each defaults to `--seed` |
+| `--chains-per-rank N` | chains accumulated per update per rank; the loss is divided by `K·N`, so an update is the mean over every chain seen |
+| `--init-adapter PATH` | start a **new stage** from a parent adapter's LoRA weights (fresh optimizer, LR schedule, step counter, RNG; parent recorded). Refused when the parent's base fingerprint or LoRA rank/target differ. Not a resume — there is still none |
+| `--split {train,held_out,validation,test}` | which subset split's chains to train on |
+| *(automatic)* chain tiling | a subset with fewer chains than `ranks × --chains-per-rank` (the two-pair overfit tier) is tiled within each epoch so every rank has a chain; under `fresh` noise each copy draws its own ε. Recorded as `chain_tiling` in `config.json` |
 | `--timing` | per-step phase breakdown; see "Reading the timing lines" below |
+| `--reserve-gpu-gib N` | operational: allocate and free N GiB per rank before `Accelerator()`, so the caching allocator holds it and other jobs' free-memory checks see the card as taken during the 42 GB load (shared machines). Changes no computation. **Launch with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`**: without it, a 25 GiB reservation fragmented the allocator and the first block OOMed with ~15.6 GiB reserved but unallocated (measured 2026-10-02) |
 | `--skip-subset-check` | explicit opt-out of bundle preflight; failures can then occur at any later chain load |
 | `--overwrite` | archive a used `--output`'s prior contents into `archived_<timestamp>/` before launching (see Invariants) |
 
@@ -264,3 +282,9 @@ masters, invalid capture FPS, and cross-source geometry fail before `Accelerator
 and dry launches. A successful overwrite dry-run preserves config, metrics and checkpoints.
 CPU stand-ins for two ranks exercise archive ownership/barrier ordering and the saved loss
 identifier; these do not replace a real distributed smoke test (Stage C).
+
+Since 2026-10-02: base identity and full-subset hash stamping, the fresh/fixed noise streams
+(`test_fresh_noise_changes_per_visit_and_is_shared_across_candidates`), and the condition reader
+on metadata this module writes. The real-GPU acceptance (four-rank dev D1 export, step-0 no-op,
+fused-vs-PEFT parity) is recorded in the dev-training study under
+`expr/onestep_avatar/dev_training_20261001/analysis/setup/`.

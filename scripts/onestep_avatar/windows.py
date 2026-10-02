@@ -153,6 +153,15 @@ class SourceRecord:
     effective_pad_factor: float
     rgb_sha256: str
     guide_sha256: str | None
+    # Full input provenance (G6/G3): the masters the trainer actually reads, and the guide's
+    # render sidecar. Empty/None when frozen with --skip-hash or when the artifact is absent.
+    capture_latent_sha256: str = ""
+    guide_latent_sha256: str | None = None
+    guide_sidecar_sha256: str | None = None
+    # The common span every consumer uses (loss, evaluation, decode, noise, references), and
+    # the unused tail it leaves -- recorded rather than padded or silently trimmed.
+    span_latent_frames: int | None = None
+    unused_tail_latent_frames: int = 0
 
 
 def _view_dirs(clip: ClipRef) -> list[tuple[int, Path]]:
@@ -166,6 +175,7 @@ def _view_dirs(clip: ClipRef) -> list[tuple[int, Path]]:
 def survey_source(
     clip: ClipRef, view_idx: int, manifest: dataset.CaptureManifest, *, require_guide: bool,
     objective: str = dataset.DEFAULT_OBJECTIVE,
+    require_guide_latent: bool = False,
 ) -> tuple[SourceRecord | None, str]:
     """Apply every gate to one view; return its record or the reason it was dropped.
 
@@ -183,6 +193,16 @@ def survey_source(
     guide = view_dir / dataset.render_name(objective)
     if require_guide and not guide.is_file():
         return None, "no_guide_render"
+    if require_guide_latent:
+        # The render MP4 existing is not D1 readiness (G6): the trainer reads the guide
+        # LATENT, and that latent must come from a render composited under the current contract.
+        if not (view_dir / dataset.guide_bundle_name(objective)).is_file():
+            return None, "no_guide_latent"
+        sidecar = view_dir / dataset.render_metadata_name(objective)
+        if not sidecar.is_file():
+            return None, "no_guide_sidecar"
+        if json.loads(sidecar.read_text()).get("compositing_version") != dataset.GUIDE_COMPOSITING_VERSION:
+            return None, "stale_guide_compositing"
 
     box = manifest.box_for(view_dir)
     record = np.load(clip.bbox_path(view_idx), allow_pickle=True).item()
@@ -242,19 +262,50 @@ def build(
     min_holdout: int,
     hash_workers: int,
     skip_hash: bool,
+    require_guide_latent: bool = False,
+    actor_splits: dict[str, list[str]] | None = None,
+    clip_start_only: bool = False,
+    span_latent_frames: int | None = None,
+    max_views_per_clip: int | None = None,
+    clips_allowed: list[str] | None = None,
 ) -> dict:
+    """Freeze the subset. With ``actor_splits`` the split is the given explicit lists.
+
+    ``actor_splits`` (``{"train": [...], "validation": [...], "test": [...]}``) replaces the
+    hashed two-way split with a predeclared three-way one, frozen before any candidate output
+    is seen; every source of an actor outside the lists is dropped as ``actor_not_in_split``.
+    ``span_latent_frames`` freezes one common latent span per source (shorter sources are
+    dropped, never padded) and records the unused tail; ``clip_start_only`` keeps only the
+    chain starting at block 0, so no chain needs ground-truth cache priming.
+    """
     manifest = dataset.CaptureManifest.load(root)
     clips = dataset.list_clips(root)
     dropped: dict[str, int] = {}
     survivors: list[tuple[ClipRef, SourceRecord]] = []
 
     for clip in clips:
+        if clips_allowed is not None and clip.name not in clips_allowed:
+            dropped["clip_not_selected"] = dropped.get("clip_not_selected", 0) + 1
+            continue
         for view_idx, _ in _view_dirs(clip):
             if views is not None and view_idx not in views:
                 continue
             record, reason = survey_source(
-                clip, view_idx, manifest, require_guide=require_guide, objective=objective
+                clip, view_idx, manifest, require_guide=require_guide, objective=objective,
+                require_guide_latent=require_guide_latent,
             )
+            if record is not None and span_latent_frames is not None:
+                if record.n_latent_frames < span_latent_frames:
+                    record, reason = None, "shorter_than_span"
+                else:
+                    record = SourceRecord(
+                        **{
+                            **asdict(record),
+                            "n_blocks": len(plan_blocks(span_latent_frames)),
+                            "span_latent_frames": span_latent_frames,
+                            "unused_tail_latent_frames": record.n_latent_frames - span_latent_frames,
+                        }
+                    )
             if record is None:
                 dropped[reason] = dropped.get(reason, 0) + 1
             else:
@@ -274,19 +325,46 @@ def build(
         actors = sorted(sorted(actors, key=lambda a: hashlib.sha256(a.encode()).hexdigest())[:max_actors])
         survivors = [(clip, record) for clip, record in survivors if record.actor in actors]
 
-    train_actors, held_out_actors = split_actors(
-        actors, holdout_fraction=holdout_fraction, min_holdout=min_holdout
-    )
+    if actor_splits is not None:
+        listed = [actor for members in actor_splits.values() for actor in members]
+        if len(listed) != len(set(listed)):
+            raise SystemExit(f"an actor appears in more than one split: {actor_splits}")
+        missing = sorted(set(listed) - set(actors))
+        if missing:
+            raise SystemExit(f"split actors with no surviving source: {missing}")
+        outside = [record for _, record in survivors if record.actor not in set(listed)]
+        if outside:
+            dropped["actor_not_in_split"] = dropped.get("actor_not_in_split", 0) + len(outside)
+        survivors = [(clip, record) for clip, record in survivors if record.actor in set(listed)]
+        splits = {name: sorted(members) for name, members in actor_splits.items()}
+    else:
+        train_actors, held_out_actors = split_actors(
+            actors, holdout_fraction=holdout_fraction, min_holdout=min_holdout
+        )
+        splits = {"train": train_actors, "held_out": held_out_actors}
+
+    if max_views_per_clip is not None:
+        kept: list[tuple[ClipRef, SourceRecord]] = []
+        per_clip: dict[str, int] = {}
+        for clip, record in sorted(survivors, key=lambda item: (item[1].clip, item[1].view_idx)):
+            if per_clip.get(record.clip, 0) >= max_views_per_clip:
+                dropped["over_views_per_clip"] = dropped.get("over_views_per_clip", 0) + 1
+                continue
+            per_clip[record.clip] = per_clip.get(record.clip, 0) + 1
+            kept.append((clip, record))
+        survivors = kept
 
     if not skip_hash:
         survivors = _hash_survivors(survivors, root, hash_workers, objective)
 
-    split_of = {actor: "held_out" for actor in held_out_actors}
-    split_of.update({actor: "train" for actor in train_actors})
+    split_of = {actor: name for name, members in splits.items() for actor in members}
 
     chains = []
     for _, record in survivors:
-        for blocks in chain_blocks(record.n_blocks, chain_length, chain_stride):
+        source_chains = chain_blocks(record.n_blocks, chain_length, chain_stride)
+        if clip_start_only:
+            source_chains = source_chains[:1]
+        for blocks in source_chains:
             chains.append(
                 {
                     "source": record.relative_dir,
@@ -329,18 +407,36 @@ def build(
         # composite guides cannot be trained as if it were the white-background pair.
         "objective": objective,
         "excluded": dropped,
-        "splits": {"train": train_actors, "held_out": held_out_actors},
+        "splits": splits,
+        "clip_start_only": clip_start_only,
+        "span_latent_frames": span_latent_frames,
+        "requires_guide_latent": require_guide_latent,
         "sources": [asdict(record) for record in records],
         "chains": chains,
         "counts": {
-            "actors": len(train_actors) + len(held_out_actors),
+            "actors": sum(len(members) for members in splits.values()),
             "sources": len(records),
             "blocks": sum(record.n_blocks for record in records),
             "chains": len(chains),
             "train_chains": sum(1 for chain in chains if chain["split"] == "train"),
-            "held_out_chains": sum(1 for chain in chains if chain["split"] == "held_out"),
+            **{
+                f"{name}_chains": sum(1 for chain in chains if chain["split"] == name)
+                for name in splits
+            },
         },
     }
+
+
+def subset_sha256(subset: dict) -> str:
+    """The identity of a whole frozen subset: sources, chains, splits, span and objective.
+
+    ``train.checkpoint_metadata`` used to hash ``subset['sources']`` only, so two subsets with
+    different chains or splits shared one "identity" (G3). This is the one spelling of the
+    full digest; training stamps it and the probe can compare it.
+    """
+    keys = ("objective", "sources", "chains", "splits", "span_latent_frames", "clip_start_only", "chain_length")
+    payload = {key: subset.get(key) for key in keys}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def _hash_survivors(
@@ -357,13 +453,21 @@ def _hash_survivors(
         _, record = item
         view_dir = root / record.relative_dir
         guide = view_dir / dataset.render_name(objective)
-        return sha256(view_dir / "rgb.mp4"), (sha256(guide) if guide.is_file() else None)
+        guide_latent = view_dir / dataset.guide_bundle_name(objective)
+        sidecar = view_dir / dataset.render_metadata_name(objective)
+        return {
+            "rgb_sha256": sha256(view_dir / "rgb.mp4"),
+            "guide_sha256": sha256(guide) if guide.is_file() else None,
+            "capture_latent_sha256": sha256(view_dir / dataset.capture_bundle_name(objective)),
+            "guide_latent_sha256": sha256(guide_latent) if guide_latent.is_file() else None,
+            "guide_sidecar_sha256": sha256(sidecar) if sidecar.is_file() else None,
+        }
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(digests, survivors))
     return [
-        (clip, SourceRecord(**{**asdict(record), "rgb_sha256": rgb, "guide_sha256": guide}))
-        for (clip, record), (rgb, guide) in zip(survivors, results, strict=True)
+        (clip, SourceRecord(**{**asdict(record), **hashes}))
+        for (clip, record), hashes in zip(survivors, results, strict=True)
     ]
 
 
@@ -392,6 +496,16 @@ def verify(subset: dict) -> list[str]:
                 problems.append(f"{record['relative_dir']}: {guide.name} is gone")
             elif sha256(guide) != record["guide_sha256"]:
                 problems.append(f"{record['relative_dir']}: guide render changed since the freeze")
+        objective = subset.get("objective", dataset.DEFAULT_OBJECTIVE)
+        for key, name in (
+            ("capture_latent_sha256", dataset.capture_bundle_name(objective)),
+            ("guide_latent_sha256", dataset.guide_bundle_name(objective)),
+            ("guide_sidecar_sha256", dataset.render_metadata_name(objective)),
+        ):
+            if record.get(key):
+                path = view_dir / name
+                if not path.is_file() or sha256(path) != record[key]:
+                    problems.append(f"{record['relative_dir']}: {name} changed or is gone since the freeze")
     return problems
 
 
@@ -417,6 +531,18 @@ def main() -> int:
     p.add_argument("--hash-workers", type=int, default=8)
     p.add_argument("--skip-hash", action="store_true", help="skip the sha256 pin (development only -- SS5.0 requires it)")
     p.add_argument("--verify", type=Path, default=None, help="re-hash an existing subset JSON and exit")
+    p.add_argument(
+        "--require-guide-latent", action="store_true",
+        help="keep only views whose guide LATENT exists and whose render sidecar is current under "
+        "GUIDE_COMPOSITING_VERSION (implies the D1 readiness G6 asks for, not just a render MP4)",
+    )
+    p.add_argument("--train-actors", nargs="+", default=None, help="explicit train actor ids (all three lists together)")
+    p.add_argument("--validation-actors", nargs="+", default=None)
+    p.add_argument("--test-actors", nargs="+", default=None)
+    p.add_argument("--clip-start-only", action="store_true", help="keep only each source's block-0 chain (no priming)")
+    p.add_argument("--span-latent-frames", type=int, default=None, help="freeze one common latent span per source")
+    p.add_argument("--max-views-per-clip", type=int, default=None, help="keep the lowest-index N views per clip")
+    p.add_argument("--clips", nargs="+", default=None, help="restrict to these clip names (e.g. Part_2_0007_01)")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
 
@@ -427,8 +553,22 @@ def main() -> int:
         print(f"{len(problems)} problem(s)")  # noqa: T201
         return 1 if problems else 0
 
+    explicit = (args.train_actors, args.validation_actors, args.test_actors)
+    if any(v is not None for v in explicit) and any(v is None for v in explicit):
+        p.error("--train-actors, --validation-actors and --test-actors go together")
+    actor_splits = (
+        None
+        if args.train_actors is None
+        else {"train": args.train_actors, "validation": args.validation_actors, "test": args.test_actors}
+    )
     subset = build(
         args.corpus_root,
+        require_guide_latent=args.require_guide_latent,
+        actor_splits=actor_splits,
+        clip_start_only=args.clip_start_only,
+        span_latent_frames=args.span_latent_frames,
+        max_views_per_clip=args.max_views_per_clip,
+        clips_allowed=args.clips,
         views=args.views,
         require_guide=args.require_guide,
         objective=args.objective,

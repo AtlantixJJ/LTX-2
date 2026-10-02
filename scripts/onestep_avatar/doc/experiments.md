@@ -69,10 +69,12 @@ filename holds them. An objective is never a second pipeline.
 | Ghost band | present by design — `mask_0 \ mask_t`, a stale person-shaped patch from frame 0 — and part of the full-frame loss like everything else | does not exist: nothing to go stale |
 | Required `c0` | the capture master's frame 0 for **this** objective | the **white** objective's first frame — never the unmatted `bg` latent, never a guide frame |
 | Buys | the whole product | isolates the subject-texture gap from the background question |
-| Corpus state (2026-09-18 inventory) | 3,360 capture masters; 19 guide pairs, of which **18 are stale under v2** ([G6](known_gaps.md#g6--guide-artifacts-on-disk-predate-the-compositing-fix)) | 3,360 capture masters; **zero** guide renders |
+| Corpus state (2026-09-18 inventory; white updated 2026-10-02) | 3,360 capture masters; 19 guide pairs, of which **18 are stale under v2** ([G6](known_gaps.md#g6--guide-artifacts-on-disk-predate-the-compositing-fix)) | 3,360 capture masters; **51** v2 guide renders, all with guide latents |
 
 Consequences for what can run **today**: `white` + `d0` needs only capture bundles and is fully
-ready. `bg` + `d1` needs the 19 guides rebuilt under v2 first. `white` + `d1` has no data at all.
+ready. `bg` + `d1` needs the 19 guides rebuilt under v2 first. `white` + `d1` is ready on 51 pairs
+(2026-10-02); freeze it with `windows.py --require-guide-latent`. The dev-backbone recipe is
+R5 in [`../configs/README.md`](../configs/README.md).
 
 A subset records the objective it was frozen against; `train.py` refuses a mismatch.
 
