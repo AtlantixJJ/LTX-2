@@ -268,6 +268,8 @@ def build(
     span_latent_frames: int | None = None,
     max_views_per_clip: int | None = None,
     clips_allowed: list[str] | None = None,
+    block_latent_frames: int = BLOCK_LATENT_FRAMES,
+    hash_latents_only: bool = False,
 ) -> dict:
     """Freeze the subset. With ``actor_splits`` the split is the given explicit lists.
 
@@ -301,7 +303,7 @@ def build(
                     record = SourceRecord(
                         **{
                             **asdict(record),
-                            "n_blocks": len(plan_blocks(span_latent_frames)),
+                            "n_blocks": len(plan_blocks(span_latent_frames, block_latent_frames)),
                             "span_latent_frames": span_latent_frames,
                             "unused_tail_latent_frames": record.n_latent_frames - span_latent_frames,
                         }
@@ -355,7 +357,7 @@ def build(
         survivors = kept
 
     if not skip_hash:
-        survivors = _hash_survivors(survivors, root, hash_workers, objective)
+        survivors = _hash_survivors(survivors, root, hash_workers, objective, latents_only=hash_latents_only)
 
     split_of = {actor: name for name, members in splits.items() for actor in members}
 
@@ -391,16 +393,17 @@ def build(
         },
         "geometry": {
             "attention": "block_causal",
-            "block_latent_frames": BLOCK_LATENT_FRAMES,
+            "block_latent_frames": block_latent_frames,
             "context_latent_frames": CONTEXT_LATENT_FRAMES,
             "sink_latent_frames": SINK_LATENT_FRAMES,
-            "stride_frames": BLOCK_LATENT_FRAMES * _SCALE_FACTORS.time,
+            "stride_frames": block_latent_frames * _SCALE_FACTORS.time,
             "latent_time_scale": _SCALE_FACTORS.time,
             "edge": manifest.edge,
         },
         "chain_length": chain_length,
         "chain_stride": chain_length if chain_stride is None else chain_stride,
         "content_pinned": not skip_hash,
+        "content_pin_scope": "none" if skip_hash else ("latent_masters_only" if hash_latents_only else "raw_and_latents"),
         "requires_guide": require_guide,
         # SS1.2: which objective's artifacts this subset was surveyed against. train.py reads
         # it rather than taking its own --objective on faith, so a subset frozen against the
@@ -440,7 +443,8 @@ def subset_sha256(subset: dict) -> str:
 
 
 def _hash_survivors(
-    survivors: list[tuple[ClipRef, SourceRecord]], root: Path, workers: int, objective: str
+    survivors: list[tuple[ClipRef, SourceRecord]], root: Path, workers: int, objective: str,
+    latents_only: bool = False,
 ) -> list[tuple[ClipRef, SourceRecord]]:
     """sha256 every selected ``rgb.mp4`` and guide render, in parallel.
 
@@ -455,6 +459,16 @@ def _hash_survivors(
         guide = view_dir / dataset.render_name(objective)
         guide_latent = view_dir / dataset.guide_bundle_name(objective)
         sidecar = view_dir / dataset.render_metadata_name(objective)
+        if latents_only:
+            # Corpus-scale freeze: pin only the ~5 MB masters the trainer reads; hashing every
+            # raw rgb.mp4 (hundreds of MB each) per freeze is impractical at 3,000+ views.
+            return {
+                "rgb_sha256": "",
+                "guide_sha256": None,
+                "capture_latent_sha256": sha256(view_dir / dataset.capture_bundle_name(objective)),
+                "guide_latent_sha256": sha256(guide_latent) if guide_latent.is_file() else None,
+                "guide_sidecar_sha256": None,
+            }
         return {
             "rgb_sha256": sha256(view_dir / "rgb.mp4"),
             "guide_sha256": sha256(guide) if guide.is_file() else None,
@@ -488,7 +502,7 @@ def verify(subset: dict) -> list[str]:
         if not rgb.is_file():
             problems.append(f"{record['relative_dir']}: rgb.mp4 is gone")
             continue
-        if sha256(rgb) != record["rgb_sha256"]:
+        if record["rgb_sha256"] and sha256(rgb) != record["rgb_sha256"]:
             problems.append(f"{record['relative_dir']}: rgb.mp4 content changed since the freeze")
         guide = view_dir / dataset.render_name(subset.get("objective", dataset.DEFAULT_OBJECTIVE))
         if record["guide_sha256"] is not None:
@@ -543,6 +557,13 @@ def main() -> int:
     p.add_argument("--span-latent-frames", type=int, default=None, help="freeze one common latent span per source")
     p.add_argument("--max-views-per-clip", type=int, default=None, help="keep the lowest-index N views per clip")
     p.add_argument("--clips", nargs="+", default=None, help="restrict to these clip names (e.g. Part_2_0007_01)")
+    p.add_argument("--hash-latents-only", action="store_true",
+                   help="pin only the latent masters the trainer reads (corpus-scale freezes); raw videos are not hashed")
+    p.add_argument(
+        "--block-latent-frames", type=int, default=BLOCK_LATENT_FRAMES,
+        help="Causal block size the chains are planned with. With --span-latent-frames N and block N-1, "
+        "block 0 is the whole span: one bidirectional block per clip (whole-clip training, K=1).",
+    )
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
 
@@ -569,6 +590,8 @@ def main() -> int:
         span_latent_frames=args.span_latent_frames,
         max_views_per_clip=args.max_views_per_clip,
         clips_allowed=args.clips,
+        block_latent_frames=args.block_latent_frames,
+        hash_latents_only=args.hash_latents_only,
         views=args.views,
         require_guide=args.require_guide,
         objective=args.objective,

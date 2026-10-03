@@ -235,7 +235,8 @@ def test_cache_refresh_uses_the_models_own_output_and_carries_no_grad(monkeypatc
     _spy_on(monkeypatch, "refresh_block", refreshed)
     _run(chain, StubTransformer())
 
-    assert len(refreshed) == 2
+    # Two blocks, one refresh: the chain's last refresh is skipped (nothing reads it).
+    assert len(refreshed) == 1
     for tokens in refreshed:
         assert not tokens.requires_grad
     grid = _grid(chain)
@@ -244,6 +245,43 @@ def test_cache_refresh_uses_the_models_own_output_and_carries_no_grad(monkeypatc
     gt = grid.patchify(chain.z_y.unsqueeze(0).to(train.DTYPE))[:, lo:hi]
     # ...and it is NOT the ground truth, which is what teacher forcing would have put there.
     assert not torch.allclose(refreshed[0].float(), gt.float(), atol=1e-2)
+
+
+@pytest.mark.parametrize("blocks", [[0], [0, 1, 2], [1, 2]])
+def test_the_last_block_of_a_chain_is_not_refreshed(monkeypatch: pytest.MonkeyPatch, blocks: list[int]) -> None:
+    """The final refresh writes K/V no later block reads (the next chain resets the cache in
+    prime_cache), so it is skipped: K blocks -> K denoise forwards, K - 1 refresh forwards. A
+    whole-clip K=1 chain therefore runs no refresh at all."""
+    chain = _chain(blocks=blocks)
+    denoised: list[torch.Tensor] = []
+    refreshed: list[torch.Tensor] = []
+    _spy_on(monkeypatch, "denoise_block", denoised)
+    _spy_on(monkeypatch, "refresh_block", refreshed)
+    _run(chain, StubTransformer())
+    assert len(denoised) == len(blocks)
+    assert len(refreshed) == len(blocks) - 1
+
+
+def test_a_clip_start_single_block_chain_runs_on_a_one_frame_cache() -> None:
+    """Whole-clip training (K=1, clip start) writes nothing to the cache, so main() allocates a
+    one-frame placeholder instead of ~14.5 GB/rank; train_chain must accept it, and must still
+    refuse it for a chain that would write (K > 1)."""
+    placeholder = lambda chain: BlockCache.allocate(  # noqa: E731
+        _grid(chain), GEOMETRY, num_layers=1, inner_dim=4, device=DEVICE, dtype=train.DTYPE,
+        capacity_latent_frames=1,
+    )
+    single = _chain(blocks=[0])
+    totals = train.train_chain(
+        StubTransformer(), torch.zeros(1, 1, 8), single, GEOMETRY, placeholder(single), _StubAccelerator(),
+        sigma0=SIGMA0, seed=0, anchor_weight=0.0, latent_channels=CHANNELS,
+    )
+    assert len(totals["per_block"]) == 1
+    multi = _chain(blocks=[0, 1])
+    with pytest.raises(ValueError, match="cache"):
+        train.train_chain(
+            StubTransformer(), torch.zeros(1, 1, 8), multi, GEOMETRY, placeholder(multi), _StubAccelerator(),
+            sigma0=SIGMA0, seed=0, anchor_weight=0.0, latent_channels=CHANNELS,
+        )
 
 
 def test_teacher_forcing_refreshes_with_the_gt_instead_of_self_generation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -507,9 +545,10 @@ def test_a_cache_too_small_for_this_clip_is_refused_before_any_forward() -> None
     a round of all-gathers short of the others -- the FSDP desynchronisation that presents as
     a hang, which ``assert_rank_lockstep`` and ``prime_cache``'s unconditional forward both
     exist to rule out. This raise is reached before ``prime_cache`` is called, so every rank
-    fails the same way.
+    fails the same way. A two-block chain, because a clip-start single-block chain writes
+    nothing and is allowed to run on a placeholder cache (whole-clip training).
     """
-    chain = _chain(blocks=[0])
+    chain = _chain(blocks=[0, 1])
     deep = CausalGeometry(scale_factors=SCALE, block_latent_frames=2, context_latent_frames=16)
     # Sized for a 3-latent-frame clip, then handed a 7-frame one: the "first chain sized the
     # buffer" bug, reproduced.

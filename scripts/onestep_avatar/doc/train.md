@@ -98,7 +98,7 @@ The ordering is denoise → backward → refresh → evict. The denoise pass can
 because it carries gradients; refresh is a separate no-grad clean-latent forward, making its
 K/V final and reusable by later blocks. Eviction retains the pinned frame-0 sink and the
 configured most-recent context. `prime_cache` is deliberately called even at block 0: its
-empty forward keeps every FSDP rank at the same `1 + 2K` transformer-forward count. That forward
+empty forward keeps every FSDP rank at the same `2K` transformer-forward count (1 prime + K denoise + K − 1 refresh; the chain's last refresh is skipped since 2026-10-03 because the next chain resets the cache). That forward
 attaches no cache and its result is discarded. Block 0 receives the clean first-frame condition
 in its own modality; the extra forward exists only for collective lockstep.
 
@@ -169,14 +169,17 @@ else in the loop, and nothing in `causal_core`, knows which regime is in play.
 
 - **Every rank runs the same number of transformer forwards per step**, checked by
   `assert_rank_lockstep` *before* the step's forwards run, while the ranks are still in step
-  from the previous optimizer update. The count is `1 prime + K denoise + K refresh`. Under
+  from the previous optimizer update. The count is `1 prime + K denoise + (K − 1) refresh` = `2K`. Under
   FSDP `FULL_SHARD` a forward is a round of all-gathers, so ranks that disagree desynchronise
   and the job **hangs** with no error; the guard converts that into a message naming the
   counts. Checking after the fact cannot work — the mismatched collective is already enqueued
   and the check's own gather joins the pile-up. See `doc/causal_core.md` for the 2026-09-16
   instance that motivated it.
 - **The K/V cache is allocated once and sized from `ChainStore.max_latent_frames`**, never
-  from the first chain drawn. `BlockCache.allocate` caps capacity at the clip it is sized
+  from the first chain drawn. **Exception (2026-10-03): a subset whose chains are all
+  clip-start `K = 1` (whole-clip training) gets a one-frame placeholder**: such a chain primes
+  nothing and its only refresh is the skipped last one, so it never writes the cache; sizing it
+  for the clip would reserve ~14.5 GB per rank at block 16 and OOM the 17-frame whole clip. `BlockCache.allocate` caps capacity at the clip it is sized
   against, so a short first clip would make every later long one overflow `LayerKVCache.write`
   — inside a forward, on one rank, which is an FSDP desync rather than a clean failure.
   `train_chain` re-checks `cache.fits(...)` before the step's first forward.

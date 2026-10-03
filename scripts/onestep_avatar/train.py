@@ -314,7 +314,7 @@ def assert_rank_lockstep(accelerator: Accelerator, planned_forwards: int, source
     work: by then the mismatched collective has already been enqueued and this gather would
     join the pile-up rather than report it.
 
-    The count is ``1 prime + K denoise + K refresh``. What it is does not matter -- only that
+    The count is ``1 prime + K denoise + (K - 1) refresh`` (the chain's last refresh is skipped). What it is does not matter -- only that
     every rank computes the same one.
     """
     if accelerator.num_processes == 1:
@@ -500,7 +500,7 @@ def train_chain(  # noqa: PLR0913, PLR0915 -- one AR training step is defined by
     timing: bool = False,
     accumulation: int = 1,
 ) -> dict[str, float]:
-    """SS4.4's chain: ``K`` denoise forwards, ``K`` backwards, ``K`` refreshes, one optimizer step.
+    """SS4.4's chain: ``K`` denoise forwards, ``K`` backwards, ``K - 1`` refreshes, one optimizer step.
 
     Per block, in this order and for these reasons:
 
@@ -579,7 +579,9 @@ def train_chain(  # noqa: PLR0913, PLR0915 -- one AR training step is defined by
             f"cache was allocated for {cache.grid.tokens_per_latent_frame}; the corpus is "
             f"supposed to be one geometry (SS4.5)"
         )
-    elif not cache.fits(grid.latent_frames):
+    elif not (len(chain.blocks) == 1 and chain.seed_is_clip_start) and not cache.fits(grid.latent_frames):
+        # (A clip-start K=1 chain writes nothing -- no priming, last refresh skipped -- so it
+        # runs against the one-frame placeholder main() allocates for whole-clip subsets.)
         # Checked HERE rather than left to LayerKVCache.write: an overflow raises inside one
         # rank's forward, and a rank that leaves a forward early has issued one round of
         # all-gathers fewer than the others -- the FSDP desynchronisation assert_rank_lockstep
@@ -645,7 +647,12 @@ def train_chain(  # noqa: PLR0913, PLR0915 -- one AR training step is defined by
         )
 
         clean = target_tokens[:, lo:hi] if teacher_forcing else z0.detach()
-        causal_core.refresh_block(denoise_fn, grid, cache, clean, context, span)
+        # The chain's LAST refresh would write K/V that nothing reads: the next chain starts
+        # with prime_cache, which resets the cache. Skipping it saves one full forward per
+        # chain (a third of a whole-clip K=1 chain). Every rank's chain has the same K, so the
+        # forward count stays equal across ranks (assert_rank_lockstep counts 2K).
+        if block_index != chain.blocks[-1]:
+            causal_core.refresh_block(denoise_fn, grid, cache, clean, context, span)
         if timing:
             LOGGER.info(
                 "timing |   block %d (span %d:%d): denoise %.2fs backward %.2fs refresh %.2fs (total %.2fs)",
@@ -1374,6 +1381,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
             LOGGER.info("saved initial (untrained) checkpoint %s", path)
 
     generator = torch.Generator().manual_seed(args.data_seed)
+    single_block_chains = all(
+        len(chain["blocks"]) == 1 and chain["seed_is_clip_start"] for chain in store.chains
+    )
     # One cache allocation for the whole run: capacity depends only on the geometry and the
     # (fixed) 1024**2 crop, so reallocating per chain would just churn ~2 GB of VRAM.
     cache: BlockCache | None = None
@@ -1415,11 +1425,16 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                             # The subset's longest clip, not this chain's: one allocation serves
                             # every chain in the run, so a capacity capped by the first clip drawn
                             # would overflow on a longer one at a deep --context-latent-frames.
-                            capacity_latent_frames=store.max_latent_frames,
+                            # A K=1 subset (whole-clip training) never writes the cache: a clip-start
+                            # chain primes nothing and its only refresh is the skipped last one. Its
+                            # denoise still reads an (empty) cache, so a one-frame placeholder serves;
+                            # sizing it for the clip would reserve ~14.5 GB/rank at block 16.
+                            capacity_latent_frames=1 if single_block_chains else store.max_latent_frames,
                         )
                 loaded_at = time.time()
-                # 1 prime + K denoise + K refresh. Checked here, before any of them run.
-                assert_rank_lockstep(accelerator, 1 + 2 * len(chain.blocks), chain.source)
+                # 1 prime + K denoise + (K - 1) refresh -- the last refresh is skipped. Checked
+                # here, before any of them run.
+                assert_rank_lockstep(accelerator, 2 * len(chain.blocks), chain.source)
                 totals = train_chain(
                     transformer,
                     context,

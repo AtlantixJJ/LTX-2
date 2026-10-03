@@ -69,6 +69,12 @@ subset so `train.py` and the probe read them rather than re-deriving them:
   sidecar must carry the current `GUIDE_COMPOSITING_VERSION`.
 - `--max-views-per-clip N` keeps the lowest-index views; `--clips` restricts to named clips
   (the overfit tier).
+- `--hash-latents-only` pins only the capture/guide latent masters (corpus-scale freezes; the raw
+  `rgb.mp4` files are not hashed). The subset records `content_pin_scope`.
+- `--block-latent-frames B` plans chains with block size `B`. With `--span-latent-frames N` and
+  `B = N − 1`, block 0 is the whole span: one bidirectional block per clip (whole-clip training,
+  `K = 1`). The subset's `geometry.block_latent_frames` records it, and `train.py` must be launched
+  with the same `--block-latent-frames`.
 
 Hashing now also pins `capture_latent_sha256`, `guide_latent_sha256` and
 `guide_sidecar_sha256` (the masters the trainer actually reads), and `--verify` re-checks

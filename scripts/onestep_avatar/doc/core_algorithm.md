@@ -128,7 +128,7 @@ cannot silently fall back to the guide's frame 0.
 denoise:  queries = block i's noisy tokens, keys = [cache | block i]   read-only, grad-carrying
 loss:     full-frame latent MSE against z_y over block i's tokens
 backward: immediately, so peak activation memory is ONE block
-refresh:  queries = block i's CLEAN tokens at timestep 0, no_grad      the only cache writer
+refresh:  queries = block i's CLEAN tokens at timestep 0, no_grad      the only cache writer (training skips it after a chain's last block)
 evict:    keep the pinned frame-0 sink and the last `context` latent frames (default 8)
 ```
 
@@ -240,7 +240,7 @@ not a decoding bug. `c0` itself is preserved on both sides, so frame 0 never par
 | Source selection | `--guide-mode d0` → `z_y`; `d1` → `z_g` | D0 or D1; `visualize_d1.py` pairs them | D1 only; `guide_conditionings` refuses `d0` |
 | Forcing policy | `--teacher-forcing` refreshes from `z_y`; else `ẑ₀.detach()` | `--teacher-forcing` passes explicit `z_y`; else generated output | self forcing only |
 | Output selection | none — loss only, nothing decoded | the whole clip's rolled-out tokens, decoded once per σ (`--span chain` limits it to the chain's `K` blocks) | the whole covered span, unpatchified |
-| Forward count | `1 + 2K` (one priming + denoise + refresh per block) | `2·len(plan)` per σ, ×3 σ levels | `2·len(plan)` |
+| Forward count | `2K` (one priming + one denoise per block + a refresh after every block but the last, whose K/V nothing reads) | `2·len(plan)` per σ, ×3 σ levels | `2·len(plan)` |
 | Checkpoint-condition checks | metadata **written** at save | not validated on load (G3) | σ₀ on-grid check only (G3) |
 
 **Shared primitives do not by themselves prove parity.** `train_chain` and `causal_core.rollout`
