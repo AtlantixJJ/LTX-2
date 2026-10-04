@@ -8,9 +8,27 @@ Reconstruct exactly the noised whole-video input used in a saved baseline D0 run
 
 `load_manifest` validates the one-step white-capture, full-bidirectional run, BF16 dtype, finite sigmas in (0,1], integer seed, absent LoRA and unguided single-pass CFG 1/STG 0. Unsupported guidance is rejected rather than silently reconstructed differently. `build_input` checks capture content, BF16 shape, fps, VAE fingerprint and actual prompt-context bytes, loads content-verified finite BF16 epsilon, verifies the token shape and saved geometry, and rebuilds the clean-first-frame modality. It returns the grid, modality, clean first-frame tokens and source row. `verify_pair` adds candidate-versus-baseline setup checks; `verify_saved_noise` compares actual epsilon tensors after independently verifying each file's recorded hash. `latent_path` verifies the saved output hash before returning its path.
 
-`native_provenance` stamps the full calibration-manifest SHA256, seed, VAE, context, guidance, geometry, dtype and calibration capture/noise identities. `validate_native_provenance` checks the pinned manifest content and all distribution fields against that manifest and, when supplied, the selected baseline. Older native masks without these pins need recalibration; they are not silently upgraded. `actor_identity` resolves a DNARendering actor above `views/` so another view of that actor cannot serve as held-out validation.
+`native_provenance` stamps the full calibration-manifest SHA256, seed, VAE,
+context, guidance, geometry, dtype and calibration capture/noise identities.
+`validate_native_provenance` checks these against the pinned manifest and, when
+supplied, the selected baseline. Older masks without these pins need recalibration.
+`actor_identity` resolves aliases and uses the bare actor ID from DNARender
+`meta.json` above `views/`. Without metadata it recognizes `Part_N/actor_clip`
+directory names, normalizing leading zeros. Another clip, Part, view or symlink
+of that bare actor cannot serve as held-out validation. Generic fixture names
+retain the resolved-directory fallback; existing malformed actor metadata fails
+closed. `test_actor_holdout.py` checks this boundary independently of the avatar
+producer.
 
-`verify_candidate` checks the saved checkpoint fingerprint and actual safetensors export task, source identity and mask hash. It validates provenance, not numerical parity: run the separate export gate before accepting output quality or deployment.
+`verify_candidate` checks the saved checkpoint fingerprint and actual safetensors
+export task/source identity, then dispatches by the declared pruning family.
+Existing width exports retain their mask-hash and complete native-mask checks.
+Depth exports require a content-pinned `whole_clip_d0_depth_v1` artifact and
+`score.export_depth.verify_export`, including both index mappings, complete
+retained tensor inventory, sliced config and exact resident-video accounting.
+Unknown families are rejected. This validates architecture/provenance, not
+payload equality or numerical parity: run the separate export gate before
+accepting output quality or deployment.
 
 ## Invariants and checks
 

@@ -1,12 +1,26 @@
-# `checks/export_parity.py` — functional mask versus export
+# `checks/export_parity.py` — in-memory intervention versus export
 
 ## Objective
 
-Test whether an exported native D0 checkpoint computes the same one-step whole-video output as the source checkpoint with its mask attached. This is separate from baseline-versus-candidate quality and from runtime measurement.
+Test whether an exported native D0 checkpoint computes the same one-step
+whole-video output as its in-memory source intervention. Width exports use
+functional masks; depth exports use the ordered retained `ModuleList`. This is
+separate from baseline-versus-candidate quality and from runtime measurement.
 
 ## Data flow
 
-The default CLI takes a saved baseline D0 directory, native mask artifact, exported checkpoint, held-out view and exact sigma list. `data.whole_clip.build_input` reconstructs each input from the baseline alone. The source transformer runs with functional head/FFN hooks; the exported transformer loads sequentially and runs without hooks. A `source` checkpoint fingerprint, mask SHA256 and `task=whole_clip_d0` in export metadata must match. Each output is compared by maximum absolute difference and relative L2; default maximum absolute tolerance is 0.02. The command writes `export_parity.json` through `core.artifacts` and exits nonzero on a failed numerical comparison.
+The CLI takes a saved baseline D0 directory, exactly one of `--masks` or
+`--depth-artifact`, an exported checkpoint, held-out view and exact sigma list.
+`data.whole_clip.build_input` reconstructs each input from the baseline alone.
+The source transformer runs with head/FFN hooks or a temporary physically
+shortened block list; the original block list is restored afterward. The exported
+transformer loads sequentially and runs without interventions. The source
+fingerprint, family artifact SHA256 and native task must match. Depth additionally
+checks the retained key inventory, transformed config and parameter accounting.
+Each output is compared by maximum absolute difference and relative L2; default
+maximum absolute tolerance is 0.02, and nonfinite tolerances are rejected.
+The command writes `export_parity.json` through `core.artifacts` and exits nonzero
+on a failed numerical comparison.
 
 ```bash
 python -m scripts.prune.checks.export_parity \
@@ -14,6 +28,13 @@ python -m scripts.prune.checks.export_parity \
   --masks <native-d0-mask.json> --exported-checkpoint <export.safetensors> \
   --view <held-out-view-path> --sigmas 0.725 0.909375 --gpu-id N
 ```
+
+For depth exports, replace `--masks <native-d0-mask.json>` with
+`--depth-artifact <native-d0-depth.json>`. Its result identifies depth and the
+in-memory retained-block reference. A passing result establishes faithful
+serialization of that smaller architecture, not its quality relative to the
+original teacher. A cached identity-bypass model is not used as the reference:
+skipped blocks would leave holes in the cache list.
 
 
 ## Invariants and checks

@@ -4,6 +4,13 @@
 inputs and verifies paired candidates. `score.whole_clip_d0_scores` observes
 native forwards through `score.hooks`, computes `score.estimators` statistics and
 writes a pinned mask. `score.export_pruned` turns that mask into a checkpoint.
+`score.export_depth` separately binds intact-block removal to native saved
+calibration inputs, streams retained payloads into a shorter checkpoint and
+records original/compact block mappings with exact resident-video counts.
+`score.token_sampling` owns deterministic generated-frame sample indices and
+their hashes. `score.ffn_reconstruction` fits a bounded local ridge correction
+and verifies calibration caches; changed fitted weights need separate model
+validation and are not faithful width-mask exports.
 
 `checks.export_parity` compares functional masking with checkpoint execution.
 `evaluate.whole_clip_d0` compares baseline and candidate directions, capture

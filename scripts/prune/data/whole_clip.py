@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 
 import torch
@@ -61,11 +62,28 @@ def validate_manifest(manifest: dict) -> None:  # noqa: PLR0912
 
 
 def actor_identity(view: str) -> str:
-    """Identify a capture subject across views, resolving filesystem aliases."""
+    """Identify a bare DNARender actor across clips/parts, resolving filesystem aliases."""
     path = Path(view).resolve()
+    clip = None
     for parent in path.parents:
         if parent.name == "views":
-            return str(parent.parent)
+            clip = parent.parent
+            break
+    if clip is not None:
+        metadata = clip / "meta.json"
+        if metadata.is_file():
+            try:
+                actor = json.loads(metadata.read_text())["actor"]["id"]
+            except (KeyError, TypeError, json.JSONDecodeError) as exc:
+                raise ValueError(f"{metadata}: unavailable DNARender actor identity") from exc
+            if type(actor) not in (int, str) or not str(actor).strip():
+                raise ValueError(f"{metadata}: invalid DNARender actor identity")
+            identity = str(actor).strip()
+            return "dna_actor:" + (str(int(identity)) if identity.isdecimal() else identity)
+        name = re.fullmatch(r"(\d+)_(\d+)", clip.name)
+        if name and re.fullmatch(r"Part_\d+", clip.parent.name):
+            return "dna_actor:" + str(int(name.group(1)))
+        return str(clip)
     return str(path.parent if path.name.startswith("view") and path.parent.name else path)
 
 
@@ -156,9 +174,9 @@ def verify_pair(base: dict, candidate: dict) -> None:
 
 
 def verify_candidate(base: dict, candidate: dict) -> dict:
-    """Bind a paired candidate to its actual export, source and mask content."""
+    """Bind a paired candidate to its actual export, source and family artifact content."""
     # Hooks consume this input contract; defer this validation-only dependency.
-    from scripts.prune.score import export_pruned, hooks  # noqa: PLC0415
+    from scripts.prune.score import export_depth, export_pruned, hooks  # noqa: PLC0415
 
     verify_pair(base, candidate)
     path = Path(candidate["model"]["transformer_path"])
@@ -171,6 +189,16 @@ def verify_candidate(base: dict, candidate: dict) -> dict:
             pruning.get("source_transformer_fingerprint") != base["model"]["transformer_fingerprint"] or
             pruning.get("model_key") != base["model"]["model_key"]):
         raise ValueError("candidate export task/source differs from native whole-clip D0")
+    family = pruning.get("family", "width")
+    if family == "depth":
+        artifact_path = Path(pruning.get("artifact", ""))
+        if not artifact_path.is_file() or provenance.file_sha256(artifact_path) != pruning.get("artifact_sha256"):
+            raise ValueError("candidate export depth artifact content differs or is unavailable")
+        return export_depth.verify_export(
+            base["model"]["transformer_path"], artifact_path, path, baseline=base,
+        )
+    if family != "width":
+        raise ValueError(f"unknown native pruning family: {family!r}")
     mask_path = Path(pruning.get("masks", ""))
     if not mask_path.is_file() or provenance.file_sha256(mask_path) != pruning.get("mask_sha256"):
         raise ValueError("candidate export mask content differs or is unavailable")

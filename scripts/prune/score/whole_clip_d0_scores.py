@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import torch
 
 from scripts.prune.core import provenance, session
 from scripts.prune.data import whole_clip
-from scripts.prune.score import estimators, hooks
+from scripts.prune.score import estimators, hooks, token_sampling
 
 
 def _sample_indices(tokens: int, tokens_per_frame: int, stride: int, device: torch.device) -> torch.Tensor:
@@ -38,7 +39,7 @@ def _weight_norms(model) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tenso
 
 def score(baseline: Path, *, gpu_id: int, calibration_views: list[str],  # noqa: PLR0915
           sigma_levels: list[float], head_fraction: float, ffn_fraction: float,
-          spatial_stride: int, output: Path) -> dict:
+          spatial_stride: int, output: Path, sampler: str = "stride") -> dict:
     base = whole_clip.load_manifest(baseline)
     rows = whole_clip.records(base)
     if not calibration_views or not sigma_levels:
@@ -48,6 +49,8 @@ def score(baseline: Path, *, gpu_id: int, calibration_views: list[str],  # noqa:
     keys = [(view, sigma) for view in calibration_views for sigma in sigma_levels]
     if any(key not in rows for key in keys):
         raise ValueError("calibration view/sigma is absent from the saved baseline")
+    if sampler not in token_sampling.SAMPLERS or type(spatial_stride) is not int or spatial_stride < 1:
+        raise ValueError("invalid token sampler or spatial stride")
     if gpu_id >= torch.cuda.device_count():
         raise ValueError(f"GPU {gpu_id} does not exist")
     device = torch.device(f"cuda:{gpu_id}")
@@ -84,8 +87,15 @@ def score(baseline: Path, *, gpu_id: int, calibration_views: list[str],  # noqa:
                 grid, modality, c0, b = whole_clip.build_input(
                     baseline, base, view=view, sigma=sigma, current=current,
                 )
-                indices = _sample_indices(
-                    modality.latent.shape[1], grid.tokens_per_latent_frame, spatial_stride, device,
+                shape = grid.tools.target_shape
+                if shape.height * shape.width != grid.tokens_per_latent_frame:
+                    raise ValueError("latent H/W differ from native tokens per frame")
+                indices = token_sampling.sample_indices(
+                    modality.latent.shape[1], shape.height, shape.width, spatial_stride, device, sampler=sampler,
+                )
+                sampling = token_sampling.sampling_record(
+                    indices, tokens=modality.latent.shape[1], height=shape.height, width=shape.width,
+                    stride=spatial_stride, sampler=sampler,
                 )
                 with torch.no_grad():
                     prediction, _ = model(video=modality, audio=None, perturbations=None)
@@ -94,10 +104,10 @@ def score(baseline: Path, *, gpu_id: int, calibration_views: list[str],  # noqa:
                     )
                 recorded = torch.load(whole_clip.latent_path(baseline, b), map_location="cpu", weights_only=True)
                 max_abs = float((recorded.float() - prediction.cpu().float()).abs().max())
-                if max_abs > 0.02:
+                if not math.isfinite(max_abs) or max_abs > 0.02:
                     raise ValueError(f"scoring forward differs from saved baseline for {view}, {sigma}: {max_abs}")
                 runs.append({"view": view, "sigma": sigma, "sample_tokens": int(indices.numel()),
-                             "saved_rollout_max_abs": max_abs})
+                             "sampling": sampling, "saved_rollout_max_abs": max_abs})
                 count += 1
                 del grid, modality, c0, prediction, recorded, indices
                 indices = None
@@ -116,7 +126,7 @@ def score(baseline: Path, *, gpu_id: int, calibration_views: list[str],  # noqa:
         "provenance": whole_clip.native_provenance(baseline, base, calibration_views, sigma_levels),
         "method": "sampled post-activation RMS times output-projection column norm; per-layer/branch allocation",
         "head_fraction": head_fraction, "ffn_fraction": ffn_fraction,
-        "spatial_token_stride": spatial_stride, "runs": runs,
+        "spatial_token_stride": spatial_stride, "sampler": sampler, "runs": runs,
         "scores": {name: value.tolist() for name, value in contributions.items()},
         "masks": masks,
         "removed_heads": sum(len(v) - sum(v) for k, v in masks.items() if not k.endswith(".ff")),
@@ -135,6 +145,7 @@ def main() -> None:
     parser.add_argument("--head-fraction", type=float, default=0.10)
     parser.add_argument("--ffn-fraction", type=float, default=0.10)
     parser.add_argument("--spatial-stride", type=int, default=16)
+    parser.add_argument("--sampler", choices=token_sampling.SAMPLERS, default="stride")
     parser.add_argument("--gpu-id", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -142,7 +153,7 @@ def main() -> None:
         args.baseline, gpu_id=args.gpu_id,
         calibration_views=args.view, sigma_levels=args.sigmas,
         head_fraction=args.head_fraction, ffn_fraction=args.ffn_fraction,
-        spatial_stride=args.spatial_stride, output=args.output,
+        spatial_stride=args.spatial_stride, output=args.output, sampler=args.sampler,
     )
     print(json.dumps({"output": str(args.output), "runs": len(result["runs"]),
                       "removed_heads": result["removed_heads"],

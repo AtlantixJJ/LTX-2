@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from contextlib import ExitStack
 from pathlib import Path
@@ -15,7 +16,7 @@ from ltx_core.model.transformer.modality import Modality
 from scripts.onestep_avatar import causal_core
 from scripts.prune.core import artifacts, provenance, session
 from scripts.prune.data import whole_clip
-from scripts.prune.score import export_pruned, hooks
+from scripts.prune.score import export_depth, export_pruned, hooks
 
 
 def _difference(a: torch.Tensor, b: torch.Tensor) -> dict:
@@ -32,18 +33,25 @@ def _forward(model, grid: causal_core.ClipGrid, modality: Modality, c0: torch.Te
         return grid.unpatchify_block(causal_core.with_clean_prefix(prediction, c0), grid.latent_frames).cpu()
 
 
-def main() -> int:  # noqa: PLR0915
+def argument_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--baseline", type=Path, required=True, help="Saved baseline whole-clip D0 rollout directory")
-    p.add_argument("--masks", type=Path, required=True)
+    candidates = p.add_mutually_exclusive_group(required=True)
+    candidates.add_argument("--masks", type=Path)
+    candidates.add_argument("--depth-artifact", type=Path)
     p.add_argument("--exported-checkpoint", type=Path, required=True)
     p.add_argument("--view", required=True)
     p.add_argument("--sigmas", type=float, nargs="+", required=True)
     p.add_argument("--gpu-id", type=int, required=True)
     p.add_argument("--max-abs", type=float, default=0.02)
+    return p
+
+
+def main() -> int:  # noqa: PLR0912, PLR0915
+    p = argument_parser()
     args = p.parse_args()
-    if args.max_abs < 0 or len(set(args.sigmas)) != len(args.sigmas):
-        p.error("max-abs must be nonnegative and sigma levels distinct")
+    if not math.isfinite(args.max_abs) or args.max_abs < 0 or len(set(args.sigmas)) != len(args.sigmas):
+        p.error("max-abs must be finite and nonnegative and sigma levels distinct")
     baseline = whole_clip.load_manifest(args.baseline)
     rows = whole_clip.records(baseline)
     if any((args.view, sigma) not in rows for sigma in args.sigmas):
@@ -52,20 +60,31 @@ def main() -> int:  # noqa: PLR0915
     source_path = Path(baseline["model"]["transformer_path"])
     if provenance.checkpoint_fingerprint(source_path) != source_fingerprint:
         raise ValueError("baseline checkpoint changed since saved D0 rollout")
-    masks, mask_sha = hooks.read_mask_artifact(
-        args.masks, model_key=baseline["model"]["model_key"], fingerprint=source_fingerprint,
-        widths=export_pruned.checkpoint_mask_widths(source_path), expected_task=whole_clip.TASK, baseline=baseline,
-    )
-    hooks.require_native_heldout_scope(args.masks, view=args.view, sigmas=args.sigmas, baseline=baseline)
+    depth, masks = None, {}
+    candidate_path = args.depth_artifact or args.masks
+    if args.depth_artifact:
+        inspected = export_depth.inspect_checkpoint(source_path)
+        depth, candidate_sha = export_depth.read_artifact(
+            candidate_path, model_key=baseline["model"]["model_key"], fingerprint=source_fingerprint,
+            num_layers=inspected["source_num_layers"], baseline=baseline,
+        )
+        export_depth.verify_export(source_path, candidate_path, args.exported_checkpoint, baseline=baseline)
+    else:
+        masks, candidate_sha = hooks.read_mask_artifact(
+            candidate_path, model_key=baseline["model"]["model_key"], fingerprint=source_fingerprint,
+            widths=export_pruned.checkpoint_mask_widths(source_path), expected_task=whole_clip.TASK, baseline=baseline,
+        )
+    hooks.require_native_heldout_scope(candidate_path, view=args.view, sigmas=args.sigmas, baseline=baseline)
     with safe_open(args.exported_checkpoint, framework="pt", device="cpu") as handle:
         metadata = json.loads((handle.metadata() or {}).get("config", "{}"))
     pruning = metadata.get("transformer", {}).get("pruning", {})
-    if (pruning.get("mask_sha256") != mask_sha or
+    if depth is None and (pruning.get("mask_sha256") != candidate_sha or
             pruning.get("source_transformer_fingerprint") != source_fingerprint or
-            pruning.get("task") != whole_clip.TASK):
+            pruning.get("task") != whole_clip.TASK or pruning.get("family", "width") != "width"):
         raise ValueError("exported checkpoint does not carry this native D0 mask and source")
-    model_args = argparse.Namespace(model="2.5", gpu_id=args.gpu_id, seed=baseline["seed"])
+    model_args = argparse.Namespace(model=baseline["model"]["model_key"], gpu_id=args.gpu_id, seed=baseline["seed"])
     source = session.open_session(model_args, script="export_parity_d0",
+                                  transformer_path=source_path,
                                   prompt=baseline["text_context"]["prompt"])
     exported = session.open_session(model_args, script="export_parity_d0",
                                     transformer_path=args.exported_checkpoint,
@@ -80,6 +99,8 @@ def main() -> int:  # noqa: PLR0915
         functional = {}
         torch.cuda.reset_peak_memory_stats(source.device)
         with ExitStack() as stack:
+            if depth is not None:
+                stack.enter_context(export_depth.retained_blocks(model, depth["removed_blocks"]))
             if heads:
                 stack.enter_context(hooks.attach_head_masks(model, heads, requires_grad=False))
             if ffns:
@@ -107,10 +128,16 @@ def main() -> int:  # noqa: PLR0915
     result = {"task": whole_clip.TASK, "provenance": source.stamp(),
               "baseline_manifest": str((args.baseline / "manifest.json").resolve()),
               "exported_fingerprint": exported.stamp()["transformer_fingerprint"],
-              "mask_sha256": mask_sha, "view": args.view, "sigmas": args.sigmas,
+              "family": "depth" if depth is not None else "width",
+              "view": args.view, "sigmas": args.sigmas,
               "max_abs_tolerance": args.max_abs, "comparisons": comparisons,
               "functional_peak_allocated_gib": source_peak,
               "export_peak_allocated_gib": export_peak, "pass": passed}
+    if depth is not None:
+        result.update(depth_artifact_sha256=candidate_sha,
+                      reference="in-memory ordered retained blocks; quality relative to teacher is separate")
+    else:
+        result["mask_sha256"] = candidate_sha
     (out / "export_parity.json").write_text(json.dumps(result, indent=2) + "\n")
     print(out / "export_parity.json")
     return 0 if passed else 1

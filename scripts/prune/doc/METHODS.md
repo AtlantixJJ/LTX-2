@@ -1,6 +1,7 @@
 # Pruning LLMs and video generators: literature, evidence and LTX-2 test plan
 
-Literature checked 1 October 2026. This review covers representative weight,
+Literature checked 1 October 2026, with avatar/causal-training references added
+4 October 2026. This review covers representative weight,
 channel, head and block pruning methods, including video-diffusion work through
 2026. Primary papers and author project pages support the claims. Results belong
 to their stated models and protocols; they do not form a common leaderboard or
@@ -244,7 +245,7 @@ content and multi-frame dynamics, including adversarial training. Its revised
 paper reports 2.5× speedup on SF-V, 1.4× on T2V-Turbo-v2 and 1.25× on
 HunyuanVideo. These are distinct starting architectures and sampling protocols.
 Its shallow/deep observations should not become a universal LTX deletion rule.
-[ICMD, CVPR 2025 / revised paper](https://arxiv.org/html/2411.18375v3).
+[ICMD, ACM MM 2025 / revised paper](https://arxiv.org/html/2411.18375v3).
 
 V.I.P. uses iterative preference distillation, combining supervised learning
 with ReDPO to recover compressed video generators. It reports 36.2% parameter
@@ -344,6 +345,41 @@ differ; rows cannot be sorted into a common performance ranking.
 sensitivity matters; execution determines realized speed. None of these papers
 establishes a universally best pruning percentage or score for LTX-2.5.
 
+### 5.8. Related work: explicit driving-video conditioning and Wan-Animate-2
+
+Wan-Animate-2 consumes driving RGB through a separate motion branch. Its Lite
+design uses causal teacher-forcing pretraining, an error buffer, then Self-Forcing
+distillation with chunk-wise gradient accumulation. This is relevant to our
+render-guided avatar and streaming stages, rather than evidence that static
+pruning alone works. The paper describes 14B-scale models; do not interpret
+"Lite" as a measured parameter-size reduction.
+[Wan-Animate-2, August 2026 preprint, §§3–4](https://arxiv.org/html/2608.06009v1).
+
+**LTX hypothesis:** separate the render/pose condition from the noisy generation
+state, then adapt to generated history. This could preserve guidance at high
+sigma; it requires new conditioning and training contracts. The official release
+lists Base and Distilled weights, which does not establish availability of a
+separate causal Lite checkpoint.
+[Official code and release notes](https://github.com/Wan-Video/Wan-Animate-2).
+
+### 5.9. Related work: generated-history distribution matching with Self Forcing
+
+Self Forcing trains autoregressive video diffusion on its own generated histories,
+using K/V-cached rollouts and a video-level distribution objective. It addresses
+the gap between teacher-forced training and autoregressive deployment; it is not
+a structural parameter-pruning method.
+[Self Forcing, 2025, paper](https://arxiv.org/abs/2506.08009).
+
+**LTX implication:** generated-history training is necessary to test deployment,
+but history matching alone does not guarantee sharp, correct avatars. Our
+[October dev study](../../../../expr/onestep_avatar/dev_training_20261001/REPORT.md)
+already trained cached D1 on generated history and still learned blur under
+capture-latent MSE. A distribution-matching follow-on needs an appropriate score
+teacher and an auxiliary learned score model; the few-step distilled generator
+cannot simply be assumed to supply calibrated diffusion scores. Keep causal,
+step-count and structural-compression gains separately measured.
+
+
 ## 6. Current implementation and measured limits
 
 ### 6.1. Activation screening
@@ -400,6 +436,26 @@ and fails functional-mask parity; combined pruning changes held-out content.
 This rejects the present mask/export as a speed optimization, not structural
 pruning generally. Coverage is one held-out actor/view, one seed, three sigmas.
 
+The subsequent [method screen](../../../../expr/refiner_prune/2.5/method_screen_20261001/REPORT.md)
+adds separated rankings, allocation, compensation and block-bypass experiments,
+then 27 blind actor/seed/sigma cases per finalist. None passes all gates.
+Four-block bypass reaches about 1.090× forward speedup but fails quality and
+retains the source checkpoint tensors. An aligned FFN reduction reaches
+1.056–1.057× but fails functional/export parity; the exact one-head export is
+slower. The subsequent [CPU depth export proof](../../../../expr/refiner_prune/2.5/depth_export_20261004/README.md)
+physically removes original blocks `[3,7,8,15]`, leaving 44 blocks. All 4,013
+retained tensor payloads match the source bytes. Resident-video elements fall
+from 13,123,337,344 to 12,048,169,856 (8.19%); checkpoint payload falls 7.36%,
+and full-file bytes fall from 42,018,190,584 to 38,923,958,248. This deletion set
+failed its earlier functional quality gate and remains unqualified. Native BF16
+export parity, decoded quality, measured timing and recovery training remain
+pending; CPU payload fidelity does not establish them.
+
+The [October 4 roadmap](../../../plans/2026-10-04-prune-finetune-causal-avatar.md)
+prioritizes recoverable compact depth, an aligned-FFN backup and explicit motion
+conditioning before cached avatar integration. It separates preserving D0 from
+learning the deployment task, whose future capture frames are unavailable.
+
 ## 7. Methods we plan to test
 
 The production workflow supports RMS scoring, uniform allocation, functional
@@ -444,6 +500,15 @@ This establishes whether activation calibration improves ranking.
 
 **Current RMS proxy.** Retain it as the cheap baseline, testing heads, FFN and
 combined families separately.
+
+**Implemented sampling control, not yet evaluated on GPU.**
+`score.token_sampling` and the D0 scorer now offer opt-in
+`balanced_2d_midpoint_v1`, preserving default stride and its token budget.
+Actual latent H/W and deterministic integer-index hashes are recorded. At
+32×32/stride 16 the control uses an 8×8 midpoint grid, expanding sampled columns
+from two to eight; it does not cover all 32 rows or columns. CPU tests verify
+native patchifier coordinates and budget/c0 invariants. Production native BF16
+baseline parity, ranking comparison and held-out deletion results remain pending.
 
 **Exact projected contribution.** Rank heads by $E_h$ on the same sampled tokens.
 Single-channel FFN contribution already factorizes into RMS times column norm
@@ -545,6 +610,15 @@ calibration-only ridge regression. Evaluate unseen actors and complete forward
 outputs, not just the fitted layer. This is a SparseGPT/LLM-Surgeon-inspired
 adaptation rather than an exact reproduction.
 
+**Implemented CPU helper, no LTX fitting result.** `score.ffn_reconstruction`
+provides a bounded FP64 dual ridge correction around retained source weights,
+with output-channel chunks, sample/memory caps and unchanged bias. A separate
+calibration-cache validator pins the native distribution, source/mask,
+actual capture/noise geometry/content, retained order/alignment, equal case
+quotas and sampler/payload hashes. Synthetic CPU controls verify the algebra
+and rejection rules. Activation collection, fitted checkpoint serialization,
+BF16 execution and held-out full-model improvement remain unrun.
+
 Next compare no recovery with fixed-budget LoRA/student distillation. Keep masks,
 inputs and training budget matched, checking per-frame content and multi-frame
 dynamics as motivated by ICMD. Merge LoRA or include its runtime overhead.
@@ -568,7 +642,9 @@ text-to-video or autoregressive-avatar performance.
 validation split chooses budgets/thresholds; a blind test split supports final
 claims. Actors remain disjoint across all views. Proposed initial expanded
 coverage is at least three held-out actors and three fixed seeds, including
-low-motion and active-motion cases. This coverage is not completed yet.
+low-motion and active-motion cases. The method screen completed three blind
+actors and three seeds; future tuning requires newly reserved identities rather
+than treating those inspected actors as blind again.
 
 **Controlled questions.** Compare rankings at fixed feasible widths, allocation
 with a fixed score, and compensation/recovery with a fixed mask. Finally compare
