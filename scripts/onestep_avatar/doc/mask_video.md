@@ -70,15 +70,34 @@ Readers pool spatially and over causal frame groups in memory; nothing is writte
 
 ## Organization logic
 
+### Store exact mask bytes
+
+`write_mask_video` requires a nonempty uint8 array `[RGB_frames,height,width]`.
+Pipe its one-channel bytes to ffmpeg with the declared lossless grayscale settings.
+Write a temporary sibling file and atomically replace the destination only after successful encoding.
+Reading takes one decoded channel directly because all decoded grayscale channels are identical.
+No threshold or color conversion is part of this storage round trip.
+
+### Derive encoded-frame coverage
+
+For each uint8 mask frame, area-resize to the encoded height/width, then convert to float32 and divide by 255.
+For temporal scale `t`, encoded frame zero averages RGB range `[0,1)`.
+Encoded frame `i>0` averages `[1+(i-1)*t, 1+i*t)`.
+Reject a mask too short for any requested range.
+Stack these temporal means as `[F,H,W]` and return contiguous float16 coverage.
+This preserves the current resize/quantization order.
+It does not threshold coverage into a binary training mask or save another derived file.
+Training full-frame MSE does not use this coverage as a weight.
+
 **`MASK_ENCODE_ARGS` is asserted by a test, not just its effect.** The module was transcribed
 into both of the package's former trees (different conda envs, no shared import); consolidating
 removed the copy, but the risk it guarded did not go away — a drift to a lossy `crf` while
 "tuning storage" would be invisible in every downstream number, so the setting itself is
 pinned.
 
-**`read_mask(stem)` takes a suffix-less path** and prefers the MP4, falling back to a legacy
-`.npy`. That fallback is what lets renders predating the format keep working untouched — a
-`.npy` is the same array, just 42× larger, and rebuilding one costs a full re-render.
+**`read_mask(stem)` takes a suffix-less path** and requires its lossless MP4.
+Legacy arrays are not supported stored-mask inputs. Their historical storage
+cost was about 42× greater than the lossless MP4.
 
 **Writes are atomic** (temp file, then rename), for the same reason every other artifact here
 is: a killed ffmpeg must not leave something that looks complete.
@@ -87,15 +106,38 @@ is: a killed ffmpeg must not leave something that looks complete.
 causal VAE's `1, 8, 8, ...` temporal grouping when a reader asks for coverage. This keeps the
 MP4s as the only mask artifacts and permits a geometry change without mask regeneration.
 
-## Migration
+## Completed storage migration
 
-`build_guidance.py --migrate-alpha` re-encodes legacy `.npy` grids, **verifying each round
-trip is bit-exact before counting it**; `--prune-npy` deletes the originals only after that
-check passes. It needs no GPU, no renderer and no ARGAvatar import, so it runs anywhere.
+Stored-mask readers require the lossless MP4. `mask_exists` checks that file;
+`read_mask` fails if it is absent, even if a legacy array exists. The removed
+migration command is no longer a producer path. Bit-exact MP4 round-trip tests
+remain the format requirement. The all-objective inventory checked 70 existing
+guides with no legacy-only selected masks. No original array or source media
+was deleted by the reader cleanup.
 
 Run on the 19 views on disk: **240 MB → 5.9 MB**, 0 failures.
 
+## Invariants
+
+- Storage preserves every uint8 grayscale value without a threshold.
+- A failed encode cannot replace a completed mask video.
+- Derived coverage follows the continuous VAE's first-frame/eight-frame groups.
+- Derived encoded grids remain in memory and are not duplicate stored mask artifacts.
+- Coverage measurements do not introduce mask weights into training MSE.
+
+## Gotchas
+
+Address the stored mask by RGB frame index before temporal pooling.
+An encoded frame index is not a stored-video frame index.
+Equal array shape does not prove matching capture/guide crops or source times.
+Mask IoU thresholds used for QA are separate from grayscale storage and area pooling.
+
 ## Tests
 
+Worked pooling check: at scale eight, three encoded frames require 17 RGB masks.
+Uniform masks with values 255 at frame zero, 0 at frames 1–8, and 255 at frames 9–16
+give coverage `[1,0,1]` at every encoded pixel.
+A 16-frame mask fails because encoded frame two needs RGB range `[9,17)`.
+
 `tests/test_mask_video.py` — bit-exactness, the soft edge specifically, frame-count round trip,
-the encode setting itself, the compression floor, and both legacy-fallback behaviours.
+the encode setting itself, the compression floor, and required-MP4 failure behavior.

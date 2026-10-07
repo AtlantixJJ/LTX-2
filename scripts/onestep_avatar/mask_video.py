@@ -106,24 +106,16 @@ def read_mask_video(path: Path) -> np.ndarray:
 
 
 def read_mask(path_without_suffix: Path) -> np.ndarray:
-    """Read a stored mask, preferring the MP4 and falling back to a legacy ``.npy``.
-
-    The fallback is what lets the renders that predate this format keep working untouched
-    instead of being rebuilt: a `.npy` on disk is the same array, just 42x larger. New writes
-    are always MP4.
-    """
+    """Read the required lossless MP4; absent storage fails explicitly."""
     video = path_without_suffix.with_suffix(".mp4")
-    if video.is_file():
-        return read_mask_video(video)
-    legacy = path_without_suffix.with_suffix(".npy")
-    if legacy.is_file():
-        return np.load(legacy)
-    raise FileNotFoundError(f"no mask at {video} or {legacy}")
+    if not video.is_file():
+        raise FileNotFoundError(f"no stored mask at {video}")
+    return read_mask_video(video)
 
 
 def mask_exists(path_without_suffix: Path) -> bool:
-    """True if either form is present -- the resumability check's question."""
-    return path_without_suffix.with_suffix(".mp4").is_file() or path_without_suffix.with_suffix(".npy").is_file()
+    """True when the required stored MP4 is present."""
+    return path_without_suffix.with_suffix(".mp4").is_file()
 
 
 def _pixel_range(latent_index: int, time_scale: int) -> tuple[int, int]:

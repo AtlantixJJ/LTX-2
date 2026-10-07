@@ -6,6 +6,11 @@ Reconstruct exactly the noised whole-video input used in a saved baseline D0 run
 
 ## Data flow
 
+Read capture tensors and frame rate through `onestep_avatar.dataset.load_training_master`.
+The dataset reader checks the continuous-master schema, nonempty floating shape,
+and finite positive frame rate. It imports no training CLI. This replaces the
+private trainer reader without changing reconstructed input values.
+
 `load_manifest` validates the one-step white-capture, full-bidirectional run, BF16 dtype, finite sigmas in (0,1], integer seed, absent LoRA and unguided single-pass CFG 1/STG 0. Unsupported guidance is rejected rather than silently reconstructed differently. `build_input` checks capture content, BF16 shape, fps, VAE fingerprint and actual prompt-context bytes, loads content-verified finite BF16 epsilon, verifies the token shape and saved geometry, and rebuilds the clean-first-frame modality. It returns the grid, modality, clean first-frame tokens and source row. `verify_pair` adds candidate-versus-baseline setup checks; `verify_saved_noise` compares actual epsilon tensors after independently verifying each file's recorded hash. `latent_path` verifies the saved output hash before returning its path.
 
 `native_provenance` stamps the full calibration-manifest SHA256, seed, VAE,

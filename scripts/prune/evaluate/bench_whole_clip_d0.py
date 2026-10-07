@@ -11,19 +11,19 @@ from pathlib import Path
 import torch
 
 from ltx_core.model.transformer.modality import Modality
-from scripts.onestep_avatar import causal_core
+from scripts.onestep_avatar.model import common
 from scripts.prune.core import provenance, session
 from scripts.prune.data import whole_clip
 
 
 def _one_arm(current: session.Session, path: Path, expected: Path,
-             grid: causal_core.ClipGrid, modality: Modality, c0: torch.Tensor,
+             grid: common.ClipGrid, modality: Modality, c0: torch.Tensor,
              *, warmup: int, repeats: int, label: str) -> dict:
     times = []
     with current.transformer(path) as transformer:
         def forward() -> torch.Tensor:
             prediction, _ = transformer(video=modality, audio=None, perturbations=None)
-            return causal_core.with_clean_prefix(prediction, c0)
+            return common.with_clean_prefix(prediction, c0)
 
         with torch.no_grad():
             output = forward()

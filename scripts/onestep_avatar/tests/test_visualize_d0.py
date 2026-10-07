@@ -12,9 +12,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-from scripts.onestep_avatar import causal_core, visualize_d0
-from scripts.onestep_avatar.causal_core import CausalGeometry
-from scripts.onestep_avatar.train import Chain
+from scripts.onestep_avatar import media, visualize_d0
+from scripts.onestep_avatar.model import causal as causal_core
+from scripts.onestep_avatar.model import common
+from scripts.onestep_avatar.model.causal import CausalGeometry
+from scripts.onestep_avatar.training.engine import Chain
 
 SCALE = causal_core.SpatioTemporalScaleFactors(8, 32, 32)
 
@@ -36,7 +38,6 @@ def _chain(blocks: list[int]) -> Chain:
         z_g=None,
         z_y=torch.zeros(1, 1, 1, 1),
         fps=30.0,
-        z0_base=None,
     )
 
 
@@ -68,7 +69,7 @@ def test_frame_labels_follow_the_vae_s_own_frame_mapping() -> None:
     """Latent frame 0 is ONE pixel frame; every later latent frame is ``time_scale``."""
     labels = visualize_d0._frame_labels([(0, 3), (3, 5)], 8)
 
-    assert len(labels) == causal_core.pixel_frames_for(5, 8) == 33
+    assert len(labels) == common.pixel_frames_for(5, 8) == 33
     assert labels[0].startswith("latent 0")
     assert labels[1].startswith("latent 1")
     assert labels[8].startswith("latent 1")  # last pixel frame of latent 1
@@ -81,7 +82,7 @@ def test_frame_labels_cover_exactly_the_decoded_frames() -> None:
     """One caption per decoded frame: a short list would leave the tail unstamped."""
     plan = _geometry().plan(18)
     labels = visualize_d0._frame_labels(plan, 8)
-    assert len(labels) == causal_core.pixel_frames_for(plan[-1][1], 8)
+    assert len(labels) == common.pixel_frames_for(plan[-1][1], 8)
 
 
 def test_stamp_writes_only_the_caption_band() -> None:
@@ -108,9 +109,9 @@ def test_probe_sigmas_are_explicit_unique_schedule_members() -> None:
 
 def test_explicit_block_epsilon_reuses_noise_across_sigma_mixtures() -> None:
     clean = torch.arange(12, dtype=torch.float32).reshape(1, 3, 4)
-    epsilon = causal_core.epsilon_block(clean, 42)
-    low = causal_core.mix_block_noise(clean, epsilon, 0.25)
-    high = causal_core.mix_block_noise(clean, epsilon, 1.0)
+    epsilon = common.epsilon_block(clean, 42)
+    low = common.mix_block_noise(clean, epsilon, 0.25)
+    high = common.mix_block_noise(clean, epsilon, 1.0)
 
     assert torch.equal(high, epsilon)
     assert torch.allclose(low, torch.lerp(clean, epsilon, 0.25))
@@ -118,9 +119,9 @@ def test_explicit_block_epsilon_reuses_noise_across_sigma_mixtures() -> None:
 
 def test_decoder_output_is_normalized_to_frame_major_video() -> None:
     bcthw = torch.zeros(1, 3, 5, 8, 9)
-    assert visualize_d0._as_fchw(bcthw).shape == (5, 3, 8, 9)
+    assert media.as_fchw(bcthw).shape == (5, 3, 8, 9)
     fhwc = torch.zeros(5, 8, 9, 3)
-    assert visualize_d0._as_fchw(fhwc).shape == (5, 3, 8, 9)
+    assert media.as_fchw(fhwc).shape == (5, 3, 8, 9)
 
 
 def test_source_master_is_the_one_line_the_arm_changes() -> None:

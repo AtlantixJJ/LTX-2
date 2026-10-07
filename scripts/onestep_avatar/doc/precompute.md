@@ -6,6 +6,11 @@ Turn corpus pixels into the master latents the trainer reads, for **one or both*
 resumably. Every product lives **beside its source video**, one per view; there is no
 experiment-side latent tree.
 
+Product still preparation is owned by [prepare_inputs.py](prepare_inputs.md).
+It reuses this module's bundle contract and native encoder helper for one actual
+RGB image, with its own fresh output directory and input-role provenance.
+It neither slices nor rewrites continuous corpus video masters.
+
 | Artifact | Written by | Is |
 |---|---|---|
 | `ltx_vae_latent[_white].pt` | `--process_gt_latent` | `z_y`, the capture master |
@@ -84,6 +89,21 @@ flowchart TD
 ```
 
 ## Organization logic
+
+### Core pixel and encoding transformations
+
+For white capture targets, blend capture RGB with white using the recorded capture matte at full resolution.
+Then apply the recorded crop/resize. For `bg`, use the capture pixels without that white blend.
+Use the same fixed crop for the complete video; do not move it per frame.
+Normalize RGB to the VAE's `[-1,1]` convention and encode one continuous aligned prefix per requested objective.
+Store `[C,F,H,W]` encoded data with frame rate, crop, VAE, source, dimensions, and encoding identities.
+The paired guide pass reads the already-composited guide RGB; it does not blend guide/capture latents.
+
+Worked frame check: a 130-RGB-frame input at temporal scale eight uses
+`8*floor((130-1)/8)+1 = 129` RGB frames and produces 17 encoded frames.
+At a `1024x1024` crop with scale 32 and 128 channels, the stored shape is `[128,17,32,32]`.
+The one incomplete trailing RGB frame is excluded.
+Requesting `bg` and `white` decodes source pixels once and writes two objective-specific master records.
 
 **One continuous encode per source, and the master is what is stored.** “Source” here means
 the complete VAE-aligned prefix: `time * floor((F-1)/time) + 1` pixel frames.

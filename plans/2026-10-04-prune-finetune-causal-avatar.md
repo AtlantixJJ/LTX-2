@@ -1,6 +1,6 @@
 # Smaller LTX avatar model: recovery, motion conditioning and block-causal inference
 
-Date: 2026-10-04. Status: CPU-only execution started at the user's request.
+Date: 2026-10-04. Status: stages 1–5 CPU preparation complete; GPU qualification in progress.
 The user authorized sequential execution and said GPUs 0–3 should be available
 in about one hour (earliest check: 2026-10-04 15:58 UTC). Do not assume they are
 free at that time; inspect availability before any launch. Experiment outputs belong under workspace
@@ -462,6 +462,8 @@ timings. Do not waive a failed gate because a value is close.
 - [ ] Shared actor split, reversible fit-quality/clothing labels and evaluator.
 - [x] Physically shortened checkpoint with retained-block mapping and CPU reload checks.
   Native full-size BF16 parity remains pending GPU.
+- [x] Four-case native external-baseline inventory, matched CPU guides and dry-run contracts.
+  Wan preprocessing/audio and actual output ranking remain pending.
 - [ ] Bounded depth recovery; one aligned-FFN reconstruction/recovery backup.
 - [ ] Explicit pose condition and held-out multistep task teacher at sigma 1.
 - [ ] Compact task recovery, separating model size from sampling steps.
@@ -483,6 +485,19 @@ complete by writing this plan.
   passed selection/input identity checks for 81 blind cases, gate/timing claims,
   eight selected MP4s, 95 artifact pins, corrected captions, reproducibility and
   desktop/mobile layout. This is reused experimental evidence, not a new GPU run.
+  After stages 2–4, the report was refreshed with scoped CPU evidence, a size
+  figure with separate resident-video/payload denominators, and an explicit
+  reviewed-source update for the independently changing dev report. Original
+  source pins are preserved and the reviewed report/queue lists are frozen.
+  Root revalidation at 21:07 UTC passed 13 check groups and all 150 selected
+  file pins, deterministic rebuild, local links and desktop/mobile checks.
+  The final stage-5 update archives those pins and the prior narrative, then
+  records the completed baseline preparation without changing historical
+  experimental claims or external source pins.
+  Final root validation at 21:37 UTC passed fourteen groups and all 179
+  selected pins. Desktop/mobile software rendering loaded all 27 images with
+  preserved aspect ratios and zero page overflow. The updated validator passes
+  the repository's complete Ruff rules and formatting check.
 - **Stage 2 CPU foundation complete:** [registry and reversible labels](../../expr/refiner_prune/2.5/data_audit_20261004/manifests/selected_cases.json)
   index 360 sources from 12 actors; 26 cases were reviewed, with 22 eligible for
   further checks and four preserved exclusions. Actor 7 has visible-hand mask
@@ -540,3 +555,72 @@ complete by writing this plan.
   so launch readiness is false. No fixtures enter the training dataset.
   GPU VAE encoding, the 50-update memory/validation sanity run, the separately
   gated 200-update teacher pilot and pose-generation quality remain unrun.
+
+- **Stage 5 CPU preparation complete:** [native baseline bundle](../../expr/refiner_prune/2.5/baseline_inventory_20261004/README.md)
+  inventories all four requested models and prepares exact 33-frame capture
+  prefixes for four validation cases from actors 13/17. Genuine CPU DWPose
+  extraction produced 136 detections in 81.80 seconds, with raw landmark
+  confidence and person-selection records. The independent validator passed ten
+  groups, including all capture/MHR prefix frames, c0 resizing, byte-identical
+  native renderer outputs, current provenance and rejected stale/mismatched inputs.
+  Root reran it with CUDA hidden. All seven scripts passed Ruff and have matching
+  module documentation. Sixteen dry-run contracts record eight ready Mimic/Uni
+  inputs and eight pending Wan inputs; all GPU/ranking flags remain false.
+  Capture-extracted DWPose is an offline oracle, separate from MHR-only or
+  render-derived driving; shared-crop native-renderer inputs are separate from
+  published retargeting pipelines. Wan Animate requires genuine native pose/face
+  preprocessing, and S2V requires matched audio and a native-time contract.
+  Native frame routing is source-checked, but generated motion phase is unverified.
+  Fresh GPU runners record raw outputs, exact settings, synchronized cold loading/
+  generation/decoding time and memory; warm-forward/kernel profiling remains
+  separate. At 21:35 UTC GPUs 0–3 still used approximately 48 GiB each at 100%
+  utilization. No GPU workload was started and the existing reservation remains
+  in force.
+
+### Next execution boundary
+
+The user explicitly stopped the previous GPU 0–3 training and queue controllers,
+released those cards, and subsequently authorized parallel experiments. The
+first native BF16 depth parity control and twenty genuine pose-reference
+encodings have now completed. Run the 50-update native pose-conditioning sanity
+check after reference consistency and four-card memory preflight. The separately
+gated 200-update pilot follows
+only after memory and exact validation-video review. A later full task teacher
+must pass before compact task recovery and block-causal training.
+
+Before scientific candidate selection, integrate learned output pose/identity
+extractors and freeze metric thresholds from matched reference variability.
+That evaluation qualification, garment coverage expansion, Wan preprocessing,
+matched S2V audio/time handling and raw-output external ranking remain open;
+completion of the bounded CPU bundles does not complete those experiments.
+
+### GPU execution record
+
+- **Native depth parity passed, 22:12–22:14 UTC:** [first held-out control](../../expr/refiner_prune/2.5/depth_export_20261004/gpu_runs/native_parity_20261004T221251Z/independent_validation.json)
+  used physical GPU 0, actor 19 and sigmas 0.725/0.909375/1.0. All three exported
+  versus ordered-retained-source comparisons had matching shapes and exactly
+  zero maximum absolute and relative-L2 differences. Allocated peaks were
+  28.343 GiB for the source intervention and 26.340 GiB for the export. These are
+  this control's allocated peaks, not a warmed speed measurement or quality pass.
+  The prior quality failure and diagnostic/unqualified status remain. The native
+  GPU transformer-lifetime test also passed in 20.01 seconds; no production code
+  changed to obtain these results.
+- **Genuine pose references encoded:** [GPU 1 producer attempt](../../expr/refiner_prune/2.5/pose_condition_20261004/gpu_runs/reference_encode_20261004T221524Z/launch.json)
+  completed all twenty actual native 129-frame, 512-square videos. Their BF16
+  `[128,17,16,16]` payloads and provenance passed a separate
+  [post-encoding independent validator](../../expr/refiner_prune/2.5/pose_condition_20261004/manifests/gpu_reference_validation.json),
+  including 142 source pins and 23 rejection controls. The original CPU-only
+  receipt retains its historical missing-reference assertions. Maximum recorded
+  encoder reserved memory was 8,050,966,528 bytes. Reference readiness now passes;
+  GPU training fit and condition usefulness remain untested. A one-case native
+  tiled-versus-untiled encoding comparison is being prepared before training.
+- **First native external samples:** [MimicMotion GPU 2 attempt](../../expr/refiner_prune/2.5/baseline_inventory_20261004/attempts/mimic_gpu2_20261004T221518Z/README.md)
+  produced 33 raw 512-square frames for validation actor 13/cam51. Full decoding,
+  hashes and source/settings provenance passed. Its cold load/generation/decode
+  call took 81.752 seconds, with 4.890/11.787 GiB peak allocated/reserved memory.
+  These are native capture-oracle measurements at a different geometry from LTX,
+  with FPS microconditioning 7 and physical playback 30, not a common-task speed
+  ranking. Sampled large arm positions follow the guide; brightness/background
+  and facial/clothing details differ. Exact motion phase and learned metric
+  qualification remain open. UniAnimate's GPU 3 call completed and its independent
+  output audit is in progress. No existing CPU input/receipt was overwritten.

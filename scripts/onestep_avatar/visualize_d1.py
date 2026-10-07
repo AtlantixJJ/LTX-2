@@ -15,8 +15,13 @@ import torch
 from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
 from ltx_core.model.transformer.attention import attention_label
 from ltx_core.model.transformer.transformer import DEFAULT_TRANSFORMER_OPS
-from scripts.onestep_avatar import backbone, causal_core, dataset, sampling, visualize_d0
-from scripts.onestep_avatar.train import Chain, _load_training_master, clip_grid_for
+from scripts.onestep_avatar import dataset, visualize_d0
+from scripts.onestep_avatar.dataset import load_training_master
+from scripts.onestep_avatar.model import backbone, common
+from scripts.onestep_avatar.model import causal as causal_core
+from scripts.onestep_avatar.model import sampling as model_sampling
+from scripts.onestep_avatar.training import checkpoints as sampling
+from scripts.onestep_avatar.training.engine import Chain, clip_grid_for
 from scripts.prune.core import provenance
 from scripts.prune.core.session import (
     DEFAULT_PROMPT,
@@ -123,7 +128,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 parser.error("--dev-denoising-steps requires --dev-schedule truncated")
             for sigma in args.sigmas:
                 try:
-                    causal_core.thinned_truncated_schedule(sigma, args.steps, args.dev_denoising_steps)
+                    model_sampling.thinned_truncated_schedule(sigma, args.steps, args.dev_denoising_steps)
                 except ValueError as error:
                     parser.error(str(error))
     elif args.steps is not None:
@@ -156,24 +161,24 @@ def whole_clip_block(latent_frame_counts: list[int]) -> int:
     return count - 1
 
 
-def _load_chain(view: Path, objective: str) -> Chain:
+def load_chain(view: Path, objective: str) -> Chain:
     capture = view / dataset.capture_bundle_name(objective)
     guide = view / dataset.guide_bundle_name(objective)
     for path in (capture, guide):
         if not path.is_file():
             raise SystemExit(f"missing master latent: {path}")
-    z_y, fps = _load_training_master(capture)
-    z_g, guide_fps = _load_training_master(guide)
+    z_y, fps = load_training_master(capture)
+    z_g, guide_fps = load_training_master(guide)
     if z_g.shape != z_y.shape or guide_fps != fps:
         raise SystemExit(f"capture/guide shape or fps mismatch: {view}")
-    return Chain(str(view), "probe", view.parent.parent.name, True, [], z_g, z_y, fps, None)
+    return Chain(str(view), "probe", view.parent.parent.name, True, [], z_g, z_y, fps)
 
 
-def _global_epsilons(
-    source: torch.Tensor, grid: causal_core.ClipGrid, plan: list[tuple[int, int]], seed: int
+def global_epsilons(
+    source: torch.Tensor, grid: common.ClipGrid, plan: list[tuple[int, int]], seed: int
 ) -> tuple[torch.Tensor, list[torch.Tensor]]:
     """Draw noise once over global latent-frame indices, independent of block geometry."""
-    epsilon = causal_core.epsilon_block(source, seed)
+    epsilon = common.epsilon_block(source, seed)
     return epsilon, [epsilon[:, slice(*grid.token_span(*span))] for span in plan]
 
 
@@ -188,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
         raise SystemExit(f"output directory must be fresh and empty: {args.output}")
     if args.checkpoint is not None and not args.checkpoint.is_file():
         raise SystemExit(f"checkpoint does not exist: {args.checkpoint}")
-    chains = [(view, _load_chain(view, args.objective)) for view in args.view]
+    chains = [(view, load_chain(view, args.objective)) for view in args.view]
     if args.whole_clip:
         args.block_latent_frames = whole_clip_block([chain.z_y.shape[1] for _, chain in chains])
         # One block has no history: the explicit-history path with an empty prefix is the same
@@ -215,9 +220,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
         for sigma in args.sigmas:
             if args.variant == "dev":
                 schedule = (
-                    list(causal_core.thinned_truncated_schedule(sigma, args.steps, args.dev_denoising_steps))
+                    list(model_sampling.thinned_truncated_schedule(sigma, args.steps, args.dev_denoising_steps))
                     if args.dev_denoising_steps is not None
-                    else list(causal_core.truncated_schedule(sigma, args.steps))
+                    else list(model_sampling.truncated_schedule(sigma, args.steps))
                 )
             else:
                 schedule = [sigma, 0.0]
@@ -360,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
                     raise SystemExit(f"--max-blocks must be within [1, {len(plan)}]")
                 plan = plan[: args.max_blocks]
             source = grid.patchify(chain.z_y.unsqueeze(0).to(device=session.device, dtype=DTYPE))
-            global_epsilon, epsilons = _global_epsilons(source, grid, plan, seed)
+            global_epsilon, epsilons = global_epsilons(source, grid, plan, seed)
             stem = f"{view.parent.parent.name}_{view.name}" + ("" if args.seeds is None else f"_seed{seed}")
             noise_path = args.output / f"{stem}_epsilon.pt"
             torch.save(global_epsilon.cpu(), noise_path)
@@ -381,13 +386,13 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
                 schedule = None
                 if args.variant == "dev":
                     if args.dev_denoising_steps is not None:
-                        schedule = list(causal_core.thinned_truncated_schedule(sigma, args.steps, args.dev_denoising_steps))
+                        schedule = list(model_sampling.thinned_truncated_schedule(sigma, args.steps, args.dev_denoising_steps))
                     else:
-                        make = causal_core.truncated_schedule if args.dev_schedule == "truncated" else causal_core.rescaled_schedule
+                        make = model_sampling.truncated_schedule if args.dev_schedule == "truncated" else model_sampling.rescaled_schedule
                         schedule = list(make(sigma, args.steps))
                 elif args.trajectory_only:
                     schedule = [float(level) for level in session.model.sigmas if level <= sigma + 1e-9]
-                    causal_core.validate_schedule(schedule, session.model.sigmas)
+                    model_sampling.validate_schedule(schedule, session.model.sigmas)
                     if len(schedule) == 2:
                         continue  # the final grid level already has a one-step trajectory
                 arms[sigma] = {}
@@ -396,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
                         torch.cuda.synchronize(session.device)
                         torch.cuda.reset_peak_memory_stats(session.device)
                     started = time.perf_counter()
-                    _, latent = visualize_d0._run_chain(
+                    _, latent = visualize_d0.run_chain(
                         transformer,
                         session.context,
                         chain,

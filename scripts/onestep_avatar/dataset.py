@@ -11,6 +11,7 @@ second code path.
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -91,11 +92,11 @@ ALPHA_GRID = 256
 # than the raw arrays they replaced, bit-exact, and readable by the same OpenCV path as every
 # other video here. All three are objective-independent -- the render is the same render and
 # the matte the same matte; only what sits behind the subject differs between objectives.
-ALPHA_STEM = "argavatar_alpha"                     # .mp4 now; .npy still read if present
-ALPHA_NAME = f"{ALPHA_STEM}.mp4"                   # the render's own alpha, ALPHA_GRID**2
-CAPTURE_MASK_CROP_STEM = "capture_mask_crop"       # mask.mp4 cropped to the box, ALPHA_GRID**2
+ALPHA_STEM = "argavatar_alpha"  # suffix-less name for required MP4
+ALPHA_NAME = f"{ALPHA_STEM}.mp4"  # the render's own alpha, ALPHA_GRID**2
+CAPTURE_MASK_CROP_STEM = "capture_mask_crop"  # mask.mp4 cropped to the box, ALPHA_GRID**2
 CAPTURE_MASK_CROP_NAME = f"{CAPTURE_MASK_CROP_STEM}.mp4"
-CAPTURE_MASK_NAME = "mask.mp4"                     # the dataset's own, full resolution
+CAPTURE_MASK_NAME = "mask.mp4"  # the dataset's own, full resolution
 
 
 def _suffix(objective: str) -> str:
@@ -139,6 +140,23 @@ def load_master(path: Path, *, bundle: dict | None = None) -> torch.Tensor:
         )
     # [C, F, H, W] -- the frame axis is 1.
     return bundle["master"]
+
+
+def load_training_master(path: Path, *, bundle: dict | None = None) -> tuple[torch.Tensor, float]:
+    """Check the tensor and timebase used by both startup and lazy chain loading."""
+    record = torch.load(path, map_location="cpu", weights_only=True) if bundle is None else bundle
+    master = load_master(path, bundle=record)
+    if (
+        not isinstance(master, torch.Tensor)
+        or master.ndim != 4
+        or not master.is_floating_point()
+        or any(size <= 0 for size in master.shape)
+    ):
+        raise SystemExit(f"{path}: master must be a nonempty floating [C, F, H, W] tensor")
+    fps = record.get("fps")
+    if isinstance(fps, bool) or not isinstance(fps, (int, float)) or not math.isfinite(fps) or fps <= 0:
+        raise SystemExit(f"{path}: fps must be a finite positive number, got {fps!r}")
+    return master, float(fps)
 
 
 def capture_master_latent_frames(bundle_path: Path) -> int | None:
@@ -334,3 +352,96 @@ def atomic_write(destination: Path, write_to: Callable[[Path], T]) -> T:
         raise
     temp.replace(destination)
     return result
+
+
+@dataclass(frozen=True)
+class EncodedVideo:
+    """One checked video; selection of frames belongs to the chosen model mode."""
+
+    source: str
+    actor: str
+    split: str
+    z_y: torch.Tensor
+    z_g: torch.Tensor | None
+    fps: float
+    encode_records: dict
+    hashes: dict[str, str]
+
+
+class ClipStore:
+    """Read fixed-video membership without block chains, cache settings, or frame selection."""
+
+    def __init__(self, membership: dict, corpus_root: Path | None = None) -> None:
+        from scripts.onestep_avatar.subset import validate_membership  # noqa: PLC0415 -- filenames stay import-light
+
+        validate_membership(membership)
+        self.membership = membership
+        self.root = Path(corpus_root or membership["corpus_root"])
+        self.objective = membership["objective"]
+        self.sources = {record["relative_dir"]: record for record in membership["sources"]}
+
+    def __len__(self) -> int:
+        return len(self.sources)
+
+    def _read(self, source: dict, *, guide: bool) -> tuple[torch.Tensor, dict, str]:
+        from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- avoid import-time model dependencies
+
+        role = "guide" if guide else "capture"
+        name = guide_bundle_name(self.objective) if guide else capture_bundle_name(self.objective)
+        path = self.root / source["relative_dir"] / name
+        expected = source.get(f"{role}_latent_sha256")
+        if not expected:
+            raise ValueError(f"{path}: {role} content hash is not recorded in membership")
+        actual = sha256(path)
+        if actual != expected:
+            raise ValueError(f"{path}: encoded content changed since the fixed video list")
+        bundle = torch.load(path, map_location="cpu", weights_only=True)
+        # Use the public reader for the exact tensor/timebase checks shared with pruning.
+        master, fps = load_training_master(path, bundle=bundle)
+        if list(master.shape) != source["shape"] or fps != source["fps"]:
+            raise ValueError(f"{path}: shape or frame rate differs from membership")
+        if bundle.get("objective", DEFAULT_OBJECTIVE) != self.objective:
+            raise ValueError(f"{path}: encoded background differs from membership")
+        encoding = source.get(f"{role}_encode_record")
+        if not isinstance(encoding, dict) or not encoding:
+            raise ValueError(f"{path}: {role} encoding record is missing")
+        if any(bundle.get(key) != value for key, value in encoding.items()):
+            raise ValueError(f"{path}: encoding record differs from membership")
+        return master, encoding, actual
+
+    def load(self, source_id: str, require_guide: bool = False) -> EncodedVideo:
+        from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415
+
+        source = self.sources[source_id]
+        capture, capture_record, capture_hash = self._read(source, guide=False)
+        records = {"capture": capture_record}
+        hashes = {"capture": capture_hash}
+        guide = None
+        if require_guide:
+            guide, guide_record, guide_hash = self._read(source, guide=True)
+            for key in ("source", "objective", "box_xyxy", "vae_fingerprint", "edge", "encode_contract_version"):
+                if key not in guide_record or guide_record[key] != capture_record.get(key):
+                    raise ValueError(f"{source_id}: capture and guide {key} differ or are not recorded")
+            view = self.root / source_id
+            sidecar = view / render_metadata_name(self.objective)
+            sidecar_hash = sha256(sidecar)
+            if sidecar_hash != source.get("guide_sidecar_sha256"):
+                raise ValueError(f"{sidecar}: sidecar content changed or is not recorded")
+            metadata = json.loads(sidecar.read_text())
+            if metadata.get("compositing_version") != GUIDE_COMPOSITING_VERSION:
+                raise ValueError(f"{sidecar}: outdated guide compositing")
+            if metadata.get("objective", DEFAULT_OBJECTIVE) != self.objective:
+                raise ValueError(f"{sidecar}: wrong guide background")
+            render_hash = sha256(view / render_name(self.objective))
+            if guide_record.get("input_fingerprint") != render_hash:
+                raise ValueError(f"{source_id}: guide master encodes different render bytes")
+            records["guide"] = guide_record
+            hashes.update(guide=guide_hash, guide_sidecar=sidecar_hash, render=render_hash)
+        return EncodedVideo(
+            source_id, source["actor"], source["split"], capture, guide, float(source["fps"]), records, hashes
+        )
+
+    def verify(self, require_guide: bool = False) -> None:
+        """Fail on any selected input before model setup; never skip a selected video."""
+        for source_id in self.sources:
+            self.load(source_id, require_guide=require_guide)

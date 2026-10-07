@@ -2,6 +2,15 @@
 
 ## Objective
 
+Supported guide production requires clip-level refined multiview body data.
+The per-view record still supplies camera and crop fields. Load both records,
+repair camera gaps, merge same-shaped refined body arrays, and use refined
+validity for motion conversion. Missing refined data fails; there is no
+per-view-only producer option. Both file hashes contribute to motion identity.
+The removal prerequisite was checked across 70 existing bg/white guides in
+`all_objective_guide_legacy_inventory.json`: all refined shapes pass and none
+records a per-view-only producer. Original guide media and sidecars are unchanged.
+
 Produce, for one (clip, driving view) and **one objective**, the guide video the model is
 conditioned on — plus the alpha and QA the rest of the pipeline needs. This is the expensive
 half of corpus building (~20 min/view, GPU).
@@ -96,9 +105,10 @@ the manifest crop. A review batch over many actors must not die on one bad clip.
 
 **The alpha is stored as a lossless grayscale MP4**, not a raw array — 42× smaller, bit-exact,
 and the soft edge survives untouched. See [mask_video.md](mask_video.md) for the measurements
-and why lossy was rejected. `--migrate-alpha` re-encodes the legacy `.npy` grids (verified
-bit-exact before anything is removed; `--prune-npy` deletes them). It needs no GPU and no
-renderer, so it runs before every import-heavy step in `main()`.
+and why lossy was rejected. Supported stored masks are MP4 only. The completed
+all-objective inventory found no legacy-only mask among 70 existing guides, so
+the old alpha-migration command and legacy array reader are removed. Original
+arrays, when present beside MP4s, stay untouched; guide renders are not rebuilt.
 
 ## Resumability
 
@@ -125,6 +135,12 @@ a GPU-day for nothing.
   persisted `capture.mp4` is needed or produced.
 
 ## Tests
+
+Worked compositing check with RGB values in `[0,1]`: `R_white=[.6,.8,1]`, render alpha `.5`, and background `[.2,.2,.2]`
+give `[.2,.4,.6]` through `R_white+(1-alpha)*(background-1)`.
+Using white background `[1,1,1]` returns `R_white` unchanged.
+Using alpha zero replaces a white empty render pixel with the chosen background.
+Use render alpha for this operation; the capture matte is a separate target-preparation input.
 
 `tests/test_build_guidance.py` — the v2 background-replacement blend against
 renderer-faithful (already-white-composited) fixtures including the audit's exact CPU repro

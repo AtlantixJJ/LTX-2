@@ -6,18 +6,66 @@ stays here, prominently, until a fix is implemented *and* verified. Nothing belo
 this documentation; do not read an acceptance criterion as a passing test.
 
 Status vocabulary: **open** (no fix), **in progress** (a fix is partially landed),
-**verified** (fixed and checked — then the entry is removed).
+**verified** (fixed and checked; only a brief historical invariant is retained).
 
 | | Gap | Severity | Status |
 |---|---|---|---|
-| [G1](#g1--the-supplied-first-frame-is-not-a-model-condition) | The supplied first frame is not a model condition | blocks the product contract | **verified** |
-| [G2](#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target) | Generic teacher-forced rollout refreshes from the guide, not the target | wrong outside D0 | **verified** |
-| [G3](#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced) | Checkpoint/artifact conditions are recorded but not enforced | silent off-condition evaluation | **in progress** |
-| [G4](#g4--no-d1-probe) | No D1 probe | D1 checkpoints cannot be looked at | **in progress** |
+| [G1](#g1--the-supplied-first-frame-is-not-a-model-condition) | Historical clean first-frame defect | preserve conditioning invariant | **verified** |
+| [G2](#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target) | Historical teacher-target defect | preserve explicit target invariant | **verified** |
+| [G3](#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced) | Condition checks are missing from some callers | silent off-condition evaluation | **in progress** |
+| [G4](#g4--no-d1-probe) | D1 probe coverage differs between paths | direct-path real-adapter verification remains incomplete | **in progress** |
 | [G5](#g5--training-and-deployment-disagree-about-valid-sigma) | Training and deployment disagree about valid sigma (σ) | a trained adapter its own API refuses | **open** |
-| [G6](#g6--guide-artifacts-on-disk-predate-the-compositing-fix) | 18 of 19 guide renders predate the v2 compositing fix | D1 data readiness | **in progress** |
+| [G6](#g6--guide-artifacts-on-disk-predate-the-compositing-fix) | Selected guides need current provenance checks | D1 data readiness | **in progress** |
 | [G7](#g7--cached-history-can-disagree-with-a-causal-prefix) | Cached history can disagree with an explicit causal prefix | continuation quality is unmeasured | **in progress** |
-| [G8](#g8--bf16-lora-fusion-weakens-the-trained-adapter) | bf16 LoRA fusion weakens the trained adapter | probe/deploy run a smaller correction than training learned | **open** |
+| [G9](#g9--a-random-window-c0-is-not-a-keyframe-encode) | a random-window `c0` is not a keyframe encode | training conditions on 8-frame latents that deployment never supplies | **open (accepted 2026-10-05)** |
+| [G8](#g8--bf16-lora-fusion-weakens-the-trained-adapter) | bf16 LoRA fusion weakens the trained adapter | shared unmerged path needs native effect/cost verification | **in progress** |
+| [G11](#g11--euler-rounding-differs-from-the-stock-step) | Euler rounding differs from the stock step | native sampling parity remains unmeasured | **in progress** |
+
+| [G10](#g10--saved-comparisons-have-unreadable-titles-at-narrow-widths) | Saved render text shrinks below the narrow-width requirement | preserve matched readable formats | **verified** |
+
+---
+
+## G11 — Euler rounding differs from the stock step
+
+**Required.** Positive next levels use the stock step's operation order and
+dtype conversions. A direct `[sigma,0]` step returns the prediction exactly.
+E1 compares native raw encodings and pixels, including this terminal difference.
+
+**Historical defect.** The custom step used bf16 interpolation at every level.
+A fixed CPU sample of 524,288 elements differed from the stock step at 257,310
+elements for `[1,0.725]`, with RMS 0.00334952 and maximum 0.03125.
+This is arithmetic evidence, not model-output or perceptual evidence.
+
+**Current.** `model.sampling.euler_to` calls the actual native
+`EulerDiffusionStep.step` at positive next levels and returns the prediction
+directly at zero. The stock bf16 step rounds velocity before reconstructing its
+endpoint, so the terminal outputs can differ. Keep the direct endpoint contract;
+do not hide this difference with a parity claim or an unmeasured tolerance.
+
+**Acceptance.** CPU multi-interval float32/bf16 tests must match the native
+step exactly at positive levels and preserve the exact direct endpoint. E1 must
+still measure full-model raw and decoded differences with matched inputs.
+Historical outputs keep their original source hashes.
+
+**Status.** In progress. The native E1 comparison remains open.
+
+## G9 — a random-window `c0` is not a keyframe encode
+
+**Required.** Training's `c0` has the distribution of what deployment supplies: a single real
+image encoded by the causal VAE as latent frame 0 (one pixel frame).
+
+**Current.** `train.py --random-window-latent-frames W` slices the stored master at a random
+latent frame `s` and uses frame `s` as `c0` (user decision, 2026-10-05: slice, do not re-encode).
+For `s = 0` this is the keyframe encode; for `s > 0` it is a latent that encodes 8 pixel frames
+(pixel frames 8s − 7 … 8s), with different statistics. `keyframes_mask` still marks window
+frame 0, and evaluation keeps `s = 0`.
+
+**Consequence.** Part of the training signal conditions on `c0` latents deployment never
+produces. The share is `1 − 1/(F − W + 1)` of samples (½ for 18-frame clips, 11/12 for
+28-frame clips at `W = 17`).
+
+**Closing it.** Re-encode each window from pixel frame `8s` so its frame 0 is a true
+single-frame encode (precompute per offset, capture and guide), or train only on `s = 0`.
 
 ---
 
@@ -26,8 +74,17 @@ Status vocabulary: **open** (no fix), **in progress** (a fix is partially landed
 **Required.** The adapter that probe and deployment run is the function training optimised,
 within bf16 rounding of the *delta*, not just of the weights.
 
-**Current.** Training runs the LoRA unmerged (PEFT, fp32 adapter weights against the bf16
-base). `Session.transformer(loras=...)` fuses `W + BA` into bf16 weights at load. Measured
+**Current.** Typed training, ordinary evaluation and product now share
+`model.adapters` configuration and saved tensor loading: unmerged PEFT, fp32
+adapter weights against frozen bf16 base weights. Inference wraps that velocity
+function once in stock x0. CPU controls with real small LTX/PEFT models match the
+loaded training reference bit-for-bit in both modes, including zero adapters.
+Native E2 effect, views/checkpoint steps, decoded appearance and cost remain open.
+`--adapter-application fused_bf16` is an explicit evaluation diagnostic requiring
+a recorded research override. Product exposes no fusion choice.
+
+**Historical evidence.** `Session.transformer(loras=...)` fuses `W + BA` into
+bf16 weights at load. Measured
 2026-10-02 on a real dev D1 adapter (60 updates, block 0, σ .421875, clip 0013_07): with no
 adapter the two paths are bit-identical, but the adapter's effect on the block is relative
 L2 0.136 unmerged and 0.119 fused, the two effects differ by 16%, and the raw outputs by 2.2%
@@ -38,10 +95,13 @@ learned correction.
 **Impact.** Every fused evaluation slightly understates (and perturbs) what the adapter learned;
 the effect is largest for small, early adapters.
 
-**Acceptance.** Fuse in fp32 and round once, or run the probe with the adapter unmerged; then
-re-measure the effect gap (target well under 5%).
+**Acceptance.** Run ordinary evaluation/product with the unmerged adapter and
+measure its effect against the loaded training reference (target under 5%, with
+an explicit near-zero-effect rule). Compare fusion separately. An fp32 sum
+rounded into bf16 base weights is not the accepted normal function. Run the
+bounded native E2 views/checkpoint-step, zero-effect, appearance and cost controls.
 
-**Status.** Open.
+**Status.** In progress: shared application implemented and CPU checked; native E2 open.
 
 ---
 
@@ -89,102 +149,18 @@ one-view exploratory run is in the workspace
 
 ## G1 — the supplied first frame is not a model condition
 
-The workspace tracks this as **F2 / Stage C** of
-the September 18 audit.
-
-### Required
-
-Every generated block, **including block 0**, has the supplied first-frame clean latent `c0` as
-initial conditioning — independent of D0/D1 and of teacher/self forcing. `c0` is
-objective-consistent, enters block 0 as clean tokens at per-token timestep zero, is preserved in
-that block's output and refresh, and remains reachable by every later block through the pinned
-cache history. Teacher forcing may add clean completed targets and self forcing adds detached
-predictions; neither replaces `c0`. A mid-clip chain start uses the same `c0` semantics. Full
-detail: [`core_algorithm.md` §3](core_algorithm.md#3-the-conditioning-contract).
-
-### Current
-
-`train_chain` derives `c0` from the objective-consistent capture master and makes block 0's
-leading latent-frame tokens clean at timestep zero. `causal_core.rollout` requires that same
-patchified condition, preserves it in the output, and writes it through the pinned cache sink.
-`onestep_core.rollout` requires `first_frame_latent`, so deployment cannot silently use the
-guide's composited frame 0.
-
-CPU reproduction recorded by the audit, through the real primitives with an identity denoiser: a
-first-frame input value of `1.0` comes out as `1.6720136404`, at timestep `0.725`.
-
-### Impact
-
-* The product's defining input — "one real first frame" — never reaches the model.
-* The background every later frame is supposed to propagate is itself generated, so identity and
-  background drift have no anchor.
-* Deployment has no parity with training even in principle, because the interface is missing.
-* Under teacher forcing the decoded video (predictions) can disagree with the identity that
-  conditioned the next block (ground truth), visible as a transition at the block-0/1 boundary.
-
-### What does **not** count as a fix
-
-Setting a zero timestep while the content stays noised; clamping frame 0 in the output after
-denoising; relying on `keyframes_mask`; pinning a generated frame 0 in the cache. "The sink is
-pinned" is not evidence — pinning is a *retention* policy over whatever was written.
-
-### Acceptance criteria for the future runtime fix
-
-These are **owed**, not present. They are distinct from the tests already in
-`tests/test_causal_core.py` / `tests/test_train.py`; in particular the existing cached-vs-full
-attention parity test passes today *with* this defect, so it establishes nothing about it.
-
-1. Inspect block 0's assembled input directly: frame 0's tokens equal `c0` bit-for-bit and its
-   per-token timestep is exactly zero, while generation tokens carry `σ`.
-2. Frame 0 is preserved in block 0's output and in the tokens written to the cache.
-3. The retained cache content still holds `c0` after eviction has discarded every other frame,
-   including at `--context-latent-frames 0`.
-4. Coverage across D0 × D1 and teacher × self forcing — the invariant is independent of both.
-5. Objective consistency: the `white` arm conditions on the white-objective first frame, never an
-   unmatted `bg` latent or a guide frame.
-6. Mid-clip chain starts use the same `c0` semantics; any additional GT history priming is
-   separately asserted and disclosed.
-7. D1 teacher forcing refreshes from the **target**, distinguishable from the guide (see G2).
-8. Train/rollout parity on a small real transformer, and equal transformer-forward counts on
-   every rank (FSDP lockstep) for clip-start and mid-clip chains alike.
-9. The conditioning change is **versioned** in checkpoint metadata; results from before and after
-   are not pooled.
-
-### Status
-
-**Verified 2026-09-19.** Focused CPU conditioning tests passed, followed by a two-GPU D0
-teacher-forced step-0/step-1 debug train and matching D0 probe.
-
----
+**Verified historical defect, fixed 2026-09-19.** Current `train_chain` and rollout assemble
+clean capture/supplied-image `c0` before the model at token timestep zero, preserve it in
+prediction/refresh and retain it as the sink. Dedicated conditioning tests and the recorded
+two-GPU debug run verified this boundary. Pre-fix results do not share `clean_c0_v1`.
+The original missing-condition reproduction is historical, not current behavior.
 
 ## G2 — generic teacher-forced rollout refreshes from the guide, not the target
 
-**Required.** Teacher forcing means the cache refresh is fed the **ground-truth target** for the
-completed block.
-
-**Current.** `train.train_chain` does that — `clean = target_tokens[lo:hi]` — and
-`causal_core.rollout` now does too: it takes `teacher_tokens` and refreshes from it.
-
-**What was wrong (until 2026-09-21).** `rollout(teacher_forcing=True)` refreshed from
-`guide_tokens`, the tensor the block was noised from. Those are the same tensor **for D0 only**,
-where the source *is* `z_y`. For D1 the generic rollout teacher-forced on the render guide, which
-is not the target.
-
-**Impact.** `visualize_d0.py --teacher-forcing` and any other caller of the generic rollout
-evaluated a regime training never ran, without raising. It was silent, and it looked like the
-training ablation. No D1 result was ever produced through that path — no D1 run has been
-trained — so nothing on disk needs relabelling.
-
-**Acceptance.** Pass an explicit teacher target through the rollout, or restrict
-`teacher_forcing=True` to D0 and refuse it otherwise; assert that a D1 teacher-forced refresh
-receives `z_y` and not `z_g`.
-
-**Status.** **Verified 2026-09-21.** `rollout` takes `teacher_tokens` and raises when
-`teacher_forcing=True` is passed without it — deliberately *required* rather than defaulted, so
-the next caller cannot reintroduce the bug by omission. `visualize_d0.py` passes the capture
-master. `tests/test_causal_core.py::test_teacher_forcing_refreshes_from_the_target_not_the_guide`
-pins all three behaviours on a case where `z_g != z_y`, including that the result no longer
-matches a refresh from the guide.
+**Verified historical defect, fixed 2026-09-21.** `causal_core.rollout` requires explicit
+`teacher_tokens` when teacher forcing is requested and refreshes from that capture target.
+`test_teacher_forcing_refreshes_from_the_target_not_the_guide` verifies the distinction when
+guide and capture differ. Preserve this invariant during extraction; no implicit guide fallback.
 
 ---
 
@@ -193,18 +169,12 @@ matches a refresh from the guide.
 **Required.** A fixed-σ, fixed-geometry, fixed-arm adapter must not load off-condition without an
 explicit, recorded override.
 
-**Current.** `train.checkpoint_metadata` stamps σ₀/σ levels, `K`, block and cache geometry,
-objective, guide mode, anchor weight, teacher forcing, LoRA rank/alpha/target, subset hash and
-`loss=full_frame_x0_mse`. Nothing reads it back: `visualize_d0.py` now accepts explicit geometry
-and sigma overrides and records them, but still takes those values and `--teacher-forcing` from
-the command line rather than the adapter. It checks probe sigmas against the selected base
-model's schedule, not the adapter metadata. `onestep_core.rollout` checks only that σ₀ is on the
-model grid and the schedule is one step. `sampling.assert_one_step_conditions` has no
-production call site.
-Related enforcement gaps: LoRA `alpha/rank` scaling is stamped but not folded into the exported
-factors nor applied at fusion (safe only at the default `alpha == rank`); `dataset.load_master`
-checks schema, not encode contract/objective/crop provenance; the stamped subset hash covers
-`subset['sources']` only, so different chains or splits can share one "identity".
+**Current.** Training stamps exact sigma/levels, geometry, objective/arm/forcing, loss,
+base fingerprint and full subset identity. `sampling.check_adapter_conditions` is used by
+`visualize_d1.py` before loading; explicit overrides are recorded. `visualize_d0.py` and
+the removed old product rollout do not use that full reader. Alpha/rank is refused when unsupported
+rather than applied at fusion; master schema checking still does not enforce all encode
+provenance. The lower status record describes the existing partial enforcement.
 
 **Impact.** A context-16 checkpoint is probed at context 2; a D1 adapter is accepted by the D0
 probe; a fixed-σ adapter is probed at other σ without being labelled off-condition. Every one of
@@ -221,7 +191,7 @@ objective, arm, `clean_c0_v1`, loss, attention, history computation, geometry, f
 off-condition use unless `--off-condition-override` is passed, which the manifest records. The
 trainer now stamps the base identity, the history computation and the **full** subset hash
 (`windows.subset_sha256`: sources, chains, splits, span); `windows.py` pins capture/guide latent
-and sidecar hashes. Still open: `visualize_d0.py` and `onestep_core.rollout` do not call the
+and sidecar hashes. Still open: `visualize_d0.py` and the removed old product rollout do not call the
 reader; LoRA `alpha/rank` is refused rather than applied at fusion; `dataset.load_master` still
 checks schema, not encode provenance.
 
@@ -229,27 +199,19 @@ checks schema, not encode provenance.
 
 ## G4 — no D1 probe
 
-**Required.** A checkpoint from the deployable arm can be decoded and looked at.
+**Required.** A checkpoint from the deployable arm can be decoded and inspected.
 
-**Current.** `visualize_d0.py` is the only probe and is D0-only: it renders
-`capture │ frozen base │ LoRA` from the capture source. It does not refuse a D1 adapter either
-(that is part of G3).
+**Current.** `visualize_d0 --guide-mode d1` exists and shares its rollout with D0.
+`visualize_d1 --arms d1 --checkpoint` provides paired evaluation. The existing 2026-10-02
+record reports real dev D1 adapters exercised via `visualize_d1` in the dev-training study.
+Claims that no D1 probe or D1 adapter exists are obsolete.
 
-**Impact.** The arm that actually deploys cannot be inspected; the arm that cannot deploy can.
+**Status.** In progress: the recorded real-adapter path is `visualize_d1`; direct
+`visualize_d0` end-to-end D1 verification is not established here, and its complete adapter
+condition enforcement remains G3. This documentation phase supplies no new GPU evidence.
 
-**Acceptance.** A D1-capable probe sharing the evaluation code with an explicit source choice —
-not a second rollout implementation — plus a refusal path in the D0 tool until it exists.
-
-**Status.** **In progress (2026-09-21; exercised 2026-10-02).** Real dev D1 adapters from the
-dev-training study (`expr/onestep_avatar/dev_training_20261001/`) were exported, loaded fused
-into the dev base by `visualize_d1.py --arms d1 --checkpoint`, and rolled out in-condition; the
-step-0 adapter reproduces the bare base bit for bit. `visualize_d0.py --guide-mode d1` exists and shares
-one `causal_core.rollout` with D0, changing only the noising source (`_source_master`); the
-refusal path is moot for the arm itself. Two things keep this open rather than verified: the D1
-path has **not yet been exercised against a real D1 adapter on a GPU** (none exists — no D1 run
-has been trained), and the tool still reads arm/σ/geometry from the command line rather than
-from adapter metadata, which is [G3](#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced)'s
-half of the same problem: nothing stops probing a D0 adapter with `--guide-mode d1`.
+**Acceptance.** Preserve the existing verified D1 behavior in unified evaluation, exercise
+its real-adapter path and use the common condition reader for every consumer.
 
 ---
 
@@ -258,7 +220,7 @@ half of the same problem: nothing stops probing a D0 adapter with `--guide-mode 
 **Required.** One nonzero, on-grid validator for the operating points both sides support.
 
 **Current.** `train.training_sigmas` accepts any value in `(0, 1]` and refuses `0.0`.
-`onestep_core.one_step_sigma` accepts only points on the distilled model's 9-point grid — and
+the removed old distilled-only validator accepts only points on the distilled model's 9-point grid — and
 would accept `0.0` if it were on that grid. `--sigma0 0.5` therefore trains an adapter that its
 own deployment API refuses.
 
@@ -270,7 +232,7 @@ checked separately, and an explicit research override for deliberate off-grid wo
 **Status.** Open (audit F12). Note since 2026-10-02: the dev backbone has no grid at all (any
 start in `(0, 1]`), so "on-grid" is a property of the distilled base only; the condition reader
 checks an adapter's *calibrated* σ separately from what the base supports, but
-`onestep_core.one_step_sigma` still applies the distilled grid to every base.
+the removed old distilled-only validator still applies the distilled grid to every base.
 
 ---
 
@@ -279,14 +241,14 @@ checks an adapter's *calibrated* σ separately from what the base supports, but
 **Required.** Every guide latent used for D1 was composited under the current contract,
 `dataset.GUIDE_COMPOSITING_VERSION` (2).
 
-**Current.** The v2 background-replacement fix (`R_white + (1−α)·(B−white)`) has landed in
-`build_guidance.composite_guide_frame` and is checked by `_render_is_complete`, with no legacy
-value grandfathered. One real `bg`/`white` pair (`Part_1/0012_09` view01) has been rebuilt and
-reviewed; **the other 18 `bg` pairs on disk are known-stale**, and there are **zero `white` guide
-renders**, so white D1 has no data at all.
+**Current.** The v2 replacement formula and producer guard are implemented. Some earlier
+inventories recorded stale bg guides; the 2026-10-02 status below records white guides built
+under v2. These dated inventories are not a live readiness check. Every selected D1 source
+must have current render/latent/crop/VAE provenance; documentation design does not regenerate
+or validate the full corpus and does not claim that white guide count is zero.
 
-**Impact.** A D1 run over the current `t2r2` subset would train on v1 guides. D0 is unaffected —
-it reads no guide artifact.
+**Impact.** A D1 run that selects a stale guide latent would train on the old compositing
+contract. Readiness must be checked for that run's selected sources. D0 reads no guide artifact.
 
 **Acceptance.** All guides required by a subset rebuilt under v2 before that subset is used for a
 D1 run; the subset's readiness checked against guide *latents*, not just render MP4s.
@@ -304,4 +266,70 @@ bit-identically, list in `expr/onestep_avatar/dev_training_20261001/provenance/`
 
 * [`core_algorithm.md`](core_algorithm.md) — the contract these gaps are measured against.
 * [`experiments.md`](experiments.md) — which arms each gap affects.
-* [`../configs/README.md`](../configs/README.md) — the recipes, each labelled with G1.
+* [`../configs/README.md`](../configs/README.md) — current runnable recipes and recorded limitations.
+
+### Product enforcement update — two-mode implementation
+
+The product `infer` CLI now checks version-two records and actual LoRA matrices
+before weight/text sessions. It checks the full base hash, D1/background, mode,
+shape and exact schedule, and permits no research override. Supplied-image
+encoding provenance and actual VAE identity are checked. Distilled levels must
+be on the selected base grid; dev levels are continuous in (0,1]. Thus the old
+product-side G3/G5 paths described above are removed. Old research visualization
+callers still await conversion, so broader G3 enforcement remains incomplete.
+
+### Causal diagnostic condition repair — 2026-10-07
+
+The typed checker now requires causal request fields `history_mode` and
+`kv_source`. It maps recorded `cached_refresh_global_sigma0` to cache/refresh.
+Recompute/joint history or denoise-produced K/V requires the existing research
+override; recorded differences name the field, trained/requested values and
+the changed continuation calculation. Missing/unsupported fields or invalid
+denoise-history pairs fail even with an override. Typed evaluation binds these
+fields before model/text sessions and records them in `conditions`. Product
+preflight explicitly uses cache/refresh and exposes no diagnostic override.
+Focused CPU checks cover these paths with actual adapter contracts/matrices and
+checked input records. This fixes F5's omitted history choices. Legacy
+visualization consumers still leave broader G3 incomplete. The shared adapter
+repair also binds `application_method` before loading: unmerged is the ordinary method;
+fusion requires a research override and is refused by product inference.
+
+The selected G7 default is clean global-sigma-zero cache refresh for training and
+product. Recomputed and joint history remain diagnostics. The existing numerical
+disagreement is not a default-selection blocker; E3 quality and cost measurement
+before/after eviction is still required. G8 requires unmerged fp32 PEFT adapters
+for ordinary evaluation/product and E2 effect verification. An fp32 sum rounded
+back into bf16 base weights is not accepted as the normal application method.
+
+## G10 — saved comparisons have unreadable titles at narrow widths
+
+**Required.** Keep text at least 16 pixels in a delivered compact video or poster
+shown at 480 pixels wide. Preserve exact labels, panel order, source frames and
+image aspect ratios. Fail before decoding when no supported layout fits.
+
+**Historical defect.** Saved comparisons only produced a full video with a
+1280-pixel viewing width. Its 16-pixel titles on a 1232-pixel canvas shrank to
+about 6.23 pixels at 480. A successful receipt did not prove narrow readability.
+The initial artifact and its evidence remain preserved.
+
+**Current.** Shared metadata-only geometry selects a measured compact layout.
+Schema-three saved renders contain both full and compact media, using the same
+decoded RGB panels without a second decode. Completion checks bind layout,
+font, dimensions, timing, labels, media hashes and equal panel pixel hashes.
+The saved-only report reader exposes both formats and refuses missing or changed
+compact output. It never renders missing media.
+
+**Verified.** The native first original corpus comparison produced a 2 × 2
+compact canvas at 824 × 1028, with 28-pixel text: 16.31 pixels at width 480.
+Both videos contain 129 frames at 30 fps. Inspected full and narrow native frames
+and a Chromium player screenshot at 480 pixels. The full compact movie played
+to its 4.3-second end at normal speed with no browser media error. Wide panel
+records and numeric metrics exactly match the prior native render. Original
+specification and four input hashes remain unchanged. The guarded queue finished
+with a verified receipt and released its GPU-4 claim.
+
+Workspace evidence: `expr/onestep_avatar/two_mode_restructure_20261005/compact_presentation_acceptance.json`.
+The 789-test suite includes compact-selection, pre-decode refusal, altered format
+and saved-only report-reader cases. This closes the presentation defect for the
+implemented saved-render path. It does not establish transformer/FSDP, adapter
+quality, stock sampling or whole-study scientific acceptance.

@@ -16,7 +16,8 @@ from ltx_core.model.transformer.modality import Modality
 from ltx_core.model.transformer.model import LTXModel, X0Model
 from ltx_core.model.transformer.model_configurator import LTXModelConfigurator, LTXVideoOnlyModelConfigurator
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import causal_core
+from scripts.onestep_avatar.model import causal as causal_core
+from scripts.onestep_avatar.model import common
 from scripts.prune.checks import export_parity
 from scripts.prune.core import provenance
 from scripts.prune.data import whole_clip
@@ -98,12 +99,12 @@ def _reload(path: Path, *, av: bool = False) -> LTXModel:
     return model.eval()
 
 
-def _inputs() -> tuple[causal_core.ClipGrid, Modality, torch.Tensor]:
+def _inputs() -> tuple[common.ClipGrid, Modality, torch.Tensor]:
     geometry = causal_core.CausalGeometry(
         scale_factors=SpatioTemporalScaleFactors(time=8, height=32, width=32),
         block_latent_frames=2, context_latent_frames=16,
     )
-    grid = causal_core.ClipGrid.build(
+    grid = common.ClipGrid.build(
         7, 64, 64, 30, geometry, device=torch.device("cpu"), dtype=torch.float32, latent_channels=8,
     )
     generator = torch.Generator().manual_seed(6)
@@ -111,8 +112,8 @@ def _inputs() -> tuple[causal_core.ClipGrid, Modality, torch.Tensor]:
     noise = torch.randn(1, 28, 8, generator=generator)
     context = torch.randn(1, 3, 8, generator=generator)
     c0 = capture[:, :4]
-    state = causal_core.with_clean_prefix(causal_core.mix_block_noise(capture, noise, 0.725), c0)
-    modality = causal_core.block_modality(
+    state = common.with_clean_prefix(common.mix_block_noise(capture, noise, 0.725), c0)
+    modality = common.block_modality(
         grid, state, context, 0.725, token_slices=[(0, 28)], clean_prefix_tokens=4,
     )
     return grid, modality, c0
@@ -209,7 +210,7 @@ def test_reloaded_compact_cached_forward_matches_in_memory_and_causal_reference(
             grid, geometry, num_layers=subject.num_blocks, inner_dim=subject.inner_dim,
             device=torch.device("cpu"), dtype=torch.float32,
         ) for subject in (model, loaded)]
-        forwards = [causal_core.denoised_from_velocity_model(subject) for subject in (model, loaded)]
+        forwards = [common.denoised_from_velocity_model(subject) for subject in (model, loaded)]
         for index, span in enumerate(plan):
             lo, hi = grid.token_span(*span)
             outputs = [causal_core.denoise_block(
@@ -221,7 +222,7 @@ def test_reloaded_compact_cached_forward_matches_in_memory_and_causal_reference(
             ids = causal_core.block_ids_for(spans, grid.tokens_per_latent_frame)
             timesteps = torch.zeros(1, hi, 1)
             timesteps[:, lo:] = 0.725
-            reference_modality = causal_core.block_modality(
+            reference_modality = common.block_modality(
                 grid, sequence, modality.context, 0.725, token_slices=[(0, hi)],
                 attention_mask=causal_core.block_causal_mask(ids),
             )
@@ -252,7 +253,7 @@ def test_compact_cache_eviction_preserves_reloaded_execution(tmp_path: Path) -> 
             grid, geometry, num_layers=subject.num_blocks, inner_dim=subject.inner_dim,
             device=torch.device("cpu"), dtype=torch.float32,
         ) for subject in (model, loaded)]
-        forwards = [causal_core.denoised_from_velocity_model(subject) for subject in (model, loaded)]
+        forwards = [common.denoised_from_velocity_model(subject) for subject in (model, loaded)]
         for span in geometry.plan(grid.latent_frames):
             lo, hi = grid.token_span(*span)
             outputs = [causal_core.denoise_block(

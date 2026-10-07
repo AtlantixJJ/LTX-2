@@ -2,11 +2,13 @@
 
 Snapshot: LTX-2 revision `5452107`; the active plan has uncommitted updates. New work is in experiment-local scripts. This review inspected those scripts, manifests and saved tensors, and one continuation contact sheet. It did not rerun transformer/VAE inference or modify the other agent's implementation/jobs. The sigma-sweep analysis was actively decoding during review; its final metrics/report and the decoder diagnostic results were not yet available.
 
+Current execution note (2026-10-07): the legacy sigma-sweep executors are retired. Their bytes are retained as provenance text; [current commands](../../../expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/README.md) use the package dependency queue. The exact self-matching watcher described in finding 4 was verified idle and stopped during retirement. These changes do not revise the dated scientific observations below.
+
 ## Findings, in priority order
 
 ### 1. Quality acceptance metrics do not yet measure identity or guide motion
 
-The [sweep scorer](../../../expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/analyze.py) calls adjacent unaligned RGB change `motion_over_capture`, and last-frame versus first-frame RGB error `drift_vs_c0_last`. The [continuation scorer](../../../expr/onestep_avatar/d1_continuation_confirm_20260926/analyze.py) uses equivalent definitions. Texture flicker contributes to the first score; legitimate pose changes contribute to the second. Neither can establish preserved motion or identity. Shared masks include generated outputs, so the measurement region also changes when new conditions are added to the sweep.
+The [sweep scorer](../../../expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/provenance/retired_execution_sources/analyze.py.txt) calls adjacent unaligned RGB change `motion_over_capture`, and last-frame versus first-frame RGB error `drift_vs_c0_last`. The [continuation scorer](../../../expr/onestep_avatar/d1_continuation_confirm_20260926/analyze.py) uses equivalent definitions. Texture flicker contributes to the first score; legitimate pose changes contribute to the second. Neither can establish preserved motion or identity. Shared masks include generated outputs, so the measurement region also changes when new conditions are added to the sweep.
 
 Keep these as explicitly named RGB diagnostics. Add tracked face/clothing comparisons, guide/capture pose trajectories and visibility confidence, using fixed source-derived regions. Inspect boundary-adjacent lossless frames. Do not select a sigma or declare the AR seam fixed from these scores alone. In the inspected `0025_11` boundary sheet, capture itself changes arm pose near the boundary; raw RGB jump size therefore cannot isolate an appearance reset.
 

@@ -18,16 +18,21 @@ render.
 
 ## Organization logic
 
-Only **three** things need fixing, and the file is organized around naming them explicitly
-rather than around a general-purpose converter:
+### Convert one frame
 
-1. **`raw_size` is `[W, H]` here but ARGAvatar reads `[H, W]`.** Left as-is, the render is
-   built for a transposed canvas and `full_K` normalisation is wrong with it. The fix asserts
-   the swapped result against the video's own decoded height rather than trusting the array.
-2. / 3. The other two conversions are documented inline at their call sites.
+Copy the pose and camera/cache fields named by `POSE_KEEP_KEYS` and `CACHE_KEYS` into CPU float32 tensors.
+Keep the calibrated camera fields from the driving view; do not solve a new camera.
+Apply these three conversions:
 
-A conversion that is "three known fixes" should read as three known fixes. Anything more
-general would hide which parts are load-bearing.
+1. Change `raw_size` from dataset `[width,height]` to ARGAvatar `[height,width]`.
+   Check the stored height against the actual decoded video height before conversion.
+2. Write `person_valid` as the boolean value of the source frame's `valid` field.
+3. Write `bg_color=[1,1,1]` in float32, which is the renderer's white background.
+
+The converter does not composite a capture background here.
+`build_guidance.py` owns that later pixel operation.
+
+### Refined body and view-local camera
 
 The default guide path uses the clip-level multiview refinement. It replaces only
 `pred_pose_raw`, `shape`, `scale`, `hand`, `face`, and `valid`; per-view camera, crop, and
@@ -35,12 +40,33 @@ image-cache fields stay with the driving view. The two records must have identic
 each replaced value. This preserves calibrated camera projection while giving every view the
 same refined whole-sequence body motion.
 
-When a view's detector missed frames, its per-view export has NaNs for every camera/cache
-field even though the multiview body trajectory is valid. The refined path repairs those
-view-local rows in memory by holding the nearest finite row, then applies the refined body
-values at every original frame. Its motion validity is the multiview `valid` array; the legacy
-per-view path still requires a valid finite bbox. The manifest crop box remains fixed and is
-never rebuilt from these repaired rows.
+For view detector gaps, `repair_view_camera_gaps` first selects rows with a valid bbox and no NaN coordinate.
+Copy an earlier valid row over each internal/trailing invalid run.
+For a leading run, copy the first following valid row.
+Repair only in memory and retain all original frame indices.
+Then replace the six refined body fields at their original indices.
+This leaves view-local camera/cache values from the repaired view and body motion from the refinement.
+No valid source row or raw corpus file is overwritten.
+No available camera row is an error.
+
+### Preserve motion timing
+
+For the legacy view-only path, usable frames require both pose and bbox validity, with no NaN bbox coordinate.
+For the refined path, use the supplied multiview validity array after camera repair.
+`build_motion` uses the same earlier-row/leading-row hold rule for short unusable motion runs.
+Reject a run longer than `max_gap` (default three frames), or a clip with no usable frame.
+Write one entry per original frame under `frames/{index:06d}.png`.
+Zero-padded names sort in playback order. Do not drop bad frames and shift later timing.
+Camera repair itself has no maximum-gap limit; motion validity still follows the body record.
+The manifest crop remains fixed and is never rebuilt from repaired rows.
+
+## Invariants
+
+- Camera and image-cache fields stay with the driving view.
+- Refined body replacement requires equal field shapes and frame timing.
+- The conversion preserves frame count and original order.
+- Raw size is checked against the video, not inferred from a tensor shape.
+- Gap repair changes in-memory rows only.
 
 ## Gotchas
 
@@ -51,3 +77,7 @@ never rebuilt from these repaired rows.
 ## Tests
 
 `tests/test_motion.py`
+Worked conversion check: dataset `raw_size=[1920,1080]` with actual video height 1080
+becomes `[1080,1920]`; `valid=True` becomes `person_valid=True`; background is `[1,1,1]`.
+Worked gap check: validity `[False,True,False,False,True]` selects source indices `[1,1,1,1,4]`.
+The output still contains five entries. A four-frame invalid motion run exceeds the default limit and fails.

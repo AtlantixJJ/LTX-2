@@ -48,7 +48,7 @@ A fixed clip and fixed seeds make a sequence of checkpoints directly comparable.
 `--steps` visualizes several checkpoints from one run in a single call (e.g. `--steps 100 500
 1000`), reusing one shared frozen-base decode and GT panel across all of them.
 
-The shared `_run_chain` helper also accepts internal `history_mode` and `max_blocks` arguments
+The shared `run_chain` helper also accepts internal `history_mode` and `max_blocks` arguments
 for `visualize_d1.py`'s matched diagnostics. This CLI remains cached; explicit causal-prefix
 and joint-window modes are inference-only references in `causal_core.rollout`.
 

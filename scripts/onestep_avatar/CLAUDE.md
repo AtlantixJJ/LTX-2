@@ -3,6 +3,11 @@
 Guidance for Claude Code when working inside this package: the one-step LTX-2.5 avatar
 renderer, corpus tooling and model training in **one tree**.
 
+**Implementation authorization (2026-10-05):** the user directed execution of the revised
+two-mode plan. The review boundary is passed. Read `doc/README.md` for the current
+implemented/proposed mapping. Model execution and launchers belong in this package;
+`expr/` code only generates reports from saved results.
+
 ## Reading order — binding
 
 Before editing anything here, in this order:
@@ -56,7 +61,17 @@ turn the namespace into a regular package and break that merge.
 This package sits inside the **LTX-2 submodule**, but most of it is workspace-specific:
 corpus plumbing for DNARendering and ARGAvatar, not anything upstream would want. It lives
 here because the model half genuinely cannot leave — `train.py`, `precompute.py` and
-`causal_core.py` import `scripts.prune.core` and `ltx_core`/`ltx_trainer`, all LTX-2-resident.
+the `model/` owners import `scripts.prune.core` and `ltx_core`/`ltx_trainer`, all LTX-2-resident.
+
+**Repository boundary:** training, training/evaluation launchers and queues, generation,
+model probes, reusable metrics, decoding, and training/inference visualization stay in this
+LTX-2 package. Code under `expr/onestep_avatar/` is only for report generation: sections,
+captions, report-specific plots, saved-result summaries, and report validation. Study settings,
+saved runs, metrics, media, and logs can remain there as data. Package code accepts their paths
+and does not import executable study code. Report rebuilds read saved results; missing results
+fail instead of launching training, generation, evaluation, or decoding. Move required logic
+out of current `expr/` executors during the reviewed implementation and remove obsolete copies
+and their docs. Do not leave forwarding execution wrappers in `expr/`.
 
 Practical consequence: **corpus-side changes move the LTX-2 submodule pin.** The workspace
 `CLAUDE.md` asks for explicit approval before moving that pin, so say so when a change here
@@ -64,13 +79,16 @@ needs committing.
 
 ## The documentation contract
 
-**Every module has a design doc at `doc/<module>.md`, and updating it is part of the change —
-not a write-up afterwards.**
+**Production files over 100 physical lines require a source-mirrored design doc. Files with
+100 lines or fewer describe their logic in their header docstring.** Count blanks, comments
+and headers; exactly 100 uses the header rule. Empty package markers and tests need no
+standalone module docs. Cross-module contracts and the documentation index are separate.
 
 | | |
 |---|---|
 | **Inline docstrings** answer | *why this line, why this constant, why not the obvious alternative* |
-| **`doc/<module>.md`** answers | *what this file is for, what flows through it, how it fits the other files, what breaks if you change it* |
+| **`doc/<relative-source-path>.md`** for larger files | *what this file is for, what flows through it, how it fits the other files, what breaks if you change it* |
+| **Small-file header** | objective, ordered logic, inputs/outputs and important invariants |
 
 The second is what a reader cannot reconstruct from one file, and it is where this pipeline
 has gone wrong before — every past bug has been **two producers of something that must have
@@ -80,9 +98,26 @@ one**, which is invisible from inside either producer.
 *contract with another module*. A pure refactor that moves no tensor and changes no artifact
 needs no doc edit; a new flag that changes what lands on disk always does.
 
-**When adding a module**, add `doc/<name>.md` and a row in `doc/README.md`'s file table in the
-same commit, keeping the existing section shape — Objective · Data flow · Organization logic ·
-Invariants · Gotchas · Tests.
+**Before changing code**, establish its intended logic in the doc folder. Large-file docs
+mirror source paths, e.g. `model/causal.py` → `doc/model/causal.md`, and use Objective · Data
+flow · Organization logic · Invariants · Gotchas · Tests. Core logic needs readable Mermaid
+diagrams plus explicit shape/state facts and worked checks with expected outcomes. Render
+and inspect diagrams; they cannot establish runtime numerical/distributed correctness.
+
+**Core logic is required in the design doc.** The Organization logic section states actual
+decisions, ordered operations, calculations/state changes, and outputs/failure behavior.
+Do not replace that explanation with a file/function list or a reference to source comments.
+Give a worked input with its expected result. For visualization, specify the displayed data,
+screen positions, labels, timing, size/readability rules, and the exact text selection rule.
+Tests must check those decisions and results, not only file existence or diagram syntax.
+
+Proposed modules are labeled Proposed and their absent source paths are text, not broken links.
+For planned small files, draft responsibilities/header content in the index's migration notes
+before editing the header. Once implemented, update the status/index and actual doc/header.
+When a file shrinks to at most 100 lines, preserve its useful explanation in its header and
+delete its separate doc. When it grows past 100, write the matching design doc first.
+Source moves/deletions update doc ownership and remove obsolete copies. Do not split or pad
+files merely to change which documentation rule applies.
 
 **When a doc and the code disagree, decide which kind of disagreement it is.**
 
@@ -96,6 +131,16 @@ a stale design doc is worse than none. A doc that describes what the code *must*
 does not, is a **code** defect: label the two plainly (Required / Current) and file the gap. A
 known violation stays prominently marked — in the module doc, in the affected recipes, and in
 `known_gaps.md` — until a fix is implemented *and* verified.
+
+## Documentation language
+
+Follow the user's target of about 80% ASD-STE100 style.
+Use short sentences, active verbs, and one term for each concept.
+Define technical terms before use. Preserve exact code identifiers and equations.
+Use `video segment` for consecutive encoded frames; explain `span` only as a code/option term.
+Define `c0` as the first-image input with no added noise.
+Name data explicitly in diagrams, for example `capture or guide frames` and `encoded first image`.
+Avoid unexplained labels such as `selected span` or `source span + c0`.
 
 ## Diagrams
 
@@ -157,16 +202,16 @@ at them.
    ([G1](doc/known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition), verified
    2026-09-19). Cache-parity tests do not cover it; the dedicated conditioning tests in
    `tests/test_train.py` do.
-1. **`causal_core.py` is the ONE rollout implementation.** `train.py`, `onestep_core.py`,
-   `visualize_d0.py`, `bench_forward.py` and `windows.py`'s block plan all call it. Never add
-   a second "build a block state" path — a train/deploy mismatch must have to be an edit to
-   that file rather than a divergence between two that were meant to agree.
+1. **Current:** `model/common.py` owns shared conditioning/noise/loss helpers;
+   `model/bidirectional.py` and `model/causal.py` own their mode calculations.
+   Training and generation remain different operations; extraction alone does
+   not prove parity. No CLI may create a second block-state or input path.
 2. **One producer per artifact.** The crop box comes from `precompute.py --process_gt_latent`'s
    manifest; `z_y` from the capture pass; the guide and its alpha from `build_guidance.py`;
    the subset from `windows.py`. Readers never recompute and never "reconstruct if missing" —
    they raise with a pointed error.
 3. **Shared knowledge has exactly one spelling.** Artifact names live in `dataset.py`, the
-   crop box in `geometry.py`, the block plan in `causal_core.py`, the mask codec in
+   crop box in `geometry.py`, the block plan in `model/causal.py`, the mask codec in
    `mask_video.py`. These were four transcribed pairs before the merge; do not reintroduce a
    copy "to avoid an import".
 4. **Both objectives (`bg`, `white`) share every code path**, differing only in which pixels
@@ -178,6 +223,7 @@ at them.
 
 ## Before calling a change done
 
-- `conda run -n ltx python -m pytest scripts/onestep_avatar/tests -q` passes;
-- the touched modules' `doc/*.md` reflect the change;
+- docs-only work checks links, source symbols, mode logic, worked design checks and inspected diagrams;
+- behavior changes pass `conda run -n ltx python -m pytest scripts/onestep_avatar/tests -q`;
+- touched modules' mirrored docs or small-file headers reflect the change;
 - shared whole-clip input or export changes follow [`../prune/CLAUDE.md`](../prune/CLAUDE.md).

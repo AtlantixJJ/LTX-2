@@ -1,141 +1,122 @@
-# Experiments — the D0/D1, objective and forcing axes
+# Training choices — mode, input, background, and past frames
 
-The canonical definition of every experiment this package can run. The runnable commands are in
-[`../configs/README.md`](../configs/README.md); the mechanics are in
-[`core_algorithm.md`](core_algorithm.md).
+These definitions apply to the implemented typed modes. Legacy execution
+paths remain until their callers and native replacement gates are checked.
 
-**Three independent axes.** A run picks one value on each. They are orthogonal: the objective
-does not change the code path, and the forcing policy does not change the arm.
+Historical D0 completion reports keep their original attribution and metrics.
+The removed fixed-run report builder expected a training grid containing sigma
+zero, separate frozen-base videos, and union-masked losses. These conditions do
+not describe current full-frame training. Do not rebuild a current result with
+that historical contract or relabel a historical masked loss. Current raw
+results, checked render records and numeric logs supply evidence to report code
+under `expr/`; missing artifacts must fail rather than start model jobs.
+Current commands are in [configs/README](../configs/README.md).
+See [README terms](../README.md#terms-used-here) before the model designs.
 
-| Axis | Values | Flag |
+## Attention mode
+
+Training supports explicit bidirectional and causal modes.
+A transitional mode-less loop still uses causal block sequences.
+The old loop's one-block complete-video path and `--whole-clip` visualizer
+are legacy behavior. Typed bidirectional execution has no cache or priming.
+The `--mode` switch is implemented. Native acceptance remains pending.
+
+Bidirectional mode processes one segment together.
+Causal mode processes blocks in order with stored past-frame data.
+Joint-history and recalculated-history paths are diagnostic comparisons.
+They are not additional training modes.
+
+## Arm
+
+Code uses `arm` or `guide_mode` for the D0/D1 input choice.
+
+| Choice | D0 | D1 |
 |---|---|---|
-| **Arm** | `d0` (diagnostic) · `d1` = D1a (deployable) | `--guide-mode` |
-| **Objective** | `bg` (the product) · `white` (subject-isolating) | `--objective` |
-| **History** | self forcing (default) · teacher forcing (ablation) | `--teacher-forcing` |
+| Data mixed with noise | capture encoding `z_y` | guide encoding `z_g` |
+| Training target | capture encoding `z_y` | capture encoding `z_y` |
+| First-image input | capture or supplied-image encoding | the same input, never guide frame zero |
+| Required files | capture master | capture and checked guide masters |
+| Purpose | capacity test | guide-to-capture training |
+| Product generation | unavailable because capture is absent | supported when conditions pass |
 
-All six combinations keep the clean supplied first frame `c0`, independent of arm and forcing
-policy.
+Both use full-frame MSE; see [core_algorithm](core_algorithm.md).
+A lower D0 loss does not establish better D1 video quality.
+At sigma one, D0/D1 agree only with the same model, adapter, noise, first image, and history.
+Do not compare separately trained adapters as this equality control.
 
----
+## Objective
 
-## 1. Arm
+Code uses `objective` for the background choice.
 
-Both arms compute the same loss against the same target; they differ in **which master latent is
-noised into the block input**.
-
-| | **D0** — capacity diagnostic | **D1 / D1a** — guide adaptation |
+| Choice | `bg` | `white` |
 |---|---|---|
-| Block input | `(1−σ)·z_y + σ·ε` | `(1−σ)·z_g + σ·ε` |
-| Loss target | `z_y` | `z_y` |
-| Reduces to | ordinary flow matching on real video (`z_g = z_y` ⇒ `v* = ε − z_y`) | the real render→capture task |
-| First-frame source (required) | `c0` from capture master frame 0 | the same `c0` — **not** the guide's frame 0, which is a render composite |
-| Artifacts required | capture master only (`ltx_vae_latent[_white].pt`) | capture **and** guide masters; the guide must be current under `GUIDE_COMPOSITING_VERSION` |
-| Loss | unweighted full-frame latent MSE, block-averaged | identical |
-| CLI | `--guide-mode d0` | `--guide-mode d1` (the default) |
-| Probe | `visualize_d0.py --guide-mode d0` | `visualize_d0.py --guide-mode d1` (2026-09-21; [G4](known_gaps.md#g4--no-d1-probe) partly closed) |
-| Deployable | **no** — `onestep_core.guide_conditionings` refuses `d0`, because there is no `z_y` at inference | yes, and the only deployable arm |
-| Interpretation | the architecture's capacity ceiling at σ₀ when the correspondence gap is zero | whether a LoRA closes the measured render→capture gap |
+| Capture pixels | original capture | capture matted to white |
+| Guide pixels | render over capture frame zero | render on white |
+| Filename | no suffix | `_white` suffix |
+| First-image input | bg capture encoding | white capture encoding |
 
-**D0 is not a competing arm and its loss is not a D1 quality number.** D0 starts from the target
-itself (`r = 0`), so its loss measures how well the frozen backbone plus a LoRA can reproduce real
-video in one step. D1's loss additionally carries the render→capture correspondence gap
-(subject-interior `r ≈ 0.89–0.93` measured 2026-09-12 by `stats.py`). Comparing the two numbers
-compares two different problems. The legitimate reading is directional: if **D0** fails, the
-bottleneck is capacity and no D1 tuning fixes it; if D0 is easy, the bottleneck is the
-correspondence.
+Version-two pixel compositing is `R_white+(1-alpha)*(B_frame0-white)`.
+Do not blend encoded data to replace this pixel operation.
+Both backgrounds use the same code.
+Check each selected video's current producer records before D1 training.
+Old inventory counts are not a live readiness check.
 
-**D1b / D1c are deferred proposals, not runnable configurations.** D1b (latent blend of the
-guide with the first frame before noising) and D1c (an additive guide embedding after
-`patchify_proj`) were sketched in the September 15 plan. `--guide-mode` accepts only `d0` and
-`d1`; there is no code for either. D1b additionally contradicts the package's own rule that
-composites are built in **pixel** space, never as a latent blend — an unresolved design
-contradiction, not queued work. The old plan's "nothing is rejected in advance" was a statement
-about the design space; it is not an implementation status, and must not be quoted as one. The
-former `d2` extra-token arm was dropped in 2026-09-13 (it cost 1.05× `k2`) and is not
-expressible under block-causal attention at all — appended reference tokens are future context.
+## Causal history
 
----
+Self forcing updates the cache from generated frames without gradients.
+Teacher forcing updates it from the explicit capture target.
+Both keep the same first-image input.
 
-## 2. Objective
+Current `model.causal.sample` requires `teacher_tokens` for teacher forcing.
+It no longer substitutes guide frames. G2 is fixed and verified.
 
-Both objectives share **every** code path, differing only in which pixels were encoded and which
-filename holds them. An objective is never a second pipeline.
+Clean cache refresh at whole-model sigma zero is the selected causal training
+and product computation. Active-sigma recomputation and joint-history execution
+are diagnostics; they can differ because of prompt AdaLN and old-frame context
+after eviction. This is a different continuation calculation, not a numerical
+optimization of recomputation. A causal adapter requires an explicit research
+override for changed `history_mode` or `kv_source`. Product uses cache/refresh
+with generated history and permits no override. Native quality/cost evidence
+before and after eviction remains open.
 
-| | **`bg`** (default, the product) | **`white`** |
-|---|---|---|
-| Guide `z_g` | render composited over the clip's real first frame, in **pixel** space: `R_white + (1−α)·(B_frame0 − white)` | render on white — the compositing identity case |
-| Target `z_y` | the real, unmatted capture | the capture with its background matted to white |
-| Bundle names | unsuffixed: `ltx_vae_latent.pt`, `argavatar_ltx_vae_latent.pt`, `argavatar_render.mp4` | `_white` suffix: `ltx_vae_latent_white.pt`, `argavatar_ltx_vae_latent_white.pt`, `argavatar_render_white.mp4` (`dataset._suffix`) |
-| Ghost band | present by design — `mask_0 \ mask_t`, a stale person-shaped patch from frame 0 — and part of the full-frame loss like everything else | does not exist: nothing to go stale |
-| Required `c0` | the capture master's frame 0 for **this** objective | the **white** objective's first frame — never the unmatted `bg` latent, never a guide frame |
-| Buys | the whole product | isolates the subject-texture gap from the background question |
-| Corpus state (2026-09-18 inventory; white updated 2026-10-02) | 3,360 capture masters; 19 guide pairs, of which **18 are stale under v2** ([G6](known_gaps.md#g6--guide-artifacts-on-disk-predate-the-compositing-fix)) | 3,360 capture masters; **51** v2 guide renders, all with guide latents |
+When training starts at a later block, priming uses capture past frames under either policy.
+Product generation starts at frame zero and has no capture past frames.
+Generated-history evaluation of a teacher-trained adapter changes its training conditions.
+Record that change.
+Bidirectional mode has no history policy.
 
-Consequences for what can run **today**: `white` + `d0` needs only capture bundles and is fully
-ready. `bg` + `d1` needs the 19 guides rebuilt under v2 first. `white` + `d1` is ready on 51 pairs
-(2026-10-02); freeze it with `windows.py --require-guide-latent`. The dev-backbone recipe is
-R5 in [`../configs/README.md`](../configs/README.md).
+## Weights, noise and schedules
 
-A subset records the objective it was frozen against; `train.py` refuses a mismatch.
+Dev/distilled selects base weights, not mode.
+Check base weight identity and supported noise levels before adapter settings.
 
----
+Current fixed-sigma and multiple-level direct training are supported.
+Since 2026-10-05, one uniform sigma draw is made per update/GPU process.
+Accumulated samples on that process share the draw.
+Earlier rotation-based results keep their historical attribution.
 
-## 3. History — teacher vs self forcing
+Fresh noise and fixed-per-sequence noise are different settings.
+Keep their current seeds.
+Random-start segment selection resets positions and uses the first selected capture encoding.
+G9 remains visible.
+More-step evaluation of a directly trained adapter needs an explicit record of changed conditions.
 
-The two regimes differ in **exactly one tensor**: what the cache refresh is handed after a block
-is denoised.
+## Implementation boundaries
 
-| | **Self forcing** (default, and what deploys) | **Teacher forcing** (`--teacher-forcing`) |
-|---|---|---|
-| Refresh input | `ẑ₀.detach()` — the block's own prediction at timestep zero | the clean ground-truth target for that block |
-| Later blocks see | the model's own accumulated errors | a clean history the model did not produce |
-| Role | the production setting; deployment has no ground truth | an **ablation**: isolates exposure-bias drift from everything else the AR loop changes |
-| Probing | probe a self-forced checkpoint self-forced | a teacher-forced checkpoint never saw its own errors in the cache, so probe it teacher-forced or the input distribution is one training never produced |
+Current code supports D0/D1, both backgrounds, both causal history policies, clean first-image input,
+and existing evaluation/generation paths.
+Explicit mode files, a fixed video list independent of frame selection,
+shared typed training, and one adapter checker are implemented. Their native
+acceptance, remaining input preparation and legacy ownership cleanup are open.
 
-**Teacher forcing is not access to future ground truth at deployment.** It is a training and
-evaluation ablation only; nothing in a deployed rollout can supply it.
+Required ordinary adapter application uses the same unmerged fp32 PEFT adapter
+function as training, against frozen bf16 base weights. Current ordinary
+typed evaluation/inference use the shared unmerged loader; G8 remains open
+pending native matched effect and cost measurement. Keep historical fused results labeled
+with that original method. Memory failure does not authorize a fused fallback.
 
-Two things to keep straight:
-
-* "Clean" cached content means **timestep-zero**, not ground truth. A self-forced refresh writes
-  generated content that is clean in exactly that sense.
-* The generic `causal_core.rollout(teacher_forcing=True)` currently refreshes from the **guide**,
-  which equals the target for D0 only —
-  [G2](known_gaps.md#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target).
-  Training does it correctly.
-
-**Cache priming is a separate teacher-forced seam.** A chain that starts mid-clip fills the cache
-from clean ground truth with one no-grad forward, in both forcing regimes. That is a
-training/deployment difference in its own right and must be disclosed as one; the escalation is
-to train whole clips (`windows.py --chain-length` covering the clip), which needs no priming.
-
----
-
-## 4. What is implemented, deferred and historical
-
-| | Status |
-|---|---|
-| D0, D1a; `bg`, `white`; teacher and self forcing | **implemented** and selectable from the CLI |
-| Clean supplied first frame `c0` in every block | **implemented** as `clean_c0_v1` |
-| D1 probe | **implemented 2026-09-21** as `visualize_d0.py --guide-mode d1`; not yet run against a real D1 adapter ([G4](known_gaps.md#g4--no-d1-probe)) |
-| Frozen-base paired D0/D1 probe | **implemented** as `visualize_d1.py`; one-step and distilled-tail runs use the same base when `--checkpoint` is omitted |
-| `visualize_d1.py --history-mode recompute` | **inference-only causal reference**; clean retained history is recomputed at each active global sigma, without K/V cache |
-| `visualize_d1.py --history-mode joint` | **inference-only architecture reference**; the same clean history and noisy current block attend bidirectionally, with no future block |
-| D1b, D1c | **deferred proposals** — no code, unresolved design contradiction |
-| `d2` extra reference tokens | **dropped** 2026-09-13; not expressible under causal attention |
-| Anchor loss (`--anchor-weight`) | **disabled** — only `0.0` is accepted; no `base_denoised.pt` producer exists and one frozen per-view tensor cannot represent the anchor across chains/σ/history |
-| Masked, subject-weighted or disagreement-weighted loss | **superseded** — the binding decision is unweighted full-frame latent MSE |
-| Sliding windows with a frozen carryover | **historical** — replaced by block-causal attention + K/V cache (2026-09-14). removed; there is no retained window baseline |
-| Pre-causal D0/D1 results, `runs/prelim/` | **historical evidence only.** `runs/prelim/` is an incomplete D1/`bg` causal run with merged launches and duplicate steps — not an experimental control. No `.safetensors` checkpoints exist under the current runs tree |
-
-Old measurements made under masked loss or the pre-causal scheme are historical. They must not be
-relabelled as current results, and they must not become configuration defaults.
-
----
-
-## Related
-
-* [`core_algorithm.md`](core_algorithm.md) — symbols, block algorithm, conditioning contract.
-* [`known_gaps.md`](known_gaps.md) — the open defects, with acceptance criteria.
-* [`../configs/README.md`](../configs/README.md) — the named, runnable recipes.
-* [`train.md`](train.md) · [`windows.md`](windows.md) — the per-module detail.
+Remove disabled anchor plumbing during cleanup.
+Masks and alpha are data-quality records, not loss weights.
+Old sliding-window designs and dropped choices are not active defaults.
+[Known gaps](known_gaps.md) records fixed defects and unresolved limits.
+Documentation adds no new model-test results.

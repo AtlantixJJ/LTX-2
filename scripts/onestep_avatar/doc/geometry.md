@@ -20,6 +20,23 @@ two conda envs.
 
 ## Organization logic
 
+### Core crop calculation
+
+1. Select valid bbox rows with no NaN coordinate. Reject an empty selection.
+2. Form their union: minimum left/top and maximum right/bottom across the complete video.
+3. Let union width/height be `w,h` and center be `cx,cy`.
+   Request a square side `max(w,h)*pad_factor`, centered at that point.
+4. Set fitted side `s=min(round(requested_side), canvas_width, canvas_height)`.
+5. Set left to `min(max(round(cx-s/2),0), canvas_width-s)`.
+   Apply the same rule to top with the canvas height.
+6. Return `[left,top,left+s,top+s]` and crop only pixels inside the original canvas.
+7. Calculate effective padding `s/max(w,h)`.
+   A value below one means the subject union does not fit; the corpus caller excludes that view.
+
+Use Python's existing rounding rule. Keep exactly the same arithmetic for old recorded boxes.
+`canonical_crop_box` calculates/checks geometry; capture precompute is the producer of the saved box.
+Guide generation reads that saved box and reports a disagreement rather than choosing another crop.
+
 `canonical_crop_box` is **the whole rule in one call**, and since 2026-09-15 it is the *only*
 copy of it. `precompute.py --process_gt_latent` calls it to compute the box it records, and
 `build_guidance.py` renders into that recorded box — one producer, one arithmetic.
@@ -30,6 +47,10 @@ package removed that seam; the two were verified identical over **all 3,360 corp
 canvas shapes** before the copy was deleted, so no recorded box moved. `test_geometry.py` is
 now a golden test on exact box values, which is what still bites: changing the rule would
 silently re-crop a corpus whose latents are already encoded.
+
+The legacy `crop_with_padding` helper can still fill out-of-frame areas for older callers.
+It is not the rule for producing capture training targets.
+Inventory callers before removing it; never replace shift-and-cap with synthetic target pixels.
 
 ## Invariants
 
@@ -53,3 +74,7 @@ silently re-crop a corpus whose latents are already encoded.
 `tests/test_geometry.py` — golden tests on exact box values. There is no longer a pin against
 `precompute.py`'s arithmetic: `precompute._capture_box` calls `canonical_crop_box`, so the two
 cannot disagree and a test comparing them would be tautological.
+Worked check: canvas `100x80`, union `[0,20,40,60]`, and padding `1.2`
+request `[-4,16,44,64]`. Fitting returns `[0,16,48,64]` with no synthetic pixels.
+A 90-pixel-wide union on that canvas gets square side 80 and effective padding `80/90 < 1`.
+That view is excluded rather than accepted as a clipped training target.

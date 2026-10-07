@@ -13,7 +13,7 @@ import torch
 from safetensors import safe_open
 
 from ltx_core.model.transformer.modality import Modality
-from scripts.onestep_avatar import causal_core
+from scripts.onestep_avatar.model import common
 from scripts.prune.core import artifacts, provenance, session
 from scripts.prune.data import whole_clip
 from scripts.prune.score import export_depth, export_pruned, hooks
@@ -27,10 +27,10 @@ def _difference(a: torch.Tensor, b: torch.Tensor) -> dict:
             "rel_l2": float(delta.square().sum().sqrt() / a.float().square().sum().sqrt().clamp_min(1e-12))}
 
 
-def _forward(model, grid: causal_core.ClipGrid, modality: Modality, c0: torch.Tensor) -> torch.Tensor:  # noqa: ANN001
+def _forward(model, grid: common.ClipGrid, modality: Modality, c0: torch.Tensor) -> torch.Tensor:  # noqa: ANN001
     with torch.no_grad():
         prediction, _ = model(video=modality, audio=None, perturbations=None)
-        return grid.unpatchify_block(causal_core.with_clean_prefix(prediction, c0), grid.latent_frames).cpu()
+        return grid.unpatchify_block(common.with_clean_prefix(prediction, c0), grid.latent_frames).cpu()
 
 
 def argument_parser() -> argparse.ArgumentParser:

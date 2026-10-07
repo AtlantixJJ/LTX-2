@@ -12,8 +12,9 @@ import torch
 from safetensors import safe_open
 
 from ltx_core.model.transformer.modality import Modality
-from scripts.onestep_avatar import causal_core
-from scripts.onestep_avatar.train import _load_training_master
+from scripts.onestep_avatar.dataset import load_training_master
+from scripts.onestep_avatar.model import causal as causal_core
+from scripts.onestep_avatar.model import common
 from scripts.prune.core import provenance, session
 
 TASK = "whole_clip_d0"
@@ -226,14 +227,14 @@ def verify_saved_noise(base_root: Path, candidate_root: Path, base_row: dict, ca
 
 
 def build_input(root: Path, manifest: dict, *, view: str, sigma: float,
-                current: session.Session) -> tuple[causal_core.ClipGrid, Modality, torch.Tensor, dict]:
+                current: session.Session) -> tuple[common.ClipGrid, Modality, torch.Tensor, dict]:
     """Rebuild the baseline D0 modality without requiring a pruned candidate."""
     validate_manifest(manifest)
     row = records(manifest)[(view, sigma)]
     capture_path = Path(row["artifacts"]["capture"])
     if provenance.file_sha256(capture_path) != row["artifacts"]["capture_sha256"]:
         raise ValueError("capture changed since saved baseline rollout")
-    capture, fps = _load_training_master(capture_path)
+    capture, fps = load_training_master(capture_path)
     if capture.dtype != session.DTYPE or capture.ndim != 4 or not torch.isfinite(capture).all():
         raise ValueError("capture must be a finite BF16 C,T,H,W latent")
     if provenance.checkpoint_fingerprint(current.model.paths.video_vae()) != manifest["model"]["video_vae_fingerprint"]:
@@ -246,7 +247,7 @@ def build_input(root: Path, manifest: dict, *, view: str, sigma: float,
         current.model.scale_factors, block_latent_frames=latent_frames - 1,
         context_latent_frames=manifest["geometry"]["context_latent_frames"],
     )
-    grid = causal_core.ClipGrid.build(
+    grid = common.ClipGrid.build(
         latent_frames, height * current.model.scale_factors.height,
         width * current.model.scale_factors.width, fps, geometry,
         device=current.device, dtype=session.DTYPE,
@@ -264,10 +265,10 @@ def build_input(root: Path, manifest: dict, *, view: str, sigma: float,
         raise ValueError("session text context differs from saved baseline")
     if epsilon.shape != source.shape:
         raise ValueError("saved epsilon does not fit the captured token grid")
-    noisy = causal_core.mix_block_noise(source, epsilon.to(current.device), sigma)
+    noisy = common.mix_block_noise(source, epsilon.to(current.device), sigma)
     c0 = source[:, :grid.tokens_per_latent_frame]
-    state = causal_core.with_clean_prefix(noisy, c0)
-    modality = causal_core.block_modality(
+    state = common.with_clean_prefix(noisy, c0)
+    modality = common.block_modality(
         grid, state, current.context, sigma,
         token_slices=[grid.token_span(0, latent_frames)],
         # The entire clip is one bidirectional block. None expresses full visibility

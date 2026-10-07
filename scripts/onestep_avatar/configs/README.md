@@ -1,342 +1,537 @@
-# Configuration — Accelerate YAMLs and the D0/D1 run recipes
+# Package launch configuration and current commands
 
-Two different things live under this heading, and conflating them is the mistake this file
-exists to prevent:
+Explicit bidirectional and causal training use the typed runtime. New launches
+use the shared `fsdp.yaml` and an explicit process count. The old mode-less
+entry is temporary for live queues and is not a new-run recipe.
 
-* **`fsdp_{2,3,4}gpu.yaml`** configure the *process and sharding topology* — how many ranks, how
-  FSDP shards and saves. They say nothing about the experiment.
-* **The recipes in §2** configure the *experiment* — arm, objective, forcing, geometry, σ, LoRA,
-  schedule. `train.py` is a **CLI-driven trainer**: there is no experiment YAML and no config
-  loader. There is deliberately no `d0.yaml`/`d1.yaml`; a file like that could not be loaded.
+Use the `ltx` environment from the LTX-2 root. Only guide rendering uses
+`argavatar`. Check available GPUs before execution. These recipes describe
+commands; this refactor does not start campaigns or bulk preprocessing.
 
-> Every recipe uses `clean_c0_v1`: the supplied real first frame is clean at timestep zero in
-> block 0 and is retained as the pinned cache sink.
-
-Definitions of the arms and axes: [`../doc/experiments.md`](../doc/experiments.md).
-Mechanics: [`../doc/core_algorithm.md`](../doc/core_algorithm.md).
-
----
+Read [core rules](../doc/core_algorithm.md), [mode settings](../doc/training/config.md)
+and [adapter checks](../doc/training/checkpoints.md) before changing conditions.
 
 ## 1. Accelerate configs
 
-Copies of `packages/ltx-trainer/configs/accelerate/fsdp.yaml` at 2, 3 and 4 processes, with two
-deliberate differences. The trainer's own file is left untouched — the LTX-2.3 I2V run in `expr/`
-depends on it — so `fsdp_4gpu.yaml` here is a copy at the same process count, not a reference.
+### Shared template and process-count override
 
-| Setting | Trainer's fsdp.yaml | Here | Why |
-|---|---|---|---|
-| `num_processes` | 4 | 2 / 3 / 4 | Preliminary runs take whatever cards are free. Drop `--lora-rank`, never `K` — `K` is what the loop exists to exercise. |
-| `fsdp_cpu_ram_efficient_loading` | `true` | `false` | `train.py` loads the 42 GB bf16 checkpoint **straight onto each GPU** (`--init-device cuda`) rather than staging it in host RAM. Three ranks staging on the host would want ~126 GB of a machine with ~139 GB free, and host-RAM contention here has hung jobs for hours. FSDP shards in place, so the 42 GB is transient and fits a 49 GB card. |
-| `fsdp_state_dict_type` | `SHARDED_STATE_DICT` | `FULL_STATE_DICT` | `save_lora` gathers the adapter on the main process and writes ONE ComfyUI-compatible `.safetensors`, the layout `DiffusionStage.with_loras` fuses at load. The adapter is tens of MB; there is nothing to shard. |
+`fsdp.yaml` is the package template for new explicit-mode launches. It keeps
+GPU checkpoint loading (`fsdp_cpu_ram_efficient_loading: false`), adapter
+gathering (`FULL_STATE_DICT`), FSDP version 1, original parameters, and the
+`BasicAVTransformerBlock` wrap policy. Its default process count is four.
+Pass `--num_processes` to match the selected devices. Installed Accelerate's
+launch parser must resolve that override before any model process starts.
 
-Memory at 2 GPUs: ~21 GB of sharded weights per rank plus the all-gather buffer, the
-gradient-checkpointed activations of **one block**, and the LoRA grads/Adam state. Detaching
-between blocks keeps that at one block regardless of `K`.
-
-**Pick the YAML that matches the cards you actually have free** (`nvidia-smi` first), and give
-each concurrent launch its own `--main_process_port`.
-
----
-
-## 2. The four named recipes
-
-### Frozen-base D1 appearance-jump diagnostic
-
-Run these as separate fresh output directories on a free GPU, from `LTX-2`. Both schedule
-arms omit `--checkpoint`, so they use identical frozen weights. The probe saves raw D0/D1
-latents and a global frame-indexed epsilon tensor per view. Change only the listed flag for
-each paired control; keep seed, view, geometry and output objective fixed.
+For example, from `LTX-2`, after checking free devices:
 
 ```bash
-conda run -n ltx python -m scripts.onestep_avatar.visualize_d1 \
-  --view ../data/AnimatableHuman/DNARenderingVideo/Part_1/0008_01/views/view00_cam51 \
-  --objective white --sigmas 0.909375 --teacher-forcing --seed 42 --gpu-id 1 \
-  --output ../expr/onestep_avatar/d1_diagnostic/base_one_step
-
-conda run -n ltx python -m scripts.onestep_avatar.visualize_d1 \
-  --view ../data/AnimatableHuman/DNARenderingVideo/Part_1/0008_01/views/view00_cam51 \
-  --objective white --sigmas 0.909375 --teacher-forcing --trajectory-only \
-  --seed 42 --gpu-id 1 --output ../expr/onestep_avatar/d1_diagnostic/base_three_step
+CUDA_VISIBLE_DEVICES=<GPUS> conda run --no-capture-output -n ltx accelerate launch \
+  --config_file scripts/onestep_avatar/configs/fsdp.yaml \
+  --num_processes <COUNT> --main_process_port <PORT> \
+  -m scripts.onestep_avatar.train --mode bidirectional \
+  --subset <V2_SUBSET> --output <FRESH_OUT> --variant dev \
+  --guide-mode d1 --objective white --span-latent-frames 17
 ```
 
-Repeat the three-step command without `--teacher-forcing` for generated history, then with
-`--history-mode recompute` for the explicit causal-prefix reference. At sigma 1, pass
-`--sigmas 1.0` and compare one step with the eight-step tail. A two-versus-four latent-frame
-comparison uses the same full-grid epsilon for both geometries. The recomputed prefix can
-cost substantially more memory and time; review its raw latents and manifest before using
-decoded panels as evidence. The prompt cache and model paths are resolved by `open_session`.
-For the joint-window reference, change only `--history-mode joint` relative to the recomputed
-causal run; this allows history to attend to the current block and is an inference-only
-architecture experiment. Add `--raw-only` to measure rollout cost without VAE decoding.
+The three old GPU-count copies are removed after the training caller migration.
+The running study uses the separate recorded forward-prefetch setting; preserve
+that setting when reproducing its jobs. Do not modify the trainer package's YAML.
 
----
+### Corpus measurements and guide rendering
 
-All commands run **from the LTX-2 repo root** in the `ltx` conda env.
+Use the public module commands directly from `LTX-2`. The removed corpus shell
+launchers had no active callers in the package or current study execution
+inventory. They selected environments, checked free GPU memory, and set logging
+paths; they did not implement measurement or guide rendering.
 
-### Path substitutions
-
-| Placeholder | Meaning |
-|---|---|
-| `<SUBSET>` | a frozen subset JSON under `../expr/onestep_avatar/windows/` |
-| `<OUT>` | a **fresh** run directory under `../expr/onestep_avatar/runs/` — a used `--output` is refused unless `--overwrite` archives it |
-| `<GPUS>` | the free device ids, e.g. `2,3` |
-| `<PORT>` | a free `--main_process_port`, e.g. `29517` |
-
-`--corpus-root` is **not** passed: it defaults to the subset's own recorded `corpus_root`, which
-is where `precompute.py` wrote the masters. Pass it only to read a relocated copy.
-
-### Freezing the subset first — where `K` comes from
-
-`K` (blocks per training sample) is a **property of the frozen subset**, chosen at freeze time by
-`windows.py --chain-length`. `train.py` has no `--chain-length` flag; it reads `K` from the
-subset's chains.
+Before measurements, check `nvidia-smi` for an available device with at least
+34,000 MiB free. Use the `ltx` environment and the corpus path for both inputs:
 
 ```bash
-# bg (needs guide renders; --require-guide checks the render MP4, not the guide latent -- G6/F4)
-conda run -n ltx python -m scripts.onestep_avatar.windows \
-  --name t2r2 --objective bg --require-guide \
-  --max-actors 8 --chain-length 3 --min-holdout-actors 2
-
-# white D0 (capture-only: no --require-guide, since D0 reads no guide artifact at all)
-conda run -n ltx python -m scripts.onestep_avatar.windows \
-  --name white-d0-t2r2 --objective white \
-  --max-actors 8 --chain-length 3 --min-holdout-actors 2
+conda run --no-capture-output -n ltx python -u -m scripts.onestep_avatar.stats \
+  --model 2.5 --gpu-id <GPU_ID> \
+  --renders ../data/AnimatableHuman/DNARenderingVideo \
+  --render-glob argavatar_render.mp4 \
+  --pairs ../data/AnimatableHuman/DNARenderingVideo \
+  --max-videos 4 --eps-samples 8 \
+  --out ../expr/onestep_avatar/analysis_summary.json
 ```
 
-`--min-holdout-actors` defaults to 12; at 8 actors use 2, or the training split is left with one
-actor. The subset records the objective it was frozen against, and `train.py` refuses a
-`--objective` that disagrees.
-
-### R1 — `d0_teacher_forced`
-
-The capacity diagnostic with a clean ground-truth history. Not deployable.
+Before guide rendering, check for at least 20,000 MiB free. `CUDA_VISIBLE_DEVICES`
+maps the selected physical device to local device zero. Use `argavatar`, keep
+two separate driving-view values, and save an unbuffered combined log under
+`expr/`. Inspect the first batch's QA overlays before starting another batch.
 
 ```bash
-CUDA_VISIBLE_DEVICES=<GPUS> accelerate launch \
-  --config_file scripts/onestep_avatar/configs/fsdp_2gpu.yaml --main_process_port <PORT> \
-  -m scripts.onestep_avatar.train \
-  --subset <SUBSET> --output <OUT> \
-  --model 2.5 --objective white --guide-mode d0 --teacher-forcing \
-  --sigma0 0.725 --block-latent-frames 2 --context-latent-frames 8 \
-  --lora-rank 32 --lora-alpha 32 --lora-target attn \
-  --lr 1e-4 --warmup-steps 20 --steps 2000 --seed 42 \
-  --save-every 100 --anchor-weight 0.0
+mkdir -p ../expr/onestep_avatar/logs
+CUDA_VISIBLE_DEVICES=<GPU_ID> conda run --no-capture-output -n argavatar \
+  python -u -m scripts.onestep_avatar.build_guidance \
+  --driving-views 1 5 --limit 8 --visualize --device cuda:0 \
+  2>&1 | tee ../expr/onestep_avatar/logs/guide_review.log
 ```
 
-### R2 — `d0_self_forced`
+Choose a fresh log name for another batch. A zero limit requests all available
+inputs; do not use it for this refactor's bounded checks. These recipes document
+preserved behavior and do not authorize a corpus campaign.
 
-The same diagnostic under the regime deployment actually uses. Drop one flag:
+## 2. Fixed inputs and training modes
+
+### Fixed training preview inputs
+
+Prepare RGB reference pixels with the checked `media --prepare-training-references`
+command first. Then assemble one selected source using ordinary evaluation flags:
 
 ```bash
-#   ... --guide-mode d0          (no --teacher-forcing)
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.prepare_inputs preview \
+  --references <REFERENCES_JSON> --output <FRESH_FIXED_DIRECTORY> --gpu-id <FREE_GPU> \
+  --evaluation-arguments --mode bidirectional --subset <V2_SUBSET> --source <SOURCE_ID> \
+  --variant dev --guide-mode d1 --span-latent-frames 7 --schedule 0.725 0 --include-base
 ```
 
-Run R1 and R2 as a pair when the question is exposure-bias drift: one variable, everything else
-held.
+For causal, select `--mode causal` with the intended block/history settings.
+References must cover the selected 49 RGB frames. `--include-base` requests the
+base comparison; without it the baseline cell is explicitly not requested.
+Both positive and, when needed, negative text are pinned. Supply the resulting
+`preview.json` as training's `--preview-inputs`; checkpoint completion enqueues
+the separate generation/rendering job. Preparation performs no transformer call.
 
-### R3 — `d1_teacher_forced`
+### Supplied-image product input
 
-The deployable arm with a ground-truth history — a training ablation, not a deployment mode.
+The image uses the original canvas coordinates of the guide's saved crop. White
+requires a matching grayscale matte; bg rejects one. Use a fresh directory:
 
 ```bash
-CUDA_VISIBLE_DEVICES=<GPUS> accelerate launch \
-  --config_file scripts/onestep_avatar/configs/fsdp_2gpu.yaml --main_process_port <PORT> \
-  -m scripts.onestep_avatar.train \
-  --subset <SUBSET> --output <OUT> \
-  --model 2.5 --objective bg --guide-mode d1 --teacher-forcing \
-  --sigma0 0.725 --block-latent-frames 2 --context-latent-frames 8 \
-  --lora-rank 16 --lora-alpha 16 --lora-target attn \
-  --lr 1e-4 --warmup-steps 20 --steps 2000 --seed 42 \
-  --save-every 100 --anchor-weight 0.0
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.prepare_inputs supplied-image \
+  --image <RGB_IMAGE> --mask <GRAYSCALE_MATTE> --guide <WHITE_GUIDE_BUNDLE> \
+  --output <FRESH_INPUT_DIRECTORY> --gpu-id <FREE_GPU> --review
 ```
 
-Training and the generic `causal_core.rollout(teacher_forcing=True)` both refresh from the
-explicit **target** `z_y`. The rollout requires `teacher_tokens`, so D1 cannot silently refresh
-from the render guide; [G2](../doc/known_gaps.md#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target)
-records the verified fix.
+The result `image.pt` is the `infer.py --first-image` input. The prepared PNG
+shows actual preprocessing; the decoded PNG shows native VAE reconstruction.
+This command prepares exactly one image and does not generate a video.
 
-### R4 — `d1_self_forced`
+### Historical sigma-sweep generation preparation
 
-**The baseline every other arm has to beat** — the deployable arm under the deployable regime.
+Preserve the four original cases as 32 explicit causal evaluation jobs and four
+dependent matched decoder jobs using
+their exact recorded schedules, literal prompts, paired master hashes and
+saved noise prefixes. The cases file pins the original manifests and the
+historical source supporting their unguided configuration. From `LTX-2`:
 
 ```bash
-#   ... --guide-mode d1          (no --teacher-forcing)
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.sigma_sweep_jobs \
+  --cases ../expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/configs/generation_cases.json \
+  --output <FRESH_PREPARATION_DIRECTORY>
 ```
 
-### R5 — `d1_self_forced_dev` (LTX-2.5 dev backbone, 2026-10-02)
+This prepares data only. Review `jobs.json` through the package queue's
+`--dry-run`; actual execution uses its documented shared claims and device
+policy. Historical GPU numbers are evidence only. The preparation record binds
+the thirteen derived files, original inputs and producer sources. Each decoder
+waits for eight unchanged verified generation receipts. Its version-two spec
+resolves future tensor hashes only from scientifically complete result records.
+Reports are rebuilt separately from saved decoded samples. The old callers are
+retired; their exact bytes and hashes remain as producer provenance text.
+Native replacement parity remains an open acceptance gate.
 
-R4 on the **dev** transformer, the recipe of the dev-training study
-(`plans/2026-10-01-ltx25-dev-onestep-avatar-training.md`). Freeze the study subset first —
-three-way explicit split, clip-start chains only, one common 17-latent-frame span, guide
-**latents** required:
+### Saved sigma-sweep decoding
+
+The package owns saved sweep decoding; reports read its saved PNG samples.
+The four historical decodes also have package queue data in
+`expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/configs/saved_decode_jobs.json`.
+These `sigma_sweep` jobs use shared claims, pin their specs and verify all saved
+media and metric controls before publishing receipts. They decode existing
+historical tensors. Generation preparation also creates result-bound dependent
+decoders for new outputs.
+Four checked specs are under
+`expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/configs/`.
+This command uses the original raw tensors and masters and requires a fresh
+destination. Check that the selected GPU is free and use shared reservations
+before native execution. From `LTX-2`:
 
 ```bash
-conda run -n ltx python -m scripts.onestep_avatar.windows \
-  --name pilot_white_k8 --output-root ../expr/onestep_avatar/dev_training_20261001/subsets \
-  --objective white --require-guide --require-guide-latent --clip-start-only \
-  --span-latent-frames 17 --chain-length 8 --max-views-per-clip 2 \
-  --train-actors 7 11 14 16 --validation-actors 13 17 --test-actors 10 97 128 206
-conda run -n ltx python -m scripts.onestep_avatar.windows --verify <SUBSET>   # 0 problems before launch
-
-CUDA_VISIBLE_DEVICES=<4 GPUS> accelerate launch \
-  --config_file scripts/onestep_avatar/configs/fsdp_4gpu.yaml --main_process_port <PORT> \
-  -m scripts.onestep_avatar.train \
-  --subset <SUBSET> --output <OUT> \
-  --model 2.5 --variant dev --objective white --guide-mode d1 \
-  --sigma0 0.421875 --block-latent-frames 2 --context-latent-frames 8 \
-  --lora-rank 16 --lora-alpha 16 --lora-target attn \
-  --lr 5e-5 --warmup-steps 20 --steps 200 --seed 42 --noise-policy fresh \
-  --save-initial --save-every 25 --anchor-weight 0.0 --no-wandb
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.sigma_sweep \
+  --spec <SAVED_SWEEP_SPEC> --output <FRESH_SAVED_MEDIA_DIRECTORY> --gpu-id <GPU>
 ```
 
-Measured 2026-10-02 on 4× RTX A6000 (47.4 GiB): **two ranks OOM** in the block-0 denoise
-forward; four ranks peak at ~44.8 GiB (≈2.6 GiB headroom). Each update (four chains, K=8, one
-priming + 16 forwards + 8 backwards per chain) is all-gather-bound — see the study report for
-the measured seconds per update by GPU placement. Probe a dev adapter only through
-`visualize_d1.py --variant dev --steps 30 --dev-denoising-steps 1 --sigmas <its σ> --arms d1
---raw-only --checkpoint <ADAPTER>`, which refuses it on any other base, σ, geometry or schedule.
-The C2 variant changes only `--sigma0 0.725`; mixed noise is `--sigma-levels 0.421875 0.725`
-followed by a calibration stage `--init-adapter <mixed checkpoint> --sigma0 <σ>`.
-
-### The `bg` / `white` substitution
-
-Change **two** things together and nothing else:
-
-1. `--objective bg` → `--objective white`;
-2. `<SUBSET>` → a subset frozen with `windows.py --objective white`.
-
-Subset requirements per combination:
-
-| Arm × objective | Subset needs | Ready today |
-|---|---|---|
-| `d0` + `white` | capture masters only | **yes** — 3,360 white captures exist |
-| `d0` + `bg` | capture masters only | yes |
-| `d1` + `bg` | capture **and** guide masters, current under `dataset.GUIDE_COMPOSITING_VERSION` | **no** — 18 of 19 guide pairs are stale under v2 ([G6](../doc/known_gaps.md#g6--guide-artifacts-on-disk-predate-the-compositing-fix)) |
-| `d1` + `white` | same | **yes, 30 → 51 pairs (2026-10-02)** — 51 white guide latents current under v2; freeze with `--require-guide-latent` |
-
----
-
-## 3. Which values are defaults, and which are choices
-
-`train.py --help` is the authority; this table is the reading of it at the time of writing.
-
-| Flag | Default in `parse_args` | In the recipes |
-|---|---|---|
-| `--model` | `2.5` | **checked default**, stated explicitly |
-| `--variant` | `distilled` | **experiment choice**; R5 passes `dev` |
-| `--noise-policy` | `fresh` | default since 2026-10-02; `fixed_per_chain` only for the overfit debug control |
-| `--init-seed` / `--data-seed` / `--noise-seed` | `--seed` | recorded separately in metadata |
-| `--chains-per-rank` | `1` | operational; chains per update = this × ranks |
-| `--init-adapter` | none | a new stage from a parent adapter, not a resume |
-| `--sigma0` | `0.725` | **checked default** — the deployed operating point |
-| `--block-latent-frames` | `2` (`causal_core.BLOCK_LATENT_FRAMES`) | **checked default** — the deployed 16-pixel-frame stride |
-| `--context-latent-frames` | `8` (`causal_core.CONTEXT_LATENT_FRAMES`, max 16) | **checked default**; a retained history of 9 latent frames including the pinned sink. Memory-bound: depth 15 OOMs in `backward` at rank 32 on 4×49 GB, depth 7 measured flat at ~45.1 GB |
-| `--guide-mode` | `d1` | experiment choice |
-| `--objective` | `bg` | experiment choice; must match the subset |
-| `--teacher-forcing` | off | experiment choice |
-| `--lora-rank` | `8` | **example choice** (16/32 above) |
-| `--lora-alpha` | equal to `--lora-rank` | **keep it equal**: non-unit `alpha/rank` is stamped but not applied at fusion ([G3](../doc/known_gaps.md#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced)) |
-| `--lora-target` | `attn` | **checked default**; `attn_ffn` adds the FFN projections |
-| `--lr` | `1e-4` | **checked default** |
-| `--warmup-steps` | `20` | **checked default** |
-| `--steps` | `200` | **example choice** (2000 above) |
-| `--seed` | `42` | **checked default** |
-| `--save-every` | `100` | **checked default** |
-| `--anchor-weight` | `0.0` | **the only accepted value** — the anchor is disabled; any nonzero value is rejected before the subset is read |
-| `--max-grad-norm` | `1.0` | default |
-| `--init-device` | `cuda` | default; see the FSDP table above |
-
-`K` is **not** a `train.py` flag. `--overwrite`, `--dry-run`, `--skip-subset-check`,
-`--save-initial`, `--timing` and the W&B flags are operational, not experimental.
-
-### Fixed σ versus `--sigma-levels`
-
-`--sigma0` trains **one** operating point. `--sigma-levels a b c` instead trains one adapter
-across several, assigning `sigmas[(rank + step) % len(sigmas)]` — so levels are mixed *within* a
-step and every rank walks through every level over the run. It overrides `--sigma0` and stamps
-`onestep_avatar_sigma0 = "mixed"` plus the level list, so a fixed-σ loader cannot mistake it for
-calibrated. `σ = 0.0` is refused (it noises nothing: loss and gradient are identically zero), and
-repeated levels are refused.
-
-The candidate grid is the distilled checkpoint's own: `{0.421875, 0.725, 0.909375}`. Note that
-`train.py` accepts any value in `(0, 1]` while `onestep_core` accepts only on-grid points —
-[G5](../doc/known_gaps.md#g5--training-and-deployment-disagree-about-valid-sigma).
-
-### What a run records
-
-`<OUT>/config.json` and the W&B run config record the resolved configuration; each checkpoint's
-safetensors metadata carries σ₀ (or `"mixed"`) and the level list, `K`, the schedule, the
-attention kind, block and cache geometry, the subset hash, objective, guide mode, anchor weight,
-teacher forcing, LoRA rank/alpha/target, and `loss=full_frame_x0_mse`. **That metadata is the
-record of a particular run** — but nothing reads it back on load, so it does not currently protect
-a probe or a deployment from off-condition use (G3). A run directory name is not provenance.
-
----
-
-## 4. Sanity and probe commands
-
-### Fixed stock dev schedule and fewer-call comparison
-
-For whole-clip dev diagnostics use `--variant dev --steps 30 --dev-schedule truncated
---whole-clip --cfg 3 --stg 1 --stg-blocks 28 --rescale 0.7`. Each initial σ uses the
-remaining stock levels, rather than 30 calls at every σ. To compare K actual calls,
-add `--dev-denoising-steps K`; this selects evenly spaced indices from the same tail.
-Use the prefix of `1, 2, 4, 6, 8, 10, 12, 16, 20, 25, 30` that does not exceed the
-sigma-specific maximum, with the exact maximum as the reference. At σ .97 the maximum
-is 25. This is distinct from changing `--steps N`, which constructs a different curve.
+After decoding has completed, assemble report-only sheets from saved samples:
 
 ```bash
-# Zero-init check: step 0's LoRA B must export as exactly zero; step 1 is the first update.
-#   ... --guide-mode d0 --save-initial --save-every 1 --steps 1
-
-# Decode a D0 checkpoint: `capture | frozen base | LoRA` per probe sigma.
-conda run -n ltx python -m scripts.onestep_avatar.visualize_d0 \
-  --subset <SUBSET> --run <OUT> --steps 0 1 --output <OUT>/probes/init --gpu-id <ID>
+conda run --no-capture-output -n ltx python \
+  ../expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/sheets.py \
+  --manifest <SAVED_MEDIA_DIRECTORY>/manifest.json --output <FRESH_SHEET_DIRECTORY>
 ```
 
-Matched frozen-base sigma comparison (historical geometry made explicit):
+The report reader checks hashes and does not open models or repair missing
+media. These recipes do not establish native VAE parity. The old analyzer and
+generation launchers have been retired after package/report caller migration.
+
+Check completed saved decoding without opening a decoder or discovering GPUs:
 
 ```bash
-conda run -n ltx python -m scripts.onestep_avatar.visualize_d0 \
-  --subset ../expr/onestep_avatar/windows/t2r2.json \
-  --base-only --probe-sigmas 0.909375 1.0 \
-  --block-latent-frames 2 --context-latent-frames 15 \
-  --teacher-forcing --seed 42 --no-frame-labels \
-  --output ../expr/onestep_avatar/runs/base-block-flicker-sigma-20260920/teacher_forced \
-  --gpu-id 0
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.sigma_sweep \
+  --spec <SAVED_SWEEP_SPEC> --output <SAVED_MEDIA_DIRECTORY> --verify
 ```
 
-D1 probe, and the two-step causal teacher arm (both added 2026-09-21):
+Schema-two completion requires all ten movies and 120 samples with actual
+coverage/geometry checks, current input/VAE/software bindings and saved metric
+controls. The report reader runs this same check, including movies it does not
+display in a sheet. Old schema-one control artifacts remain historical evidence.
+
+### Historical future-noise study preparation
+
+The package's `future_noise_study` CLI prepares data and evaluation jobs only.
+It requires paths to the original study manifest, saved A/B noise archive,
+prefix block-noise archive and legacy subset. It never starts a model or queue.
+Run from `LTX-2` in the `ltx` environment:
 
 ```bash
-# D1: noise the ARGAvatar guide z_g instead of the capture. The reference panel and c0 stay the
-# capture in both arms -- the guide's frame 0 is a render composite, never the supplied frame.
-conda run -n ltx python -m scripts.onestep_avatar.visualize_d0 \
-  --subset <SUBSET> --guide-mode d1 --base-only --probe-sigmas 0.725 \
-  --block-latent-frames 2 --context-latent-frames 8 \
-  --split held_out --chain-index 0 --output <OUT> --gpu-id <ID>
-
-# The same, as a two-step causal teacher: one extra DENOISING forward per block (3 total per
-# block, counting the refresh), same cached history, no future blocks.
-#   ... --schedule 0.725 0.421875 0
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.future_noise_study \
+  --manifest <ORIGINAL_STUDY_MANIFEST> --noise <SAVED_NOISE_AB> \
+  --blocks <ORIGINAL_BLOCK_NOISE> --subset <ORIGINAL_SUBSET> \
+  --output <FRESH_PREPARATION_DIRECTORY>
 ```
 
-`--schedule` takes exactly one `--probe-sigmas` value and refuses a schedule starting elsewhere;
-every nonzero level must be on the selected model's grid. The manifest records the schedule and
-the denoise/refresh forward counts separately, so a latency claim cannot fold the refresh into
-"one step".
+Current real preparation refuses a changed guide-render pin in `t2r2.json`.
+Do not remove it to bypass conversion checks. The old launcher remains pending
+checked data and parity; original results remain historical evidence. See the
+[preparation design](../doc/future_noise_study.md) for the exact noise slicing,
+five jobs and seven result roles.
 
-The probe covers **both arms** since 2026-09-21 ([G4](../doc/known_gaps.md#g4--no-d1-probe) is
-closed in code, open until a real D1 adapter exercises it), but it still does not validate the
-adapter's recorded conditions against the flags it is given (G3) — nothing stops probing a D0
-adapter with `--guide-mode d1`. Its defaults are the deployed geometry and three `PROBE_SIGMAS`;
-explicit geometry and sigma overrides are recorded but remain off-condition when they differ
-from adapter training.
+For an already prepared directory, check original and derived bytes without
+starting a model or writing files:
 
-### Whole-clip corpus coverage
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.future_noise_study \
+  --verify-preparation <PREPARATION_DIRECTORY>
+```
 
-`precompute` encodes one continuous prefix of `time * floor((F-1)/time) + 1`
-pixel frames. It has no `--window-frames` or `--overlap-frames` options.
-Old window-geometry manifests fail the current coverage check and require fresh
-corpus preprocessing. `bench_forward` reports causal denoising and cache refresh
-cost only, without a k2 arm or ratio.
+The version-two preparation record binds all seven derived files and the
+current producer. Verification also reconstructs noise, membership/frame plan
+and exact job settings from the original inputs. This does not establish
+native generation or parity with historical raw results.
+
+`<V2_SUBSET>` is a checked version-two fixed video list, not an old block-chain
+subset. Convert an old list without changing the original or its masters:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.subset \
+  --convert <OLD_SUBSET> --output <NEW_V2_SUBSET> \
+  --frame-plan-output <REPRODUCTION_PLAN> --require-guide
+```
+
+Omit `--require-guide` only for capture-only D0. A paired D0/D1 comparison uses
+the same checked capture/guide list. Conversion preserves groups and old sample
+ranges; each new mode writes its own frame plan. Use `--frame-plan` only when
+its explicit reproduction geometry matches the requested mode.
+
+Legacy adapter conversion uses a reviewed version-two contract and exact
+original records. It copies tensors unchanged into a new derived file:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.training.checkpoints \
+  --source <OLD_ADAPTER> --output <NEW_DERIVED_ADAPTER> --contract <REVIEWED_CONTRACT_JSON> \
+  --original-config <ORIGINAL_CONFIG> --original-subset <OLD_SUBSET> \
+  --membership <NEW_V2_SUBSET> --frame-plan <REPRODUCTION_PLAN> --base <BASE_CHECKPOINT>
+```
+
+This checks conditions and unused-history evidence rather than inferring a
+mode from the run name. Random-window legacy runs require a matching plan
+`start_draw` and a reviewed contract with `data.segment_selection`: window
+templates, checked master lengths, allowed starts, the original seed key and G9.
+Parent-initialized legacy runs still need additional evidence support.
+The original config and adapter must explicitly
+stamp the same sigma draw rule; missing stamps are refused, including step zero.
+Historical mixed-level runs cannot be assigned today's uniform rule by default.
+Original adapters, configs, subsets and masters
+remain unchanged. This command does not resume training or recalibrate weights.
+
+For a new training run, choose a fresh output directory. Repeat the shared
+Accelerate command above and replace its training arguments with one of these:
+
+```text
+-m scripts.onestep_avatar.train --mode bidirectional \
+  --subset <V2_SUBSET> --output <FRESH_OUT> --model 2.5 --variant dev \
+  --guide-mode d1 --objective white --span-latent-frames 17 \
+  --start-policy clip_start --sigma0 0.725 \
+  --lora-rank 8 --lora-alpha 8 --lora-target attn --seed 42
+
+-m scripts.onestep_avatar.train --mode causal \
+  --subset <V2_SUBSET> --output <FRESH_OUT> --model 2.5 --variant dev \
+  --guide-mode d1 --objective white --block-latent-frames 2 \
+  --blocks-per-sample 3 --context-latent-frames 8 --sigma0 0.725 \
+  --lora-rank 8 --lora-alpha 8 --lora-target attn --seed 42
+```
+
+D0 changes only `--guide-mode d0`; its target remains the capture. For causal
+capture-history training, add `--teacher-forcing`. Bidirectional commands reject
+block, cache, and teacher-history options. Switching modes starts a separate
+run. A parent adapter initializes a fresh stage; it does not resume optimizer
+state or establish calibration in the new mode.
+
+`--corpus-root` is optional when the list's recorded corpus path resolves.
+`--dry-run` verifies data, geometry, schedules and adapter conditions without
+loading model weights or writing a run directory. Distilled weights require
+supported nonzero sigma levels; state `--variant distilled` explicitly when
+using that base. LoRA alpha must equal rank. Anchor options are unsupported by
+the typed runtime.
+
+Multi-step evaluation and inference use native Euler arithmetic at positive next
+levels. The final zero step returns the prediction exactly. This direct endpoint
+can differ from the stock bf16 reconstructed endpoint; native stock acceptance
+is still open in [G11](../doc/known_gaps.md#g11--euler-rounding-differs-from-the-stock-step).
+Older fixed-input records remain historical after a sampling source change;
+prepare fresh records for current execution instead of changing their hashes.
+
+For the separate 17-frame base sampling diagnostic, use an independently encoded
+image and a fixed text record. This runs the actual stock video sampling
+components with audio absent, plus a repeated control and the bidirectional
+sampler. It does not run joint audio-video generation or D1 guide mixing:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.stock_parity \
+  --first-image <PREPARED_IMAGE>/image.pt --text-record <FIXED_PREVIEW>/preview.json \
+  --output <FRESH_STOCK_CHECK> --frames 17 --steps 4 --seed 42 --gpu-id <FREE_GPU>
+```
+
+Add `--dry-run` to validate inputs and print the predeclared protocol without
+model/GPU work or output writes. The schedule uses the native scheduler without
+a latent argument. The current matching path explicitly uses float32 global
+sigma. Inspect repeated-control, intermediate-call, raw and decoded evidence
+before accepting it. Ordinary product precision, adapters and the seven-frame
+pilot remain separate checks. See [the module design](../doc/stock_parity.md).
+
+## 3. Evaluation and previews
+
+Evaluation writes encoded results and numeric records. It currently does not
+prepare all reference RGB or complete comparison rendering automatically:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.evaluate \
+  --mode bidirectional --subset <V2_SUBSET> --source <SOURCE_ID> \
+  --model 2.5 --variant dev --guide-mode d1 --span-latent-frames 17 \
+  --schedule 0.725 0 --checkpoint <V2_ADAPTER> --include-base \
+  --noise-file <SAVED_BF16_TOKEN_NOISE> --output <FRESH_OUT> --gpu-id <GPU_ID>
+```
+
+Use the causal mode and its explicit block/cache settings for a causal adapter.
+A saved noise file belongs to one video and must match its full token range.
+Adapters are checked before loading weights. Research overrides are recorded;
+product inference does not permit them. Do not reinterpret historical G7/G8
+results as fixed by the refactor.
+
+For a causal adapter trained with clean sigma-zero cache refresh, normal
+evaluation uses `--history-mode cache --kv-source refresh` (the defaults).
+`--history-mode recompute`, `--history-mode joint`, or cached generated history
+with `--kv-source denoise` changes the adapter computation and requires
+`--research-override`. Results record both requested fields and every difference.
+Base-only diagnostics record the choices without an adapter override.
+
+Normal adapter evaluation now defaults to
+`--adapter-application peft_unmerged_fp32`, sharing training's unmerged fp32
+PEFT function against frozen bf16 base weights. Product inference always uses
+that method. To measure bf16 fusion as a changed research condition, pass
+`--adapter-application fused_bf16 --research-override` in evaluation; the
+preflight and saved results record the method difference. Neither ordinary
+evaluation nor product silently falls back to fusion on a memory failure.
+Native E2 effect/cost acceptance remains pending.
+
+Prepare the three fixed reference roles with the package's decoder-only command:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.media \
+  --prepare-training-references --subset <V2_SUBSET> --source <SOURCE_ID> \
+  --encoded-frames 7 --guide-mode d1 --model 2.5 --seed 42 \
+  --output <FRESH_REFERENCE_DIRECTORY> --gpu-id <FREE_GPU>
+```
+
+Check GPU availability before executing. Use `--guide-mode d0` for a capture-only
+list. An absent guide appears as `Guide not used`; a recorded guide is still
+checked. The command uses the saved crop and background and creates
+`references.json` with pinned RGB files. It performs no transformer or text work.
+This is the reference bundle, not the complete fixed preview record. That record
+also pins capture, optional guide, first-image, text and noise identities and
+evaluation arguments; bind `reference_bundle.path` to the absolute manifest path
+and `reference_bundle.sha256` to its file hash. A checked automatic producer for
+the complete fixed record remains open.
+
+Training can pin `--preview-inputs <FIXED_PREVIEW_RECORD>`. A completed adapter
+save may enqueue a preview job. Its raw generation stage runs outside training:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.evaluate \
+  --preview-job <JOB_JSON> --gpu-id <GPU_ID>
+```
+
+With a pinned reference bundle, this command decodes the saved outputs, renders
+the training panels, and completes the job after checking the media evidence.
+Without that bundle, raw generation leaves the job running until checked
+rendering evidence is supplied. The renderer selects the normal or compact
+training layout from the actual labels before decoding; labels that fit neither
+fail before opening the decoder. Full native preview acceptance remains pending.
+A failure records its reason without invalidating the checkpoint.
+See [evaluation](../doc/evaluate.md) and [media](../doc/media.md) for evidence
+requirements and exact panel layouts. Report code consumes saved results only.
+
+### Generation benchmark
+
+Historical saved-encoding measurements use the package owner directly:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.evaluate \
+  --saved-metrics <PROBE_DIRECTORY>
+```
+
+Add `--long-metrics` for complete longer two-frame block sequences. This route
+checks saved output hashes and opens no model/VAE session. It preserves the
+historical generated-frame metric definitions, which differ from training's
+full-frame loss.
+
+Use ordinary evaluation arguments with `bench`, plus measured repetitions and
+discarded warmup. For example, benchmark a checked bidirectional segment:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.bench \
+  --mode bidirectional --subset <VIDEO_LIST> --source <SOURCE_ID> \
+  --variant dev --guide-mode d1 --schedule 0.725 0 --span-latent-frames 17 \
+  --noise-file <FIXED_NOISE> --output <NEW_OUTPUT> --repetitions 3 --warmup 1
+```
+
+Each ordinary result includes `benchmark` measurements and output identities.
+The measured boundary includes sampling and complete CPU encoding, excludes
+loading/decoding/writes, and uses a fresh cache per causal repetition. One extra
+untimed artifact call must match the measured outputs. Synthetic causal
+operation timing requires `--operation-timing --mode causal` and does not
+measure complete-output latency. Real-weight performance acceptance is pending.
+
+### Future-noise diagnostic
+
+Use saved native-bf16 token tensors for exactly one selected video. The second
+tensor keeps all tokens before the boundary unchanged and changes later tokens:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.evaluate \
+  --mode causal --subset <VIDEO_LIST> --source <SOURCE_ID> \
+  --variant dev --guide-mode d1 --schedule 0.421875 0 \
+  --block-latent-frames 2 --context-latent-frames 8 --span-latent-frames 17 \
+  --noise-file <ORIGINAL_NOISE> --changed-noise-file <CHANGED_NOISE> \
+  --future-noise-start 9 --checkpoint <V2_ADAPTER> --output <NEW_OUTPUT>
+```
+
+This compares earlier encoded frames zero through eight against later frames
+nine through sixteen. Results include both encodings, their provenance and
+`future_noise.json`. It tests dependence on future noise; it does not establish
+capture fidelity or universal cache/recalculation equality.
+
+### Historical eight-block diagnostic
+
+For the saved white D1 diagnostic, the package owns the session and two
+generated-history rollouts. It checks the adapter's recorded conditions before
+opening weights. Masters need at least 17 encoded frames; global noise draws
+retain the entire recorded master. Use a new output path:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.evaluate \
+  --causality --checkpoint <ADAPTER> --view <VIEW> --sigma 0.421875 \
+  --gpu-id <FREE_GPU> --output <FRESH_JSON>
+```
+
+This preserves the earlier diagnostic's sigma, seed pair 42/99, B2/D8/sink1,
+first eight blocks, and changed noise after frame eight. It reports earlier
+bit equality and later differences; it does not establish capture fidelity.
+
+### Product review panels
+
+Prepared guide and supplied-image encodings must have matching crop, background,
+frame rate and VAE provenance. Generate and save raw output before decoding:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.infer \
+  --mode bidirectional --guide <GUIDE_PT> --first-image <IMAGE_PT> \
+  --variant dev --schedule 0.725 0 --output <NEW_OUTPUT> \
+  --decode --review --poster-frame 0
+```
+
+The generated-only video stays separate from the review under `review/`.
+The review shows the decoded supplied-image still, decoded guide and generated
+video. Its labels identify VAE reconstructions; it adds no capture metrics.
+Omit `--review` for generated-only media. Product adapter checks permit no
+research override. Real-weight product/review acceptance remains pending.
+
+## 4. Remaining migration
+
+Review a normalized package queue without starting children:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.queue \
+  --jobs <QUEUE_JSON> --state <STATE_JSON> --dry-run
+```
+
+It checks package arguments and persisted job identities, then prints planned
+commands. It creates no state/output directories, claims no GPU and starts no
+child. Planned GPU IDs do not prove availability. Scientific input preflight
+and artifact verification are separate from this review.
+
+Saved-comparison rendering uses a `render` job with no model-generation mode:
+
+```json
+{"id":"comparison", "kind":"render", "arguments":["--render-saved-comparisons","spec.json","--output","fresh_media","--seed","42"], "output":"fresh_media", "dependencies":[], "completion":{"manifest":"fresh_media/render_manifest.json"}}
+```
+
+The version-one list wraps this record in `jobs`. Paths are relative to that
+list's directory. Queue preparation pins the spec bytes. Jobs wait for all
+saved panel files before acquiring one allowed GPU. Completion requires the
+exact requested spec, current decoder/software identity and input/media hashes;
+an old unbound render manifest is not adopted. Reports remain separate readers.
+The development study's converted list is
+`../expr/onestep_avatar/dev_training_20261001/configs/package_render_jobs.json`.
+It preserves eight specifications and seed 42, with fresh outputs beneath the
+study's `media/videos/package/`. Review it with `--dry-run`; this recipe does
+not start a campaign or replace historical media.
+
+Dispatch normalized jobs continuously with the shared reservations directory:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.queue \
+  --jobs <QUEUE_JSON> --state <STATE_JSON> --execute --loop \
+  --claims-dir <SHARED_CLAIMS> --poll-seconds 30
+```
+
+Use `--once` instead of `--loop` for at most one dispatch. Every queue using
+the same GPUs must share `<SHARED_CLAIMS>`; during historical migration this
+is the study's existing `runs/.gpu_claims` directory. The loop waits without
+reservations, accepts appended jobs with unchanged prior identities, and exits
+only after verified completion. Failed or running journal entries stop the
+loop. Explicit recovery checks terminated child handles and saved outputs:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.queue \
+  --jobs <QUEUE_JSON> --state <STATE_JSON> --recover
+```
+
+Recovery needs an existing journal. It refuses live children, unresolved launch
+windows and changed output content. It neither starts processes nor releases
+reservations nor retries failed work. Typed training has a separate automatic
+startup contention path: at most three retries, with original failed outputs
+and logs preserved under `superseded_startup_contention/`. A token-bound
+CUDA OOM or typed port-in-use event must precede every rank's update boundary;
+surviving workers and any numeric update forbid retry. Other failures stop.
+`--once` returns 2 when a preserved retry is pending and starts no second child.
+See [retry evidence](../doc/queue.md#startup-contention-retries). Historical text
+job lists and mode-less jobs need conversion before these commands can execute
+them. These recipes do not restart an existing queue or start a campaign.
+
+The old GPU-count YAML copies were removed after their training caller moved.
+Live training uses its own recorded forward-prefetch setting. Do not silently
+substitute the new template for that study. The trainer package's Accelerate
+configuration is unchanged.
+
+Old diagnostic and campaign commands are historical evidence, not current
+package recipes. Their saved inputs, outputs and attribution stay intact during
+execution-owner migration. Joint-history, recalculation and guidance diagnostics
+still need complete CLI migration before they can replace all older callers.
+`fsdp_forward_prefetch.yaml` is the package-owned four-process template for
+converted historical whole-clip jobs. It preserves the old forward/backward
+prefetch and full-shard settings. The queue supplies `--num_processes 4` and
+the recorded port. Historical configs under `expr/` remain provenance inputs;
+they are not imported by package execution.

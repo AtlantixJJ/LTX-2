@@ -12,7 +12,10 @@ import argparse
 
 import pytest
 
-from scripts.onestep_avatar import causal_core, visualize_d1
+from scripts.onestep_avatar import visualize_d1
+from scripts.onestep_avatar.model import causal as causal_core
+from scripts.onestep_avatar.model import common
+from scripts.onestep_avatar.model import sampling as model_sampling
 from scripts.prune.core.session import DEFAULT_PROMPT, add_prompt_args, resolve_prompt
 
 SCALE = causal_core.SpatioTemporalScaleFactors(8, 32, 32)
@@ -67,7 +70,7 @@ SHAPE = (1, 128, 18, 32, 32)
 @pytest.mark.parametrize("sigma", [0.421875, 0.725, 0.909375, 0.975, 1.0])
 @pytest.mark.parametrize("steps", [1, 4, 8, 16, 30])
 def test_rescaled_schedule_shape(sigma: float, steps: int) -> None:
-    schedule = causal_core.rescaled_schedule(sigma, steps)
+    schedule = model_sampling.rescaled_schedule(sigma, steps)
     assert len(schedule) == steps + 1
     assert schedule[0] == sigma and schedule[-1] == 0.0  # exact: rollout rejects any mismatch
     assert all(b < a for a, b in zip(schedule, schedule[1:]))
@@ -77,14 +80,14 @@ def test_rescaled_schedule_at_one_is_stock() -> None:
     from ltx_core.components.schedulers import LTX2Scheduler
 
     stock = LTX2Scheduler().execute(steps=30).tolist()
-    assert causal_core.rescaled_schedule(1.0, 30) == pytest.approx(tuple(stock))
+    assert model_sampling.rescaled_schedule(1.0, 30) == pytest.approx(tuple(stock))
 
 
 def test_rescaled_schedule_rejects_bad_inputs() -> None:
     with pytest.raises(ValueError):
-        causal_core.rescaled_schedule(0.0, 8)
+        model_sampling.rescaled_schedule(0.0, 8)
     with pytest.raises(ValueError):
-        causal_core.rescaled_schedule(0.5, 0)
+        model_sampling.rescaled_schedule(0.5, 0)
 
 
 class _FakeX0:
@@ -129,7 +132,7 @@ def test_guided_denoise_combines_passes() -> None:
     model = _FakeX0()
     neg = -torch.ones(1, 2, 8)
     guider = MultiModalGuider(MultiModalGuiderParams(cfg_scale=3.0, stg_scale=1.0, stg_blocks=[28]), neg)
-    out = causal_core.guided_denoised_from_x0_model(model, guider, neg)(_modality(torch.ones(1, 2, 8)))
+    out = common.guided_denoised_from_x0_model(model, guider, neg)(_modality(torch.ones(1, 2, 8)))
     assert model.calls == ["cond", "uncond", "ptb"]
     # 5 + (3 - 1) * (5 - 2) + 1 * (5 - 3)
     assert torch.allclose(out, torch.full_like(out, 13.0))
@@ -142,7 +145,7 @@ def test_unguided_is_one_conditional_pass() -> None:
 
     model = _FakeX0()
     guider = MultiModalGuider(MultiModalGuiderParams())
-    out = causal_core.guided_denoised_from_x0_model(model, guider)(_modality(torch.ones(1, 2, 8)))
+    out = common.guided_denoised_from_x0_model(model, guider)(_modality(torch.ones(1, 2, 8)))
     assert model.calls == ["cond"] and torch.allclose(out, torch.full_like(out, 5.0))
 
 
@@ -159,12 +162,12 @@ def test_dev_flag_validation() -> None:
 def test_truncated_schedule(steps: int) -> None:
     from ltx_core.components.schedulers import LTX2Scheduler
 
-    assert causal_core.truncated_schedule(1.0, steps) == pytest.approx(
+    assert model_sampling.truncated_schedule(1.0, steps) == pytest.approx(
         tuple(LTX2Scheduler().execute(steps=steps).tolist()) if steps > 1 else (1.0, 0.0)
     )
     counts = []
     for sigma in (0.421875, 0.725, 0.909375, 0.975, 1.0):
-        sched = causal_core.truncated_schedule(sigma, steps)
+        sched = model_sampling.truncated_schedule(sigma, steps)
         assert sched[0] == sigma and sched[-1] == 0.0
         assert all(b < a for a, b in zip(sched, sched[1:]))
         counts.append(len(sched) - 1)

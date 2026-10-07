@@ -18,14 +18,21 @@ The rest pin the properties a wrong number would otherwise be blamed on the mode
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 import torch
 
 from ltx_core.components.noisers import GaussianNoiser
 from ltx_core.model.transformer.model import LTXModel, LTXModelType
 from ltx_core.types import LatentState, SpatioTemporalScaleFactors
-from scripts.onestep_avatar import causal_core, visualize_d1
-from scripts.onestep_avatar.causal_core import BlockCache, CausalGeometry, ClipGrid
+from scripts.onestep_avatar import visualize_d1
+from scripts.onestep_avatar.model import causal as causal_core
+from scripts.onestep_avatar.model import common
+from scripts.onestep_avatar.model import sampling as model_sampling
+from scripts.onestep_avatar.model.causal import BlockCache, CausalGeometry
+from scripts.onestep_avatar.model.common import ClipGrid
+from scripts.onestep_avatar.training import engine as train
 
 SCALE = SpatioTemporalScaleFactors(time=8, height=32, width=32)
 CHANNELS = 8
@@ -92,7 +99,7 @@ def test_cached_rollout_matches_block_causal_full_sequence() -> None:
     geometry = _geometry()
     grid = _grid(geometry)
     context = _context()
-    denoise_fn = causal_core.denoised_from_velocity_model(model)
+    denoise_fn = common.denoised_from_velocity_model(model)
     plan = geometry.plan(grid.latent_frames)
     assert len(plan) >= 3, "the test needs at least three blocks to exercise a non-trivial history"
 
@@ -126,7 +133,7 @@ def test_cached_rollout_matches_block_causal_full_sequence() -> None:
         # Per-token timesteps: 0 on the clean prefix, sigma_0 on the block being denoised.
         timesteps = torch.zeros(1, sequence.shape[1], 1)
         timesteps[:, prefix_end:] = SIGMA0
-        modality = causal_core.block_modality(
+        modality = common.block_modality(
             grid,
             sequence,
             context,
@@ -166,7 +173,7 @@ def test_recomputed_history_exposes_prompt_sigma_cache_difference(sigma: float, 
             dtype=torch.float32,
         )
         result, _ = causal_core.rollout(
-            causal_core.denoised_from_velocity_model(model),
+            common.denoised_from_velocity_model(model),
             grid,
             geometry,
             cache,
@@ -207,7 +214,7 @@ def test_global_probe_noise_is_independent_of_block_geometry() -> None:
         geometry = CausalGeometry(SCALE, block_latent_frames=block_frames, context_latent_frames=8)
         grid = _grid(geometry, latent_frames=9)
         source = torch.zeros(1, grid.latent_frames * grid.tokens_per_latent_frame, CHANNELS)
-        global_noise, blocks = visualize_d1._global_epsilons(source, grid, geometry.plan(9), 42)
+        global_noise, blocks = visualize_d1.global_epsilons(source, grid, geometry.plan(9), 42)
         assembled = torch.cat(blocks, dim=1)
         torch.testing.assert_close(assembled, global_noise[:, : assembled.shape[1]], rtol=0, atol=0)
         masters.append(global_noise)
@@ -221,7 +228,7 @@ def test_explicit_history_uses_no_dense_mask_for_first_block() -> None:
     source = torch.zeros(1, grid.latent_frames * grid.tokens_per_latent_frame, CHANNELS)
     seen = []
 
-    def denoise(modality):
+    def denoise(modality: Any) -> Any:  # noqa: ANN401 -- lightweight modality spy
         seen.append(modality.attention_mask)
         return modality.latent
 
@@ -241,7 +248,7 @@ def test_whole_clip_keeps_stock_sigma_precision_with_bf16_latents() -> None:
     source = torch.zeros(1, grid.latent_frames * grid.tokens_per_latent_frame, CHANNELS, dtype=torch.bfloat16)
     seen = []
 
-    def denoise(modality):
+    def denoise(modality: Any) -> Any:  # noqa: ANN401 -- lightweight modality spy
         seen.append(modality)
         return modality.latent
 
@@ -270,7 +277,7 @@ def test_joint_window_changes_information_access_only_after_block_zero() -> None
     outputs = {}
     for mode in ("recompute", "joint"):
         outputs[mode], _ = causal_core.rollout(
-            causal_core.denoised_from_velocity_model(model),
+            common.denoised_from_velocity_model(model),
             grid,
             geometry,
             None,
@@ -306,7 +313,7 @@ def test_teacher_forcing_flag_refreshes_the_cache_from_the_teacher_target() -> N
     geometry = _geometry()
     grid = _grid(geometry)
     context = _context()
-    denoise_fn = causal_core.denoised_from_velocity_model(model)
+    denoise_fn = common.denoised_from_velocity_model(model)
     plan = geometry.plan(grid.latent_frames)
     assert len(plan) >= 2, "the test needs a second block to see what the first block's refresh fed it"
 
@@ -342,11 +349,11 @@ def test_teacher_forcing_flag_refreshes_the_cache_from_the_teacher_target() -> N
     ref_cache = _cache()
     ref_cache.reset()
     lo0, hi0 = grid.token_span(*plan[0])
-    noisy0 = causal_core.noise_block(guide[:, lo0:hi0], SIGMA0, 7)
+    noisy0 = common.noise_block(guide[:, lo0:hi0], SIGMA0, 7)
     causal_core.denoise_block(denoise_fn, grid, ref_cache, noisy0, context, SIGMA0, plan[0])
     causal_core.refresh_block(denoise_fn, grid, ref_cache, guide[:, lo0:hi0], context, plan[0])
     lo1, hi1 = grid.token_span(*plan[1])
-    noisy1 = causal_core.noise_block(guide[:, lo1:hi1], SIGMA0, 8)
+    noisy1 = common.noise_block(guide[:, lo1:hi1], SIGMA0, 8)
     reference1 = causal_core.denoise_block(denoise_fn, grid, ref_cache, noisy1, context, SIGMA0, plan[1])
     torch.testing.assert_close(tf_tokens[:, lo1:hi1], reference1, rtol=2e-4, atol=2e-4)
 
@@ -383,7 +390,7 @@ def test_teacher_forcing_refreshes_from_the_target_not_the_guide() -> None:
     geometry = _geometry()
     grid = _grid(geometry)
     context = _context()
-    denoise_fn = causal_core.denoised_from_velocity_model(model)
+    denoise_fn = common.denoised_from_velocity_model(model)
     plan = geometry.plan(grid.latent_frames)
     assert len(plan) >= 2
 
@@ -423,7 +430,7 @@ def test_teacher_forcing_refreshes_from_the_target_not_the_guide() -> None:
         cache = _cache()
         cache.reset()
         c0 = z_y[:, : grid.tokens_per_latent_frame]
-        noisy0 = causal_core.with_clean_prefix(causal_core.noise_block(z_g[:, lo0:hi0], SIGMA0, 11), c0)
+        noisy0 = common.with_clean_prefix(common.noise_block(z_g[:, lo0:hi0], SIGMA0, 11), c0)
         causal_core.denoise_block(
             denoise_fn,
             grid,
@@ -435,7 +442,7 @@ def test_teacher_forcing_refreshes_from_the_target_not_the_guide() -> None:
             clean_prefix_tokens=c0.shape[1],
         )
         causal_core.refresh_block(denoise_fn, grid, cache, refresh_with[:, lo0:hi0], context, plan[0])
-        noisy1 = causal_core.noise_block(z_g[:, lo1:hi1], SIGMA0, 12)
+        noisy1 = common.noise_block(z_g[:, lo1:hi1], SIGMA0, 12)
         return causal_core.denoise_block(denoise_fn, grid, cache, noisy1, context, SIGMA0, plan[1])
 
     torch.testing.assert_close(d1_tokens[:, lo1:hi1], _reference(z_y), rtol=2e-4, atol=2e-4)
@@ -467,7 +474,7 @@ def test_noise_block_matches_the_gaussian_noiser() -> None:
     """
     clean = torch.randn(1, 12, CHANNELS)
     seed = 1234
-    ours = causal_core.noise_block(clean, SIGMA0, seed)
+    ours = common.noise_block(clean, SIGMA0, seed)
 
     state = LatentState(
         latent=clean.clone(),
@@ -645,7 +652,7 @@ def test_prime_cache_forwards_exactly_once_whether_or_not_it_has_anything_to_pri
     tokens = torch.randn(1, grid.tokens_per_latent_frame * LATENT_FRAMES, CHANNELS)
 
     calls = 0
-    denoise = causal_core.denoised_from_velocity_model(model)
+    denoise = common.denoised_from_velocity_model(model)
 
     def counting(modality):  # noqa: ANN001, ANN202
         nonlocal calls
@@ -703,8 +710,6 @@ def test_the_real_training_loop_runs_a_chain_against_a_real_transformer() -> Non
     exercised together against a transformer that actually reads the cache. A shape or dtype
     mismatch between the three would otherwise first appear on a 22B model on a GPU.
     """
-    from scripts.onestep_avatar import train  # noqa: PLC0415 -- pulls in accelerate/peft
-
     model = _model().to(train.DTYPE)
     geometry = CausalGeometry(scale_factors=SCALE, block_latent_frames=2, context_latent_frames=2)
     chain = train.Chain(
@@ -717,7 +722,6 @@ def test_the_real_training_loop_runs_a_chain_against_a_real_transformer() -> Non
         z_g=torch.randn(CHANNELS, LATENT_FRAMES, 2, 2),
         z_y=torch.randn(CHANNELS, LATENT_FRAMES, 2, 2),
         fps=FPS,
-        z0_base=None,
     )
 
     class _Accelerator:
@@ -745,7 +749,6 @@ def test_the_real_training_loop_runs_a_chain_against_a_real_transformer() -> Non
         _Accelerator(),
         sigma0=SIGMA0,
         seed=0,
-        anchor_weight=0.0,
         latent_channels=CHANNELS,
     )
 
@@ -781,7 +784,7 @@ class _X0ModelWrap(torch.nn.Module):
 
 def test_base_model_unwraps_bare_and_returns_it_immediately() -> None:
     model = _model()
-    assert causal_core.base_model(model) is model
+    assert common.base_model(model) is model
 
 
 def test_base_model_agrees_with_both_retired_walks() -> None:
@@ -817,17 +820,17 @@ def test_base_model_agrees_with_both_retired_walks() -> None:
         return node
 
     fsdp_peft = _FSDPPeftWrap(model)
-    assert causal_core.base_model(fsdp_peft) is model
+    assert common.base_model(fsdp_peft) is model
     assert old_fsdp_peft_walk(fsdp_peft) is model
 
     x0 = _X0ModelWrap(model)
-    assert causal_core.base_model(x0) is model
+    assert common.base_model(x0) is model
     assert old_velocity_model_walk(x0) is model
 
 
 def test_base_model_raises_when_no_known_wrapper_shape_matches() -> None:
     with pytest.raises(TypeError, match="cannot find the LTXModel"):
-        causal_core.base_model(torch.nn.Module())
+        common.base_model(torch.nn.Module())
 
 
 def test_euler_to_is_the_straight_path_step_and_refuses_bad_intervals() -> None:
@@ -842,13 +845,13 @@ def test_euler_to_is_the_straight_path_step_and_refuses_bad_intervals() -> None:
     x = torch.randn(1, 6, CHANNELS)
     y = torch.randn(1, 6, CHANNELS)
 
-    torch.testing.assert_close(causal_core.euler_to(x, y, 0.8, 0.0), y)
-    torch.testing.assert_close(causal_core.euler_to(y, y, 0.8, 0.4), y)
-    torch.testing.assert_close(causal_core.euler_to(x, y, 0.8, 0.4), y + 0.5 * (x - y))
+    torch.testing.assert_close(model_sampling.euler_to(x, y, 0.8, 0.0), y)
+    torch.testing.assert_close(model_sampling.euler_to(y, y, 0.8, 0.4), y)
+    torch.testing.assert_close(model_sampling.euler_to(x, y, 0.8, 0.4), y + 0.5 * (x - y))
 
     for bad in ((0.4, 0.8), (0.4, 0.4), (0.0, 0.0)):
         with pytest.raises(ValueError, match="sigma"):
-            causal_core.euler_to(x, y, *bad)
+            model_sampling.euler_to(x, y, *bad)
 
 
 def test_validate_schedule_pins_the_shape_and_the_grid() -> None:
@@ -859,17 +862,17 @@ def test_validate_schedule_pins_the_shape_and_the_grid() -> None:
     standing. Silently accepting it is how a teacher arm becomes unusable evidence.
     """
     grid = [1.0, 0.909375, 0.725, 0.421875, 0.0]
-    assert causal_core.validate_schedule([0.725, 0.0], grid) == (0.725, 0.0)
-    assert causal_core.validate_schedule([0.725, 0.421875, 0.0], grid) == (0.725, 0.421875, 0.0)
+    assert model_sampling.validate_schedule([0.725, 0.0], grid) == (0.725, 0.0)
+    assert model_sampling.validate_schedule([0.725, 0.421875, 0.0], grid) == (0.725, 0.421875, 0.0)
 
     with pytest.raises(ValueError, match=r"end at exactly 0\.0"):
-        causal_core.validate_schedule([0.725, 0.1], grid)
+        model_sampling.validate_schedule([0.725, 0.1], grid)
     with pytest.raises(ValueError, match="strictly decreasing"):
-        causal_core.validate_schedule([0.421875, 0.725, 0.0], grid)
+        model_sampling.validate_schedule([0.421875, 0.725, 0.0], grid)
     with pytest.raises(ValueError, match="at least"):
-        causal_core.validate_schedule([0.0], grid)
+        model_sampling.validate_schedule([0.0], grid)
     with pytest.raises(ValueError, match="not on the model grid"):
-        causal_core.validate_schedule([0.5, 0.0], grid)
+        model_sampling.validate_schedule([0.5, 0.0], grid)
 
 
 def test_two_step_schedule_costs_one_extra_forward_and_changes_the_output() -> None:
@@ -886,7 +889,7 @@ def test_two_step_schedule_costs_one_extra_forward_and_changes_the_output() -> N
     geometry = _geometry()
     grid = _grid(geometry)
     context = _context()
-    denoise_fn = causal_core.denoised_from_velocity_model(model)
+    denoise_fn = common.denoised_from_velocity_model(model)
     plan = geometry.plan(grid.latent_frames)[:2]
     tokens = grid.latent_frames * grid.tokens_per_latent_frame
     guide = torch.randn(1, tokens, CHANNELS)
@@ -951,7 +954,7 @@ def test_schedule_never_renoises_the_supplied_first_frame() -> None:
 
     def spy(modality):  # noqa: ANN001, ANN202
         seen.append(modality.latent[:, : grid.tokens_per_latent_frame].clone())
-        return causal_core.denoised_from_velocity_model(model)(modality)
+        return common.denoised_from_velocity_model(model)(modality)
 
     causal_core.rollout(
         spy,
@@ -1000,7 +1003,7 @@ def test_kv_source_denoise_halves_the_forwards_and_changes_the_history() -> None
     geometry = _geometry()
     grid = _grid(geometry)
     context = _context()
-    denoise_fn = causal_core.denoised_from_velocity_model(model)
+    denoise_fn = common.denoised_from_velocity_model(model)
     plan = geometry.plan(grid.latent_frames)[:3]
     tokens = grid.latent_frames * grid.tokens_per_latent_frame
     guide = torch.randn(1, tokens, CHANNELS)
@@ -1060,7 +1063,7 @@ def test_kv_source_denoise_refuses_teacher_forcing() -> None:
     guide = torch.randn(1, tokens, CHANNELS)
     with pytest.raises(ValueError, match="incompatible"):
         causal_core.rollout(
-            causal_core.denoised_from_velocity_model(model),
+            common.denoised_from_velocity_model(model),
             grid,
             geometry,
             BlockCache.allocate(
@@ -1080,3 +1083,59 @@ def test_kv_source_denoise_refuses_teacher_forcing() -> None:
             teacher_tokens=guide,
             kv_source="denoise",
         )
+
+
+def test_fusion_parity_block_rejects_unknown_denoiser_kind() -> None:
+    with pytest.raises(ValueError, match="unknown fusion-parity denoiser kind"):
+        causal_core.fusion_parity_block(
+            None,
+            "unsupported",
+            None,
+            None,
+            None,
+            None,
+            0.0,
+            (0, 1),
+            clean_prefix_tokens=0,
+        )
+
+
+@pytest.mark.parametrize("kind", ["velocity", "x0"])
+def test_fusion_parity_block_matches_original_real_model_path(kind: str) -> None:
+    """The extracted executor preserves the exact block input, forward count and c0."""
+    model = _model()
+    geometry = _geometry()
+    grid = _grid(geometry)
+    span = geometry.plan(grid.latent_frames)[0]
+    lo, hi = grid.token_span(*span)
+    noisy = torch.randn(1, hi - lo, CHANNELS)
+    c0 = noisy[:, :grid.tokens_per_latent_frame].clone()
+    context = _context()
+    calls = []
+    hook = model.register_forward_hook(lambda *_args: calls.append(1))
+
+    def cache() -> BlockCache:
+        return BlockCache.allocate(
+            grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
+            device=DEVICE, dtype=torch.float32,
+        )
+
+    try:
+        denoiser = (common.denoised_from_velocity_model(model) if kind == "velocity"
+                    else common.denoised_from_x0_model(model))
+        with torch.no_grad():
+            original = common.with_clean_prefix(causal_core.denoise_block(
+                denoiser, grid, cache(), noisy, context, SIGMA0, span,
+                clean_prefix_tokens=grid.tokens_per_latent_frame,
+            ), c0)
+        assert len(calls) == 1
+        extracted = causal_core.fusion_parity_block(
+            model, kind, grid, cache(), noisy, context, SIGMA0, span,
+            clean_prefix_tokens=grid.tokens_per_latent_frame,
+        )
+        assert len(calls) == 2
+        assert torch.equal(original, extracted)
+        assert torch.equal(extracted[:, :grid.tokens_per_latent_frame], c0)
+        assert not extracted.requires_grad
+    finally:
+        hook.remove()

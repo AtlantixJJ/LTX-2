@@ -13,7 +13,6 @@ from scripts.onestep_avatar.build_guidance import (
     _render_is_complete,
     composite_guide_frame,
     guide_background,
-    migrate_alpha,
 )
 
 
@@ -147,9 +146,8 @@ def test_render_is_complete_rejects_a_render_from_a_different_motion_input(tmp_p
     assert _render_is_complete(output, metadata, 5, 32, "bg", "b" * 64) is False
 
 
-def test_a_legacy_npy_alpha_still_counts_as_complete(tmp_path: Path) -> None:
-    """A render built before the MP4 format must not be rebuilt for the format alone --
-    re-rendering 19 views to change a file extension would cost a GPU-day."""
+def test_legacy_only_alpha_is_not_a_supported_complete_render(tmp_path: Path) -> None:
+    """A missing required MP4 cannot pass the stored-artifact completion gate."""
     output = tmp_path / dataset.render_name("bg")
     metadata_path = tmp_path / dataset.render_metadata_name("bg")
     _write_video(output, frames=5, size=(32, 32))
@@ -157,7 +155,7 @@ def test_a_legacy_npy_alpha_still_counts_as_complete(tmp_path: Path) -> None:
     metadata_path.write_text(
         json.dumps({"n_frames": 5, "alpha_grid": ALPHA_GRID, "objective": "bg", **_V2})
     )
-    assert _render_is_complete(output, metadata_path, 5, 32, "bg") is True
+    assert _render_is_complete(output, metadata_path, 5, 32, "bg") is False
 
 
 def test_a_pre_objective_sidecar_infers_bg_but_still_needs_a_current_compositing_version(
@@ -172,25 +170,3 @@ def test_a_pre_objective_sidecar_infers_bg_but_still_needs_a_current_compositing
     assert _complete(tmp_path, "bg", {"composited": True}) is False
     assert _complete(tmp_path, "bg", {}) is False
 
-
-def _legacy_view(corpus: Path) -> Path:
-    view = corpus / "Part_1" / "0001_01" / "views" / "view01_cam01"
-    view.mkdir(parents=True)
-    np.save(view / f"{dataset.ALPHA_STEM}.npy", np.zeros((3, 8, 8), dtype=np.uint8))
-    return view
-
-
-def test_migrate_alpha_dry_run_describes_the_run_it_previews(tmp_path: Path) -> None:
-    """A dry run that called an already-migrated view a pending conversion would not be a
-    preview of anything -- and 'how much is left' is the only question it is asked."""
-    view = _legacy_view(tmp_path)
-    assert migrate_alpha(tmp_path, prune=False, dry_run=True)["converted"] == 1
-
-    mask_video.write_mask_video(
-        np.zeros((3, 8, 8), dtype=np.uint8), view / f"{dataset.ALPHA_STEM}.mp4"
-    )
-    preview = migrate_alpha(tmp_path, prune=False, dry_run=True)
-    assert preview == {"converted": 0, "already_mp4": 1, "failed": 0, "removed_npy": 0}
-    # And a dry run never touches the disk, whatever --prune-npy says.
-    assert migrate_alpha(tmp_path, prune=True, dry_run=True)["removed_npy"] == 0
-    assert (view / f"{dataset.ALPHA_STEM}.npy").is_file()

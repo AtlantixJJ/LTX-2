@@ -12,8 +12,8 @@ import torch
 from PIL import Image, ImageDraw, ImageFont
 
 from ltx_core.model.transformer.modality import Modality
-from scripts.onestep_avatar import causal_core
-from scripts.onestep_avatar.train import _load_training_master
+from scripts.onestep_avatar.dataset import load_training_master
+from scripts.onestep_avatar.model import common
 from scripts.prune.core import provenance, session
 from scripts.prune.data import whole_clip
 from scripts.prune.score import export_pruned, hooks
@@ -112,7 +112,7 @@ def compare(baseline: Path, candidate: Path, output: Path) -> dict:
                 raise ValueError(f"unmatched {field} for {key}")
         if b["schedule"] != [key[1], 0.0] or p["schedule"] != b["schedule"]:
             raise ValueError(f"not the same one-step schedule for {key}")
-        capture, _ = _load_training_master(Path(b["artifacts"]["capture"]))
+        capture, _ = load_training_master(Path(b["artifacts"]["capture"]))
         if provenance.file_sha256(b["artifacts"]["capture"]) != b["artifacts"]["capture_sha256"]:
             raise ValueError(f"capture changed since baseline: {key}")
         whole_clip.verify_saved_noise(baseline, candidate, b, p)
@@ -171,15 +171,15 @@ def functional_ablation(baseline: Path, masks_path: Path, output: Path, *, view:
             grid, modality, c0, row = whole_clip.build_input(
                 baseline, base, view=view, sigma=sigma, current=current,
             )
-            capture, _ = _load_training_master(Path(row["artifacts"]["capture"]))
+            capture, _ = load_training_master(Path(row["artifacts"]["capture"]))
             capture = capture.unsqueeze(0)
             epsilon = whole_clip.load_epsilon(baseline, row)
             recorded = torch.load(whole_clip.latent_path(baseline, row), map_location="cpu", weights_only=True)
 
-            def forward(grid: causal_core.ClipGrid, modality: Modality, c0: torch.Tensor) -> torch.Tensor:
+            def forward(grid: common.ClipGrid, modality: Modality, c0: torch.Tensor) -> torch.Tensor:
                 with torch.no_grad():
                     prediction, _ = model(video=modality, audio=None, perturbations=None)
-                    return grid.unpatchify_block(causal_core.with_clean_prefix(prediction, c0),
+                    return grid.unpatchify_block(common.with_clean_prefix(prediction, c0),
                                                  grid.latent_frames).cpu()
 
             direct = forward(grid, modality, c0)

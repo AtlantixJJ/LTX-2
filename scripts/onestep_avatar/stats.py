@@ -42,7 +42,9 @@ from pathlib import Path
 import torch
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import causal_core, dataset, mask_video
+from scripts.onestep_avatar import dataset, mask_video
+from scripts.onestep_avatar.model import causal as causal_core
+from scripts.onestep_avatar.model import common
 from scripts.onestep_avatar.precompute import (
     VideoReader,
     atomic_json_save,
@@ -246,7 +248,7 @@ def measure_map(
     )
     with session.transformer() as transformer:
         for path, z_g, fps, height, width in encoded:
-            grid = causal_core.ClipGrid.build(
+            grid = common.ClipGrid.build(
                 z_g.shape[2], height, width, fps, causal_core.CausalGeometry(model.scale_factors),
                 device=device, dtype=DTYPE, latent_channels=model.caps.latent_channels,
             )
@@ -257,13 +259,13 @@ def measure_map(
                 epsilon = torch.randn(clean.shape, generator=torch.Generator(device=device).manual_seed(seed + k),
                                       device=device, dtype=DTYPE)
                 initial = torch.lerp(clean, epsilon, sigma0)
-                modality = causal_core.block_modality(
-                    grid, causal_core.with_clean_prefix(initial, c0), context, sigma0,
+                modality = common.block_modality(
+                    grid, common.with_clean_prefix(initial, c0), context, sigma0,
                     token_slices=[grid.token_span(0, grid.latent_frames)],
                     clean_prefix_tokens=grid.tokens_per_latent_frame,
                 )
                 prediction, _ = transformer(video=modality, audio=None, perturbations=None)
-                outputs.append(grid.unpatchify_block(causal_core.with_clean_prefix(prediction, c0), grid.latent_frames))
+                outputs.append(grid.unpatchify_block(common.with_clean_prefix(prediction, c0), grid.latent_frames))
             excursion = sum(rms_gap(out, z_g) for out in outputs) / len(outputs)
             # Spread is the mean pairwise distance between the N outputs, in the SAME units as
             # the excursion -- so "does eps matter" is answerable by comparing two numbers.

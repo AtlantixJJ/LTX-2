@@ -1,94 +1,112 @@
-# `dataset.py` — corpus layout and the objective → filename map
+# `dataset.py` — find and load encoded video data
+
+Status: path, filename, and crop-record functions are **Current**.
+`load_training_master` is the shared checked reader extracted from `train.py`.
+`ClipStore` reads the new fixed-video list. Engine integration remains pending.
+Source already exceeds 100 lines.
 
 ## Objective
 
-Three jobs, all "one constant (or one function), not a convention repeated at call sites":
-
-1. **Where the corpus is and how a clip is laid out.** `DEFAULT_CORPUS_ROOT`, `ClipRef` and
-   its per-view path accessors. T4's scale-out to the full `Processed/` tree is a `root=`
-   argument, not a second code path.
-2. **Which filename each objective's artifacts use, and the alpha/mask grid they share**
-   (SS1.2). Every module reads it from here. It was transcribed into a second module
-   (`corpus_names.py`) while the package was split across two trees; consolidating removed
-   both the copy and the test that pinned it.
-   Also owns `GUIDE_COMPOSITING_VERSION` — the guide's RGB/alpha *contract* version, as
-   opposed to *which filename* it lives in. It belongs beside the naming map for the same
-   reason: `build_guidance.py`'s `_render_is_complete` reads it the same way it reads
-   `render_name`, so one module still owns "how does a reader know this artifact is current".
-3. **`atomic_write`, since S1 of the 2026-09-17 cleanup plan.** Not a corpus-layout concern by
-   itself, but every writer in the package needs it and this is the one leaf module every
-   writer (`precompute.py`, `build_guidance.py`, `mask_video.py`, `windows.py`) already
-   imports without creating a cycle — `mask_video.py` cannot import `precompute.py` (which
-   imports it back), and a second new file was not worth it for three lines.
+Own corpus paths, background-dependent filenames, version constants, crop-record access, and atomic writes.
+Add one checked video reader for both modes.
+Evaluation and pruning must not import training helpers to read data.
 
 ## Data flow
 
-Mostly pure path/metadata resolution — reads `meta.json`, opens no video. `atomic_write` is
-the one exception: it is generic file I/O, used by every producer in the package.
+```mermaid
+flowchart LR
+  M[("video list and encoded masters")] --> L["ClipStore.load"]
+  L --> V["check shapes and frame rate"] --> C(["encoded frames and input records"])
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
+  class L,V proc;
+  class M disk;
+  class C out;
+```
 
-Three independent resolutions, no I/O beyond `meta.json`:
-
-- corpus root → `ClipRef` → `rgb_path` / `mask_path` / `bbox_path` / `pose3d_path` /
-  `refined_pose3d_path` / `view_dir`,
-  and `actor_id` / `fps` / `n_frames` / `is_done` from `meta.json`;
-- objective → `render_name` / `render_metadata_name` / `guide_bundle_name` /
-  `capture_bundle_name`;
-- `(destination, write_to)` → `atomic_write` → `write_to(temp)` → `temp.replace(destination)`.
-
-`CaptureManifest` reads the **crop box of record** written by the LTX half. It is a reader
-only: nothing here computes a box.
+This diagram is Proposed.
+Current `load_master` reads schema-two continuous masters.
+`dataset.load_training_master` checks arrays and frame rate.
+`ChainStore` checks capture/guide pairs.
 
 ## Organization logic
 
-The objective mapping lives here, next to the corpus layout, because that is what it is —
-a fact about where things sit on disk, not a training decision. Putting it in
-`build_guidance.py` would make the renderer its owner, and `windows.py` would then import
-a renderer to learn a filename.
+Current functions follow these rules:
 
-**Three rules encoded in the mapping:**
+- `bg` uses filenames without a suffix. `white` uses `_white` filenames.
+- Alpha and cropped masks do not depend on background choice. Reject unknown choices.
+- `GUIDE_COMPOSITING_VERSION=2` records the pixel-compositing rule. Missing or older values fail the current-guide check.
+- `CaptureManifest` reads the saved crop box. It does not calculate a replacement crop.
+- `capture_master_latent_frames` reads the actual encoded frame count.
+- `ClipRef` resolves video/view paths and person IDs for train/evaluation groups.
+- `atomic_write` writes to a temporary sibling file and replaces the destination only after success.
+  On failure, remove the temporary file and keep the old destination.
 
-- **`bg` is the unsuffixed name.** The 2,034 capture bundles and 19 guide renders already on
-  disk were written before the objective existed, and they are `bg` artifacts. Mapping `bg`
-  to the names they already have means adding `white` invalidates none of them.
-- **Only two artifacts are suffixed** — the guide render and the two latent bundles. The
-  render's alpha, the cropped capture matte and the loss-mask grids are
-  objective-**independent** (same render, same matte; only what sits behind the subject
-  differs), so suffixing them would manufacture two copies of one thing.
-- **Both persisted masks are `.mp4`, and the constants carry a `_STEM` as well as a `_NAME`.**
-  The stem is what `mask_video.read_mask` takes, so a legacy `.npy` is still found. See
-  [mask_video.md](mask_video.md).
-- **An unknown objective raises**, rather than falling back to a default. A typo that
-  silently resolves to `bg` would train the wrong pair with no error anywhere.
-- **`GUIDE_COMPOSITING_VERSION` has no legacy value to grandfather in.** Unlike a
-  pre-`objective` sidecar (which correctly infers as `bg`), every render built before this
-  field existed used the retired v1 double-alpha formula — there is no historical value that
-  means "current", so a missing/old version is always stale (2026-09-18 audit finding F1;
-  see [build_guidance.md](build_guidance.md)).
+`load_training_master(path)` checks a nonempty floating array `[C,F,H,W]` and finite positive frame rate.
+Keep the current loader calculations.
+`ClipStore.load(source_id, require_guide)` returns `EncodedVideo`: video/person/group IDs,
+capture, optional guide, frame rate, encoding records, and content hashes.
+It loads one video when needed. It does not select frame ranges or history policies.
+
+The constructor checks fixed-list identity and groups. `verify(require_guide)`
+loads and checks every selected video before model loading. Each read verifies the
+encoded-file hash, shape, frame rate, background, and recorded encoding fields.
+D1 also verifies current render bytes, sidecar identity, compositing version,
+and matching capture/guide crop and VAE records. D0 never opens guide artifacts.
+Keep subset validation imports lazy so filename access does not load model code.
+
+For D1, check matching shapes, frame rate, background, crop, and VAE records.
+Check file hashes and metadata before model loading.
+A valid file schema alone does not prove correct encoding.
+Fail on missing producer output.
+D0 loading does not read guide data.
+
+### Checked-reader procedure
+
+The proposed `ClipStore` receives a verified video-list entry and the chosen background.
+Resolve its relative view path against the requested corpus root.
+Read capture encoding through `load_training_master`: a nonempty floating `[C,F,H,W]`
+array and finite positive frame rate.
+Match its content hash, dimensions, crop identity, VAE identity, and encode records to the entry.
+For D1, resolve/read the guide and require the same geometry, frame coverage, frame rate,
+crop, background, VAE convention, and current compositing/encode records.
+For D0, do not open the guide or fail on its absence.
+
+Return the unsliced capture, optional guide, frame rate, IDs/group, and checked identities.
+Keep their encoded values/dtype unchanged. The mode selects frames and builds tokens later.
+Loading a video never selects its training start, resets positions, primes history, or rebuilds a missing producer artifact.
+If a checked entry changes on disk, report the path and failed field rather than skipping it.
+
+Keep filename/path functions usable in `argavatar` without heavy model imports.
+Use lazy tensor imports where needed.
+Never import the ARGAvatar renderer or training CLI here.
 
 ## Invariants
 
-- **`capture_master_latent_frames` is the one producer of a source's latent-frame count.**
-  Read it from the stored master, never from the video: a master consolidated out of v1
-  per-window slices ends at the last whole window and is short of the video by up to one
-  window. `windows.py` derived the number from the video until 2026-09-16 and froze block
-  plans one block too long, which `train.py` — planning from the tensor — then refused.
+- Each filename and crop rule has one owner.
+- Frame rate is required because it affects model positions.
+- Train/evaluation groups come from the verified fixed video list.
+- Masters remain continuous encodings. Do not encode each segment again.
+- Loading does not allocate history caches or select causal blocks.
 
+## Gotchas
 
-- `actor_id()` returns the **bare** actor id, never `(part, id)`. Actor ids are not globally
-  unique across `Part_*`, and the conservative reading is what makes the held-out split
-  leak-proof under either interpretation.
-- `fps()` is never defaulted — fps scales the temporal RoPE axis.
-- `refined_pose3d_path()` is clip-level because the multiview solve refines one shared body
-  trajectory; it is never substituted for the per-view pose record, which owns the calibrated
-  camera and image-cache fields.
-- `CaptureManifest` is the single source of the crop box. Recomputing one "the same way"
-  is exactly the desync this file exists to prevent.
-- **`atomic_write`'s temp name is one convention** (`.<stem>.tmp.<pid><suffix>`) for every
-  writer in the package. Do not hand-roll a second one at a new call site.
+Keep old alpha `.npy` reading until its usage and conversion checks pass.
+Use person IDs that prevent the same person from entering both data groups.
+A guide file can exist and still have outdated encode records.
+Equal shape alone is insufficient for D1.
+
+G9 is caused by frame selection, not this reader.
+Do not replace a stored frame with a new image encoding silently.
 
 ## Tests
 
-`tests/test_geometry.py` (golden crop-box values), `tests/test_mask_video.py` (the mask
-codec), and `tests/test_dataset.py` (`atomic_write`'s replace-on-success /
-cleanup-on-failure contract). The name mapping no longer needs a test of its own: there is
-one copy of it.
+Current tests include `tests/test_dataset.py`, `test_geometry.py`, `test_mask_video.py`,
+and master/pair checks in `tests/test_train.py`.
+After extraction, keep useful array/frame-rate and atomic-write tests here.
+Check that this file imports no training code.
+[V8](verification.md) checks that conversion preserves videos and master hashes.
+Worked check: capture is `[128,17,8,8]` at 30 fps and guide is `[128,16,8,8]` at 30 fps.
+D1 fails on frame coverage; D0 can load capture without opening guide.
+Returning the 17-frame master does not itself select a causal block or a random-start segment.

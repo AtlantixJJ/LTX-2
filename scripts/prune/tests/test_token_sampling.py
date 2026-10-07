@@ -1,5 +1,6 @@
 """Sampling budget and native spatial coordinates are independent of scoring quality."""
 
+
 import hashlib
 import struct
 
@@ -7,7 +8,8 @@ import pytest
 import torch
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import causal_core
+from scripts.onestep_avatar.model import causal as causal_core
+from scripts.onestep_avatar.model import common
 from scripts.prune.score import token_sampling
 from scripts.prune.score.whole_clip_d0_scores import _sample_indices
 
@@ -63,7 +65,7 @@ def test_index_hash_has_explicit_integer_encoding_and_geometry_pin() -> None:
 def test_sampler_indices_match_real_patchifier_row_column_coordinates() -> None:
     height, width, frames = 3, 5, 4
     geometry = causal_core.CausalGeometry(scale_factors=SpatioTemporalScaleFactors(time=8, height=32, width=32))
-    grid = causal_core.ClipGrid.build(frames, height * 32, width * 32, 30, geometry,
+    grid = common.ClipGrid.build(frames, height * 32, width * 32, 30, geometry,
                                     device=torch.device("cpu"), dtype=torch.float32, latent_channels=1)
     latent = torch.empty(1, 1, frames, height, width)
     for frame in range(frames):

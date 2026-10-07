@@ -43,9 +43,10 @@ from pathlib import Path
 import numpy as np
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import causal_core, dataset, geometry
+from scripts.onestep_avatar import dataset, geometry
 from scripts.onestep_avatar.dataset import ClipRef
 from scripts.onestep_avatar.hashing import sha256
+from scripts.onestep_avatar.model import causal as causal_core
 
 # The block plan depends on scale factors only through the pixel<->latent time ratio -- the
 # latent frame count `plan_blocks` is called with already has that applied (see

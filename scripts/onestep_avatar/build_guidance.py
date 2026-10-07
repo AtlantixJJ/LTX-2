@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Render ARGAvatar guides -- the B2 stage of
 ``plans/2026-09-10-ltx25-one-step-argavatar-lora.md``.
 
@@ -26,7 +25,7 @@ Per (clip, driving view ``D``):
 5. IoU (render alpha vs ``mask.mp4``, cropped/resized identically) is computed here as a cheap
    read-only QA number -- SSB1's decisive alignment check -- and the alpha is persisted
    (``argavatar_alpha.mp4``, lossless gray; see ``mask_video.py``) for SS4.3 row 1's masked
-   loss. A legacy ``.npy`` is still read, and ``--migrate-alpha`` converts one.
+   loss. Stored masks require the lossless MP4.
 6. **The guide is composited in pixel space** (SS1.2, guide contract v2): the renderer's own
    RGB is already alpha-composited over white (``forward.cu``: ``C[ch] + T * bg_color[ch]``),
    so ``composite_guide_frame`` REPLACES that white background rather than blending a second
@@ -62,6 +61,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -77,32 +77,31 @@ DEFAULT_ARGAVATAR_ROOT = Path("/home/jianjinx/data2/ARG-Avatar")
 # Not the config's own default (`checkpoints/ARGAvatar-Final.pth`) -- that file's content has
 # since diverged from this training run's PT_40000 (different md5, same size). Pin explicitly.
 DEFAULT_CHECKPOINT_PATH = Path(
-    "/home/jianjinx/data2/SAM3DGS/expr/"
-    "MV-UV-RNU-HR-FACRoPE-None-L2-PoseDep-TokenCascade-SH1-DS-GSplat/PT_40000.pth"
+    "/home/jianjinx/data2/SAM3DGS/expr/MV-UV-RNU-HR-FACRoPE-None-L2-PoseDep-TokenCascade-SH1-DS-GSplat/PT_40000.pth"
 )
 DEFAULT_CONFIG_NAME = "configs/ARGAvatar-Final.yaml"
 
 # SS4.1 of the 09-05 plan: reconstruction inputs 90 degrees apart, driving views maximally
 # distant from every input -- so the render is never trivially good from having "seen" D.
-DEFAULT_RECON_VIEWS = (0, 2, 4)      # front, right, back
-DEFAULT_DRIVING_VIEWS = (1, 5)       # front-right, back-left
+DEFAULT_RECON_VIEWS = (0, 2, 4)  # front, right, back
+DEFAULT_DRIVING_VIEWS = (1, 5)  # front-right, back-left
 
 ENCODE_ARGS = ["-c:v", "libx264", "-preset", "slow", "-crf", "12", "-pix_fmt", "yuv420p"]
 # Artifact names come from dataset.py, which owns the objective -> filename mapping for
 # both trees (SS1.2). Nothing here spells a corpus filename itself.
 # The render's own alpha (SS4.4 "alpha comes free"), persisted for SS4.3 row 1's masked loss.
-ALPHA_NAME = dataset.ALPHA_NAME          # "argavatar_alpha.mp4"
-ALPHA_STEM = dataset.ALPHA_STEM          # suffix-less, for the legacy-.npy fallback
+ALPHA_NAME = dataset.ALPHA_NAME  # "argavatar_alpha.mp4"
+ALPHA_STEM = dataset.ALPHA_STEM  # suffix-less, for stored-mask lookup
 # Alpha is stored as an area-fraction grid, not at full 1024**2: the loss consumes it at the
 # VAE's latent resolution (32x32 at this geometry), so persisting 1024**2 would be ~157 MB
 # per view to throw 99.9 % of away. 256 is a clean multiple of every plausible latent grid,
 # so `precompute.py` can average-pool it down without ever resampling to a non-integer ratio,
 # and uint8 (1/255 of a cell's area) is finer than the downsample itself. The grid is 9.8 MB
 # raw for a 150-frame clip; stored as lossless gray MP4 (mask_video.py) that is 0.23 MB.
-ALPHA_GRID = dataset.ALPHA_GRID          # the producer and consumer of one grid, one spelling
+ALPHA_GRID = dataset.ALPHA_GRID  # the producer and consumer of one grid, one spelling
 
 
-def read_frames(path: Path):
+def read_frames(path: Path) -> Iterator[np.ndarray]:
     """Yield BGR ``HxWxC`` uint8 frames from a video, one at a time (never the whole clip --
     a 3000x4096 clip is ~50 MB/frame in memory, and a 225-frame clip would be several GB)."""
     cap = cv2.VideoCapture(str(path))
@@ -122,9 +121,13 @@ def encode_frames(frame_dir: Path, out_path: Path, fps: float) -> list[str]:
     """ffmpeg-encode ``%06d.png`` frames in ``frame_dir`` to ``out_path``. Returns the exact
     argv (minus ``ffmpeg`` itself) so callers can record it verbatim in the sidecar metadata."""
     args = [
-        "-y", "-loglevel", "error",
-        "-framerate", f"{fps:.8f}".rstrip("0").rstrip("."),
-        "-i", str(frame_dir / "%06d.png"),
+        "-y",
+        "-loglevel",
+        "error",
+        "-framerate",
+        f"{fps:.8f}".rstrip("0").rstrip("."),
+        "-i",
+        str(frame_dir / "%06d.png"),
         *ENCODE_ARGS,
         str(out_path),
     ]
@@ -132,7 +135,7 @@ def encode_frames(frame_dir: Path, out_path: Path, fps: float) -> list[str]:
     return args
 
 
-def read_cropped_masks(clip: ClipRef, view_idx: int, box: geometry.XYXY, out_size: int):
+def read_cropped_masks(clip: ClipRef, view_idx: int, box: geometry.XYXY, out_size: int) -> Iterator[np.ndarray]:
     """Stream ``mask.mp4[view_idx]``, cropped to ``box`` and resized -- read-only, for IoU.
 
     ``crop_from_canvas`` rather than ``crop_with_padding``: a manifest box is inside the
@@ -145,7 +148,7 @@ def read_cropped_masks(clip: ClipRef, view_idx: int, box: geometry.XYXY, out_siz
         yield cv2.resize(mask_c, (out_size, out_size), interpolation=cv2.INTER_AREA)
 
 
-def read_cropped_capture(clip: ClipRef, view_idx: int, box: geometry.XYXY, out_size: int):
+def read_cropped_capture(clip: ClipRef, view_idx: int, box: geometry.XYXY, out_size: int) -> Iterator[np.ndarray]:
     """Stream ``rgb.mp4[view_idx]`` cropped to ``box`` and resized -- the capture track.
 
     Exactly what ``precompute.py --process_gt_latent`` feeds the VAE, reconstructed on the fly for
@@ -176,9 +179,7 @@ def _atomic_write_video(frame_dir: Path, output: Path, fps: float) -> list[str]:
     return dataset.atomic_write(output, lambda temp: encode_frames(frame_dir, temp, fps))
 
 
-def composite_guide_frame(
-    render_bgr: np.ndarray, alpha: np.ndarray, background_bgr: np.ndarray
-) -> np.ndarray:
+def composite_guide_frame(render_bgr: np.ndarray, alpha: np.ndarray, background_bgr: np.ndarray) -> np.ndarray:
     """Replace the renderer's white background with ``background_bgr`` (guide contract v2).
 
     ``render_bgr`` is NOT straight foreground color -- ARG-Avatar's own rasterizer
@@ -226,9 +227,7 @@ def composite_guide_frame(
     return blended.round().clip(0, 255).astype(np.uint8)
 
 
-def guide_background(
-    objective: str, clip: ClipRef, driving_view: int, box: geometry.XYXY, out_size: int
-) -> np.ndarray:
+def guide_background(objective: str, clip: ClipRef, driving_view: int, box: geometry.XYXY, out_size: int) -> np.ndarray:
     """The frame ``composite_guide_frame`` blends behind the render, for one objective.
 
     Read once per view, outside the per-frame loop -- it is constant over the clip in both
@@ -283,7 +282,7 @@ def resolve_box(
     expected = geometry.canonical_crop_box(
         bbox["xyxy"], bbox["valid"], view_meta["width"], view_meta["height"], pad_factor
     )
-    if any(abs(a - b) > 1e-3 for a, b in zip(box, expected)):
+    if any(abs(a - b) > 1e-3 for a, b in zip(box, expected, strict=False)):
         raise ValueError(
             f"{clip.name} view{view_idx:02d}: {dataset.CAPTURE_MANIFEST_NAME} records crop box "
             f"{box} but the current bbox.npy yields {expected} -- bbox.npy has changed since "
@@ -310,7 +309,11 @@ def padded_fraction(box_xyxy: geometry.XYXY, frame_width: float, frame_height: f
 
 
 def _render_is_complete(
-    output: Path, metadata_path: Path, expected_frames: int, out_size: int, objective: str,
+    output: Path,
+    metadata_path: Path,
+    expected_frames: int,
+    out_size: int,
+    objective: str,
     motion_sha256: str | None = None,
 ) -> bool:
     """Per-view resumability: a render counts as built only if its sidecar and its video
@@ -351,23 +354,25 @@ def _render_is_complete(
     )
 
 
-def motion_input_sha256(clip: ClipRef, driving_view: int, use_refined_pose: bool) -> str:
+def motion_input_sha256(clip: ClipRef, driving_view: int) -> str:
     """Content identity of every pose record that contributes to a guide render."""
     view_digest = hashing.sha256(clip.pose3d_path(driving_view))
-    if not use_refined_pose:
-        return view_digest
     refined_path = clip.refined_pose3d_path()
     if not refined_path.is_file():
         raise FileNotFoundError(
-            f"{refined_path} does not exist; pass --per-view-pose only to reproduce the "
-            "unrefined per-view trajectory"
+            f"{refined_path} does not exist; supported guide production requires refined multiview pose"
         )
     return f"{view_digest}:{hashing.sha256(refined_path)}"
 
 
 def write_overlay(
-    render_video: Path, clip: ClipRef, driving_view: int, box: geometry.XYXY, out_path: Path,
-    out_size: int, fps: float,
+    render_video: Path,
+    clip: ClipRef,
+    driving_view: int,
+    box: geometry.XYXY,
+    out_path: Path,
+    out_size: int,
+    fps: float,
 ) -> None:
     """A 0.6/0.4 dissolve of capture-over-render -- misalignment shows as ghosting or doubled
     edges. The capture side is cropped from ``rgb.mp4`` with the manifest box on the fly, so
@@ -375,7 +380,7 @@ def write_overlay(
     latents were encoded from. Purely a review aid; not part of the training contract."""
     with tempfile.TemporaryDirectory(prefix="overlay_") as tmp:
         tmp_dir = Path(tmp)
-        frames = zip(read_frames(render_video), read_cropped_capture(clip, driving_view, box, out_size))
+        frames = zip(read_frames(render_video), read_cropped_capture(clip, driving_view, box, out_size), strict=False)
         for i, (render_bgr, capture_bgr) in enumerate(frames, start=1):
             blended = cv2.addWeighted(capture_bgr, 0.6, render_bgr, 0.4, 0.0)
             cv2.imwrite(str(tmp_dir / f"{i:06d}.png"), blended)
@@ -398,23 +403,25 @@ class PairResult:
 
 
 def render_pair(
-    clip: ClipRef, driving_view: int, box_record: BoxOfRecord, avatar, pipeline, out_size: int,
-    pad_factor: float, force: bool, objective: str = dataset.DEFAULT_OBJECTIVE,
-    use_refined_pose: bool = True,
+    clip: ClipRef,
+    driving_view: int,
+    box_record: BoxOfRecord,
+    avatar: object,
+    pipeline: object,
+    out_size: int,
+    pad_factor: float,
+    force: bool,
+    objective: str = dataset.DEFAULT_OBJECTIVE,
 ) -> PairResult:
     pose_path = clip.pose3d_path(driving_view)
     pose3d = np.load(pose_path, allow_pickle=True).item()
     bbox = np.load(clip.bbox_path(driving_view), allow_pickle=True).item()
-    refined_valid = None
-    if use_refined_pose:
-        refined_path = clip.refined_pose3d_path()
-        refinement = np.load(refined_path, allow_pickle=True).item()
-        pose3d = motion.repair_view_camera_gaps(pose3d, bbox)
-        pose3d = motion.merge_multiview_refinement(
-            pose3d, refinement
-        )
-        refined_valid = np.asarray(refinement["valid"], dtype=bool)
-    motion_sha256 = motion_input_sha256(clip, driving_view, use_refined_pose)
+    refined_path = clip.refined_pose3d_path()
+    refinement = np.load(refined_path, allow_pickle=True).item()
+    pose3d = motion.repair_view_camera_gaps(pose3d, bbox)
+    pose3d = motion.merge_multiview_refinement(pose3d, refinement)
+    refined_valid = np.asarray(refinement["valid"], dtype=bool)
+    motion_sha256 = motion_input_sha256(clip, driving_view)
     box = box_record.xyxy  # the manifest's, never recomputed here
     fps = clip.fps()
     expected_frames = clip.n_frames()
@@ -423,21 +430,22 @@ def render_pair(
     output = view_dir / dataset.render_name(objective)
     metadata_path = view_dir / dataset.render_metadata_name(objective)
 
-    if not force and _render_is_complete(
-        output, metadata_path, expected_frames, out_size, objective, motion_sha256
-    ):
+    if not force and _render_is_complete(output, metadata_path, expected_frames, out_size, objective, motion_sha256):
         record = json.loads(metadata_path.read_text())
         iou = {p: record[f"iou_p{p}"] for p in IOU_PERCENTILES}
         return PairResult(
-            clip_name=clip.name, driving_view=driving_view, box_xyxy=tuple(record["crop_box_xyxy"]),
-            fps=fps, n_frames=record["n_frames"], iou=iou, render_path=str(output),
+            clip_name=clip.name,
+            driving_view=driving_view,
+            box_xyxy=tuple(record["crop_box_xyxy"]),
+            fps=fps,
+            n_frames=record["n_frames"],
+            iou=iou,
+            render_path=str(output),
         )
 
     # -- S1: motion file (SS3.1 conversions) -------------------------------------------------
     view_meta = clip.view_meta(driving_view)
-    sam3db = motion.build_motion(
-        pose3d, bbox, frame_height=view_meta["height"], valid=refined_valid
-    )
+    sam3db = motion.build_motion(pose3d, bbox, frame_height=view_meta["height"], valid=refined_valid)
 
     with tempfile.TemporaryDirectory(prefix=f"{clip.name}_view{driving_view:02d}_") as tmp:
         tmp_dir = Path(tmp)
@@ -521,7 +529,7 @@ def render_pair(
         # _render_is_complete alongside objective, so a render built under a retired
         # compositing formula is rebuilt rather than silently trained against.
         "compositing_version": dataset.GUIDE_COMPOSITING_VERSION,
-        "motion_source": "clip_refined_multiview" if use_refined_pose else "per_view",
+        "motion_source": "clip_refined_multiview",
         "motion_sha256": motion_sha256,
         "fps": fps,
         "n_frames": len(ious),
@@ -532,16 +540,21 @@ def render_pair(
     _atomic_write_json(metadata, metadata_path)
 
     return PairResult(
-        clip_name=clip.name, driving_view=driving_view, box_xyxy=box, fps=fps,
-        n_frames=metadata["n_frames"], iou=iou, render_path=str(output),
+        clip_name=clip.name,
+        driving_view=driving_view,
+        box_xyxy=box,
+        fps=fps,
+        n_frames=metadata["n_frames"],
+        iou=iou,
+        render_path=str(output),
     )
 
 
-def build_pipeline(argavatar_root: Path, checkpoint_path: Path, device_str: str):
+def build_pipeline(argavatar_root: Path, checkpoint_path: Path, device_str: str) -> object:
     """Import and construct ``ARGAvatarPipeline`` -- must run with cwd == argavatar_root, so
     the caller has already chdir'd there before calling this (importing ARGAvatar's own
     ``scripts.inference`` submodule requires it on ``sys.path``, done by the caller too)."""
-    from scripts.inference.pipeline import ARGAvatarPipeline
+    from scripts.inference.pipeline import ARGAvatarPipeline  # noqa: PLC0415 -- deferred ARGAvatar import
 
     device = torch.device(device_str)
     return ARGAvatarPipeline.build(
@@ -552,9 +565,14 @@ def build_pipeline(argavatar_root: Path, checkpoint_path: Path, device_str: str)
 
 
 def reconstruct_avatar(
-    clip: ClipRef, recon_views, manifest: dataset.CaptureManifest, pipeline, out_size: int,
-    pad_factor: float, work_dir: Path,
-):
+    clip: ClipRef,
+    recon_views: list[int],
+    manifest: dataset.CaptureManifest,
+    pipeline: object,
+    out_size: int,
+    pad_factor: float,
+    work_dir: Path,
+) -> object:
     """Reconstruct from ``R``'s frame-0 crops, each at that view's own manifest box.
 
     The reconstruction views are capture sources too, so their boxes are on record like any
@@ -570,51 +588,15 @@ def reconstruct_avatar(
     return pipeline.reconstruct(image_paths, name=clip.name)
 
 
-def migrate_alpha(corpus_root: Path, *, prune: bool, dry_run: bool) -> dict[str, int]:
-    """Re-encode legacy ``argavatar_alpha.npy`` grids as lossless MP4, verifying each one.
-
-    The round trip is bit-exact (see ``mask_video``), so this is a pure storage migration --
-    but it is *verified* rather than trusted: the MP4 is decoded and compared against the
-    array it came from before anything is removed, and a mismatch leaves both files in place
-    and is counted as a failure. ``--prune-npy`` is what actually deletes, and only after
-    that check passes, because the raw grids are 42x the size and re-deriving one costs a
-    full re-render.
-    """
-    counts = {"converted": 0, "already_mp4": 0, "failed": 0, "removed_npy": 0}
-    for legacy in sorted(corpus_root.glob(f"Part_*/*/views/*/{dataset.ALPHA_STEM}.npy")):
-        video = legacy.with_suffix(".mp4")
-        if video.is_file():
-            # Counted the same way whether or not this is a dry run: a dry run that reported
-            # an already-migrated view as a pending "conversion" would not describe the run it
-            # is previewing, which is the only thing it is for.
-            counts["already_mp4"] += 1
-            if prune and not dry_run:
-                legacy.unlink()
-                counts["removed_npy"] += 1
-            continue
-        try:
-            grid = np.load(legacy)
-            if dry_run:
-                counts["converted"] += 1
-                continue
-            mask_video.write_mask_video(grid, video)
-            if not np.array_equal(mask_video.read_mask_video(video), grid):
-                video.unlink(missing_ok=True)
-                raise ValueError("round trip was not bit-exact")
-            counts["converted"] += 1
-            if prune:
-                legacy.unlink()
-                counts["removed_npy"] += 1
-        except Exception as exc:  # noqa: BLE001 -- one bad view must not sink the migration.
-            print(f"FAILED {legacy}: {exc}")
-            counts["failed"] += 1
-    return counts
-
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--corpus-root", type=Path, default=dataset.DEFAULT_CORPUS_ROOT)
-    p.add_argument("--clips", type=str, default=None, help="comma-separated clip names (e.g. Part_1_0008_01); default: all done clips")
+    p.add_argument(
+        "--clips",
+        type=str,
+        default=None,
+        help="comma-separated clip names (e.g. Part_1_0008_01); default: all done clips",
+    )
     p.add_argument("--recon-views", type=int, nargs="+", default=list(DEFAULT_RECON_VIEWS))
     p.add_argument("--driving-views", type=int, nargs="+", default=list(DEFAULT_DRIVING_VIEWS))
     p.add_argument("--out-size", type=int, default=geometry.OUT_SIZE)
@@ -624,10 +606,6 @@ def parse_args() -> argparse.Namespace:
         "--visualize",
         action="store_true",
         help="also build the objective-specific capture/render overlay in qa/",
-    )
-    p.add_argument(
-        "--per-view-pose", action="store_true",
-        help="use the legacy per-view pose3d.npy instead of the required clip-level refined_pose3d.npy",
     )
     p.add_argument("--force", action="store_true", help="rebuild pairs whose guide render already exists")
     p.add_argument(
@@ -644,31 +622,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint-path", type=Path, default=DEFAULT_CHECKPOINT_PATH)
     p.add_argument("--device", type=str, default="cuda:0")
     p.add_argument("--dry-run", action="store_true", help="print the plan (clips x views) and exit, no GPU work")
-    p.add_argument(
-        "--migrate-alpha",
-        action="store_true",
-        help="Re-encode legacy argavatar_alpha.npy grids as lossless MP4 (~42x smaller, "
-        "bit-exact) and exit. No GPU, no renderer, no ARGAvatar import. Verifies each round "
-        "trip before counting it; add --prune-npy to delete the originals afterwards.",
-    )
-    p.add_argument(
-        "--prune-npy",
-        action="store_true",
-        help="With --migrate-alpha: delete each .npy once its MP4 is verified bit-exact.",
-    )
     return p.parse_args()
 
 
-def main() -> None:
+def main() -> None:  # noqa: PLR0912, PLR0915 -- ordered per-clip reconstruction/render ownership
     args = parse_args()
-    if args.migrate_alpha:
-        # Deliberately before every import-heavy step below: this needs no renderer, no GPU,
-        # and no cwd change, so it must run on a machine that has none of them.
-        counts = migrate_alpha(
-            args.corpus_root.resolve(), prune=args.prune_npy, dry_run=args.dry_run
-        )
-        print(json.dumps({**counts, "dry_run": args.dry_run}, indent=2))
-        return
     # Resolved before the chdir below (ARGAvatar's own imports need cwd == its repo root) --
     # a relative --corpus-root would otherwise silently re-resolve against the wrong directory.
     args.corpus_root = args.corpus_root.resolve()
@@ -686,7 +644,7 @@ def main() -> None:
     def is_done(clip: ClipRef, d: int) -> bool:
         view_dir = clip.view_dir(d)
         try:
-            motion_sha256 = motion_input_sha256(clip, d, not args.per_view_pose)
+            motion_sha256 = motion_input_sha256(clip, d)
         except FileNotFoundError:
             return False
         return _render_is_complete(
@@ -721,17 +679,17 @@ def main() -> None:
     if args.limit:
         pending_pairs = pending_pairs[: args.limit]
 
-    print(
+    print(  # noqa: T201 -- corpus CLI progress
         f"{len(clips)} clips selected, {len(all_pairs)} (clip, driving view) pairs total, "
         f"{waiting} waiting on capture latents, {skipped} already built, "
         f"{len(pending_pairs)} pending"
     )
     if args.dry_run:
         for c, d in pending_pairs:
-            print(f"  {c.name} view{d:02d}")
+            print(f"  {c.name} view{d:02d}")  # noqa: T201 -- corpus CLI progress
         return
     if not pending_pairs:
-        print("nothing to do (use --force to rebuild existing pairs)")
+        print("nothing to do (use --force to rebuild existing pairs)")  # noqa: T201 -- corpus CLI progress
         return
 
     if not args.argavatar_root.is_dir():
@@ -775,13 +733,19 @@ def main() -> None:
                     box_record = resolve_box(manifest, clip, d, args.pad_factor, args.out_size)
                     try:
                         result = render_pair(
-                            clip, d, box_record, avatar, pipeline, args.out_size, args.pad_factor,
-                            args.force, args.objective,
-                            use_refined_pose=not args.per_view_pose,
+                            clip,
+                            d,
+                            box_record,
+                            avatar,
+                            pipeline,
+                            args.out_size,
+                            args.pad_factor,
+                            args.force,
+                            args.objective,
                         )
                         iou_str = " ".join(f"p{p}={v:.3f}" for p, v in sorted(result.iou.items()))
                         clipped = " CLIPPED-SUBJECT" if box_record.clipped_subject else ""
-                        print(
+                        print(  # noqa: T201 -- corpus CLI progress
                             f"{clip.name} view{d:02d}: IoU[{iou_str}] ({result.n_frames} frames, "
                             f"pad={box_record.effective_pad_factor:.3f}{clipped}) -> {result.render_path}"
                         )
@@ -791,23 +755,28 @@ def main() -> None:
                             suffix = "" if args.objective == dataset.DEFAULT_OBJECTIVE else f"_{args.objective}"
                             overlay_path = clip.dir / "qa" / f"overlay_view{d:02d}{suffix}.mp4"
                             write_overlay(
-                                Path(result.render_path), clip, d, box_record.xyxy, overlay_path,
-                                args.out_size, result.fps,
+                                Path(result.render_path),
+                                clip,
+                                d,
+                                box_record.xyxy,
+                                overlay_path,
+                                args.out_size,
+                                result.fps,
                             )
                         done += 1
-                    except Exception as exc:  # noqa: BLE001 -- one bad pair must not sink the batch.
+                    except Exception as exc:
                         label = f"{clip.name} view{d:02d}"
-                        print(f"SKIPPED {label}: {exc}")
+                        print(f"SKIPPED {label}: {exc}")  # noqa: T201 -- corpus CLI progress
                         failed.append(label)
-        except Exception as exc:  # noqa: BLE001 -- reconstruction failure excludes the whole clip.
+        except Exception as exc:
             for d in pending:
                 label = f"{clip.name} view{d:02d}"
-                print(f"SKIPPED {label} (reconstruction failed): {exc}")
+                print(f"SKIPPED {label} (reconstruction failed): {exc}")  # noqa: T201 -- corpus CLI progress
                 failed.append(label)
 
-    print(f"done: {done} pairs rendered, {skipped} already existed, {len(failed)} skipped (use --force to rebuild)")
+    print(f"done: {done} pairs rendered, {skipped} already existed, {len(failed)} skipped (use --force to rebuild)")  # noqa: T201 -- corpus CLI progress
     if failed:
-        print("skipped pairs: " + ", ".join(failed))
+        print("skipped pairs: " + ", ".join(failed))  # noqa: T201 -- corpus CLI progress
 
 
 if __name__ == "__main__":

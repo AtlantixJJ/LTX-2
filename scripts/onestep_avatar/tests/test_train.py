@@ -25,8 +25,11 @@ import torch
 
 from ltx_core.types import SpatioTemporalScaleFactors
 from ltx_core.utils import to_velocity
-from scripts.onestep_avatar import causal_core, onestep_core, train
-from scripts.onestep_avatar.causal_core import BlockCache, CausalGeometry
+from scripts.onestep_avatar.model import causal as causal_core
+from scripts.onestep_avatar.model import common
+from scripts.onestep_avatar.model.causal import BlockCache, CausalGeometry
+from scripts.onestep_avatar.training import checkpoints
+from scripts.onestep_avatar.training import engine as train
 from scripts.prune.core import model_registry
 
 SCALE = SpatioTemporalScaleFactors(time=8, height=32, width=32)
@@ -37,29 +40,6 @@ LATENT_FRAMES = 7  # -> blocks [(0,3), (3,5), (5,7)]
 FPS = 30.0
 SIGMA0 = 0.725
 DEVICE = torch.device("cpu")
-
-
-class X0Stub(torch.nn.Module):
-    """A trainable stand-in shaped like the ``X0Model`` the session yields at deploy time --
-    ``model(video, audio, perturbations) -> (denoised, aux)``, unlike ``StubTransformer``
-    below which emits velocity. ``onestep_core.rollout`` reads it through
-    ``causal_core.denoised_from_x0_model``, which treats the model's output as the denoised
-    latent directly.
-
-    Carries a ``.velocity_model`` with a ``transformer_blocks`` attribute -- not read by this
-    stub's own ``forward``, but ``causal_core.base_model`` needs *some* path to
-    ``transformer_blocks`` to resolve, matching a real ``X0Model``'s shape.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.scale = torch.nn.Parameter(torch.tensor(0.5))
-        self.velocity_model = torch.nn.Module()
-        self.velocity_model.transformer_blocks = torch.nn.ModuleList([torch.nn.Identity()])
-        self.velocity_model.inner_dim = 4
-
-    def forward(self, video, audio, perturbations) -> tuple[torch.Tensor, None]:  # noqa: ANN001, ARG002
-        return self.scale * video.latent, None
 
 
 class StubTransformer(torch.nn.Module):
@@ -117,7 +97,6 @@ def _chain(
         z_g=z_g,
         z_y=z_y,
         fps=FPS,
-        z0_base=None,
     )
 
 
@@ -134,7 +113,7 @@ def _cache(chain: train.Chain) -> BlockCache:
 def _run(chain: train.Chain, model: StubTransformer, **kwargs) -> dict:
     return train.train_chain(
         model, torch.zeros(1, 1, 8), chain, GEOMETRY, _cache(chain), _StubAccelerator(),
-        sigma0=SIGMA0, seed=0, anchor_weight=0.0, latent_channels=CHANNELS, **kwargs,
+        sigma0=SIGMA0, seed=0, latent_channels=CHANNELS, **kwargs,
     )
 
 
@@ -172,7 +151,7 @@ def test_full_frame_mse_averages_every_token_and_channel() -> None:
     """The training objective has no subject, alpha, or disagreement weighting."""
     pred = torch.zeros(1, 16, 4)
     target = torch.ones(1, 16, 4)
-    assert train.full_frame_mse(pred, target).item() == 1.0
+    assert common.full_frame_mse(pred, target).item() == 1.0
 
 
 def test_identical_guide_and_capture_reduce_to_flow_matching(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -199,8 +178,8 @@ def test_velocity_mse_equals_x0_mse_over_sigma_squared(monkeypatch: pytest.Monke
     """SS3 identity 2: at fixed sigma_0 the existing velocity loss already IS an x0 loss.
 
     So the regression term needs no loss-function change -- only a different target -- and
-    predicting z0 in the loop (which is what makes the anchor and the capture directly
-    comparable) costs nothing in objective terms.
+    predicting z0 in the loop makes the prediction and capture directly comparable
+    without changing the regression objective.
     """
     chain = _chain()
     noisy: list[torch.Tensor] = []
@@ -211,7 +190,7 @@ def test_velocity_mse_equals_x0_mse_over_sigma_squared(monkeypatch: pytest.Monke
     grid = _grid(chain)
     lo, hi = grid.token_span(*GEOMETRY.plan(LATENT_FRAMES)[0])
     target = grid.patchify(chain.z_y.unsqueeze(0).to(train.DTYPE))[:, lo:hi]
-    denoise_fn = causal_core.denoised_from_velocity_model(model)
+    denoise_fn = common.denoised_from_velocity_model(model)
     z0 = causal_core.denoise_block(
         denoise_fn, grid, _cache(chain), noisy[0], torch.zeros(1, 1, 8), SIGMA0, GEOMETRY.plan(LATENT_FRAMES)[0]
     )
@@ -273,14 +252,14 @@ def test_a_clip_start_single_block_chain_runs_on_a_one_frame_cache() -> None:
     single = _chain(blocks=[0])
     totals = train.train_chain(
         StubTransformer(), torch.zeros(1, 1, 8), single, GEOMETRY, placeholder(single), _StubAccelerator(),
-        sigma0=SIGMA0, seed=0, anchor_weight=0.0, latent_channels=CHANNELS,
+        sigma0=SIGMA0, seed=0, latent_channels=CHANNELS,
     )
     assert len(totals["per_block"]) == 1
     multi = _chain(blocks=[0, 1])
     with pytest.raises(ValueError, match="cache"):
         train.train_chain(
             StubTransformer(), torch.zeros(1, 1, 8), multi, GEOMETRY, placeholder(multi), _StubAccelerator(),
-            sigma0=SIGMA0, seed=0, anchor_weight=0.0, latent_channels=CHANNELS,
+            sigma0=SIGMA0, seed=0, latent_channels=CHANNELS,
         )
 
 
@@ -372,18 +351,17 @@ def test_k1_chain_matches_a_single_non_ar_step() -> None:
     guide = grid.patchify(chain.z_g.unsqueeze(0).to(train.DTYPE))
     target = grid.patchify(chain.z_y.unsqueeze(0).to(train.DTYPE))
     c0 = target[:, : grid.tokens_per_latent_frame]
-    noisy = causal_core.with_clean_prefix(causal_core.noise_block(guide[:, lo:hi], SIGMA0, 0), c0)
+    noisy = common.with_clean_prefix(common.noise_block(guide[:, lo:hi], SIGMA0, 0), c0)
     z0 = causal_core.denoise_block(
-        causal_core.denoised_from_velocity_model(model_plain), grid, _cache(chain), noisy,
+        common.denoised_from_velocity_model(model_plain), grid, _cache(chain), noisy,
         torch.zeros(1, 1, 8), SIGMA0, span, clean_prefix_tokens=c0.shape[1],
     )
-    z0 = causal_core.with_clean_prefix(z0, c0)
-    loss = train.full_frame_mse(z0, target[:, lo:hi])
+    z0 = common.with_clean_prefix(z0, c0)
+    loss = common.full_frame_mse(z0, target[:, lo:hi])
     loss.backward()
 
     assert torch.allclose(chain_grad, model_plain.scale.grad, rtol=1e-4, atol=1e-8)
     assert abs(totals["mse"] - float(loss.detach())) < 1e-5
-    assert totals["anchor"] == 0.0
     assert [w["block_index"] for w in totals["per_block"]] == [0]
 
 
@@ -405,7 +383,7 @@ def test_d0_noises_the_capture_not_the_guide(monkeypatch: pytest.MonkeyPatch) ->
     optimal denoising is exactly SS3 identity 1's ordinary flow-matching target, decoupled
     from the render entirely. This measures the architecture's capacity ceiling at sigma_0
     (compare against the measured `r`, SS0.3), not a render-correction model -- there is no
-    `z_y` at inference, so `onestep_core.guide_conditionings` refuses this mode.
+    `z_y` at inference, so the product infer CLI refuses this mode.
     """
     chain = _chain()  # same=False: z_g and z_y are genuinely different draws
     noisy: list[torch.Tensor] = []
@@ -420,25 +398,6 @@ def test_d0_noises_the_capture_not_the_guide(monkeypatch: pytest.MonkeyPatch) ->
     assert eps.std().item() > 0.5
     assert torch.allclose(noisy[0].float(), (1 - SIGMA0) * z_y_tokens + SIGMA0 * eps, atol=8e-3)
     assert not torch.allclose(noisy[0].float(), (1 - SIGMA0) * z_g_tokens + SIGMA0 * eps, atol=0.1)
-
-
-@pytest.mark.parametrize("weight", ["0.1", "-0.1", "nan", "inf"])
-def test_anchor_weight_is_disabled(weight: str) -> None:
-    """2026-09-18 audit F8: no ``base_denoised.pt`` producer exists, and a fixed per-view tensor
-    cannot represent the anchor for every chain/sigma/history combination that would read it --
-    so any nonzero ``--anchor-weight`` is refused before the subset or model is even touched,
-    regardless of guide mode."""
-    with pytest.raises(SystemExit, match="anchor-weight is disabled"):
-        train.main(
-            [
-                "--subset", "/nonexistent.json", "--output", "/nonexistent",
-                "--guide-mode", "d0", "--anchor-weight", weight,
-            ]
-        )
-    with pytest.raises(SystemExit, match="anchor-weight is disabled"):
-        train.main(
-            ["--subset", "/nonexistent.json", "--output", "/nonexistent", "--anchor-weight", weight]
-        )
 
 
 def test_a_window_chain_subset_is_refused_rather_than_reinterpreted(tmp_path) -> None:  # noqa: ANN001
@@ -560,7 +519,7 @@ def test_a_cache_too_small_for_this_clip_is_refused_before_any_forward() -> None
     with pytest.raises(ValueError, match="sized from the subset's LONGEST clip"):
         train.train_chain(
             StubTransformer(), torch.zeros(1, 1, 8), chain, deep, undersized, _StubAccelerator(),
-            sigma0=SIGMA0, seed=0, anchor_weight=0.0, latent_channels=CHANNELS,
+            sigma0=SIGMA0, seed=0, latent_channels=CHANNELS,
         )
 
 
@@ -580,7 +539,7 @@ def test_the_chain_store_reports_the_subsets_longest_clip(tmp_path) -> None:  # 
         ],
     }
     store = train.ChainStore(
-        subset, tmp_path, split="train", objective="bg", with_anchor=False, with_guide=False,
+        subset, tmp_path, split="train", objective="bg", with_guide=False,
     )
     assert store.max_latent_frames == 28
 
@@ -597,7 +556,7 @@ def test_the_chain_store_refuses_a_window_chain_subset(tmp_path) -> None:  # noq
         "sources": [],
     }
     with pytest.raises(SystemExit, match=r"block-chain subset"):
-        train.ChainStore(subset, tmp_path, split="train", objective="bg", with_anchor=False, with_guide=False)
+        train.ChainStore(subset, tmp_path, split="train", objective="bg", with_guide=False)
 
 
 def test_a_subset_frozen_against_the_video_length_is_refused_at_startup() -> None:
@@ -773,20 +732,23 @@ def test_a_guide_master_with_matching_frame_count_but_a_different_spatial_size_i
         train.assert_subset_matches_geometry(subset, GEOMETRY, corpus_root=tmp_path, with_guide=True)
 
 
-def test_multilevel_sigma_schedule_rotates_by_rank_and_step() -> None:
-    """(rank + step) % len(levels): every step's batch mixes levels; every rank sees all levels."""
+def test_multilevel_sigma_is_an_iid_uniform_draw() -> None:
+    """Each (update, rank) draws a level i.i.d. uniformly, reproducibly from the noise seed."""
     levels = (0.909375, 0.725, 0.421875)
     args = argparse.Namespace(sigma0=0.725, sigma_levels=list(levels))
     assert train.training_sigmas(args) == levels
-    # step=0: 4 ranks, 3 levels -- rank 3 rotates back to rank 0's level rather than needing a
-    # 4th value, same as the old rank-only assignment.
-    assert [train.sigma_for_rank(levels, rank, 0) for rank in range(4)] == [
-        0.909375, 0.725, 0.421875, 0.909375,
-    ]
-    # A fixed rank walks through every level in turn as step advances.
-    assert [train.sigma_for_rank(levels, 0, step) for step in range(4)] == [
-        0.909375, 0.725, 0.421875, 0.909375,
-    ]
+    draws = [train.sigma_for_rank(levels, rank, step, 42) for step in range(3000) for rank in range(4)]
+    assert set(draws) == set(levels)
+    # Uniform: each of three levels gets about a third of 12,000 draws (binomial sd ~52).
+    for level in levels:
+        assert abs(draws.count(level) - 4000) < 300
+    # Reproducible for the same seed, different for another seed.
+    assert draws == [train.sigma_for_rank(levels, rank, step, 42) for step in range(3000) for rank in range(4)]
+    assert draws != [train.sigma_for_rank(levels, rank, step, 43) for step in range(3000) for rank in range(4)]
+    # Not the retired rotation: some update repeats a level across ranks or skips one.
+    assert any(len({train.sigma_for_rank(levels, rank, step, 42) for rank in range(3)}) < 3 for step in range(50))
+    # A single level is returned unchanged.
+    assert train.sigma_for_rank((0.725,), 3, 17, 42) == 0.725
 
 
 def test_sigma_zero_is_refused() -> None:
@@ -802,16 +764,16 @@ def test_step_zero_lora_export_requires_exactly_zero_b() -> None:
         "diffusion_model.block.to_q.lora_A.weight": torch.randn(2, 4, dtype=torch.bfloat16),
         "diffusion_model.block.to_q.lora_B.weight": torch.zeros(4, 2, dtype=torch.bfloat16),
     }
-    train.assert_exported_lora_is_noop(exported)
+    checkpoints.assert_exported_lora_is_noop(exported)
 
     exported["diffusion_model.block.to_q.lora_B.weight"][0, 0] = 1
     with pytest.raises(RuntimeError, match="non-zero LoRA delta"):
-        train.assert_exported_lora_is_noop(exported)
+        checkpoints.assert_exported_lora_is_noop(exported)
 
 
 def test_step_zero_lora_export_requires_b_weights() -> None:
     with pytest.raises(RuntimeError, match="no lora_B weights"):
-        train.assert_exported_lora_is_noop({"diffusion_model.block.to_q.lora_A.weight": torch.zeros(2, 4)})
+        checkpoints.assert_exported_lora_is_noop({"diffusion_model.block.to_q.lora_A.weight": torch.zeros(2, 4)})
 
 
 def _fake_model() -> model_registry.RefinerModel:
@@ -863,7 +825,7 @@ def test_cli_preflight_rejects_bad_second_source_without_touching_run(  # noqa: 
     path = tmp_path / "b" / (
         train.dataset.guide_bundle_name("bg") if guide_mode == "d1" else train.dataset.capture_bundle_name("bg")
     )
-    record = train._load_record(path)
+    record = torch.load(path, map_location="cpu", weights_only=True)
     if defect == "missing_guide":
         path.unlink()
         error = "does not exist"
@@ -953,7 +915,7 @@ def test_checkpoint_metadata_stamps_the_loss_identifier() -> None:
     future loss change) had no field to check against. ``onestep_avatar_loss`` closes that."""
     args = argparse.Namespace(
         sigma0=SIGMA0, sigma_levels=None, block_latent_frames=2, context_latent_frames=2,
-        objective="bg", guide_mode="d1", anchor_weight=0.0, teacher_forcing=False,
+        objective="bg", guide_mode="d1", teacher_forcing=False,
         lora_rank=8, lora_alpha=8, lora_target="attn", **_PROVENANCE_ARGS,
     )
     subset = {"chain_length": 3, "sources": []}
@@ -974,7 +936,7 @@ _PROVENANCE_ARGS = {
 def _metadata_args(**overrides) -> argparse.Namespace:  # noqa: ANN003
     values = {
         "sigma0": 0.421875, "sigma_levels": None, "block_latent_frames": 2, "context_latent_frames": 8,
-        "objective": "white", "guide_mode": "d1", "anchor_weight": 0.0, "teacher_forcing": False,
+        "objective": "white", "guide_mode": "d1", "teacher_forcing": False,
         "lora_rank": 16, "lora_alpha": 16, "lora_target": "attn", **_PROVENANCE_ARGS,
     }
     values.update(overrides)
@@ -1022,7 +984,7 @@ def test_fresh_noise_changes_per_visit_and_is_shared_across_candidates() -> None
 def test_condition_reader_refuses_a_dev_adapter_on_distilled_weights() -> None:
     """G3: the probe must refuse a dev adapter on distilled weights, at another sigma, or as
     a multi-step model -- and accept the matching condition."""
-    from scripts.onestep_avatar import sampling
+    from scripts.onestep_avatar.training import checkpoints as sampling
 
     meta = train.checkpoint_metadata(
         _metadata_args(), {"chain_length": 8, "sources": []}, _fake_model(), step=1
@@ -1047,7 +1009,7 @@ def test_condition_reader_refuses_a_dev_adapter_on_distilled_weights() -> None:
     assert sampling.check_adapter_conditions(meta, override=True, **{**ok, "base": distilled})
 
 
-# --- onestep_core: the deployment counterpart of the training loop -----------------------
+# --- shared generation block slicing -------------------------------------------------
 
 
 def test_rollout_slices_blocks_out_of_one_master_encode() -> None:
@@ -1062,7 +1024,7 @@ def test_rollout_slices_blocks_out_of_one_master_encode() -> None:
     geometry = GEOMETRY
     cache = _cache(chain)
     model = StubTransformer()
-    denoise_fn = causal_core.denoised_from_velocity_model(model)
+    denoise_fn = common.denoised_from_velocity_model(model)
     guide = grid.patchify(chain.z_g.unsqueeze(0).to(train.DTYPE))
     tokens, forwards = causal_core.rollout(
         denoise_fn, grid, geometry, cache, guide, torch.zeros(1, 1, 8), SIGMA0,
@@ -1071,82 +1033,6 @@ def test_rollout_slices_blocks_out_of_one_master_encode() -> None:
     plan = geometry.plan(LATENT_FRAMES)
     assert forwards == 2 * len(plan)  # one denoise plus one cache refresh per block
     assert tokens.shape == guide.shape
-
-
-def test_rollout_result_counts_both_passes() -> None:
-    """The refresh forward is real compute and must be in the number SS6 compares to `k2`."""
-    result = onestep_core.RolloutResult(
-        latent=torch.zeros(1), forwards=6, blocks=3, denoise_forwards=3, refresh_forwards=3
-    )
-    assert result.forwards == result.denoise_forwards + result.refresh_forwards
-
-
-def test_guide_conditionings_accepts_only_the_deployable_arm() -> None:
-    z_g = torch.zeros(1, CHANNELS, 3, 2, 2)
-    assert onestep_core.guide_conditionings(z_g, "d1") == ()
-    with pytest.raises(ValueError, match="unknown guide mode"):
-        onestep_core.guide_conditionings(z_g, "d2")
-    with pytest.raises(ValueError, match="training-only"):
-        onestep_core.guide_conditionings(z_g, "d0")
-
-
-def test_one_step_sigma_passes_an_on_grid_value_through_unchanged() -> None:
-    """The guard must not perturb sigma0 -- only validate it -- so wiring it into ``rollout``
-    cannot itself change a rollout's numeric output at an on-grid sigma0."""
-    grid = [1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0]
-    assert onestep_core.one_step_sigma(grid, 0.725) == pytest.approx(0.725)
-
-
-def test_one_step_sigma_refuses_an_off_grid_value() -> None:
-    grid = [1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0]
-    with pytest.raises(ValueError, match="not on the distilled sigma grid"):
-        onestep_core.one_step_sigma(grid, 0.5)
-
-
-def test_rollout_refuses_an_off_grid_sigma0() -> None:
-    """SS9 risk 13: ``onestep_core.rollout`` is the deploy path, so this is where an off-grid
-    sigma0 must be refused rather than silently produce plausible-looking output."""
-    chain = _chain()
-    with pytest.raises(ValueError, match="not on the distilled sigma grid"):
-        onestep_core.rollout(
-            X0Stub(),
-            torch.zeros(1, 1, 8),
-            chain.z_g.unsqueeze(0),
-            GEOMETRY,
-            0.5,  # off the nine-point distilled grid
-            FPS,
-            first_frame_latent=chain.z_y.unsqueeze(0)[:, :, :1],
-            device=DEVICE,
-            latent_channels=CHANNELS,
-            num_layers=1,
-            inner_dim=4,
-        )
-
-
-def test_rollout_runs_end_to_end_at_an_on_grid_sigma0() -> None:
-    """The guard sits in front of the rollout it guards -- an on-grid sigma0 still rolls out.
-
-    ``onestep_core.rollout`` had no direct test before this stage (only ``causal_core.rollout``,
-    the shared core it calls, was covered); this is also the first positive-path coverage of it.
-    """
-    chain = _chain()
-    result = onestep_core.rollout(
-        X0Stub(),
-        torch.zeros(1, 1, 8),
-        chain.z_g.unsqueeze(0),
-        GEOMETRY,
-        SIGMA0,
-        FPS,
-        first_frame_latent=chain.z_y.unsqueeze(0)[:, :, :1],
-        device=DEVICE,
-        seed=0,
-        latent_channels=CHANNELS,
-        num_layers=1,
-        inner_dim=4,
-    )
-    plan = GEOMETRY.plan(LATENT_FRAMES)
-    assert result.blocks == len(plan)
-    assert result.forwards == result.denoise_forwards + result.refresh_forwards == 2 * len(plan)
 
 
 def test_wandb_default_enabled() -> None:
@@ -1194,3 +1080,44 @@ def test_init_wandb_calls_wandb_init(monkeypatch: pytest.MonkeyPatch) -> None:
     assert called_with["project"] == "onestep-avatar"
     assert called_with["mode"] == "online"
     assert called_with["config"] == {"test_key": 123}
+
+
+def test_random_window_start_is_uniform_and_reproducible() -> None:
+    """Window starts cover 0..F-W uniformly, reproducibly from the noise seed."""
+    starts = [train.window_start_for(42, step=s, rank=r, slot=0, latent_frames=28, window=17)
+              for s in range(2000) for r in range(4)]
+    assert set(starts) == set(range(12))
+    for value in range(12):
+        assert abs(starts.count(value) - 8000 / 12) < 150
+    assert starts == [train.window_start_for(42, step=s, rank=r, slot=0, latent_frames=28, window=17)
+                      for s in range(2000) for r in range(4)]
+    assert {train.window_start_for(7, step=s, rank=0, slot=0, latent_frames=17, window=17) for s in range(50)} == {0}
+    with pytest.raises(ValueError):
+        train.window_start_for(42, step=0, rank=0, slot=0, latent_frames=16, window=17)
+
+
+def test_window_chain_slices_every_master_and_moves_c0() -> None:
+    """The window is a clip of its own: frame 0 of the slice (the future c0) is master frame s."""
+    z_y = torch.arange(2 * 28 * 2 * 2, dtype=torch.float32).reshape(2, 28, 2, 2)
+    chain = train.Chain(source="a/b", split="train", actor="7", seed_is_clip_start=True, blocks=[0],
+                        z_g=z_y + 1000, z_y=z_y, fps=30.0)
+    cut = train.window_chain(chain, 5, 17)
+    assert cut.z_y.shape == (2, 17, 2, 2) and cut.z_g.shape == (2, 17, 2, 2)
+    assert torch.equal(cut.z_y[:, 0], z_y[:, 5]) and torch.equal(cut.z_g[:, -1], z_y[:, 21] + 1000)
+    with pytest.raises(ValueError):
+        train.window_chain(chain, 12, 17)
+
+
+def test_random_window_is_refused_for_mismatched_geometry_or_short_sources() -> None:
+    """Window = one whole-clip block + c0, and every source must hold it."""
+    store = argparse.Namespace(
+        chains=[{"blocks": [0], "seed_is_clip_start": True}],
+        subset={"sources": [{"relative_dir": "x", "n_latent_frames": 18}, {"relative_dir": "y", "n_latent_frames": 16}]},
+    )
+    with pytest.raises(SystemExit, match="must equal --block-latent-frames"):
+        train.check_random_window(argparse.Namespace(random_window_latent_frames=17, block_latent_frames=2), store)
+    with pytest.raises(SystemExit, match="shorter than the 17-frame window"):
+        train.check_random_window(argparse.Namespace(random_window_latent_frames=17, block_latent_frames=16), store)
+    store.subset["sources"].pop()
+    train.check_random_window(argparse.Namespace(random_window_latent_frames=17, block_latent_frames=16), store)
+    train.check_random_window(argparse.Namespace(random_window_latent_frames=None, block_latent_frames=2), store)

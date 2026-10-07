@@ -28,7 +28,7 @@ make the rollout geometry explicit.
 
 **Revised 2026-09-14 (SS4.4).** The probe rolls out through ``causal_core`` -- block-causal
 attention plus the clean-latent K/V cache -- exactly as training and deployment do, so the
-probe cannot silently diverge from either. It does not call :mod:`onestep_core`, which refuses
+probe cannot silently diverge from either. It does not call the product infer CLI, which refuses
 D0 on purpose to protect deployment from accepting an arm that needs the unavailable capture
 latent -- and this tool has to be able to run both arms through one code path.
 
@@ -82,10 +82,13 @@ from PIL import Image, ImageDraw, ImageFont
 
 from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
 from ltx_trainer.video_utils import save_video
-from scripts.onestep_avatar import causal_core, dataset
-from scripts.onestep_avatar.train import Chain, ChainStore, clip_grid_for
+from scripts.onestep_avatar import dataset
+from scripts.onestep_avatar.media import decode as _decode
+from scripts.onestep_avatar.model import causal as causal_core
+from scripts.onestep_avatar.model import common
+from scripts.onestep_avatar.model import sampling as model_sampling
+from scripts.onestep_avatar.training.engine import Chain, ChainStore, clip_grid_for
 from scripts.prune.core.session import DTYPE, add_model_args, add_prompt_args, open_session, resolve_prompt
-from scripts.prune.evaluate.decode import decode_latent
 from scripts.prune.evaluate.metrics import t3_video
 
 # This is the distilled *refiner* schedule's non-trivial levels, not the first entries of the
@@ -152,7 +155,7 @@ def _source_master(chain: Chain, guide_mode: str) -> torch.Tensor:
     return chain.z_g
 
 
-def _run_chain(  # noqa: ANN202, PLR0913
+def run_chain(  # noqa: ANN201, PLR0913
     transformer,  # noqa: ANN001
     context,  # noqa: ANN001
     chain: Chain,
@@ -184,12 +187,12 @@ def _run_chain(  # noqa: ANN202, PLR0913
     old implicit refresh-from-the-noising-source, which was right for D0 and wrong for D1
     (``known_gaps.md`` G2).
 
-    It does not call :mod:`onestep_core`: that module refuses D0 on purpose, to protect
+    It does not call the product infer CLI: that module refuses D0 on purpose, to protect
     deployment from accepting an arm that needs the unavailable capture latent, and this probe
     has to run both arms through one code path.
     """
     grid = clip_grid_for(chain, geometry, device=device, latent_channels=latent_channels)
-    base = causal_core.base_model(transformer)
+    base = common.base_model(transformer)
     cache = (
         None
         if history_mode != "cache"
@@ -214,9 +217,9 @@ def _run_chain(  # noqa: ANN202, PLR0913
             raise ValueError(f"max_blocks must be within [1, {len(plan)}], got {max_blocks}")
         plan = plan[:max_blocks]
     denoise_fn = (
-        causal_core.denoised_from_x0_model(transformer)
+        common.denoised_from_x0_model(transformer)
         if guider is None
-        else causal_core.guided_denoised_from_x0_model(transformer, guider, negative_context)
+        else common.guided_denoised_from_x0_model(transformer, guider, negative_context)
     )
     tokens, _ = causal_core.rollout(
         denoise_fn,
@@ -299,23 +302,6 @@ def _stamp(pixels: torch.Tensor, labels: list[str]) -> torch.Tensor:
     return out
 
 
-def _as_fchw(pixels: torch.Tensor) -> torch.Tensor:
-    """Normalize decoder output to the frame-major layout used by stamping and video I/O."""
-    if pixels.ndim == 5:  # B,C,T,H,W
-        return pixels.permute(0, 2, 1, 3, 4).flatten(0, 1)
-    if pixels.ndim == 4 and pixels.shape[-1] in (1, 3, 4):  # F,H,W,C
-        return pixels.permute(0, 3, 1, 2)
-    if pixels.ndim != 4:
-        raise ValueError(f"expected decoded BCTHW, FCHW or FHWC video, got {tuple(pixels.shape)}")
-    return pixels
-
-
-def _decode(session, latent: torch.Tensor, decoder, seed: int) -> torch.Tensor:  # noqa: ANN001
-    """Decode an arm with an identical fresh diffusion-decoder noise stream."""
-    generator = torch.Generator(device=session.device).manual_seed(seed)
-    return _as_fchw(decode_latent(session, latent.to(session.device), decoder, generator=generator))
-
-
 def _checkpoint_name(path: Path) -> str:
     return path.stem.replace("lora_weights_", "")
 
@@ -358,7 +344,7 @@ def _probe_sigmas(values: list[float], schedule: list[float]) -> tuple[float, ..
 def _block_epsilons(tokens: torch.Tensor, grid, plan: list[tuple[int, int]], seed: int) -> list[torch.Tensor]:  # noqa: ANN001
     """Materialize the rollout's established seed+block-index noise stream once."""
     return [
-        causal_core.epsilon_block(tokens[:, slice(*grid.token_span(*span))], seed + index)
+        common.epsilon_block(tokens[:, slice(*grid.token_span(*span))], seed + index)
         for index, span in enumerate(plan)
     ]
 
@@ -376,7 +362,7 @@ def generate_checkpoint(args: argparse.Namespace, checkpoint: Path | None, chain
     if args.schedule is not None:
         # Validated against the model's own grid here rather than inside the rollout, so an
         # off-grid teacher arm fails before 42 GB of weights are loaded rather than after.
-        levels = causal_core.validate_schedule(args.schedule, list(session.model.sigmas))
+        levels = model_sampling.validate_schedule(args.schedule, list(session.model.sigmas))
         if len(sigmas) != 1 or abs(sigmas[0] - levels[0]) > 1e-9:
             raise SystemExit(
                 f"--schedule starts at {levels[0]} but --probe-sigmas is {list(sigmas)}; a "
@@ -404,7 +390,7 @@ def generate_checkpoint(args: argparse.Namespace, checkpoint: Path | None, chain
     with session.transformer(loras=loras) as transformer:
         for sigma in sigmas:
             print(f"    rolling out sigma={sigma:.6f}...", flush=True)  # noqa: T201
-            _, latent = _run_chain(
+            _, latent = run_chain(
                 transformer,
                 session.context,
                 chain,
@@ -564,7 +550,6 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915
         corpus_root,
         split=args.split,
         objective=objective,
-        with_anchor=False,
         with_guide=args.guide_mode == "d1",
     )
     chain = _chain(store, args.chain_index, args.span)
