@@ -17,8 +17,11 @@ Initial extraction retains old sample/checkpoint interfaces for matched baseline
 checks; these are transitional, not the completed two-mode design.
 
 The extracted body still has `Chain`, `ChainStore`, `clip_grid_for`, and
-`train_chain`. Their final owners are dataset and model code. This stage removes
-the CLI dependency first. Subsequent stages remove those temporary engine owners.
+`train_chain`. Required data/model facts keep shared owners; the transitional
+interfaces and duplicate loop retire after caller/data and CPU checks. The
+current handoff orders this structural refactor before new native experiments
+on the final owners. Preserve original scientific results and issue fresh
+affected acceptance afterward; directory changes do not establish native parity.
 The original trainer module doc is removed because the CLI is under 100 physical lines.
 Its conditioning/loss/cache explanations remain in the common and mode docs.
 The checkpoint and startup rules remain here and in the config/checkpoint docs.
@@ -28,7 +31,8 @@ actual selected input bytes, base-supported sigma levels, frame dimensions,
 and the full base hash. It checks parent records and tensor shapes before model
 loading. It returns the checked store, plan, base specification, and archive decision.
 `run_settings` uses those records for explicit-mode CLI commands. Mode-less
-commands temporarily use the old runtime until live queue callers finish or migrate.
+commands temporarily use the old runtime until supported callers move or receive
+a truthful retirement disposition.
 The new runtime saves the checked frame plan and settings before the first update.
 Every update writes a numeric JSONL record. `log_every` controls external logging, not numeric evidence.
 

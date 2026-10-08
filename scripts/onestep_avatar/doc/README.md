@@ -12,6 +12,10 @@ Status: **Implementation authorized and in progress.**
 The user directed execution of the revised plan. Shared input helpers, schedules,
 the checked master reader, and bidirectional functions now exist.
 The full restructure remains incomplete. Each module records its own status.
+The current task prepares a self-contained handoff for the next agent.
+The required work order is code refactor, CPU/import/boundary validation, fresh
+affected native checks, then GPU experiments on the final source. This update
+moves no production source and launches no GPU job.
 
 ## Review reading order
 
@@ -42,7 +46,7 @@ Explicit-mode training/evaluation/product, shared fp32 adapters, input preparati
 preview rendering and software manifests are implemented. Read
 [current acceptance and next step](known_gaps.md#current-acceptance-and-next-step)
 for verified scope and remaining gates. The
-[active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#current-progress-and-revised-work-order--2026-10-08)
+[active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#current-progress--2026-10-08)
 owns exact current evidence; source presence alone does not establish acceptance.
 Individual docs explain module behavior and link to that status instead of
 repeating a changing run timeline.
@@ -114,12 +118,15 @@ Proposed behavior remains distinct from the current implementation.
 
 ## Target source and design ownership
 
-The user-directed [architecture amendment](architecture.md) adds one proposed
-`experiments/` subpackage. It defines the common/support/experiment/report map
-and allowed dependencies. The October 8 handoff amendment puts the unchanged
-tiny-set E5 pilot after native update/short-workflow correctness and before full
-characterization and source moves. Complete relevant native replacement gates
-before Stage D source moves and duplicate-runtime removal. The tables
+The user-directed [architecture contract](architecture.md) defines the target
+layout: proposed `corpus/`, `execution/` and `experiments/` subpackages beside
+`model/` and `training/`, and a split of ordinary `evaluate.py` into
+`evaluate.py`, `metrics.py`, `previews.py` and `comparisons.py` (user decisions
+of 2026-10-08). It defines the ownership map, allowed dependencies and the
+complete migration map. The latest user instruction puts Stage D source moves
+and duplicate-runtime removal first. Preserve required behavior and callers,
+validate the final source with CPU/import/boundary checks, then publish fresh
+affected native checks before GPU experiments. The tables
 below include current mixed owners; their presence is not final boundary compliance.
 The architecture migration map gives their required destinations. New larger
 experiment sources require designs under `doc/experiments/` before source changes.
@@ -212,9 +219,9 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
   [design](future_noise_study.md). Reconstruct exact saved noise and prepare
   package jobs for the historical intervention/repeat/causal controls. Current
   real conversion refuses a changed guide-render pin in the old subset. Keep
-  a still-required old executor only through its recorded native/recovery gate;
-  apply the handoff's bounded recovery/disposition rule instead of retaining a
-  broken command indefinitely. Planned owner: `experiments/future_noise_study.py`.
+  a still-required old executor until its callers and required behavior have a
+  checked final owner; follow the active handoff's disposition rule. Do not retain
+  a broken command indefinitely. Planned owner: `experiments/future_noise_study.py`.
 
 - **`convert_progress_jobs.py`:** data-only conversion of historical progress
   rows to package evaluation jobs. Preserve both fixed views, seed 42, sigma
@@ -236,15 +243,16 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
   fixed guide/text/noise and original native numerical policy. It checks the fixed
   under-5% effect criterion and measures original-budget process resources. Fusion
   stays diagnostic. Saved verification performs no model/decoder work. This
-  experiment owner moves only after Stage D; ordinary runtime does not import it.
+  experiment owner moves during the next agent's Stage D refactor; ordinary
+  runtime must not import it.
 - **`continuation_check.py` (bounded E3 observation; native acceptance pending):**
   [Native history observations](continuation_check.md) delegate unchanged cached
   and recomputed sampling, snapshot real K/V and observe native attention inputs
   before/after eviction. Public future/capture controls use the ordinary evaluator.
   Shared resources and own-process supervision preserve the original E3 limits.
   CPU preflight and tiny-native controls do not prove full-weight or seven-frame
-  pilot acceptance. The owner moves during gated Stage D; ordinary runtime does
-  not import it.
+  pilot acceptance. The owner moves during Stage D before final-source native
+  experiments; ordinary runtime must not import it.
 - **`process_registry.py` (implemented, native launch evidence in progress):**
   [Own-process tracking](process_registry.md) in one shared JSON file, direct GPU
   queries and exact targeted descendant identities. No privilege or unrelated
@@ -295,34 +303,40 @@ explain their logic; larger sources use the mirrored docs above.
 
 ## Current source owners and remaining migration
 
+The tables in this file list **current** paths. Final paths and every
+destination are in [architecture: target layout](architecture.md#target-layout)
+and [migration map](architecture.md#migration-map); that map wins over the
+"Planned change" summaries below.
+
 | Current source | Current doc | Planned change |
 |---|---|---|
-| `precompute.py` | [precompute.md](precompute.md) | keep capture/guide VAE producers |
-| `build_guidance.py` | [build_guidance.md](build_guidance.md) | keep the only ARGAvatar process; check old branches |
-| `geometry.py` | [geometry.md](geometry.md) | keep the shared crop rule |
-| `motion.py` | [motion.md](motion.md) | keep pose conversion |
-| `mask_video.py` | [mask_video.md](mask_video.md) | keep lossless masks; check old data use |
-| `stats.py` | [stats.md](stats.md) | keep measurements; reuse shared helpers later |
+| `precompute.py` | [precompute.md](precompute.md) | move to `corpus/`; keep capture/guide VAE producers |
+| `build_guidance.py` | [build_guidance.md](build_guidance.md) | move to `corpus/`; keep the only ARGAvatar process; check old branches |
+| `geometry.py` | [geometry.md](geometry.md) | move to `corpus/`; keep the shared crop rule |
+| `motion.py` | [motion.md](motion.md) | move to `corpus/`; keep pose conversion |
+| `mask_video.py` | [mask_video.md](mask_video.md) | move to `corpus/`; keep lossless masks; check old data use |
+| `stats.py` | [stats.md](stats.md) | move whole to `experiments/stats.py` (A1/B1c study code; no other consumer) |
 | `plot_training.py` | [plot_training.md](plot_training.md) | keep training plots; remove old readers after log conversion |
 | `decode_saved.py` | [decode_saved.md](decode_saved.md) | use media; apply final size rule |
 | `train.py` | source header | thin CLI implemented; [engine](training/engine.md) and [config](training/config.md) extracted; remaining owners pending |
 | `model/causal.py` | [model/causal.md](model/causal.md) | typed training/evaluation/product integrated; native quality/cost acceptance pending |
-| `windows.py` | [windows.md](windows.md) | replace with video list and mode plans, then delete |
-| `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | version-two records, tensor preflight and checked fixed/random legacy conversion implemented; unsupported evidence is refused, historical callers await gated retirement |
+| `windows.py` | [windows.md](windows.md) | move the legacy subset hash rule to `corpus/subset.py`, then delete |
+| `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | version-two records and tensor preflight stay; legacy conversion moves to `experiments/legacy_adapters.py` |
 | removed `onestep_core.py` | [infer.md](infer.md) | explicit-mode product CLI/API and shared model/media owners |
-| `visualize_d0.py` | [visualize_d0.md](visualize_d0.md) | replace with evaluate/media, then delete |
-| `visualize_d1.py` | [visualize_d1.md](visualize_d1.md) | replace with evaluate/media, then delete |
+| `visualize_d0.py` | [visualize_d0.md](visualize_d0.md) | retarget needed checks to final owners, then delete |
+| `visualize_d1.py` | [visualize_d1.md](visualize_d1.md) | move the `--whole-clip` pruning producer to `scripts/prune/`, then delete |
 | `bench.py` | [bench.md](bench.md) | causal-operation diagnostic and explicit-mode whole-generation CLI implemented; native measurement pending |
 | `model/backbone.py` | [source docstrings](../model/backbone.py) | moved; keep the weight-identity description |
-| `hashing.py` | [source docstrings](../hashing.py) | keep the shared content hash |
-| `qa.py` | [source docstrings](../qa.py) | keep mask comparison; caller rules above |
+| `hashing.py` | [source docstrings](../hashing.py) | stays at the root as a leaf utility; gains `tensor_sha256` |
+| `qa.py` | [source docstrings](../qa.py) | move to `corpus/`; keep mask comparison; caller rules above |
 
 The architecture contract also requires study/diagnostic orchestration to leave
 ordinary `evaluate.py`, A1/B1c orchestration to leave the shared root, and historical
 adapter conversion orchestration to leave the normal checkpoint owner. Shared
 measurement/model/validation primitives keep one common owner. Sweep/progress/
-stock-check files move into `experiments/` only after the defined native gates;
-their current root paths and docs stay truthful until then.
+stock-check files move into `experiments/` during the next agent's code refactor.
+Their current root paths and commands stay truthful until that actual move.
+Fresh affected native evidence is then produced on the final source.
 
 Current commands remain in [configs/README](../configs/README.md).
 Explicit `--mode` and the shared `fsdp.yaml` are implemented.

@@ -2,9 +2,12 @@
 
 Status: Bounded E2 comparison owner; full E2 acceptance remains incomplete.
 Read [current acceptance](known_gaps.md#current-acceptance-and-next-step) for
-first-update versus two-view/trained-step scope. Keep this root
-path until Stage D permits migration to `experiments/`. Ordinary runtime imports
-none of this module. The owner adds no trainer, forward or cache algorithm.
+first-update versus two-view/trained-step scope. This owner still uses the root
+path. The current handoff orders its structural move to `experiments/` and
+CPU/caller checks first, then fresh E2 experiments on the final layout. Missing
+trained-step/view scope remains scientific acceptance work, not a directory-move
+prerequisite. Ordinary runtime imports none of this module. The owner adds no
+trainer, forward or cache algorithm.
 
 ## Objective
 

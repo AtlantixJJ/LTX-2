@@ -10,9 +10,11 @@ are extracted without changing their calculations. The engine imports them.
 The transitional mode-less route still accepts old subset settings.
 
 `parse_settings` produces `RunSettings` with a `BidirectionalSettings` or
-`CausalSettings` value. The old parser remains temporarily while existing live
-queues finish or transfer ownership. Its removal remains a Stage D gate;
-explicit-mode commands already use the typed public CLI.
+`CausalSettings` value. The old parser remains temporarily until its supported
+callers move or receive a truthful retirement disposition. The current handoff
+orders this structural refactor and CPU/caller checks before new native
+experiments on final owners; explicit-mode commands already use the typed
+public CLI. Keep all scientific settings and original evidence unchanged.
 `--frame-plan` can select a saved reproduction plan. The reader checks its hash,
 membership hash, mode, geometry, and sample lengths before model loading.
 For a random-start plan, `window_start_draw` owns the saved draw descriptor:

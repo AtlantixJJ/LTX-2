@@ -1,7 +1,9 @@
 # Training choices — mode, input, background, and past frames
 
-These definitions apply to the implemented typed modes. Legacy execution
-paths remain until their callers and native replacement gates are checked.
+These definitions apply to the implemented typed modes. The next agent moves
+required behavior and callers to final owners, then removes legacy execution.
+CPU/import/boundary checks precede fresh affected native experiments on that
+final source. The current task prepares the handoff and changes no source.
 
 Historical D0 completion reports keep their original attribution and metrics.
 The removed fixed-run report builder expected a training grid containing sigma

@@ -1,9 +1,13 @@
 # `windows.py` — freeze the training subset
 
-Status: **Legacy block-chain producer; Stage D retirement remains gated.**
+Status: **Legacy block-chain producer; caller/data migration and retirement remain incomplete.**
 Typed training reads version-two membership through `subset.py` and its checked
 readers. This module still surveys and freezes the old block-chain format.
 Conversion preserves its original hashes and selections in separate new files.
+The current handoff orders structural refactoring and CPU/caller/data checks
+before fresh native experiments on the final layout. Preserve needed original
+format/hash facts in shared data owners before retiring this source; its move
+or removal cannot restamp original scientific evidence.
 
 > **Legacy `K` is fixed here.** `--chain-length` sets how many causal blocks one
 > old-format training sample spans. The mode-less trainer reads the subset's chains. The

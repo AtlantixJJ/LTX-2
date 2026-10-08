@@ -554,7 +554,12 @@ fails and dependent evaluation remains pending.
 Study configuration and original scientific records retain their identities.
 Completed checkpoints are immutable. Report code cannot start jobs. The shared
 own-process ledger and queue state have explicit owners. Stage D must remove
-remaining compatibility executors from expr.
+remaining compatibility executors from expr. The current handoff orders
+structural refactoring and CPU/caller/profile checks before new native
+experiments on the final layout. Update lazy, explicitly selected experiment
+dispatch and completion together; ordinary jobs remain independent. Original
+launch/result identities remain unchanged, and native lifecycle acceptance is
+not inferred from a path move.
 The live historical handoff occurs only after command/data conversion and
 child ownership have been verified; this design is not evidence of that handoff.
 

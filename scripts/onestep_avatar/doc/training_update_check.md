@@ -2,8 +2,11 @@
 
 Status: Implemented bounded E4 owner; both original numerical comparisons pass.
 Complete preview/product acceptance is separate; read
-[current acceptance](known_gaps.md#current-acceptance-and-next-step). Stage D moves this owner
-to `experiments/training_update_check.py` after native replacement acceptance.
+[current acceptance](known_gaps.md#current-acceptance-and-next-step). The current
+handoff orders the structural move to `experiments/training_update_check.py`
+and CPU/caller checks before fresh native experiments on the final owners.
+Original native results retain their original producer hashes. The move does
+not close numerical or workflow acceptance under changed source.
 
 ## Objective
 

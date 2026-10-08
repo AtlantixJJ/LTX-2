@@ -1,10 +1,13 @@
 # `visualize_d1.py` — paired source comparison
 
-Status: **Legacy model/media orchestration; replacement and retirement remain gated.**
+Status: **Legacy model/media orchestration; caller migration and retirement remain incomplete.**
 Current sources import `model.causal` as the local alias `causal_core`.
 The old `scripts.onestep_avatar.causal_core` module path is removed.
-Use the typed `evaluate.py` path for ordinary evaluation. Preserve historical
-conditions and source bytes until native replacement acceptance permits Stage D.
+Use the typed `evaluate.py` path for ordinary evaluation. The current handoff
+orders structural refactoring and CPU/caller/data checks before new native
+experiments on final owners. Migrate needed behavior and retire obsolete callers;
+preserve historical conditions, source bytes and result attribution. Native
+scientific acceptance remains required after the refactor.
 
 ## Objective
 

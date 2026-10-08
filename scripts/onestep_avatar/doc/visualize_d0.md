@@ -1,10 +1,13 @@
 # `visualize_d0.py` — the decoded checkpoint probe
 
-Status: **Legacy model/media orchestration; replacement and retirement remain gated.**
+Status: **Legacy model/media orchestration; caller migration and retirement remain incomplete.**
 Current sources import `model.causal` as the local alias `causal_core`.
 The old `scripts.onestep_avatar.causal_core` module path is removed.
-Use the typed `evaluate.py` path for ordinary evaluation. Preserve historical
-conditions and source bytes until native replacement acceptance permits Stage D.
+Use the typed `evaluate.py` path for ordinary evaluation. The current handoff
+orders structural refactoring and CPU/caller/data checks before new native
+experiments on final owners. Migrate needed behavior and retire obsolete callers;
+preserve historical conditions, source bytes and result attribution. Native
+scientific acceptance remains required after the refactor.
 
 > **Both arms, since 2026-09-21.** `--guide-mode d1` noises the guide `z_g` instead of the
 > capture, which is what [G4](known_gaps.md#g4--no-d1-probe) was owed; the file keeps its

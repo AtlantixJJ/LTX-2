@@ -13,8 +13,12 @@ no model, text encoder, decoder or GPU session. Native parity is pending.
 Current real preparation stops before publication: the old `t2r2.json` subset
 pins a guide-render file that has changed. Even though this experiment is D0,
 conversion must preserve the original subset's content pins. Do not remove the
-pin to make the migration pass. The expr launcher remains until checked input
-conversion and required replacement evidence are available.
+pin to make the migration pass. The expr launcher remains current source awaiting
+caller disposition. The current handoff orders structural refactoring and
+CPU/caller checks before fresh native experiments on final owners. Move required
+controls or retire obsolete execution while preserving source/result attribution;
+an unavailable historical reproduction is recorded rather than silently repaired.
+The changed pin still blocks that input conversion, not the directory move.
 
 ## Data flow
 

@@ -9,6 +9,12 @@ Use the `ltx` environment from the LTX-2 root. Only guide rendering uses
 shared own-process ledger. Independent checks may run concurrently on GPUs
 0–3; four-rank training still requires all four. These recipes describe
 commands; this refactor does not start campaigns or bulk preprocessing.
+The current task only prepares the next agent's handoff. Its work order is
+code refactor first, CPU/import/boundary validation next, then fresh affected
+native checks and GPU experiments on the final source. Current module commands
+remain unchanged until that agent moves their owners. The
+[active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#next-actions)
+owns the exact sequence; no GPU run is launched by this documentation update.
 
 Read [core rules](../doc/core_algorithm.md), [mode settings](../doc/training/config.md)
 and [adapter checks](../doc/training/checkpoints.md) before changing conditions.

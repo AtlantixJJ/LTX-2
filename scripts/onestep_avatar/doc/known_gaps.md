@@ -3,7 +3,7 @@
 Each entry separates required behavior, current implementation and remaining
 acceptance. A passing check has the scope stated in its original evidence.
 This page summarizes current gaps; the
-[active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#current-progress-and-revised-work-order--2026-10-08)
+[active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#current-progress--2026-10-08)
 owns exact receipts and live progress. Historical failures retain their original
 bytes and attribution outside this current summary.
 
@@ -12,40 +12,41 @@ Status vocabulary: **open** (no fix), **in progress** (a fix is partially landed
 
 ## Current acceptance and next step
 
-Shared model calculations, typed training, unmerged fp32 adapters, strict input
-and adapter checks, fixed preparation, previews and product review are implemented.
-Both modes pass the native four-rank/serial numerical update comparison (E4
-numerical scope), including all named matrices and exact export/reload. This
-does not close preview, product, appearance or whole-plan acceptance.
+The current task prepares the self-contained handoff for the next agent.
+Production source is unchanged by this documentation update. No GPU job or
+pilot has launched. The next agent completes the code refactor first, then
+validates CPU behavior, imports, commands and source boundaries. Fresh affected
+native checks and GPU experiments follow on the final source.
 
-The causal physical-coverage defect is repaired in evaluation and preparation.
-The full CPU suite passes, and fresh public preparation preserves the original
-capture/guide/image/text/noise tensors while keeping the original causal
-training span null. A fresh causal public preview completes raw generation,
-rendering, allocator checks and bounded owned-worker supervision. Full/narrow
-media inspection remains required. Fresh current-source first-update E2 in both
-modes passes the public saved verifier on one camera at steps zero/one.
-Short causal controls and both corrected public preview/product executions
-pass their scoped scientific and bounded-supervision checks. Full-clip media
-inspection remains separate. Older results retain original attribution
-and are not receipts for changed producers.
+Shared two-mode calculations, typed training, unmerged fp32 adapters, strict
+input/adapter checks, fixed preparation, previews and product review are
+implemented. Saved numerical E4, one-camera zero/one-update E2, short causal
+controls and both-mode preview/product checks retain their original source
+attribution. Their frame-based media review covers all 49 frames and static
+480-pixel labels; it does not establish continuous-playback or learned quality.
+These scoped results remain valid for their recorded owners. After a move or
+profile change, publish fresh affected evidence instead of restamping them.
 
-The immediate gate is to inspect complete matched videos from the current-source
-short workflows, including readable playback at 480 pixels wide.
-Then run the unchanged four-rank seven-frame E5 pilots through steps 20/60.
-Learning acceptance remains open. Full E2 still needs two camera views and both trained steps.
-E3 still needs original 17-frame history/K/V and before/after-eviction coverage,
-held-out people/seeds and measured cost. Stage D still must move experiment
-orchestration, retire the duplicate runtime/parser and remove obsolete executors.
-No user decision or access change is required for these steps.
+The next agent must move experiment orchestration into `experiments/`, separate
+ordinary evaluation and checkpoint handling, retire the duplicate runtime/parser,
+and remove obsolete executors after required behavior and callers are preserved.
+The [architecture migration map](architecture.md#migration-map) records every
+destination and retirement condition; the
+[active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#refactor-work-order--owner-groups)
+records the owner groups and their validations. GPU results
+are acceptance requirements for the final source, not blockers for reversible
+owner moves. Current root paths and module commands stay truthful until they move.
 
-Current evidence is under workspace
-`expr/onestep_avatar/handoff_implementation_20261007/`: numerical receipts in
-`native_training_deterministic/`, full CPU validation in
-`causal_output_coverage_20261008/`,
-`current_fixed_preparation_readback_20261008.json`, and causal preview execution
-in `native_short_preview_causal_current_20261008.supervision/` and
-`native_short_preview_causal_current_20261008.resources/`.
+Scientific acceptance remains open: E2 needs two cameras and steps 20/60; E3
+needs the original 17-frame history/K/V and before/after-eviction controls,
+held-out people/seeds and cost; E5 needs the unchanged bounded learning pilots.
+Keep every original setting, budget and tolerance. No user decision or additional
+access is needed for the documented handoff and refactor.
+
+The active handoff links exact saved evidence under workspace
+`expr/onestep_avatar/handoff_implementation_20261007/`. Independent prelaunch
+scope remains in `tiny_pilot_design_20261008/independent_prelaunch_audit_20261008.json`;
+it is not an observed pilot outcome or a substitute for final-source validation.
 
 | | Gap | Severity | Status |
 |---|---|---|---|
@@ -56,224 +57,11 @@ in `native_short_preview_causal_current_20261008.supervision/` and
 | [G5](#g5--training-and-deployment-disagree-about-valid-sigma) | Historical sigma consumers remain | typed validation checked; legacy retirement is gated | **in progress** |
 | [G6](#g6--guide-artifacts-on-disk-predate-the-compositing-fix) | Selected guides need current provenance checks | D1 data readiness | **in progress** |
 | [G7](#g7--cached-history-can-disagree-with-a-causal-prefix) | Cached history can disagree with an explicit causal prefix | continuation quality is unmeasured | **in progress** |
-| [G9](#g9--a-random-window-c0-is-not-a-keyframe-encode) | a random-window `c0` is not a keyframe encode | training conditions on 8-frame latents that deployment never supplies | **open (accepted 2026-10-05)** |
 | [G8](#g8--bf16-lora-fusion-weakens-the-trained-adapter) | bf16 LoRA fusion weakens the trained adapter | shared unmerged path needs native effect/cost verification | **in progress** |
+| [G9](#g9--a-random-window-c0-is-not-a-keyframe-encode) | a random-window `c0` is not a keyframe encode | training conditions on 8-frame latents that deployment never supplies | **open (accepted 2026-10-05)** |
+| [G10](#g10--saved-comparisons-have-unreadable-titles-at-narrow-widths) | Saved render text shrinks below the narrow-width requirement | preserve matched readable formats | **verified** |
 | [G11](#g11--euler-rounding-differs-from-the-stock-step) | Euler rounding differs from the stock step | measured terminal difference; full E1 scope remains open | **in progress** |
 | [G12](#g12--ordinary-global-sigma-loses-stock-precision) | Precision/runtime acceptance is incomplete | shared precision and numerical updates pass; complete workflows remain required | **in progress** |
-| [G10](#g10--saved-comparisons-have-unreadable-titles-at-narrow-widths) | Saved render text shrinks below the narrow-width requirement | preserve matched readable formats | **verified** |
-
----
-
-## G12 — ordinary global sigma loses stock precision
-
-**Required.** Shared ordinary training, evaluation and product conditioning keep
-global sigma in float32, as the stock pipeline does. Token timesteps stay
-float32 too. Record this precision in new adapter and execution conditions;
-do not silently relabel an old calibration whose precision is unknown. Historical
-records stay readable. Unknown or invalid execution precision must fail before
-weights, including with a research override. Explicit historical bf16 conditions
-remain a separate diagnostic comparison.
-
-**Current.** The shared modality builder now defaults to float32 global sigma
-and token timesteps in both modes. New adapter contracts and ordinary execution
-conditions declare that precision. Historical unknown precision is readable but
-cannot execute; research overrides only acknowledge explicitly known differences.
-Legacy conversion requires matching original config and metadata precision.
-Small-model checks cover both modes. Native ordinary-default and explicit-
-float32 bidirectional video-component sampling agree exactly. Typed FSDP
-disables root-input casting, preserves fp32 adapter leaves and applies the
-measured deterministic numerical policy. Both four-rank numerical update
-comparisons and serial references pass. Complete native workflows remain
-separate acceptance.
-
-**Evidence.** A native 17-frame D0 comparison reused the verified stock controls
-and exactly the same image, text, saved noise, schedule, geometry and fps. It
-generated only the missing ordinary arm. The initial tokens, token timesteps,
-positions and first-image marks match; only global sigma precision changes.
-The first prediction differs at RMS 0.00654027. Final latent RMS is 0.00420113,
-maximum 0.05078125, across 1,543,927 different elements. RGB RMS is 0.00111309,
-maximum 0.03125. Both custom arms use the exact terminal prediction rule, so
-terminal Euler reconstruction does not explain this comparison.
-
-The native preprocessor multiplies global sigma by its timestep scale before
-embedding it. bf16 changes this calculation before the model uses prompt
-conditioning. Do not fit a larger stock-parity tolerance to hide the difference.
-The paired video is numerical sampling evidence, not a perceptual-quality claim.
-
-**Acceptance.** Change the shared default and bind it through new checkpoint
-and execution records in the same implementation. Preserve typed rejection of
-unknown historical precision. Test first-image/timestep/cache invariants in both
-modes and train/evaluation/product parity. Then run a fresh ordinary native
-stock check with the new source identity. The old bf16 result remains historical.
-
-**Status.** Shared precision, the scoped stock video-component comparison and
-both E4 numerical update comparisons are verified. Full E1 and complete current-
-source evaluation/product workflow acceptance remain open.
-
-**Fresh native evidence.** Ordinary-default and explicit-float32 custom outputs
-are bit-identical. Their four calls have identical inputs and predictions,
-including float32 global sigma. Stock repeats are exact in raw output and decoded
-pixels. The independently recomputed raw control isolates the same terminal
-rounding difference: 90 values, RMS 0.00000338906, maximum 0.0009765625.
-Each encoding has 17 frames; comparison media has 129 RGB frames at 30 fps.
-Source/runtime, original inputs and saved output hashes were rechecked. This is
-pure-noise base sampling with audio absent. It does not verify D1, adapters,
-outer RGB/text preparation, joint audio-video or video quality. The matched
-stock and custom videos both become blurred by displayed frame 64; numerical
-agreement must not be read as appearance acceptance. Evidence:
-`expr/onestep_avatar/handoff_implementation_20261007/native_stock_float32_default_acceptance.json`
-in the workspace.
-Historical precision diagnosis:
-`expr/onestep_avatar/handoff_implementation_20261007/native_stock_default_precision_acceptance.json`.
-
-**Numerical runtime evidence.** `training.numerics` applies the measured
-deterministic policy before model work. Original launches and actual per-rank
-records bind the policy; serial replay requires those observations. Both modes'
-four-rank/serial comparisons pass all 768 named clipped gradients, moments and
-exports, with exact exported/reloaded output and original allocator bounds.
-The measured norms are below the clipping threshold, so these native cases do
-not demonstrate active clipping. Independent readback binds original inputs,
-software and output bytes. Earlier failed comparisons remain failed provenance;
-they do not describe current numerical acceptance. The active handoff links diagnosis
-and current receipts. Complete current-source workflows remain separate.
-
-## G11 — Euler rounding differs from the stock step
-
-**Required.** Positive next levels use the stock step's operation order and
-dtype conversions. A direct `[sigma,0]` step returns the prediction exactly.
-E1 compares native raw encodings and pixels, including this terminal difference.
-
-**Historical defect.** The custom step used bf16 interpolation at every level.
-A fixed CPU sample of 524,288 elements differed from the stock step at 257,310
-elements for `[1,0.725]`, with RMS 0.00334952 and maximum 0.03125.
-This is arithmetic evidence, not model-output or perceptual evidence.
-
-**Current.** `model.sampling.euler_to` calls the actual native
-`EulerDiffusionStep.step` at positive next levels and returns the prediction
-directly at zero. The stock bf16 step rounds velocity before reconstructing its
-endpoint, so the terminal outputs can differ. Keep the direct endpoint contract;
-do not hide this difference with a parity claim or an unmeasured tolerance.
-
-**Acceptance.** CPU multi-interval float32/bf16 tests must match the native
-step exactly at positive levels and preserve the exact direct endpoint. E1 must
-still measure full-model raw and decoded differences with matched inputs.
-Historical outputs keep their original source hashes.
-
-**Status.** In progress. Positive-step arithmetic is verified. Native raw and
-decoded terminal differences are measured for the declared base video-component
-case. Full E1 scope remains open.
-
-**Native evidence.** A 17-frame base video-component check with float32 global
-sigma has exact repeated stock encodings and decoded pixels. All four custom
-inputs and predictions equal stock. The final encoding differs at 90 values,
-with RMS 0.00000338906 and maximum 0.0009765625; custom output equals the final
-stock prediction exactly. Decoded RMS is 0.000657139. This confirms the identified
-terminal rounding path for this case. The later ordinary-default precision
-control agrees with explicit float32 conditioning; see G12. This does not certify
-joint audio-video, product generation, D1 guide mixing or perceptual quality. Evidence:
-`expr/onestep_avatar/handoff_implementation_20261007/native_stock_parity_acceptance.json`
-in the workspace. Full E1 scope remains open.
-
-## G9 — a random-window `c0` is not a keyframe encode
-
-**Required.** Training's `c0` has the distribution of what deployment supplies: a single real
-image encoded by the causal VAE as latent frame 0 (one pixel frame).
-
-**Current.** `train.py --random-window-latent-frames W` slices the stored master at a random
-latent frame `s` and uses frame `s` as `c0` (user decision, 2026-10-05: slice, do not re-encode).
-For `s = 0` this is the keyframe encode; for `s > 0` it is a latent that encodes 8 pixel frames
-(pixel frames 8s − 7 … 8s), with different statistics. `keyframes_mask` still marks window
-frame 0, and evaluation keeps `s = 0`.
-
-**Consequence.** Part of the training signal conditions on `c0` latents deployment never
-produces. The share is `1 − 1/(F − W + 1)` of samples (½ for 18-frame clips, 11/12 for
-28-frame clips at `W = 17`).
-
-**Closing it.** Re-encode each window from pixel frame `8s` so its frame 0 is a true
-single-frame encode (precompute per offset, capture and guide), or train only on `s = 0`.
-
----
-
-## G8 — bf16 LoRA fusion weakens the trained adapter
-
-**Required.** The adapter that probe and deployment run is the function training optimised,
-within bf16 rounding of the *delta*, not just of the weights.
-
-**Current.** Typed training, ordinary evaluation and product now share
-`model.adapters` configuration and saved tensor loading: unmerged PEFT, fp32
-adapter weights against frozen bf16 base weights. Inference wraps that velocity
-function once in stock x0. CPU controls with real small LTX/PEFT models match the
-loaded training reference bit-for-bit in both modes, including zero adapters.
-Fresh first-update comparisons pass the public saved verifier in both modes on
-one camera view, with successful bounded supervision. Full E2 still needs
-two views, steps 20/60,
-decoded inspection and measured cost; see the current acceptance summary.
-`--adapter-application fused_bf16` is an explicit evaluation diagnostic requiring
-a recorded research override. Product exposes no fusion choice.
-
-**Historical evidence.** `Session.transformer(loras=...)` fuses `W + BA` into
-bf16 weights at load. Measured
-2026-10-02 on a real dev D1 adapter (60 updates, block 0, σ .421875, clip 0013_07): with no
-adapter the two paths are bit-identical, but the adapter's effect on the block is relative
-L2 0.136 unmerged and 0.119 fused, the two effects differ by 16%, and the raw outputs by 2.2%
-(`expr/onestep_avatar/dev_training_20261001/analysis/setup/fusion_parity_q0d1_step60.json`).
-A small `BA` added to a large bf16 `W` loses low-order bits, so fusion shrinks and perturbs the
-learned correction.
-
-**Impact.** Every fused evaluation slightly understates (and perturbs) what the adapter learned;
-the effect is largest for small, early adapters.
-
-**Acceptance.** Run ordinary evaluation/product with the unmerged adapter and
-measure its effect against the loaded training reference (target under 5%, with
-an explicit near-zero-effect rule). Compare fusion separately. An fp32 sum
-rounded into bf16 base weights is not the accepted normal function. Run the
-bounded native E2 views/checkpoint-step, zero-effect, appearance and cost controls.
-
-**Status.** In progress: shared application and scoped first-update effect
-comparison pass; full E2 acceptance remains open.
-
----
-
-## G7 — cached history can disagree with a causal prefix
-
-**Required.** Before treating cached refresh as an optimization of explicit causal
-continuation, compare them under matched text conditioning, clean per-token history
-timesteps, positions and retention policy on the real checkpoint. If zero-sigma refresh is
-instead the intended streaming model, its quality must be established under generated history.
-
-**Current.** `refresh_block` computes history K/V with global sigma zero.
-`transformer_args.py` uses global sigma for prompt AdaLN, independently of token timesteps.
-The LTX-2.5 checkpoint enables this branch. A small two-layer CPU model differs at block 1
-before eviction when this branch is enabled. On the real checkpoint, clean block-0 K/V are
-equal at layer 0 but differ from layer 1 onward when only global sigma changes from 0 to
-0.909375 or 1. A two-block real rollout differs at block 1 by relative latent L2 0.12084
-(D0) / 0.11428 (D1) at 0.909375, and 0.23675 in both arms at sigma 1. Block 0 and a
-repeated cached run agree exactly.
-`rollout(history_mode="recompute")` now supplies an
-explicit block-causal reference for paired inference; its retained history stays at token
-timestep zero while global sigma tracks each denoise step. After eviction, recomputation also
-changes the old states' available context, so comparisons must split before and after eviction.
-
-**Impact.** The computational difference on real weights is measured on one view; its
-contribution to appearance jumps remains unmeasured. Teacher-forced cache history also differs
-from the displayed output by definition;
-that separate source mismatch is tested by dropping `--teacher-forcing`.
-
-**Acceptance.** Preserve the selected sigma-zero cached refresh calculation.
-Compare native block output and layerwise K/V under matched inputs before and
-after eviction at 0.909375 and sigma 1. Compare boundary quality under both
-history calculations and both forcing policies on held-out views. Measure
-generated-history quality and actual cost; do not claim cache/recalculation
-equivalence from earlier block-one observations.
-
-**Status.** In progress. The selected default is established; its numerical
-difference from diagnostics remains. CPU controls and scoped earlier native
-observations do not replace full E3. Current original-source short seven-frame
-controls and fresh current-source successors show repeat/c0/prefix invariance
-before eviction. The original 17-frame
-K/V and capture/generated-history controls, before/after eviction, plus held-out
-appearance, motion, seeds and cost remain required. The active handoff links the exact
-protocol and scoped saved observations.
 
 ---
 
@@ -286,6 +74,8 @@ and `block_modality`. They preserve the first image in predictions; causal refre
 retains it as the sink. Dedicated conditioning tests and the recorded
 two-GPU debug run verified this boundary. Pre-fix results do not share `clean_c0_v1`.
 The original missing-condition reproduction is historical, not current behavior.
+
+---
 
 ## G2 — generic teacher-forced rollout refreshes from the guide, not the target
 
@@ -387,8 +177,9 @@ remain transitional consumers, pending Stage D retirement.
 checked separately, and an explicit research override for deliberate off-grid work.
 
 **Status.** Typed validation is implemented and CPU checked. Reconcile and remove
-remaining historical consumers after native replacement acceptance. Broader
-package closure is still open; the removed product validator is historical evidence.
+remaining historical consumers after their required behavior and callers move
+to checked final owners. Fresh affected native acceptance follows final-source
+validation. Package closure remains open; the removed product validator is historical evidence.
 
 ---
 
@@ -413,6 +204,258 @@ D1 run; the subset's readiness checked against guide *latents*, not just render 
 caller migration acceptance remain open. Preserve old render/encoding records
 with their original attribution. Reprepare invalid selected inputs through their
 one producer; never weaken provenance checks or repair bytes in a reader.
+
+---
+
+## G7 — cached history can disagree with a causal prefix
+
+**Required.** Before treating cached refresh as an optimization of explicit causal
+continuation, compare them under matched text conditioning, clean per-token history
+timesteps, positions and retention policy on the real checkpoint. If zero-sigma refresh is
+instead the intended streaming model, its quality must be established under generated history.
+
+**Current.** `refresh_block` computes history K/V with global sigma zero.
+`transformer_args.py` uses global sigma for prompt AdaLN, independently of token timesteps.
+The LTX-2.5 checkpoint enables this branch. A small two-layer CPU model differs at block 1
+before eviction when this branch is enabled. On the real checkpoint, clean block-0 K/V are
+equal at layer 0 but differ from layer 1 onward when only global sigma changes from 0 to
+0.909375 or 1. A two-block real rollout differs at block 1 by relative latent L2 0.12084
+(D0) / 0.11428 (D1) at 0.909375, and 0.23675 in both arms at sigma 1. Block 0 and a
+repeated cached run agree exactly.
+`rollout(history_mode="recompute")` now supplies an
+explicit block-causal reference for paired inference; its retained history stays at token
+timestep zero while global sigma tracks each denoise step. After eviction, recomputation also
+changes the old states' available context, so comparisons must split before and after eviction.
+
+**Impact.** The computational difference on real weights is measured on one view; its
+contribution to appearance jumps remains unmeasured. Teacher-forced cache history also differs
+from the displayed output by definition;
+that separate source mismatch is tested by dropping `--teacher-forcing`.
+
+**Acceptance.** Preserve the selected sigma-zero cached refresh calculation.
+Compare native block output and layerwise K/V under matched inputs before and
+after eviction at 0.909375 and sigma 1. Compare boundary quality under both
+history calculations and both forcing policies on held-out views. Measure
+generated-history quality and actual cost; do not claim cache/recalculation
+equivalence from earlier block-one observations.
+
+**Status.** In progress. The selected default is established; its numerical
+difference from diagnostics remains. CPU controls and scoped earlier native
+observations do not replace full E3. Current original-source short seven-frame
+controls and fresh current-source successors show repeat/c0/prefix invariance
+before eviction. The original 17-frame
+K/V and capture/generated-history controls, before/after eviction, plus held-out
+appearance, motion, seeds and cost remain required. The active handoff links the exact
+protocol and scoped saved observations.
+
+---
+
+## G8 — bf16 LoRA fusion weakens the trained adapter
+
+**Required.** The adapter that probe and deployment run is the function training optimised,
+within bf16 rounding of the *delta*, not just of the weights.
+
+**Current.** Typed training, ordinary evaluation and product now share
+`model.adapters` configuration and saved tensor loading: unmerged PEFT, fp32
+adapter weights against frozen bf16 base weights. Inference wraps that velocity
+function once in stock x0. CPU controls with real small LTX/PEFT models match the
+loaded training reference bit-for-bit in both modes, including zero adapters.
+Fresh first-update comparisons pass the public saved verifier in both modes on
+one camera view, with successful bounded supervision. Full E2 still needs
+two views, steps 20/60,
+decoded inspection and measured cost; see the current acceptance summary.
+`--adapter-application fused_bf16` is an explicit evaluation diagnostic requiring
+a recorded research override. Product exposes no fusion choice.
+
+**Historical evidence.** `Session.transformer(loras=...)` fuses `W + BA` into
+bf16 weights at load. Measured
+2026-10-02 on a real dev D1 adapter (60 updates, block 0, σ .421875, clip 0013_07): with no
+adapter the two paths are bit-identical, but the adapter's effect on the block is relative
+L2 0.136 unmerged and 0.119 fused, the two effects differ by 16%, and the raw outputs by 2.2%
+(`expr/onestep_avatar/dev_training_20261001/analysis/setup/fusion_parity_q0d1_step60.json`).
+A small `BA` added to a large bf16 `W` loses low-order bits, so fusion shrinks and perturbs the
+learned correction.
+
+**Impact.** Every fused evaluation slightly understates (and perturbs) what the adapter learned;
+the effect is largest for small, early adapters.
+
+**Acceptance.** Run ordinary evaluation/product with the unmerged adapter and
+measure its effect against the loaded training reference (target under 5%, with
+an explicit near-zero-effect rule). Compare fusion separately. An fp32 sum
+rounded into bf16 base weights is not the accepted normal function. Run the
+bounded native E2 views/checkpoint-step, zero-effect, appearance and cost controls.
+
+**Status.** In progress: shared application and scoped first-update effect
+comparison pass; full E2 acceptance remains open.
+
+---
+
+## G9 — a random-window `c0` is not a keyframe encode
+
+**Required.** Training's `c0` has the distribution of what deployment supplies: a single real
+image encoded by the causal VAE as latent frame 0 (one pixel frame).
+
+**Current.** `train.py --random-window-latent-frames W` slices the stored master at a random
+latent frame `s` and uses frame `s` as `c0` (user decision, 2026-10-05: slice, do not re-encode).
+For `s = 0` this is the keyframe encode; for `s > 0` it is a latent that encodes 8 pixel frames
+(pixel frames 8s − 7 … 8s), with different statistics. `keyframes_mask` still marks window
+frame 0, and evaluation keeps `s = 0`.
+
+**Consequence.** Part of the training signal conditions on `c0` latents deployment never
+produces. The share is `1 − 1/(F − W + 1)` of samples (½ for 18-frame clips, 11/12 for
+28-frame clips at `W = 17`).
+
+**Closing it.** Re-encode each window from pixel frame `8s` so its frame 0 is a true
+single-frame encode (precompute per offset, capture and guide), or train only on `s = 0`.
+
+---
+
+## G10 — saved comparisons have unreadable titles at narrow widths
+
+**Required.** Keep text at least 16 pixels in a delivered compact video or poster
+shown at 480 pixels wide. Preserve exact labels, panel order, source frames and
+image aspect ratios. Fail before decoding when no supported layout fits.
+
+**Historical defect.** Saved comparisons only produced a full video with a
+1280-pixel viewing width. Its 16-pixel titles on a 1232-pixel canvas shrank to
+about 6.23 pixels at 480. A successful receipt did not prove narrow readability.
+The initial artifact and its evidence remain preserved.
+
+**Current.** Shared metadata-only geometry selects a measured compact layout.
+Schema-three saved renders contain both full and compact media, using the same
+decoded RGB panels without a second decode. Completion checks bind layout,
+font, dimensions, timing, labels, media hashes and equal panel pixel hashes.
+The saved-only report reader exposes both formats and refuses missing or changed
+compact output. It never renders missing media.
+
+**Verified.** The native first original corpus comparison produced a 2 × 2
+compact canvas at 824 × 1028, with 28-pixel text: 16.31 pixels at width 480.
+Both videos contain 129 frames at 30 fps. Inspected full and narrow native frames
+and a Chromium player screenshot at 480 pixels. The full compact movie played
+to its 4.3-second end at normal speed with no browser media error. Wide panel
+records and numeric metrics exactly match the prior native render. Original
+specification and four input hashes remain unchanged. The guarded queue finished
+with a verified receipt and released its GPU-4 claim.
+
+Workspace evidence: `expr/onestep_avatar/two_mode_restructure_20261005/compact_presentation_acceptance.json`.
+CPU controls include compact-selection, pre-decode refusal, altered format
+and saved-only report-reader cases. This closes the presentation defect for the
+implemented saved-render path. It does not establish transformer/FSDP, adapter
+quality, stock sampling or whole-study scientific acceptance.
+
+---
+
+## G11 — Euler rounding differs from the stock step
+
+**Required.** Positive next levels use the stock step's operation order and
+dtype conversions. A direct `[sigma,0]` step returns the prediction exactly.
+E1 compares native raw encodings and pixels, including this terminal difference.
+
+**Historical defect.** The custom step used bf16 interpolation at every level.
+A fixed CPU sample of 524,288 elements differed from the stock step at 257,310
+elements for `[1,0.725]`, with RMS 0.00334952 and maximum 0.03125.
+This is arithmetic evidence, not model-output or perceptual evidence.
+
+**Current.** `model.sampling.euler_to` calls the actual native
+`EulerDiffusionStep.step` at positive next levels and returns the prediction
+directly at zero. The stock bf16 step rounds velocity before reconstructing its
+endpoint, so the terminal outputs can differ. Keep the direct endpoint contract;
+do not hide this difference with a parity claim or an unmeasured tolerance.
+
+**Acceptance.** CPU multi-interval float32/bf16 tests must match the native
+step exactly at positive levels and preserve the exact direct endpoint. E1 must
+still measure full-model raw and decoded differences with matched inputs.
+Historical outputs keep their original source hashes.
+
+**Status.** In progress. Positive-step arithmetic is verified. Native raw and
+decoded terminal differences are measured for the declared base video-component
+case. Full E1 scope remains open.
+
+**Native evidence.** A 17-frame base video-component check with float32 global
+sigma has exact repeated stock encodings and decoded pixels. All four custom
+inputs and predictions equal stock. The final encoding differs at 90 values,
+with RMS 0.00000338906 and maximum 0.0009765625; custom output equals the final
+stock prediction exactly. Decoded RMS is 0.000657139. This confirms the identified
+terminal rounding path for this case. The later ordinary-default precision
+control agrees with explicit float32 conditioning; see G12. This does not certify
+joint audio-video, product generation, D1 guide mixing or perceptual quality. Evidence:
+`expr/onestep_avatar/handoff_implementation_20261007/native_stock_parity_acceptance.json`
+in the workspace. Full E1 scope remains open.
+
+---
+
+## G12 — ordinary global sigma loses stock precision
+
+**Required.** Shared ordinary training, evaluation and product conditioning keep
+global sigma in float32, as the stock pipeline does. Token timesteps stay
+float32 too. Record this precision in new adapter and execution conditions;
+do not silently relabel an old calibration whose precision is unknown. Historical
+records stay readable. Unknown or invalid execution precision must fail before
+weights, including with a research override. Explicit historical bf16 conditions
+remain a separate diagnostic comparison.
+
+**Current.** The shared modality builder now defaults to float32 global sigma
+and token timesteps in both modes. New adapter contracts and ordinary execution
+conditions declare that precision. Historical unknown precision is readable but
+cannot execute; research overrides only acknowledge explicitly known differences.
+Legacy conversion requires matching original config and metadata precision.
+Small-model checks cover both modes. Native ordinary-default and explicit-
+float32 bidirectional video-component sampling agree exactly. Typed FSDP
+disables root-input casting, preserves fp32 adapter leaves and applies the
+measured deterministic numerical policy. Both four-rank numerical update
+comparisons and serial references pass. Complete native workflows remain
+separate acceptance.
+
+**Evidence.** A native 17-frame D0 comparison reused the verified stock controls
+and exactly the same image, text, saved noise, schedule, geometry and fps. It
+generated only the missing ordinary arm. The initial tokens, token timesteps,
+positions and first-image marks match; only global sigma precision changes.
+The first prediction differs at RMS 0.00654027. Final latent RMS is 0.00420113,
+maximum 0.05078125, across 1,543,927 different elements. RGB RMS is 0.00111309,
+maximum 0.03125. Both custom arms use the exact terminal prediction rule, so
+terminal Euler reconstruction does not explain this comparison.
+
+The native preprocessor multiplies global sigma by its timestep scale before
+embedding it. bf16 changes this calculation before the model uses prompt
+conditioning. Do not fit a larger stock-parity tolerance to hide the difference.
+The paired video is numerical sampling evidence, not a perceptual-quality claim.
+
+**Acceptance.** Change the shared default and bind it through new checkpoint
+and execution records in the same implementation. Preserve typed rejection of
+unknown historical precision. Test first-image/timestep/cache invariants in both
+modes and train/evaluation/product parity. Then run a fresh ordinary native
+stock check with the new source identity. The old bf16 result remains historical.
+
+**Status.** Shared precision, the scoped stock video-component comparison and
+both E4 numerical update comparisons are verified. Full E1 and complete current-
+source evaluation/product workflow acceptance remain open.
+
+**Fresh native evidence.** Ordinary-default and explicit-float32 custom outputs
+are bit-identical. Their four calls have identical inputs and predictions,
+including float32 global sigma. Stock repeats are exact in raw output and decoded
+pixels. The independently recomputed raw control isolates the same terminal
+rounding difference: 90 values, RMS 0.00000338906, maximum 0.0009765625.
+Each encoding has 17 frames; comparison media has 129 RGB frames at 30 fps.
+Source/runtime, original inputs and saved output hashes were rechecked. This is
+pure-noise base sampling with audio absent. It does not verify D1, adapters,
+outer RGB/text preparation, joint audio-video or video quality. The matched
+stock and custom videos both become blurred by displayed frame 64; numerical
+agreement must not be read as appearance acceptance. Evidence:
+`expr/onestep_avatar/handoff_implementation_20261007/native_stock_float32_default_acceptance.json`
+in the workspace.
+Historical precision diagnosis:
+`expr/onestep_avatar/handoff_implementation_20261007/native_stock_default_precision_acceptance.json`.
+
+**Numerical runtime evidence.** `training.numerics` applies the measured
+deterministic policy before model work. Original launches and actual per-rank
+records bind the policy; serial replay requires those observations. Both modes'
+four-rank/serial comparisons pass all 768 named clipped gradients, moments and
+exports, with exact exported/reloaded output and original allocator bounds.
+The measured norms are below the clipping threshold, so these native cases do
+not demonstrate active clipping. Independent readback binds original inputs,
+software and output bytes. Earlier failed comparisons remain failed provenance;
+they do not describe current numerical acceptance. The active handoff links diagnosis
+and current receipts. Complete current-source workflows remain separate.
 
 ---
 
@@ -454,36 +497,3 @@ disagreement is not a default-selection blocker; E3 quality and cost measurement
 before/after eviction is still required. G8 requires unmerged fp32 PEFT adapters
 for ordinary evaluation/product and E2 effect verification. An fp32 sum rounded
 back into bf16 base weights is not accepted as the normal application method.
-
-## G10 — saved comparisons have unreadable titles at narrow widths
-
-**Required.** Keep text at least 16 pixels in a delivered compact video or poster
-shown at 480 pixels wide. Preserve exact labels, panel order, source frames and
-image aspect ratios. Fail before decoding when no supported layout fits.
-
-**Historical defect.** Saved comparisons only produced a full video with a
-1280-pixel viewing width. Its 16-pixel titles on a 1232-pixel canvas shrank to
-about 6.23 pixels at 480. A successful receipt did not prove narrow readability.
-The initial artifact and its evidence remain preserved.
-
-**Current.** Shared metadata-only geometry selects a measured compact layout.
-Schema-three saved renders contain both full and compact media, using the same
-decoded RGB panels without a second decode. Completion checks bind layout,
-font, dimensions, timing, labels, media hashes and equal panel pixel hashes.
-The saved-only report reader exposes both formats and refuses missing or changed
-compact output. It never renders missing media.
-
-**Verified.** The native first original corpus comparison produced a 2 × 2
-compact canvas at 824 × 1028, with 28-pixel text: 16.31 pixels at width 480.
-Both videos contain 129 frames at 30 fps. Inspected full and narrow native frames
-and a Chromium player screenshot at 480 pixels. The full compact movie played
-to its 4.3-second end at normal speed with no browser media error. Wide panel
-records and numeric metrics exactly match the prior native render. Original
-specification and four input hashes remain unchanged. The guarded queue finished
-with a verified receipt and released its GPU-4 claim.
-
-Workspace evidence: `expr/onestep_avatar/two_mode_restructure_20261005/compact_presentation_acceptance.json`.
-CPU controls include compact-selection, pre-decode refusal, altered format
-and saved-only report-reader cases. This closes the presentation defect for the
-implemented saved-render path. It does not establish transformer/FSDP, adapter
-quality, stock sampling or whole-study scientific acceptance.

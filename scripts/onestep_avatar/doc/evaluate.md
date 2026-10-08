@@ -47,8 +47,11 @@ and the output record. Base-only execution still uses the native Session path.
 Historical fusion diagnostics keep their explicit method and original tolerance.
 Historical sigma-sweep measurements currently remain in this mixed owner.
 The package sweep owner uses them; its old expr analyzer/launchers are retired.
-Stage D moves fixed-study orchestration and score inventory to `experiments/`
-while general transition measurements keep one shared owner.
+The current handoff moves fixed-study orchestration and score inventory to
+`experiments/` during the structural refactor, with CPU/caller/profile checks
+before new native experiments on the final layout. General transition
+measurements keep one shared owner. Original scientific results retain their
+producer identities; structural checks do not close missing native scope.
 
 Ordinary execution requests `global_sigma_dtype` from `model.common`'s float32
 contract. Adapter preflight rejects unknown historical precision before weights

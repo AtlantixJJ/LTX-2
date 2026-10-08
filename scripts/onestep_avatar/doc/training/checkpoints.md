@@ -5,6 +5,11 @@ Own `save_lora`, `load_stage_init`, `assert_exported_lora_is_noop`,
 `read_adapter_metadata`, and the adapter condition checker.
 The engine's original metadata producer remains transitional until mode/data integration.
 The extracted checker currently reads original flat metadata for existing research callers.
+The current handoff moves historical conversion orchestration to `experiments/`
+and completes structural/CPU/caller checks before new native experiments on
+final owners. Normal save/load, contract and tensor validation stay shared.
+Preserve original conversion conditions and refuse unknown evidence; missing
+native scope does not justify retaining unrelated orchestration in this owner.
 Product generation requires the version-two record described below.
 Remove unused `assert_one_step_conditions`; its permissive missing-record rule
 is not part of the new checker. Schedule checks live in model/sampling.

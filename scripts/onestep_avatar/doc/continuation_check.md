@@ -2,9 +2,13 @@
 
 Status: implemented and checked with real tiny native CPU attention/cache;
 full-weight GPU observations and E3 acceptance remain pending.
-This temporary package-root experiment owner moves only after its relevant
-native replacement gates. See [architecture](architecture.md#work-order-and-gates)
-and [current acceptance](known_gaps.md#current-acceptance-and-next-step).
+This temporary package-root experiment owner still exists here. The current
+handoff orders its structural move to `experiments/` and CPU/caller checks
+before fresh E3 experiments on the final layout. The missing original
+before/after-eviction scope remains required scientific acceptance; it does
+not block the directory move. See
+[the handoff work order](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#refactor-work-order--owner-groups) and
+[current acceptance](known_gaps.md#current-acceptance-and-next-step).
 
 ## Objective
 

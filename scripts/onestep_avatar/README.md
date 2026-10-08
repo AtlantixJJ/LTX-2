@@ -15,13 +15,18 @@ A LoRA adapter is a small set of trainable weights added to the base model.
 **Implementation is authorized and in progress. Final integration and acceptance checks remain.**
 See [doc/README.md](doc/README.md) for implemented owners and pending integration.
 Read [the architecture contract](doc/architecture.md) for common versus experiment
-code, allowed dependencies and the source-separation gates. The proposed
+code, allowed dependencies and the source-separation validation. The proposed
 `experiments/` subpackage is a documented target; its migration is not complete.
 Shared mode functions, typed training, strict adapter checks, fixed-input
 preparation, preview rendering and product review are implemented.
 [Known gaps](doc/known_gaps.md#current-acceptance-and-next-step) gives current
 acceptance scope and the next unmet gate. Numerical distributed-update acceptance
 is separate from complete workflows, learned quality and final source migration.
+The current task is to prepare a self-contained handoff for the next agent.
+That agent finishes the code refactor first, then runs CPU/import/boundary
+checks, fresh affected native checks and GPU experiments on the final source.
+No source move or GPU launch is part of this handoff update. See the
+[active work order](../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#next-actions).
 
 ## Terms used here
 
@@ -247,7 +252,8 @@ historical validation preserves recorded evidence without restamping it.
 Bidirectional training uses its own segment function with no cache or discarded
 priming call. Causal training uses immediate per-block backward and its existing
 cache calculations. The mode-less training path and old visualizers remain
-transitional callers until their native replacement gates and caller migration pass.
+transitional callers until required behavior and callers move to the typed owners.
+Fresh affected native checks follow validation of the final source.
 See [current commands](configs/README.md) and the
 [configuration](doc/training/config.md), [bidirectional](doc/model/bidirectional.md),
 and [causal](doc/model/causal.md) designs.
@@ -276,37 +282,27 @@ See [inference output design](doc/media.md#inference-output).
 
 ## Remove old code and docs
 
-Cleanup is partly complete. Remaining legacy runtime and visualization removal
-follows native replacement acceptance and complete caller classification.
-Move useful logic descriptions to the replacement docs before deleting old docs.
-Update pruning and active experiment imports before deleting their source files.
+The target layout, the complete migration map and the retirement conditions are
+in [the architecture contract](doc/architecture.md#migration-map). The
+[active handoff](../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#refactor-work-order--owner-groups)
+orders the work in owner groups G0–G14, one LTX-2 commit per verified group.
+This section keeps only the removals that are already complete.
 
-| Old source and doc | Replacement |
+| Removed source and doc | Replacement |
 |---|---|
 | `causal_core.py`, `doc/causal_core.md` | `model/common.py`, `model/causal.py`, `model/sampling.py`, and their matching docs |
-| `windows.py`, `doc/windows.md` | `subset.py`, `dataset.py`, mode frame selection, and their matching docs |
 | root `sampling.py`, `doc/sampling.md` | `model/sampling.py`, `training/checkpoints.py`, and their matching docs |
-| removed `onestep_core.py`, `doc/onestep_core.md` | `infer.py`, `doc/infer.md`, model docs, and `doc/media.md` |
-| `visualize_d0.py`, `visualize_d1.py`, and both docs | `evaluate.py`, `media.py`, and their matching docs |
+| `onestep_core.py`, `doc/onestep_core.md` | `infer.py`, `doc/infer.md`, model docs, and `doc/media.md` |
 | `bench_forward.py`, `doc/bench_forward.md` | `bench.py` and `doc/bench.md` |
-| `report_d0.py`, `doc/report_d0.md` | current evaluation/media outputs; keep useful historical evidence with its original records |
-| large-trainer `doc/train.md` | `doc/training/` and model docs; `train.py` stays as a small CLI with a header |
-| root `backbone.py` | move to `model/backbone.py`; keep its logic in the header if at most 100 lines |
+| `report_d0.py`, `doc/report_d0.md` | current evaluation/media outputs; useful historical evidence keeps its original records |
+| large-trainer `doc/train.md` | `doc/training/` and model docs; `train.py` stays a small CLI with a header |
+| root `backbone.py` | `model/backbone.py`, with its logic in the header |
+| `doc/backbone.md`, `doc/hashing.md`, `doc/qa.md` | headers of the matching source files (each at most 100 lines) |
 
-The active training anchor path and its CLI flag, data fields, loading, metadata,
-loss placeholders and logs are removed. Historical saved records retain their
-original fields. Remove remaining old flags, duplicate validators and tests that
-only check removed interfaces as their callers migrate.
-Keep tests for behavior still required.
-Do not keep forwarding files or a second old implementation in a `legacy/` folder.
-
-`doc/backbone.md`, `doc/hashing.md`, and `doc/qa.md` were already removed.
-Those existing source files have at most 100 lines and describe their logic in docstrings.
-After extraction, count every source file again.
-If `decode_saved.py` has at most 100 lines, move its explanation into its header and remove its separate doc.
-
-Before finishing cleanup, check active imports, CLI examples, doc links, and the source/doc size rule.
-Keep still-needed explanations and original evidence before removing their old links or generators.
+The active training anchor path and its CLI flag, data fields, loading,
+metadata, loss placeholders and logs are removed. Historical saved records keep
+their original fields. Do not keep forwarding files or a second old
+implementation in a `legacy/` folder.
 
 ## Environment and ownership
 
@@ -315,10 +311,11 @@ Keep still-needed explanations and original evidence before removing their old l
 The [architecture contract](doc/architecture.md) separates core runtime, reusable
 support, experiment comparison/conversion code and report code. Experiments must
 call public shared owners; ordinary runtime must not depend on experiments.
-The seven-frame E5 pilot follows numerical updates and short-workflow correctness
-at current paths. Complete broad characterization and relevant replacement gates
-before Stage D source moves and duplicate-runtime removal. Recheck affected
-workflows on the final source; do not restamp earlier pilot outputs.
+The next agent completes Stage D source moves and duplicate-runtime removal
+first. Validate CPU behavior, imports, commands and the source boundary, then
+publish fresh affected native checks and run the seven-frame E5 pilots on
+the final source. Preserve all scientific gates and original evidence; do not
+restamp earlier outputs as evidence for moved owners.
 
 All avatar training code stays in this LTX-2 package.
 That includes training launchers, required queues, evaluation, model probes, and adapter saves.

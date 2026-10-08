@@ -2,9 +2,11 @@
 
 Status: Bounded R3 diagnostic; original one-/two-slot numerical controls pass.
 They do not substitute for complete workflow acceptance. Read
-[current acceptance](known_gaps.md#current-acceptance-and-next-step). Move this experiment
-owner to `experiments/` only after the Stage C gates. Ordinary training imports
-none of this module.
+[current acceptance](known_gaps.md#current-acceptance-and-next-step). The current
+handoff orders this owner's structural move to `experiments/` and CPU/caller
+checks before fresh native experiments on the final owners. Preserve original
+numerical evidence and its source identity; missing native scope does not block
+the directory move. Ordinary training imports none of this module.
 
 ## Objective
 

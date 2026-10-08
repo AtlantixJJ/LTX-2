@@ -8,7 +8,7 @@ Read the [symbols](core_algorithm.md#1-symbols) first.
 The equations and frame traces in V1–V6 were checked mechanically.
 V7–V8 define condition and conversion checks. Current CPU tests cover these
 paths. Their existence does not certify the full native handoff. The
-[active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#current-progress-and-revised-work-order--2026-10-08)
+[active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#current-progress--2026-10-08)
 records current executed evidence and remaining native scope.
 
 ## V1 — Is the first image a clean model input?
@@ -164,7 +164,10 @@ the workspace.
 
 Arithmetic and frame traces do not establish video quality, speed, memory use, or implemented-code equality.
 G7 cache-refresh differences, G8 bf16 LoRA fusion, and accepted G9 first-image differences remain.
-After review, run deterministic CPU tests, native saved-input checks, a stock-pipeline comparison,
-and small distributed updates.
+Complete the structural refactor and deterministic CPU/caller/profile checks
+first under the current handoff. Then run fresh native saved-input checks,
+stock comparisons and distributed updates on final owners with the original
+scientific settings. These native requirements remain acceptance gates after
+the refactor; they are not prerequisites for a reversible directory move.
 
 Diagram review and Markdown-change checks are recorded in [README](README.md).

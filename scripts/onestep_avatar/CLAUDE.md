@@ -22,17 +22,35 @@ implemented/proposed mapping. Model execution and launchers belong in this packa
 `expr/` code only generates reports from saved results.
 The user-directed 2026-10-07 [architecture amendment](doc/architecture.md)
 defines the internal boundary and permits a proposed `experiments/` subpackage.
-Document/inventory it now. The October 8 handoff amendment permits the unchanged
-tiny-set E5 pilot at current paths after native update/short-workflow correctness,
-before broad characterization and Stage D moves. Relevant native replacement
-gates still precede source separation/removal. Do not treat proposed paths as shipped.
+The latest October 8 user direction requires code refactoring first: move
+experiment owners, retire duplicate execution after caller/data/code checks,
+and validate the final layout. Run fresh affected native checks and the unchanged
+E5 pilots afterward. Missing learning or longer-video evidence does not block
+reversible source moves. Scientific acceptance requirements remain unchanged.
+The current task is the handoff for the next agent; do not describe proposed
+paths as shipped.
+
+**Refactor design decisions — user, 2026-10-08:** the
+[architecture contract](doc/architecture.md#decisions-recorded-on-2026-10-08)
+is the target. It adds proposed `corpus/`, `execution/` and `experiments/`
+subpackages, splits ordinary `evaluate.py` into `evaluate.py`, `metrics.py`,
+`previews.py` and `comparisons.py`, keeps every historical study as an
+experiment module, replaces the `sigma_sweep` queue kind with one `experiment`
+kind, moves the whole-clip pruning producer to `scripts/prune/`, and limits
+`expr/` cleanup to retiring executors and freezing old reports. The queue
+becomes the only launcher for model work, with bounded supervision and an
+overall deadline for every kind and one GPU pool (GPUs 0–3); do not write
+hand-written launch controllers. The refactoring agent commits one verified
+owner group at a time on LTX-2 branch `onestep-avatar-refactor`; it never
+pushes and never updates the workspace's recorded LTX-2 commit. The handoff's
+owner groups G0–G14 order the work.
 
 ## Reading order — binding
 
 Before editing anything here, in this order:
 
 1. [`doc/architecture.md`](doc/architecture.md) — common versus experiment owners, allowed
-   dependencies, proposed destinations and native migration gates.
+   dependencies, proposed destinations, code checks and post-refactor native acceptance.
 2. [`doc/core_algorithm.md`](doc/core_algorithm.md) — symbols, the conditioning contract, the
    block-by-block algorithm, train/probe/deploy parity.
 3. [`doc/experiments.md`](doc/experiments.md) — D0/D1, `bg`/`white`, teacher/self forcing, and
@@ -97,7 +115,7 @@ and their docs. Do not leave forwarding execution wrappers in `expr/`.
 
 **Internal boundary:** core training and ordinary evaluation/product must not
 depend on experiment modules. Comparison orchestration and historical converters
-move to `experiments/` after the relevant native gates; they call shared public
+move to `experiments/` during the refactor; they call shared public
 owners. Numerical diagnostic kernels can stay with their model owner. The existing
 queue can explicitly dispatch an experiment job without making ordinary jobs
 depend on it. Follow `doc/architecture.md` for the map, provenance and worked checks.

@@ -92,8 +92,9 @@ can subsequently verify scientific completion against those original results.
 The legacy closed-row reader currently labels every closed row as saved empty
 containment. For recovered rows, the explicit recovery scope is authoritative;
 that label does not add containment or supervision evidence. Repair that reader
-after the original source-bound native replay, preserving the original source
-bytes for that replay.
+during code refactoring, preserving original replay/source bytes and recovered
+rows' explicit limited scope. Fresh affected native checks follow the final
+code-validation gate; do not launch a new replay as a prerequisite for this repair.
 
 `observe_workers` returns whether any tracked descendant remains live, the
 complete/incomplete scope, and exact identities. `release` marks this attempt
