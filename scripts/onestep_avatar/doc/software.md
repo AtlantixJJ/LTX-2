@@ -33,6 +33,10 @@ Current completion verifiers require the same current profile manifest.
 
 ## Organization logic
 
+Import `LTX_ROOT` from the package marker for every source path. `COMMON`
+includes that marker because its bytes define repository roots. A move into a
+subpackage cannot change the source tree or child working directory.
+
 An explicit experiment can add its own relative source owners through
 `capture(..., extra_sources=(...))`. The sorted unique paths are saved only when
 nonempty. They must remain inside the LTX-2 tree and name Python source files.

@@ -77,8 +77,8 @@ def test_saved_study_spec_renders_master_and_output_with_report_metrics(tmp_path
     from scripts.onestep_avatar import software
 
     original = software.sha256
-    decoder_owner = software.ROOT / 'packages/ltx-core/src/ltx_core/model/video_vae/conv_video_decoder.py'
-    assert str(decoder_owner.relative_to(software.ROOT)) in result['software']['sources']
+    decoder_owner = software.LTX_ROOT / 'packages/ltx-core/src/ltx_core/model/video_vae/conv_video_decoder.py'
+    assert str(decoder_owner.relative_to(software.LTX_ROOT)) in result['software']['sources']
     with monkeypatch.context() as changed_owner:
         changed_owner.setattr(software, 'sha256', lambda p: 'f'*64 if p == decoder_owner else original(p))
         software.validate(result['software'])

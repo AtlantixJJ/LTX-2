@@ -21,7 +21,7 @@ from pathlib import Path
 import torch
 
 from ltx_core.model.transformer.modality import Modality
-from scripts.onestep_avatar import dataset, evaluate, software
+from scripts.onestep_avatar import LTX_ROOT, dataset, evaluate, software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import causal, common
 from scripts.onestep_avatar.training.resources import Phase
@@ -679,7 +679,7 @@ def supervised_run(args: argparse.Namespace, prepared: dict) -> dict:
             environment.pop(name, None)
         _check_prepared(prepared)
         with (evidence / "child.log").open("x") as log:
-            child = subprocess.Popen(command, cwd=Path(__file__).resolve().parents[2],
+            child = subprocess.Popen(command, cwd=LTX_ROOT,
                                      env={**environment, **changes}, stdout=log, stderr=subprocess.STDOUT,
                                      start_new_session=True)
             registry.refresh(child_pid=child.pid)

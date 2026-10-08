@@ -6,10 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from scripts.onestep_avatar import convert_progress_jobs, queue
+from scripts.onestep_avatar import WORKSPACE_ROOT, convert_progress_jobs, queue
 
-ROOT = Path(__file__).resolve().parents[4]
-EXPR = ROOT / "expr/onestep_avatar/dev_training_20261001"
+EXPR = WORKSPACE_ROOT / "expr/onestep_avatar/dev_training_20261001"
 
 
 def test_converted_training_jobs_cover_each_active_legacy_row_exactly_once() -> None:
@@ -42,8 +41,8 @@ def test_converted_training_jobs_cover_each_active_legacy_row_exactly_once() -> 
 def test_training_execution_has_no_expr_launcher_or_forwarding_wrapper() -> None:
     assert not (EXPR / "code/train_queue.py").exists()
     assert not (EXPR / "code/train_job.sh").exists()
-    assert (ROOT / "LTX-2/scripts/onestep_avatar/queue.py").is_file()
-    assert (ROOT / "LTX-2/scripts/onestep_avatar/configs/fsdp_forward_prefetch.yaml").is_file()
+    assert (WORKSPACE_ROOT / "LTX-2/scripts/onestep_avatar/queue.py").is_file()
+    assert (WORKSPACE_ROOT / "LTX-2/scripts/onestep_avatar/configs/fsdp_forward_prefetch.yaml").is_file()
 
 
 def test_full_evaluation_jobs_use_package_split_and_explicit_saved_outputs() -> None:
@@ -70,7 +69,7 @@ def test_evaluation_execution_has_no_expr_launcher_and_archives_progress_rows() 
     assert archived["owner"] == "scripts.onestep_avatar"
     assert archived["jobs"]
     assert all(job["split"].startswith("vis_") for job in archived["jobs"])
-    assert (ROOT / "LTX-2/scripts/onestep_avatar/evaluate.py").is_file()
+    assert (WORKSPACE_ROOT / "LTX-2/scripts/onestep_avatar/evaluate.py").is_file()
 
 
 def test_progress_jobs_preserve_fixed_sources_and_exact_schedules() -> None:

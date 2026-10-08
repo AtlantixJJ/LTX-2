@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 import torch
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import dataset
+from scripts.onestep_avatar import WORKSPACE_ROOT
 from scripts.onestep_avatar.model import bidirectional, causal, common
 from scripts.onestep_avatar.tests.test_causal_core import _model
 
-FIXTURES = dataset.WORKSPACE_ROOT / "expr/onestep_avatar/two_mode_restructure_20261005/fixtures"
+FIXTURES = WORKSPACE_ROOT / "expr/onestep_avatar/two_mode_restructure_20261005/fixtures"
 
 
 @pytest.mark.parametrize(

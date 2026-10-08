@@ -53,6 +53,9 @@ flowchart LR
 
 ## Organization logic
 
+Use the package marker's `LTX_ROOT` for the supervised child's working
+directory. A later source move cannot change the package search root.
+
 Before scientific input preparation, reconstruct the original job through
 `queue.prepare_job`. Require its canonical digest to equal both the saved config
 and completed checkpoint marker. Require explicit replay world, job processes,

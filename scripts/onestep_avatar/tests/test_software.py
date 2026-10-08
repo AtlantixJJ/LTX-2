@@ -24,16 +24,20 @@ def test_declared_real_owner_inventory_and_runtime(profile):
     assert record['runtime']['distributions']['torch'] is not None
 
 
-@pytest.mark.parametrize('owner', ['model/common.py', 'model/causal.py', 'model/sampling.py', 'model/adapters.py', 'precompute.py'])
+@pytest.mark.parametrize('owner', [
+    '__init__.py', 'model/common.py', 'model/causal.py', 'model/sampling.py', 'model/adapters.py', 'precompute.py',
+])
 def test_changed_owner_fails_current_check_and_history_stays_readable(monkeypatch, owner):
     record = software.capture('evaluation', 'causal')
     original = software.sha256
     path = 'scripts/onestep_avatar/' + owner
-    monkeypatch.setattr(software, 'sha256', lambda p: 'f'*64 if str(p.relative_to(software.ROOT)) == path else original(p))
+    monkeypatch.setattr(software, 'sha256',
+                        lambda p: 'f'*64 if str(p.relative_to(software.LTX_ROOT)) == path else original(p))
     software.validate(record)
     with pytest.raises(ValueError, match='changed since preflight'):
         software.check_current(record)
-    assert record['sources']['scripts/onestep_avatar/evaluate.py'] == original(software.ROOT/'scripts/onestep_avatar/evaluate.py')
+    expected = original(software.LTX_ROOT/'scripts/onestep_avatar/evaluate.py')
+    assert record['sources']['scripts/onestep_avatar/evaluate.py'] == expected
 
 
 @pytest.mark.parametrize('phase', ['before_write', 'during_write'])
@@ -48,7 +52,7 @@ def test_decoder_owner_change_prevents_render_publication(tmp_path, monkeypatch,
     )
     record['software'] = software.capture('decoding')
     original = software.sha256
-    owner = software.ROOT/'packages/ltx-core/src/ltx_core/model/video_vae/conv_video_decoder.py'
+    owner = software.LTX_ROOT/'packages/ltx-core/src/ltx_core/model/video_vae/conv_video_decoder.py'
 
     def change():
         monkeypatch.setattr(software, 'sha256', lambda p: 'f'*64 if p == owner else original(p))
@@ -97,7 +101,7 @@ def test_malformed_manifest_refused(defect):
 
 @pytest.mark.parametrize('change', ['added', 'removed'])
 def test_dependency_group_inventory_changes_are_bound(tmp_path, monkeypatch, change):
-    monkeypatch.setattr(software, 'ROOT', tmp_path)
+    monkeypatch.setattr(software, 'LTX_ROOT', tmp_path)
     monkeypatch.setattr(software, 'COMMON', ())
     monkeypatch.setattr(software, 'ENTRIES', {p: () for p in software.PROFILES})
     monkeypatch.setattr(software, 'DEPENDENCIES', ())

@@ -10,15 +10,15 @@ from pathlib import Path
 
 import torch
 
+from scripts.onestep_avatar import LTX_ROOT
 from scripts.onestep_avatar.hashing import sha256
 
-ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = 'scripts/onestep_avatar/'
 PROFILES = ('training', 'evaluation', 'inference', 'decoding', 'preparation')
 DISTRIBUTIONS = ('torch', 'peft', 'safetensors', 'accelerate', 'transformers',
                  'ltx-core', 'ltx-pipelines', 'ltx-trainer', 'triton', 'flash-attn', 'natten',
                  'numpy', 'Pillow', 'opencv-python', 'imageio', 'imageio-ffmpeg', 'lpips')
-COMMON = ('software.py', 'hashing.py', 'dataset.py', 'subset.py', 'precompute.py',
+COMMON = ('__init__.py', 'software.py', 'hashing.py', 'dataset.py', 'subset.py', 'precompute.py',
           'geometry.py', 'mask_video.py', 'training/config.py',
           'training/checkpoints.py', 'model/common.py', 'model/sampling.py', 'model/backbone.py',
           'model/adapters.py')
@@ -74,12 +74,12 @@ def source_files(profile: str, mode: str | None, *, decoder: bool = False) -> li
                       'packages/ltx-trainer/src/ltx_trainer/video_utils.py'))
         groups.append('packages/ltx-core/src/ltx_core/model/video_vae')
     for group in groups:
-        directory = ROOT / group
+        directory = LTX_ROOT / group
         members = sorted(directory.rglob('*.py'))
         if not members:
             raise ValueError(f'software source group is absent: {group}')
-        files.update(str(path.relative_to(ROOT)) for path in members)
-    if any(not (ROOT / name).is_file() for name in files):
+        files.update(str(path.relative_to(LTX_ROOT)) for path in members)
+    if any(not (LTX_ROOT / name).is_file() for name in files):
         raise ValueError('a declared software source owner is absent')
     return sorted(files)
 
@@ -88,16 +88,16 @@ def capture(profile: str, mode: str | None = None, *, decoder: bool = False,
             extra_sources: tuple[str, ...] = ()) -> dict:
     extras = sorted(set(extra_sources))
     if any(not isinstance(name, str) or Path(name).is_absolute() or '..' in Path(name).parts
-           or Path(name).suffix != '.py' or not (ROOT/name).is_file()
-           or not (ROOT/name).resolve().is_relative_to(ROOT) for name in extras):
+           or Path(name).suffix != '.py' or not (LTX_ROOT/name).is_file()
+           or not (LTX_ROOT/name).resolve().is_relative_to(LTX_ROOT) for name in extras):
         raise ValueError('extra software owners must be contained Python source files')
     record = {'schema_version': 1, 'kind': 'onestep_avatar.software', 'profile': profile,
               'mode': mode, 'decoder': decoder,
-              'sources': {name: sha256(ROOT / name) for name in source_files(profile, mode, decoder=decoder)},
+              'sources': {name: sha256(LTX_ROOT / name) for name in source_files(profile, mode, decoder=decoder)},
               'runtime': runtime_versions()}
     if extras:
         record['extra_sources'] = extras
-        record['sources'].update({name: sha256(ROOT/name) for name in extras})
+        record['sources'].update({name: sha256(LTX_ROOT/name) for name in extras})
     record['sha256'] = _digest(record)
     return record
 

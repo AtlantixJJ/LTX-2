@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from scripts.onestep_avatar import queue
+from scripts.onestep_avatar import LTX_ROOT, queue
 from scripts.onestep_avatar import training_update_check as replay
 from scripts.onestep_avatar.tests.test_applied_runtime import inventory
 from scripts.onestep_avatar.tests.test_training_launch_binding import original_job
@@ -180,6 +180,6 @@ assert not torch.cuda.is_initialized()
     environment = dict(os.environ)
     environment["CUDA_VISIBLE_DEVICES"] = ""
     environment.pop("CUBLAS_WORKSPACE_CONFIG", None)
-    result = subprocess.run([sys.executable, "-c", source], cwd=Path(__file__).resolve().parents[3],
+    result = subprocess.run([sys.executable, "-c", source], cwd=LTX_ROOT,
                             env=environment, capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stderr

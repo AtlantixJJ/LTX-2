@@ -463,7 +463,8 @@ nor creates those files and never uses their TTL as permission to adopt a GPU.
 Current worker observations use exact owned handles and descendant containment.
 
 Pass an argument array to `subprocess.Popen`; use no shell interpolation.
-Run from the LTX-2 root with the current conda environment. Record the complete
+Use the package marker's `LTX_ROOT` as the child working directory with the current
+conda environment. Record the complete
 command, environment changes and log identity. Poll in short intervals so
 claims can be refreshed and state can be recorded. Default execution starts
 no campaign beyond the supplied list. On termination, record the live child

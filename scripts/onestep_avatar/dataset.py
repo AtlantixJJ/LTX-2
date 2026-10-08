@@ -20,13 +20,10 @@ from typing import TypeVar
 
 import torch
 
+from scripts.onestep_avatar import WORKSPACE_ROOT
+
 T = TypeVar("T")
 
-# LTX-2/scripts/onestep_avatar/dataset.py -> parents[3] is the workspace root, one level
-# ABOVE the LTX-2 repo. It was parents[2] until the 2026-09-15 consolidation, when this module
-# moved from the workspace's own scripts/ tree into LTX-2's; the corpus, expr/ and checkpoints
-# did not move with it, so the depth had to change with the file.
-WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CORPUS_ROOT = WORKSPACE_ROOT / "data" / "AnimatableHuman" / "DNARenderingVideo"
 
 # Written by ``LTX-2/scripts/onestep_avatar/precompute.py --process_gt_latent`` at the corpus

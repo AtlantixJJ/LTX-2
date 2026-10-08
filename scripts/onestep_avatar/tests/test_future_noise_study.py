@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar import WORKSPACE_ROOT, evaluate
 from scripts.onestep_avatar import future_noise_study as study
 from scripts.onestep_avatar.hashing import sha256
 
@@ -128,7 +128,7 @@ def test_preparation_publishes_only_after_unchanged_input_checks(
 
 
 def test_real_historical_noise_preserves_original_block_bytes() -> None:
-    root = Path(__file__).resolve().parents[4] / "expr/onestep_avatar"
+    root = WORKSPACE_ROOT / "expr/onestep_avatar"
     source = root / "joint_future_noise_influence_20260926"
     prefix = root / "d1_diagnostic/ar_sigma_rollouts/artifacts/confirmations/base_distill_noise_prefixes_20260926"
     manifest = json.loads((source / "manifest.json").read_text())

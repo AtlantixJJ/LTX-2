@@ -32,6 +32,10 @@ Current `load_master` reads schema-two continuous masters.
 
 ## Organization logic
 
+Import `WORKSPACE_ROOT` from the package marker. Build the default corpus path
+from that constant; the reader's location never determines the workspace root.
+Filename and data helpers retain their existing artifact paths after a move.
+
 Current functions follow these rules:
 
 - `bg` uses filenames without a suffix. `white` uses `_white` filenames.

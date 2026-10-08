@@ -577,7 +577,10 @@ The handoff's code gate uses these checks. Each must pass on the final source.
 - **B3 Static imports.** An AST test finds no `experiments` import outside
   `experiments/`, except the literal table in `execution/queue.py`. It also
   checks the [dependency table](#allowed-dependencies) and private-name rule.
-- **B4 Roots.** No package module computes a root from `__file__`.
+- **B4 Roots.** Only the package marker computes roots from `__file__`.
+  An AST check tracks file-path aliases, helper returns and function parameters;
+  ancestor operations on those values fail. File-byte hashing and independent
+  data-path ancestors stay valid. The roots import with the standard library only.
 - **B5 Profiles.** No ordinary profile lists `experiments/` or `expr/`. The
   profile coverage check passes for all five profiles.
 - **B6 Queue.** Ordinary kinds never import an experiment module. An unknown

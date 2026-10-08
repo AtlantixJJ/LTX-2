@@ -172,6 +172,12 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
 
 ## Small-file header designs and migration notes
 
+- **`__init__.py`:** the standard-library-only root owner. Resolve `PACKAGE_ROOT`
+  once; derive `LTX_ROOT` and `WORKSPACE_ROOT` from it. All source readers and
+  child launchers import these constants. The B4 AST checks filename aliases and
+  helpers; root import needs no tensor/model dependency. Keep `scripts/` a
+  namespace package.
+
 - **[`training/numerics.py`](../training/numerics.py):** one import-light
   deterministic training policy and required cuBLAS child environment. Configure
   that environment before native imports, apply the proven Torch/cuDNN/matmul

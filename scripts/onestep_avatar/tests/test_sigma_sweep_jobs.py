@@ -6,12 +6,11 @@ from pathlib import Path
 import pytest
 import torch
 
-from scripts.onestep_avatar import dataset, evaluate, queue, sigma_sweep_jobs, subset
+from scripts.onestep_avatar import WORKSPACE_ROOT, dataset, evaluate, queue, sigma_sweep_jobs, subset
 from scripts.onestep_avatar.hashing import sha256
 
-ROOT = Path(__file__).resolve().parents[4]
-EVIDENCE = ROOT / "expr/onestep_avatar/two_mode_restructure_20261005"
-STUDY = ROOT / "expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926"
+EVIDENCE = WORKSPACE_ROOT / "expr/onestep_avatar/two_mode_restructure_20261005"
+STUDY = WORKSPACE_ROOT / "expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926"
 
 
 def test_actual_prepared_jobs_preserve_all_historical_inputs_and_schedules() -> None:  # noqa: PLR0915 -- full case inventory

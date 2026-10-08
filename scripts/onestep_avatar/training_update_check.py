@@ -27,7 +27,7 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedType
 from safetensors.torch import load_file
 
-from scripts.onestep_avatar import dataset, queue, software
+from scripts.onestep_avatar import LTX_ROOT, dataset, queue, software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, bidirectional, causal, common
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources, runtime, update_state
@@ -549,7 +549,7 @@ def supervised_reference(job_path: Path, output: Path, world: int, ledger: Path,
         if trace:
             command.append("--consumer-trace")
         with (evidence / "child.log").open("x") as log:
-            child = subprocess.Popen(command, cwd=Path(__file__).resolve().parents[2],
+            child = subprocess.Popen(command, cwd=LTX_ROOT,
                                      env={**os.environ, **changes}, stdout=log, stderr=subprocess.STDOUT,
                                      start_new_session=True)
             registry.refresh(child_pid=child.pid)

@@ -144,7 +144,7 @@ def test_experiment_owner_bound_without_ordinary_dependency(monkeypatch):
     monkeypatch.setattr(
         software,
         "sha256",
-        lambda path: "f" * 64 if str(path.relative_to(software.ROOT)) == check.ENTRY else original(path),
+        lambda path: "f" * 64 if str(path.relative_to(software.LTX_ROOT)) == check.ENTRY else original(path),
     )
     software.validate(record)
     with pytest.raises(ValueError, match="changed"):

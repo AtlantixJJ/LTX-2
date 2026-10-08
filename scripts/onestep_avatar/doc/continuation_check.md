@@ -95,6 +95,9 @@ started when all allowed devices are occupied.
 
 ## Organization logic
 
+Use the package marker's `LTX_ROOT` for a supervised child's working directory.
+A source move must not change the interpreter's package search root.
+
 Capture delegates the entire cached rollout to `sample_case`. Its denoiser
 wrapper passes each modality unchanged to the original denoiser once. It records
 the clean tokens that the shared rollout supplies to refresh. At denoise blocks

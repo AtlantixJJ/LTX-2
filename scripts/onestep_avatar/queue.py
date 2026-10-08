@@ -11,6 +11,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+from scripts.onestep_avatar import LTX_ROOT
 from scripts.onestep_avatar.queue_protocol import LAUNCH_PROTOCOL
 
 ALLOWED_GPUS = frozenset(range(6))
@@ -1207,7 +1208,7 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
             launch_command = command if request_path is None else queue_launch.guard_command(request_path)
             child = subprocess.Popen(
                 launch_command,
-                cwd=Path(__file__).resolve().parents[2],
+                cwd=LTX_ROOT,
                 env={**os.environ, **changes},
                 stdout=log,
                 stderr=subprocess.STDOUT,

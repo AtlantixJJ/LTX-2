@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from safetensors.torch import save_file
 
 from ltx_core.model.transformer.model import X0Model
-from scripts.onestep_avatar import infer, dataset
+from scripts.onestep_avatar import WORKSPACE_ROOT, infer
 from scripts.onestep_avatar.model import causal
 from scripts.onestep_avatar.tests.test_causal_core import _geometry, _grid, _model
 from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
@@ -42,7 +42,7 @@ def test_product_preserves_supplied_image_without_capture_metrics(mode, monkeypa
     assert record["call_counts"]["model_calls"] == (1 if mode == "bidirectional" else 6)
     if mode == "causal":
         fixture = (
-            dataset.WORKSPACE_ROOT
+            WORKSPACE_ROOT
             / "expr/onestep_avatar/two_mode_restructure_20261005/fixtures/product_causal_legacy.pt"
         )
         if not fixture.exists():

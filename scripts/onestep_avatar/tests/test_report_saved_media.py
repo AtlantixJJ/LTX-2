@@ -6,16 +6,17 @@ import importlib.util
 import json
 import sys
 import types
-from pathlib import Path
 
 import pytest
+
+from scripts.onestep_avatar import WORKSPACE_ROOT
 
 
 @pytest.fixture
 def reader(tmp_path, monkeypatch):
     for name in ('aggregate', 'plots', 'report'):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
-    path = Path(__file__).resolve().parents[4] / 'expr/onestep_avatar/dev_training_20261001/code/stage2_update.py'
+    path = WORKSPACE_ROOT / 'expr/onestep_avatar/dev_training_20261001/code/stage2_update.py'
     spec = importlib.util.spec_from_file_location('saved_stage2_report_reader', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

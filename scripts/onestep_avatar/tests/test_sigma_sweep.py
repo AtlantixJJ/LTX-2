@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import media, queue, sigma_sweep
+from scripts.onestep_avatar import WORKSPACE_ROOT, media, queue, sigma_sweep
 from scripts.onestep_avatar.hashing import sha256
 from scripts.prune.core import model_registry as registry
 
@@ -259,7 +259,7 @@ def test_short_movie_prevents_complete_manifest(saved_sweep: tuple, monkeypatch:
 def test_report_refuses_changed_movie_outside_selected_samples(saved_sweep: tuple) -> None:
     _, path, output, calls = saved_sweep
     manifest = sigma_sweep.execute(path, output, gpu_id=4)
-    source = Path(__file__).resolve().parents[4] / "expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/sheets.py"
+    source = WORKSPACE_ROOT / "expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/sheets.py"
     spec = importlib.util.spec_from_file_location("saved_sweep_report", source)
     report = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(report)
