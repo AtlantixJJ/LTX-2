@@ -462,7 +462,7 @@ and current receipts. Complete current-source workflows remain separate.
 ## Related
 
 * [`core_algorithm.md`](core_algorithm.md) — the contract these gaps are measured against.
-* [`experiments.md`](experiments.md) — which arms each gap affects.
+* [`training_choices.md`](training_choices.md) — which arms each gap affects.
 * [`../configs/README.md`](../configs/README.md) — current runnable recipes and recorded limitations.
 
 ### Product enforcement update — two-mode implementation

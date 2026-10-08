@@ -53,7 +53,7 @@ Before editing anything here, in this order:
    dependencies, proposed destinations, code checks and post-refactor native acceptance.
 2. [`doc/core_algorithm.md`](doc/core_algorithm.md) — symbols, the conditioning contract, the
    block-by-block algorithm, train/probe/deploy parity.
-3. [`doc/experiments.md`](doc/experiments.md) — D0/D1, `bg`/`white`, teacher/self forcing, and
+3. [`doc/training_choices.md`](doc/training_choices.md) — D0/D1, `bg`/`white`, teacher/self forcing, and
    what is implemented, deferred or historical.
 4. [`doc/known_gaps.md`](doc/known_gaps.md) — the open contract violations.
 5. [`doc/README.md`](doc/README.md) — the per-module index, and the module doc for the file you
@@ -218,7 +218,7 @@ at them.
 ## The contract rules
 
 - **One canonical owner per cross-module contract.** `core_algorithm.md` owns the algorithm and
-  the conditioning contract; `experiments.md` owns the arm/objective/forcing definitions;
+  the conditioning contract; `training_choices.md` owns the arm/objective/forcing definitions;
   `known_gaps.md` owns defect status; `configs/README.md` owns the runnable recipes. A module doc
   summarises and links; it does not restate a parameter table or the whole algorithm.
 - **Core behavior and runnable configuration are self-contained in this package.** Do not write a

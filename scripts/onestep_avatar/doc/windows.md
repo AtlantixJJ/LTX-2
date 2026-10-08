@@ -13,7 +13,7 @@ or removal cannot restamp original scientific evidence.
 > old-format training sample spans. The mode-less trainer reads the subset's chains. The
 > subset also records the objective it was frozen against. Freeze recipes:
 > [`../configs/README.md`](../configs/README.md); definitions:
-> [experiments.md](experiments.md).
+> [experiments.md](training_choices.md).
 
 ## Objective
 

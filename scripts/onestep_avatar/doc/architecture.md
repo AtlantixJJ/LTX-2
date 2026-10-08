@@ -24,9 +24,8 @@ experiment uses the shared runtime. It does not carry another trainer, sampler,
 adapter loader, condition checker or decoder.
 
 [Core algorithm](core_algorithm.md) owns the numerical and conditioning rules.
-[Training choices](experiments.md) owns the D0/D1, background and history
-settings. (That file is renamed to `training_choices.md` in the first refactor
-step, because `doc/experiments/` becomes the folder for experiment-module docs.)
+[Training choices](training_choices.md) owns the D0/D1, background and history
+settings. `doc/experiments/` is reserved for experiment-module docs.
 Per-module docs explain current calculations. Write or move them before the
 source they describe moves.
 
