@@ -107,8 +107,8 @@ For multi-step generation, `model.sampling.euler_to` owns each update. At a
 positive next level it uses the stock Euler step and its dtype conversions.
 At zero it returns the model prediction exactly, preserving direct-step
 training/generation equality. The stock bf16 reconstructed endpoint can differ;
-[G11](known_gaps.md#g11--euler-rounding-differs-from-the-stock-step) tracks the
-remaining native comparison.
+[G11](known_gaps.md#g11--euler-rounding-differs-from-the-stock-step) records the
+measured base video-component endpoint difference and the remaining E1 scope.
 
 See [common](model/common.md), [bidirectional](model/bidirectional.md),
 [causal](model/causal.md), and [engine](training/engine.md) for the ordered steps.
@@ -152,6 +152,13 @@ Guidance and gradient checkpointing add actual work.
 FSDP distributes training across GPU processes.
 They must agree on calls, backward calculations, reductions, and saves.
 Equal K alone is not sufficient.
+Typed FSDP preserves float32 modality sigma, token timesteps and positions by
+disabling root-input casting. This rule is a runtime setting, not merely a
+checkpoint field. A fresh distributed update still needs the E4 serial check.
+Typed training preserves the incoming modality's float32 sigma, timesteps and
+positions through FSDP wrapping. Disable root-input casting without changing the
+bf16 parameter/reduction policy; otherwise recursively casting the dataclass
+silently changes this contract at the model boundary.
 
 Typed evaluation and product files use one [adapter checker](training/checkpoints.md).
 They call the selected mode's generation function.

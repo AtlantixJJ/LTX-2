@@ -11,6 +11,16 @@ is not part of the new checker. Schedule checks live in model/sampling.
 
 ## Objective
 
+**Precision contract (G12).** New records declare `training.global_sigma_dtype`
+from the shared ordinary runtime constant, and execution requests declare the
+same condition. Historical records lacking it remain readable. Current execution
+rejects unknown/malformed precision even with a research override. Explicit
+`bfloat16` calibration may differ under a recorded research override; product
+refuses the difference. Legacy conversion can declare precision only when both
+original config and adapter metadata explicitly agree; no inference from weight
+dtype or current defaults. Parent tensor initialization does not inherit an old
+calibration: the new stage records its own actual training precision.
+
 Parent-stage tensor initialization delegates to `model.adapters.load_weights`,
 the same strict exported-matrix owner used by inference. Require its complete
 PEFT matrix inventory, shapes and finite contents; base-model missing keys are
@@ -34,6 +44,49 @@ Return either a compatible request or a named list of differences.
 Keep the current ComfyUI tensor key format.
 
 ## Organization logic
+
+Export only adapter matrices. First initialize the root hierarchy through the
+public FSDP `check_is_root()` method. Require the outer transformer to be the
+root. This establishes all nested wrapper roles without unsharding frozen
+weights; summoning an uninitialized leaf first would incorrectly make it a root
+and fail the first forward. Under FSDP, all ranks summon each separately
+wrapped LoRA leaf, one at a time, and rank zero copies its full fp32 parameters
+to CPU. Never request a full frozen-transformer state dictionary just to discard
+it. One-rank NO_SHARD otherwise clones the resident frozen model on GPU and can
+exceed the unchanged 48 GB allocated-memory limit. Verify collected names equal
+the complete named LoRA inventory, then let PEFT perform its canonical adapter
+selection and the existing writer perform its bf16 export conversion. Ordinary
+non-FSDP export uses that same PEFT selection. The serialized tensors, metadata,
+zero check and atomic publication remain one calculation here.
+
+```mermaid
+flowchart LR
+  F["initialize FSDP root"] --> G["summon one LoRA leaf at a time"]
+  G --> C[("complete fp32 adapter matrices on CPU")]
+  C --> V["check inventory and export bf16"]
+  V --> P[("atomic adapter checkpoint")]
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  class F,G,V proc;
+  class C,P disk;
+```
+
+Worked check: the complete wrapped model has 768 named LoRA matrices. Every
+rank visits the same 768 leaves; rank zero collects all 768 canonical names.
+No frozen tensor enters the CPU payload. A missing leaf fails the inventory
+check before publication. An initial adapter with all B matrices zero exports
+the same canonical values as the ordinary PEFT path.
+
+The engine's completion marker binds the saved config and its original
+`queue_launch` record, plus the observed applied-runtime evidence. Adapter
+metadata describes scientific conditions; it cannot prove which launcher or
+FSDP policy was applied. Current queue completion/replay therefore checks both
+the adapter contract and these original config/marker facts. Historical missing
+launch facts remain readable but cannot pass current replay acceptance.
+The shared `queue.read_training_marker` reader validates actual completion state,
+integer schema/step, checkpoint path and checkpoint byte hash. Queue completion,
+training provenance and replay use this one readiness check. Adapter contracts
+remain this module's owner; a valid contract alone does not establish readiness.
 
 Store JSON in safetensors string metadata under `onestep_avatar_contract`.
 Use `schema_version=2`.
@@ -145,6 +198,9 @@ The main process validates tensor keys/shapes, builds metadata from checked sett
 and writes a temporary sibling safetensors file.
 Close and validate that file before atomic replacement of the final checkpoint path.
 Only then calculate/record its content hash and mark it ready for evaluation previews.
+Readers require the same checkpoint path and content hash in a complete version-two
+marker. Serial replay checks both the zero and one-update markers before using
+the adapters as accepted distributed evidence.
 On failure, remove the temporary file, preserve any previous completed checkpoint,
 and do not create a preview job for the failed save.
 A freshly initialized adapter's step-zero file must have exactly-zero `lora_B` tensors.
@@ -250,6 +306,12 @@ Metadata does not fix this difference.
 Matching exported keys does not prove equal predictions.
 
 ## Tests
+
+The adapter-only export control uses real tiny LTX/PEFT matrices with controlled
+FSDP contexts. It requires root initialization before any leaf, checks complete
+matrix ownership and exact PEFT payload equality, and refuses full state-dict
+collection. Native one-rank export-zero followed by forward/backward and
+export-one checks the actual Torch hierarchy separately.
 
 `test_legacy_adapter_conversion.py` checks both modes and D0/D1 using real
 safetensors files and checked master bundles. Derived payloads equal original

@@ -1,10 +1,18 @@
 # `model/common.py` — prepare the model inputs
 
-Status: **Shared-helper extraction in progress.** Source size: over 100 lines.
-Keep the existing public helper names during extraction. `ClipGrid`,
+Status: **Shared helpers implemented; native global-sigma precision defect open.** Source size: over 100 lines.
+Keep the existing public helper names. `ClipGrid`,
 `noise_block`, `epsilon_block`, `mix_block_noise`, `with_clean_prefix`,
-`block_modality`, and the model prediction helpers move from `causal_core`.
-`full_frame_mse` and its record identifier move from `train`.
+`block_modality`, and the model prediction helpers are shared owners extracted from `causal_core`.
+`full_frame_mse` and its record identifier were extracted from `train`.
+
+**Precision contract (G12).** Ordinary calls use float32 global sigma and
+float32 token timesteps, independently of token/weight dtype. The native paired
+check showed that bf16 global sigma changes predictions with identical initial
+inputs. `SIGMA_DTYPE` and its derived `SIGMA_PRECISION` identifier own the ordinary
+contract; explicit diagnostic dtype overrides remain available. New adapter
+records bind this precision. Historical bf16/unknown records are preserved.
+Fresh native verification of the corrected ordinary default remains required.
 
 ## Objective
 
@@ -125,4 +133,13 @@ After implementation, test token conversion, frame-rate-dependent positions, and
 Inspect the actual input to the model. Test missing guides and invalid shapes.
 
 Current tests are in `tests/test_train.py` and `tests/test_causal_core.py`.
-They have not run against this proposed module.
+Precision tests inspect both modes' actual modalities, including clean first-image
+and cache calls. Explicit diagnostic overrides do not change the ordinary contract.
+
+Saved pre-G12 training fixtures remain historical bf16-global-sigma evidence.
+`test_saved_training` explicitly reconstructs only that global-sigma cast to
+verify their exact predictions, gradients and cache bytes. Its ordinary arm
+keeps float32, asserts actual call dtypes and the changed sigma against the
+historical calls. Small quantized model predictions can coincide; these fixtures
+do not prove the size of a native precision effect. Never overwrite fixtures to make a changed runtime appear
+identical, or change token timestep precision in the historical replay.

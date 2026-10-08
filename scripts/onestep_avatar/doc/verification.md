@@ -1,13 +1,15 @@
-# Design checks before implementation
+# Cross-module checks and acceptance limits
 
-Status: **Design arithmetic checked; proposed code is not implemented.**
+Status: **Design arithmetic checked; shared implementation has scoped CPU/native evidence.**
 This file describes checks across modules.
 It is not a per-source-file doc, so the 100-line rule does not apply.
 Read the [symbols](core_algorithm.md#1-symbols) first.
 
 The equations and frame traces in V1–V6 were checked mechanically.
-V7–V8 describe cases for review and later tests.
-Implementation tests are still planned.
+V7–V8 define condition and conversion checks. Current CPU tests cover these
+paths. Their existence does not certify the full native handoff. The
+[implementation ledger](../../../../plans/assets/2026-10-07-onestep-avatar-implementation-ledger.md)
+records current executed evidence and remaining native scope.
 
 ## V1 — Is the first image a clean model input?
 
@@ -95,8 +97,11 @@ Two bidirectional samples require two model calls and two backward calls.
 **Design result:** reject mismatched K, sample-group length, or mode plans before distributed model calls.
 Equal explicit counts are necessary but not sufficient.
 Repeated checkpointed calculations, reductions, and saves also need compatible order.
-**Planned test:** record call order and run a small distributed update.
-No distributed test has run for this design.
+**Required implementation check:** record call order and compare the first
+distributed update against the fixed serial reference. The initial native
+bidirectional comparison failed. The root-input precision correction requires
+fresh four-process acceptance in both modes. See G12 and the ledger; do not
+treat compatible call counts or exact adapter reload as E4 acceptance.
 
 ## V7 — Does an incompatible request fail before model loading?
 
@@ -110,8 +115,11 @@ An old adapter without mode metadata needs explicit classification.
 **Design result:** the checker can name differences before loading 22B weights.
 Evaluation records explicit overrides; product generation rejects them.
 Evaluation can use people excluded from training.
-**Planned test:** use checker cases and a loader sentinel.
+**Required implementation check:** use checker cases and a loader sentinel.
 Rejected requests must not load weights or archive an output directory.
+Current CPU coverage includes `tests/test_checkpoint_contract.py`,
+`tests/test_evaluate.py` and `tests/test_infer.py`. Full native adapter-function
+and distributed-update acceptance remain E2/E4.
 
 ## V8 — Does the new video list preserve old data?
 
@@ -121,9 +129,12 @@ Keep the original hash and exact old block sequences in a separate reproduction 
 
 **Design result:** this schema change need not change people, encoded data, or selected samples.
 The mode can select frames without rebuilding media or crops.
-**Planned test:** compare full video lists, hashes, and reconstructed frame ranges.
+**Required implementation check:** compare full video lists, hashes, and reconstructed frame ranges.
 Reject missing D1 guides before model loading.
 Keep original subset files unchanged.
+`tests/test_subset.py` covers exact original people, hashes and frame ranges,
+changed bytes/coverage, D0 without guides, and refusal to overwrite destinations.
+The direct version-two corpus survey is still proposed; conversion is implemented.
 
 ## Repository ownership checks
 
@@ -144,7 +155,10 @@ Check required training/evaluation queues and launchers have package owners.
 Check transferred code uses matching docs or small-file headers.
 Check retired `expr/` executor docs and forwarding wrappers are removed.
 Rebuild existing reports from saved results with model executors disabled.
-These are planned checks, not implemented-code results.
+Full ownership closure remains a Stage D gate. The historical training report
+has a checked saved-only publication guard; other report families and import
+restoration paths need their own controls. One verified family does not certify
+the workspace.
 
 ## Limits of these checks
 

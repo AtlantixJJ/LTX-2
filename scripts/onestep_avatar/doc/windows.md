@@ -1,8 +1,12 @@
 # `windows.py` — freeze the training subset
 
+Status: **Legacy block-chain producer; Stage D retirement remains gated.**
+Typed training reads version-two membership through `subset.py` and its checked
+readers. This module still surveys and freezes the old block-chain format.
+Conversion preserves its original hashes and selections in separate new files.
 
-> **`K` is fixed here, not in `train.py`.** `--chain-length` sets how many causal blocks one
-> training sample spans; `train.py` has no such flag and reads it from the subset's chains. The
+> **Legacy `K` is fixed here.** `--chain-length` sets how many causal blocks one
+> old-format training sample spans. The mode-less trainer reads the subset's chains. The
 > subset also records the objective it was frozen against. Freeze recipes:
 > [`../configs/README.md`](../configs/README.md); definitions:
 > [experiments.md](experiments.md).
@@ -10,8 +14,9 @@
 ## Objective
 
 Turn "every view the capture pass has encoded" into "the exact blocks this run trains on",
-and **pin it**. Its output JSON (`kind: one_step_argavatar_block_chains`) is the only thing
-`LTX-2/…/train.py` reads from this tree.
+and **pin it**. Its output JSON (`kind: one_step_argavatar_block_chains`) serves
+the legacy engine and historical conversion. It is not the typed trainer's
+version-two membership format.
 
 ## Data flow
 
@@ -44,11 +49,12 @@ Four jobs that must not be left to the training loop:
 
 1. **Chain blocks.** A training sample is `K` *consecutive* causal blocks of one source at
    the deployed stride, so the cached context the model reads forward is what deployment
-   would give it. Block bounds come from `causal_core.CausalGeometry.plan` — **called**, not
+   would give it. Block bounds come from `model.causal.CausalGeometry.plan` — **called**, not
    transcribed, since 2026-09-15. It used to be a copy pinned by a test, because this module
    ran in the corpus tree and `causal_core` (torch, `ltx_core`) in the model tree. The cost of
-   calling it is that freezing a subset is now an `ltx`-env operation: importing `causal_core`
-   pulls in torch, a few seconds against a pass that hashes hundreds of MB of video.
+   calling it is that freezing a subset is now an `ltx`-env operation. The current
+   source imports `model.causal` as the local alias `causal_core`; no module exists
+   at the old `scripts.onestep_avatar.causal_core` path. That import loads torch.
 2. **The split**, by bare actor id, so a held-out actor cannot leak in by a path convention.
 3. **The content pin**, so a subset keeps describing what is on disk.
 4. **Exclusions** (`clipped_subject`), recorded rather than silently dropped.
@@ -56,7 +62,7 @@ Four jobs that must not be left to the training loop:
 ### Study freezes (2026-10-02)
 
 Five options turn a hashed two-way tier into a predeclared study split, all recorded in the
-subset so `train.py` and the probe read them rather than re-deriving them:
+old-format subset so the legacy engine and probe read them rather than re-deriving them:
 
 - `--train-actors/--validation-actors/--test-actors` (together) replace the hashed split with
   explicit lists, frozen before any candidate output exists. Chains carry `split` ∈
@@ -78,8 +84,8 @@ subset so `train.py` and the probe read them rather than re-deriving them:
 
 Hashing now also pins `capture_latent_sha256`, `guide_latent_sha256` and
 `guide_sidecar_sha256` (the masters the trainer actually reads), and `--verify` re-checks
-them. `subset_sha256(subset)` is the one spelling of the whole subset's identity (objective,
-sources, chains, splits, span, clip-start flag, `K`); `train.py` stamps it as
+them. `subset_sha256(subset)` is the historical whole subset identity (objective,
+sources, chains, splits, span, clip-start flag, `K`); the legacy engine stamps it as
 `onestep_avatar_subset_full_sha256`.
 
 The subset also records its **objective**, and `train.py` refuses a mismatch: a subset is
@@ -115,7 +121,7 @@ read bundles the freeze never saw.
 
   **Subsets frozen before 2026-09-16 are still on disk and are still stale.** They are
   *internally* consistent (both the count and the plan came from the video), so nothing about
-  the file looks wrong — `train.py:assert_subset_matches_geometry` is what catches them now,
+  the file looks wrong — `training.engine.assert_subset_matches_geometry` catches them in the legacy route,
   by comparing each recorded `n_latent_frames` against the stored master, at startup. Verified
   2026-09-17: the pre-fix `t2` freeze was stale on all 13 sources (19/29 recorded vs 18/28
   real); `t2r2.json` is the re-frozen one and is clean. **Retired in place, not deleted** — see
@@ -138,6 +144,6 @@ read bundles the freeze never saw.
 `tests/test_windows.py` — the split, the chaining, the content pin, the full-subset hash,
 the 17-frame span, and a **golden** test on
 exact block bounds for every clip length the corpus has. Golden rather than a comparison
-against `causal_core`, which would now be tautological: a frozen subset indexes blocks that
-`train.py` slices out of a master latent, so shifting the plan would silently re-point every
+against `model.causal`, which would now be tautological: a frozen subset indexes blocks that
+the legacy engine slices out of a master latent, so shifting the plan would silently re-point every
 chain in every subset already on disk.

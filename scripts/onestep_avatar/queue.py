@@ -96,6 +96,10 @@ def owned_workers_live(row: dict) -> bool:
     from scripts.onestep_avatar.queue_protocol import TOKEN_ENV  # noqa: PLC0415 -- canonical environment field
 
     token = row.get("environment_changes", {}).get(TOKEN_ENV)
+    if row.get("process_ledger") is not None:
+        from scripts.onestep_avatar.process_registry import inspect_record  # noqa: PLC0415 -- targeted own tree
+        observed = inspect_record(Path(row["process_ledger"]), token)
+        return not observed["complete"] or observed["workers_live"]
     return bool(
         (row.get("child_session") is not None and live_session_processes(row["child_session"]))
         or (token is not None and live_attempt_processes(token, started_ticks=row.get("attempt_started_ticks")))
@@ -427,104 +431,195 @@ def validate_job_list(record: dict) -> list[dict]:  # noqa: PLR0912 -- ordered s
     return jobs
 
 
-def prepare_jobs(path: Path) -> list[dict]:  # noqa: PLR0912, PLR0915 -- complete argument/path/identity gates
-    """Resolve and parse every saved package command before any child starts."""
-    import hashlib  # noqa: PLC0415 -- job identity computation
-    from dataclasses import asdict, is_dataclass  # noqa: PLC0415 -- typed training defaults
+def prepare_job(raw: dict, root: Path) -> dict:  # noqa: PLR0912, PLR0915 -- shared exact launch normalization
+    """Resolve one job through the same parser, defaults and hash used by the queue.
 
-    from scripts.onestep_avatar import decode_saved, evaluate, sigma_sweep  # noqa: PLC0415 -- reuse owner parsers
-    from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- launch configuration identity
-    from scripts.onestep_avatar.training.config import parse_settings  # noqa: PLC0415 -- no input access
+    Dependencies need list-level ordering checks in prepare_jobs. Here their
+    strings remain part of the identity, without requiring the complete list.
+    A supplied prepared digest is a claim to check, never the hash authority.
+    """
+    import hashlib  # noqa: PLC0415 -- canonical job identity
+    from dataclasses import asdict, is_dataclass  # noqa: PLC0415 -- owner defaults
 
-    root = path.resolve().parent
-    jobs = validate_job_list(json.loads(path.read_text()))
-    resolved_outputs = set()
-    for job in jobs:
-        arguments = list(job["arguments"])
-        forbidden = {"--gpu-id", "--dry-run", "--help", "--overwrite", "--preview-job", "--saved-metrics", "--verify"}
-        if any(value.split("=", 1)[0] in forbidden for value in arguments):
-            raise ValueError("queue command contains a forbidden execution override")
-        parser = {"train": parse_settings, "evaluate": evaluate.parse_args, "decode": decode_saved.parse_args,
-                  "render": evaluate.parse_saved_comparison_args, "sigma_sweep": sigma_sweep.parse_args}[
-            job["kind"]
-        ]
-        try:
-            parsed = parser(arguments)
-        except SystemExit as error:
-            raise ValueError(f"invalid package arguments for job {job['id']}") from error
-        fields = vars(parsed)
-        for field, value in fields.items():
-            values = [value] if isinstance(value, Path) else value if isinstance(value, list) else []
-            if not values or not all(isinstance(item, Path) for item in values):
-                continue
-            flag = "--" + field.replace("_", "-")
-            for index, argument in enumerate(arguments):
-                if argument == flag:
-                    arguments[index + 1] = str((root / arguments[index + 1]).resolve())
-                elif argument.startswith(flag + "="):
-                    arguments[index] = flag + "=" + str((root / argument.split("=", 1)[1]).resolve())
+    from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- original launch bytes
+
+    if not isinstance(raw, dict):
+        raise ValueError("queue job must be a record")
+    dependencies = raw.get("dependencies", [])
+    if (not isinstance(dependencies, list) or any(not isinstance(value, str) for value in dependencies)
+            or len(set(dependencies)) != len(dependencies) or raw.get("id") in dependencies):
+        raise ValueError("queue dependencies must name unique earlier jobs")
+    checked = validate_job_list({"schema_version": 1, "jobs": [{**raw, "dependencies": []}]})[0]
+    if "dependencies" in raw:
+        checked["dependencies"] = dependencies
+    else:
+        checked.pop("dependencies", None)
+    job = checked
+    claimed_hash = job.pop("sha256", None)
+    root = root.resolve()
+    arguments = list(job["arguments"])
+    forbidden = {"--gpu-id", "--dry-run", "--help", "--overwrite", "--preview-job", "--saved-metrics", "--verify"}
+    if any(value.split("=", 1)[0] in forbidden for value in arguments):
+        raise ValueError("queue command contains a forbidden execution override")
+    if job["kind"] == "train":
+        from scripts.onestep_avatar.training.config import parse_settings as parser  # noqa: PLC0415
+    elif job["kind"] == "decode":
+        from scripts.onestep_avatar.decode_saved import parse_args as parser  # noqa: PLC0415
+    elif job["kind"] == "sigma_sweep":
+        from scripts.onestep_avatar.sigma_sweep import parse_args as parser  # noqa: PLC0415
+    else:
+        from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- selected ordinary owner
+
+        parser = evaluate.parse_saved_comparison_args if job["kind"] == "render" else evaluate.parse_args
+    try:
         parsed = parser(arguments)
-        output = str(parsed.output.resolve())
-        if output in resolved_outputs:
-            raise ValueError("queue output paths alias another job")
-        resolved_outputs.add(output)
-        job.update(arguments=arguments, output=output)
-        completion = dict(job["completion"])
-        if "records" in completion:
-            completion["records"] = [str((root / value).resolve()) for value in completion["records"]]
-        if "checkpoint" in completion:
-            completion["checkpoint"] = str((root / completion["checkpoint"]).resolve())
-        if "manifest" in completion:
-            completion["manifest"] = str((root / completion["manifest"]).resolve())
-        job["completion"] = completion
-        if job["kind"] == "train":
-            job["accelerate_config"] = str((root / job["accelerate_config"]).resolve())
-            config_path = Path(job["accelerate_config"])
-            if not config_path.is_file():
-                raise ValueError("queue Accelerate configuration is missing")
-            job["accelerate_config_sha256"] = sha256(config_path)
-            if type(completion.get("step")) is not int or completion["step"] != parsed.steps:
-                raise ValueError("queue final checkpoint step differs from training settings")
-        if job["kind"] == "decode":
-            if not parsed.jobs.is_file():
-                raise ValueError("queue decoder job list is missing")
-            job["decoder_jobs"] = str(parsed.jobs.resolve())
-            job["decoder_jobs_sha256"] = sha256(parsed.jobs)
-        if job["kind"] == "render":
-            if not parsed.render_saved_comparisons.is_file():
-                raise ValueError("queue saved-comparison specification is missing")
-            job["render_spec"] = str(parsed.render_saved_comparisons.resolve())
-            job["render_spec_sha256"] = sha256(parsed.render_saved_comparisons)
-            if completion.get("manifest") != str(Path(output) / "render_manifest.json"):
-                raise ValueError("queue saved-comparison completion manifest differs from output")
-        if job["kind"] == "sigma_sweep":
-            if not parsed.spec.is_file():
-                raise ValueError("queue sigma-sweep specification is missing")
-            job["sweep_spec"] = str(parsed.spec.resolve())
-            job["sweep_spec_sha256"] = sha256(parsed.spec)
-            if completion.get("manifest") != str(Path(output) / "manifest.json"):
-                raise ValueError("queue sigma-sweep completion manifest differs from output")
-        defaults = asdict(parsed) if is_dataclass(parsed) else vars(parsed)
+    except SystemExit as error:
+        raise ValueError(f"invalid package arguments for job {job['id']}") from error
+    fields = vars(parsed)
+    for field, value in fields.items():
+        values = [value] if isinstance(value, Path) else value if isinstance(value, list) else []
+        if not values or not all(isinstance(item, Path) for item in values):
+            continue
+        flag = "--" + field.replace("_", "-")
+        for index, argument in enumerate(arguments):
+            if argument == flag:
+                arguments[index + 1] = str((root / arguments[index + 1]).resolve())
+            elif argument.startswith(flag + "="):
+                arguments[index] = flag + "=" + str((root / argument.split("=", 1)[1]).resolve())
+    parsed = parser(arguments)
+    output = str(parsed.output.resolve())
+    job.update(arguments=arguments, output=output)
+    completion = dict(job["completion"])
+    if "records" in completion:
+        completion["records"] = [str((root / value).resolve()) for value in completion["records"]]
+    if "checkpoint" in completion:
+        completion["checkpoint"] = str((root / completion["checkpoint"]).resolve())
+    if "manifest" in completion:
+        completion["manifest"] = str((root / completion["manifest"]).resolve())
+    job["completion"] = completion
+    if job["kind"] == "train":
+        job["accelerate_config"] = str((root / job["accelerate_config"]).resolve())
+        config_path = Path(job["accelerate_config"])
+        if not config_path.is_file():
+            raise ValueError("queue Accelerate configuration is missing")
+        digest = sha256(config_path)
+        if job.get("accelerate_config_sha256", digest) != digest:
+            raise ValueError("queue Accelerate configuration changed from its claimed hash")
+        job["accelerate_config_sha256"] = digest
+        if parsed.resource_budget is not None:
+            if not parsed.resource_budget.is_file():
+                raise ValueError("queue resource budget is missing")
+            digest = sha256(parsed.resource_budget)
+            if job.get("resource_budget_sha256", digest) != digest:
+                raise ValueError("queue resource budget changed from its claimed hash")
+            job["resource_budget_sha256"] = digest
+        elif "resource_budget_sha256" in job:
+            raise ValueError("queue resource budget hash requires an explicit budget")
+        if type(completion.get("step")) is not int or completion["step"] != parsed.steps:
+            raise ValueError("queue final checkpoint step differs from training settings")
+    if job["kind"] == "decode":
+        if not parsed.jobs.is_file():
+            raise ValueError("queue decoder job list is missing")
+        job["decoder_jobs"] = str(parsed.jobs.resolve())
+        job["decoder_jobs_sha256"] = sha256(parsed.jobs)
+    if job["kind"] == "render":
+        if not parsed.render_saved_comparisons.is_file():
+            raise ValueError("queue saved-comparison specification is missing")
+        job["render_spec"] = str(parsed.render_saved_comparisons.resolve())
+        job["render_spec_sha256"] = sha256(parsed.render_saved_comparisons)
+        if completion.get("manifest") != str(Path(output) / "render_manifest.json"):
+            raise ValueError("queue saved-comparison completion manifest differs from output")
+    if job["kind"] == "sigma_sweep":
+        if not parsed.spec.is_file():
+            raise ValueError("queue sigma-sweep specification is missing")
+        job["sweep_spec"] = str(parsed.spec.resolve())
+        job["sweep_spec_sha256"] = sha256(parsed.spec)
+        if completion.get("manifest") != str(Path(output) / "manifest.json"):
+            raise ValueError("queue sigma-sweep completion manifest differs from output")
+    defaults = asdict(parsed) if is_dataclass(parsed) else vars(parsed)
 
-        def encode(value):  # noqa: ANN001, ANN202 -- canonical JSON path/dataclass conversion
-            if isinstance(value, Path):
-                return str(value.resolve())
-            if is_dataclass(value):
-                return asdict(value)
-            raise TypeError(f"unsupported canonical job value: {type(value)}")
+    def encode(value):  # noqa: ANN001, ANN202 -- canonical JSON path/dataclass conversion
+        if isinstance(value, Path):
+            return str(value.resolve())
+        if is_dataclass(value):
+            return asdict(value)
+        raise TypeError(f"unsupported canonical job value: {type(value)}")
 
-        canonical = json.dumps(
-            {"job": job, "resolved_settings": defaults},
-            sort_keys=True,
-            separators=(",", ":"),
-            default=encode,
-            allow_nan=False,
-        )
-        job["sha256"] = hashlib.sha256(canonical.encode()).hexdigest()
+    canonical = json.dumps(
+        {"job": job, "resolved_settings": defaults},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=encode,
+        allow_nan=False,
+    )
+    job["sha256"] = hashlib.sha256(canonical.encode()).hexdigest()
+    if claimed_hash is not None and claimed_hash != job["sha256"]:
+        raise ValueError("queue prepared job identity differs from reconstructed launch")
+    return job
+
+
+def prepare_jobs(path: Path) -> list[dict]:
+    """Check list topology, then reuse the exact public single-job authority."""
+    raw = validate_job_list(json.loads(path.read_text()))
+    jobs = [prepare_job(job, path.resolve().parent) for job in raw]
+    outputs = [job["output"] for job in jobs]
+    if len(set(outputs)) != len(outputs):
+        raise ValueError("queue output paths alias another job")
     return jobs
 
 
-def job_command(job: dict, gpus: tuple[int, ...]) -> tuple[list[str], dict[str, str]]:
+def training_launch_record(job: dict, gpus: tuple[int, ...] = TRAIN_GPUS, *, schema_version: int = 2) -> dict:
+    """Capture original requested launch facts before dispatch, with exact YAML bytes."""
+    import base64  # noqa: PLC0415 -- lossless original configuration snapshot
+    import hashlib  # noqa: PLC0415 -- validate snapshot against canonical pinned hash
+
+    from scripts.onestep_avatar.training import numerics  # noqa: PLC0415 -- import-light numerical launch owner
+
+    prepared = prepare_job(job, Path.cwd())
+    if prepared["kind"] != "train":
+        raise ValueError("training launch binding requires a training job")
+    if type(schema_version) is not int or schema_version not in (1, 2):
+        raise ValueError("training launch binding has an unsupported schema")
+    command, _environment = job_command(prepared, gpus)
+    original = Path(prepared["accelerate_config"]).read_bytes()
+    if hashlib.sha256(original).hexdigest() != prepared["accelerate_config_sha256"]:
+        raise ValueError("queue Accelerate configuration changed during launch snapshot")
+    record = {"schema_version": schema_version, "job": prepared, "command": command, "gpus": list(gpus),
+            "accelerate_config_bytes_base64": base64.b64encode(original).decode("ascii"),
+            "accelerate_config_sha256": prepared["accelerate_config_sha256"]}
+    if schema_version == 2:
+        record["numerical_environment"] = dict(numerics.ENVIRONMENT)
+    return record
+
+
+def verify_training_launch(record: dict, job: dict) -> dict:
+    """Reconstruct canonical identity and compare exact original launch bytes/command."""
+    import base64  # noqa: PLC0415 -- checked original bytes
+    import binascii  # noqa: PLC0415 -- malformed original snapshot failure
+    import hashlib  # noqa: PLC0415 -- original-byte integrity
+
+    if (not isinstance(record, dict) or type(record.get("schema_version")) is not int
+            or record.get("schema_version") not in (1, 2)):
+        raise ValueError("original training launch evidence is missing or malformed")
+    prepared = prepare_job(job, Path.cwd())
+    expected = training_launch_record(prepared, TRAIN_GPUS, schema_version=record["schema_version"])
+    try:
+        original = base64.b64decode(record["accelerate_config_bytes_base64"], validate=True)
+    except (KeyError, TypeError, ValueError, binascii.Error) as error:
+        raise ValueError("original Accelerate snapshot is malformed") from error
+    if (hashlib.sha256(original).hexdigest() != record.get("accelerate_config_sha256")
+            or record != expected):
+        raise ValueError("original training launch identity, command or Accelerate bytes differ")
+    return prepared
+
+
+def read_training_launch(path: Path) -> dict:
+    """Read and verify dispatch evidence; do not infer missing original launch facts."""
+    record = json.loads(path.read_text())
+    verify_training_launch(record, record.get("job", {}))
+    return record
+
+def job_command(job: dict, gpus: tuple[int, ...]) -> tuple[list[str], dict[str, str]]:  # noqa: PLR0912 -- explicit owner and byte gates
     """Construct package-only child commands and physical-device environment changes."""
     import sys  # noqa: PLC0415 -- current conda Python owns all execution
 
@@ -533,6 +628,8 @@ def job_command(job: dict, gpus: tuple[int, ...]) -> tuple[list[str], dict[str, 
     kind = job["kind"]
     environment = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpus))}
     if kind == "train":
+        from scripts.onestep_avatar.training import numerics  # noqa: PLC0415 -- import-light launch policy
+        environment.update(numerics.ENVIRONMENT)
         if gpus != TRAIN_GPUS or job["processes"] != 4:
             raise ValueError("queued training requires GPUs 0-3 and four processes")
         from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- pinned launch bytes
@@ -540,6 +637,14 @@ def job_command(job: dict, gpus: tuple[int, ...]) -> tuple[list[str], dict[str, 
         config_path = Path(job["accelerate_config"])
         if not config_path.is_file() or sha256(config_path) != job.get("accelerate_config_sha256"):
             raise ValueError("queue Accelerate configuration changed after preparation")
+        from scripts.onestep_avatar.training.config import parse_settings  # noqa: PLC0415 -- typed budget path
+
+        budget_path = parse_settings(job["arguments"]).resource_budget
+        if budget_path is not None:
+            if not budget_path.is_file() or sha256(budget_path) != job.get("resource_budget_sha256"):
+                raise ValueError("queue resource budget changed after preparation")
+        elif "resource_budget_sha256" in job:
+            raise ValueError("queue resource budget hash requires an explicit budget")
         environment["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
         command = [
             sys.executable,
@@ -582,6 +687,29 @@ def job_command(job: dict, gpus: tuple[int, ...]) -> tuple[list[str], dict[str, 
     return command, environment
 
 
+def read_training_marker(checkpoint: Path, step: int) -> dict:
+    """Validate checkpoint readiness through one shared model-free authority."""
+    from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- actual published bytes
+
+    checkpoint = checkpoint.resolve()
+    marker = json.loads(checkpoint.with_suffix(".complete.json").read_text())
+    if (
+        not isinstance(marker, dict)
+        or type(marker.get("schema_version")) is not int
+        or marker.get("schema_version") != 2
+        or marker.get("state") != "complete"
+        or type(step) is not int
+        or step < 0
+        or type(marker.get("step")) is not int
+        or marker.get("step") != step
+        or not isinstance(marker.get("path"), str)
+        or Path(marker["path"]).resolve() != checkpoint
+        or marker.get("sha256") != sha256(checkpoint)
+    ):
+        raise ValueError("queue checkpoint completion marker is invalid")
+    return marker
+
+
 def verify_completion(job: dict) -> bool:  # noqa: PLR0911, PLR0912, PLR0915 -- artifact-specific completion gates
     """Verify saved training/evaluation evidence; missing artifacts remain pending."""
     import torch  # noqa: PLC0415 -- saved tensor verification only
@@ -603,15 +731,7 @@ def verify_completion(job: dict) -> bool:  # noqa: PLR0911, PLR0912, PLR0915 -- 
         marker_path = checkpoint.with_suffix(".complete.json")
         if not checkpoint.is_file() or not marker_path.is_file():
             return False
-        marker = json.loads(marker_path.read_text())
-        if (
-            marker.get("schema_version") != 2
-            or marker.get("state") != "complete"
-            or marker.get("step") != completion["step"]
-            or Path(marker.get("path", "")).resolve() != checkpoint
-            or marker.get("sha256") != sha256(checkpoint)
-        ):
-            raise ValueError("queue checkpoint completion marker is invalid")
+        read_training_marker(checkpoint, completion["step"])
         contract = checkpoints.read_contract(checkpoint)
         checkpoints.validate_adapter_tensors(checkpoint, contract)
         mode = job["arguments"][job["arguments"].index("--mode") + 1]
@@ -913,6 +1033,16 @@ def completion_receipt(job: dict) -> dict:
         checkpoint = Path(completion["checkpoint"])
         paths = [checkpoint, checkpoint.with_suffix(".complete.json"),
                  Path(job["output"]) / "config.json", Path(job["output"]) / "frame_plan.json"]
+        from scripts.onestep_avatar.training.config import (  # noqa: PLC0415 -- optional evidence inventory
+            parse_settings,
+        )
+
+        settings = parse_settings(job["arguments"])
+        if settings.save_update_state:
+            paths.append(settings.output / "update_states/text.pt")
+            for step in range(1, settings.steps + 1):
+                path = settings.output / "update_states" / f"step_{step:05d}.pt"
+                paths.extend((path, path.with_suffix(".json")))
     elif job["kind"] in ("decode", "render", "sigma_sweep"):
         paths = [Path(completion["manifest"])]
     else:
@@ -1007,6 +1137,31 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
             changes.update({TOKEN_ENV: claims.token, JOB_ENV: job["sha256"]})
         claims.refresh()
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        launch_binding = None
+        if job["kind"] == "train":
+            from scripts.onestep_avatar.queue_protocol import LAUNCH_ENV  # noqa: PLC0415 -- exact launch evidence
+
+            launch_record = training_launch_record(job, tuple(sorted(claims.owned)))
+            if command != launch_record["command"]:
+                raise ValueError("queue command changed before launch binding")
+            launch_binding = log_path.with_name(f"{log_path.stem}.{claims.token}.launch.json").resolve()
+            queue_launch.publish_exclusive(launch_binding, launch_record)
+            changes[LAUNCH_ENV] = str(launch_binding)
+        notifications = None
+        budget = None
+        if job["kind"] == "train":
+            from scripts.onestep_avatar.training import config, resources  # noqa: PLC0415 -- shared phase authority
+            settings = config.parse_settings(job["arguments"])
+            budget = resources.read_budget(settings.resource_budget)
+            if budget is not None:
+                from scripts.onestep_avatar import supervision  # noqa: PLC0415 -- optional bounded observer
+                notifications = log_path.with_name(f"{log_path.stem}.{claims.token}.phases.json").resolve()
+                changes.update(supervision.prepare_notifications(
+                    notifications, token=claims.token, job_sha256=job["sha256"],
+                    world=job["processes"], phases=resources.training_phases(settings),
+                    budget_sha256=budget["sha256"],
+                ))
+        registry_path = getattr(claims, "path", None)
         if state_path is not None:
             if jobs is None:
                 raise ValueError("persistent child execution requires the full prepared job list")
@@ -1036,6 +1191,13 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
                     "launch_request": str(request_path.resolve()),
                     "launch_request_sha256": queue_launch.digest(request_path),
                 }
+                if registry_path is not None:
+                    attempt["process_ledger"] = str(registry_path.resolve())
+                if notifications is not None:
+                    attempt["supervision_contract"] = str(notifications)
+                if launch_binding is not None:
+                    attempt.update(training_launch=str(launch_binding),
+                                   training_launch_sha256=queue_launch.digest(launch_binding))
                 row.update(
                     state="running", error=None, returncode=None, child_identity=None, child_session=None, **attempt
                 )
@@ -1065,14 +1227,33 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
                     state["jobs"][job["id"]]["attempts"][-1]["child_identity"] = identity
                     state["jobs"][job["id"]]["attempts"][-1]["child_session"] = child.pid
                 queue_launch.publish_grant(request_path)
-            while child.poll() is None:
-                time.sleep(poll_seconds)
-                claims.refresh(child_pid=child.pid)
-            returncode = child.wait()
-            if returncode != 0:
-                raise QueueChildError(f"queue child failed with exit {returncode}; log: {log_path}")
             worker_record = {"child_session": child.pid, "environment_changes": changes,
                              "attempt_started_ticks": claims.started_ticks}
+            if registry_path is not None:
+                worker_record["process_ledger"] = str(registry_path.resolve())
+            if notifications is not None:
+                if state_path is not None:
+                    worker_record = read_queue_state(state_path, jobs)["jobs"][job["id"]]
+                else:
+                    identity = process_identity(child.pid)
+                result = supervision.supervise(
+                    child, identity=identity, command=command, worker_record=worker_record,
+                    claims=claims, gpus=tuple(sorted(claims.owned)),
+                    evidence_path=log_path.with_name(f"{log_path.stem}.{claims.token}.supervision.json"),
+                    notifications_path=notifications, startup_seconds=budget["wall_seconds_per_phase"],
+                    phase_seconds=budget["wall_seconds_per_phase"], shutdown_seconds=30,
+                    poll_seconds=min(poll_seconds, 1),
+                )
+                returncode = result["returncode"]
+                if result["state"] != "passed":
+                    raise QueueChildError(f"bounded package child failed: {result['error']}; log: {log_path}")
+            else:
+                while child.poll() is None:
+                    time.sleep(poll_seconds)
+                    claims.refresh(child_pid=child.pid)
+                returncode = child.poll()
+            if returncode != 0:
+                raise QueueChildError(f"queue child failed with exit {returncode}; log: {log_path}")
             if owned_workers_live(worker_record):
                 raise ValueError("queue child still has live workers after leader exit")
             receipt = completion_receipt(job)
@@ -1098,6 +1279,7 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
                         child.poll() is None or owned_workers_live({
                             "child_session": child.pid, "environment_changes": changes,
                             "attempt_started_ticks": claims.started_ticks,
+                            **({"process_ledger": str(registry_path.resolve())} if registry_path is not None else {}),
                         })
                     )
                     row.update(
@@ -1118,6 +1300,7 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
         if child is None or (child.poll() is not None and not owned_workers_live({
             "child_session": child.pid, "environment_changes": changes,
             "attempt_started_ticks": claims.started_ticks,
+            **({"process_ledger": str(registry_path.resolve())} if registry_path is not None else {}),
         })):
             claims.release()
 
@@ -1237,13 +1420,14 @@ def dispatch_ready(jobs: list[dict], state: dict, state_path: Path, claims_dir: 
     def inventory() -> dict[int, int]:
         raw = subprocess.run(
             ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
-            check=True, capture_output=True, text=True,
+            check=True, capture_output=True, text=True, timeout=10,
         ).stdout
         return parse_gpu_memory(raw)
 
     memory = inventory()
     for job in ready:
-        claims = GPUClaims(claims_dir, ttl=job.get("claim_ttl_seconds", 600))
+        from scripts.onestep_avatar.process_registry import ProcessRegistry  # noqa: PLC0415 -- current policy
+        claims = ProcessRegistry(claims_dir)
         gpus = claims.choose(memory, training=job["kind"] == "train")
         if gpus is None or not claims.acquire(gpus, job=job["id"]):
             continue
@@ -1329,7 +1513,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--execute", action="store_true", help="claim available GPUs and run ready jobs")
     parser.add_argument("--recover", action="store_true", help="inspect terminated children and verify saved outputs")
-    parser.add_argument("--claims-dir", type=Path, help="shared reservations directory used by every device owner")
+    parser.add_argument("--process-ledger", type=Path, help="one shared JSON record of package-owned processes")
+    parser.add_argument("--claims-dir", type=Path, help=argparse.SUPPRESS)
     execution = parser.add_mutually_exclusive_group()
     execution.add_argument("--once", action="store_true")
     execution.add_argument("--loop", action="store_true")
@@ -1337,8 +1522,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if sum((args.dry_run, args.execute, args.recover)) != 1:
         parser.error("choose exactly one of --dry-run, --execute or --recover")
-    if args.execute and (not (args.once or args.loop) or args.claims_dir is None):
-        parser.error("--execute requires --once or --loop and --claims-dir for shared GPU ownership")
+    if args.process_ledger is not None and args.claims_dir is not None:
+        parser.error("choose --process-ledger or the deprecated --claims-dir path alias")
+    ledger = args.process_ledger if args.process_ledger is not None else (
+        None if args.claims_dir is None else args.claims_dir / "processes.json")
+    if args.execute and (not (args.once or args.loop) or ledger is None):
+        parser.error("--execute requires --once or --loop and --process-ledger")
     if (args.loop or args.once) and not args.execute:
         parser.error("--once and --loop require --execute")
     if not math.isfinite(args.poll_seconds) or not 0 < args.poll_seconds <= 60:
@@ -1347,7 +1536,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(recover_jobs(args.jobs, args.state), indent=2))  # noqa: T201 -- requested recovery summary
         return 0
     if args.execute:
-        return execute_jobs(args.jobs, args.state, args.claims_dir, once=args.once, poll_seconds=args.poll_seconds)
+        return execute_jobs(args.jobs, args.state, ledger, once=args.once, poll_seconds=args.poll_seconds)
     jobs = prepare_jobs(args.jobs)
     state = read_queue_state(args.state, jobs)
     planned = []

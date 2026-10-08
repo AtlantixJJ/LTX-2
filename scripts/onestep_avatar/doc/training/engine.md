@@ -86,6 +86,75 @@ Limit gradient size, update weights, and log once per update.
 
 ## Organization logic
 
+### Applied launch, precision and resources
+
+Before opening model sessions, read the dispatch-bound canonical launch record,
+compare its exact arguments and queue identity, and require actual Accelerator
+world size/mixed precision to agree. Retain that record in config and checkpoint
+markers. After wrapping, `training.runtime` captures actual per-rank policies and
+adapter storage, requires rank agreement, and records the complete inventory.
+Missing launch/runtime facts cannot certify a new native replay.
+
+With `--resource-budget`, `training.resources` reads and pins the original budget
+bytes before setup. Measure synchronized local CUDA allocated/reserved peaks
+and monotonic elapsed time for load, each update, and each export. Persist per-rank
+phase records and immutable per-checkpoint snapshots; bind snapshot hashes in
+completion markers. Validate the cumulative phase inventory before each marker.
+Recheck launch/software/budget before output creation or archiving, and before
+publication. A failed phase retains its measurement and propagates;
+it cannot write a passed marker. Ordinary CPU checks retain null CUDA quantities
+and do not count as native resource evidence. Sampled total-device observations
+and the external wall-time stop guard remain distinct required evidence.
+The training update phase includes diagnostic Adam-state export; the serial
+replay includes this export in its export phase. Their peak measurements enforce
+the same allocated bound, but their phase times are not identical scopes.
+
+Queued budgeted training also receives an immutable phase-notification contract
+from the package supervisor. Local phase begin/end records bind the exact token,
+job, rank, expected order and budget. External startup/transition limits remain
+separate from completed CUDA measurements. The engine does not signal workers
+or close process records; the supervising queue retains records when absence is
+ambiguous.
+
+With `--consumer-trace`, attach the shared observational trace after Accelerator
+wrapping. Keep one sample context around its forward and backward calculations
+so checkpoint recomputation retains the actual sample identity. Observe consumer
+sigma/timesteps/positions and adapter storage versus forward compute separately.
+Before each checkpoint marker, save an exclusive per-rank trace snapshot and
+validate completeness; bind the actual bytes in the marker. Final completion
+rechecks these files. Trace serialization belongs inside the measured export
+phase. A lifecycle context always removes hooks, and saves incomplete trace
+observations to a separate failed-rank file if training or export raises.
+Default runs install no trace hooks. A trace records actual
+consumer evidence and overhead; it is not a gradient-agreement result.
+
+### Optional update evidence
+
+`--save-update-state` publishes the named fp32 Adam moments after each optimizer
+update, before clearing gradients. It does not change loss scaling, clipping or
+optimizer behavior. `training.update_state` gathers only optimizer state; it
+never gathers frozen model weights. Every rank participates in FSDP collection,
+and only the main process writes `update_states/step_<step>.pt` and its bound JSON
+record. Source/runtime identity is checked before collection and publication.
+The same option saves the actual training text tensor once, pins it in config,
+and records its byte digest on each rank's update. Serial replay reads this tensor;
+it does not rebuild a prompt cache. Completion binds the text and all requested
+update-state files and refuses a missing/changed artifact.
+The record includes pre-clipping gradient norm, rank count, sample accumulation,
+step and optimizer settings. This evidence is diagnostic, not a resume checkpoint.
+No experiment module is imported by the trainer.
+
+`tokens_for_sample` is the public checked-video-to-mode-input calculation used
+by training and bounded numerical replay. It returns grid, capture/guide tokens
+and the actual recorded start/end. Replay keeps the original rank/slot seed keys;
+changing execution from distributed to serial does not redraw training inputs.
+
+Worked first-update check: Adam beta1 is 0.9 and its state starts empty. For a
+clipped averaged gradient `g`, the first saved `exp_avg` is `(1-0.9)*g`. Thus
+`exp_avg/(1-0.9)` reconstructs the clipped gradient. `exp_avg_sq` also binds its
+square accumulation. Neither a near-identical exported adapter nor a queue
+completion marker alone proves correct distributed gradient averaging.
+
 ### Scientific queued completion
 
 The typed runtime records the queue job digest and engine source digest in its
@@ -126,6 +195,24 @@ Load the frozen bf16 base transformer directly on the local GPU.
 Use the same LoRA initialization seed on every GPU process.
 Keep current fp32 trainable adapters, FSDP wrapping, and gradient checkpointing.
 Do not create a full CPU model copy for every process.
+For typed training, disable FSDP mixed precision's root-input casting before
+wrapping. The input is a `Modality` dataclass whose sigma, token timesteps and
+positions already have their required precision. PyTorch recursively casts its
+fields by default, changing the numerical function before the model sees them.
+Keep bf16 parameter/reduction settings for frozen model blocks. Preserve PEFT's
+exact wrapping choices, but give its separately wrapped trainable leaves no FSDP
+mixed-precision override. Their fp32 weights and gradients must survive the
+forward/backward interval, as in the serial and unmerged product function.
+Autocast still owns linear compute precision. A native trace found bf16 adapter
+forward weights despite fp32 storage outside forward; the first-update B gap
+remained above 2% after global-conditioning repair. `CustomPolicy` changes only
+the selected trainable leaves' mixed precision, not their wrapping membership.
+Applied runtime and consumer traces must verify this on native weights.
+No mixed-precision policy means there is no root cast to disable. The transitional
+legacy namespace path retains its original policy for historical reproduction.
+For sigma 0.725, the typed model must observe float32 0.7250000238418579 rather
+than bf16 0.7265625. Tests exercise the shared builder's actual policy and the
+installed root-casting function; native distributed acceptance remains required.
 
 For each update:
 
@@ -283,3 +370,15 @@ Pinned tensor roles also store `tensor_sha256` for the actual selected model
 inputs. Completed raw results must match capture, guide, c0, text and noise
 identities. Rendering records identify the preview job, fixed-record hash and
 raw-result records. A completion check rejects unrelated saved media.
+
+## Deterministic numerical setup
+
+The typed CLI configures the shared cuBLAS workspace before native imports.
+Queued execution requires the exact workspace from a version-two launch record.
+Apply the shared strict deterministic policy before reserved CUDA buffers,
+Accelerator, prompt or model work. Record actual flags through runtime schema
+two and require the supported policy across ranks. Recheck observed flags before
+updates, exports and publication. The mode-less historical engine is unchanged.
+The policy changes no data, seed, sigma, budget, optimizer or tolerance.
+Focused CPU controls verify the current path. Fresh four-rank native acceptance
+remains pending.

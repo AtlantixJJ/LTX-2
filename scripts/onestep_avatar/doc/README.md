@@ -1,5 +1,14 @@
 # `onestep_avatar` — current design and acceptance limits
 
+**Current GPU dispatch policy — user amendment, 2026-10-07:** query
+`nvidia-smi` directly and use one shared JSON file to record only processes this
+pipeline starts (PID, start ticks, command, GPU IDs and owned descendants).
+New launches do not consult reservation files or unrelated process environments.
+No privileged access is required. Older stale-claim recovery requirements below
+are historical and are superseded for new attempts. Preserve original claim,
+launch, result and acceptance files unchanged. Scientific inputs, budgets,
+tolerances and native E1–E5 gates remain unchanged.
+
 Status: **Implementation authorized and in progress.**
 The user directed execution of the revised plan. Shared input helpers, schedules,
 the checked master reader, and bidirectional functions now exist.
@@ -12,13 +21,14 @@ It defines terms and shows file flow.
 Then read the separate [bidirectional](../README.md#bidirectional-workflow)
 and [causal](../README.md#causal-workflow) workflows and [mode selection](../README.md#selecting-a-mode).
 
-1. [Core algorithm](core_algorithm.md): input, first-image, loss, and cache rules.
-2. [Bidirectional model](model/bidirectional.md): process one video segment together.
-3. [Causal model](model/causal.md): process blocks in order; keep past-frame data.
-4. [Common inputs](model/common.md) and [denoising steps](model/sampling.md).
-5. [Engine](training/engine.md), [settings](training/config.md), and [adapter records](training/checkpoints.md).
-6. [Video list](subset.md), [evaluation](evaluate.md), [visualization](media.md), and [timing](bench.md).
-7. [Worked checks](verification.md) and [known gaps](known_gaps.md).
+1. [Architecture](architecture.md): common versus experiment code, dependencies, migration destinations and gates.
+2. [Core algorithm](core_algorithm.md): input, first-image, loss, and cache rules.
+3. [Bidirectional model](model/bidirectional.md): process one video segment together.
+4. [Causal model](model/causal.md): process blocks in order; keep past-frame data.
+5. [Common inputs](model/common.md) and [denoising steps](model/sampling.md).
+6. [Engine](training/engine.md), [settings](training/config.md), and [adapter records](training/checkpoints.md).
+7. [Video list](subset.md), [evaluation](evaluate.md), [visualization](media.md), and [timing](bench.md).
+8. [Worked checks](verification.md) and [known gaps](known_gaps.md).
 
 Training visualization is in [engine](training/engine.md#visualization-during-training)
 and [training previews](media.md#training-previews).
@@ -30,8 +40,11 @@ The [repository boundary](../README.md#code-ownership) keeps training and model 
 `expr/` code is only for report generation from saved results.
 
 Explicit-mode training/evaluation/product, shared fp32 adapters, preview rendering,
-and software manifests are implemented and CPU checked. Native model/distributed
-acceptance, complete checked input production and legacy cleanup remain open.
+and software manifests are implemented and CPU checked. Supplied-image encoding,
+fixed preview inputs and bidirectional base video-component precision have scoped
+native evidence. Full native E1–E4, complete checked input production and legacy
+cleanup remain open. The [implementation ledger](../../../../plans/assets/2026-10-07-onestep-avatar-implementation-ledger.md)
+owns current acceptance evidence; source presence alone does not establish it.
 Individual docs distinguish implemented behavior from remaining acceptance.
 `subset.py` converts old records into new files without repairing input bytes.
 The workspace plan records migration progress; these docs explain the module logic.
@@ -101,14 +114,28 @@ Proposed behavior remains distinct from the current implementation.
 
 ## Target source and design ownership
 
+The user-directed [architecture amendment](architecture.md) adds one proposed
+`experiments/` subpackage. It defines the common/support/experiment/report map
+and allowed dependencies. The October 8 handoff amendment puts the unchanged
+tiny-set E5 pilot after native update/short-workflow correctness and before full
+characterization and source moves. Complete relevant native replacement gates
+before Stage D source moves and duplicate-runtime removal. The tables
+below include current mixed owners; their presence is not final boundary compliance.
+The architecture migration map gives their required destinations. New larger
+experiment sources require designs under `doc/experiments/` before source changes.
+
 All source owners below are inside this LTX-2 package.
 This includes training/evaluation execution, previews, decoding, and reusable metrics.
 Report-specific sections, captions, plots, and validation belong to `expr/`.
 Study settings and result files can remain there as data.
 Neither report scripts nor forwarding wrappers in `expr/` may launch model work.
-Package code does not import executable study code.
+Package code does not import executable study code from `expr/`. Core training
+and ordinary support do not depend on experiment modules. Explicit experiment
+queue dispatch follows the exception in the architecture contract.
 Model helpers, bidirectional functions, schedules, training owners, and the fixed-list
-converter exist. Complete input production and native acceptance remain pending.
+converter exist. Checked supplied-image and fixed preview preparation are
+implemented. Their native preparation evidence does not certify model output.
+Complete input production and native model acceptance remain pending.
 
 | Source owner | Doc | Size rule and purpose |
 |---|---|---|
@@ -116,12 +143,14 @@ converter exist. Complete input production and native acceptance remain pending.
 | `model/adapters.py` | [model/adapters.md](model/adapters.md) | >100; shared unmerged fp32 PEFT configuration/loading, x0 inference wrapper and explicit fusion diagnostic |
 | `software.py` | [software.md](software.md) | >100; explicit worktree owner hashes/runtime versions, current verification and historical integrity reading |
 | `prepare_inputs.py` | [prepare_inputs.md](prepare_inputs.md) | >100; fixed preview assembly/pinned text-noise-image tensors and actual one-RGB supplied-image VAE preparation |
-| `stock_parity.py` | [stock_parity.md](stock_parity.md) | >100; actual stock video sampling components, repeated native control, fixed-input traces and decoded comparisons; native acceptance open |
+| `stock_parity.py` | [stock_parity.md](stock_parity.md) | >100; actual stock video sampling components, repeated controls, checked-reference precision comparison and decoded traces; native acceptance open |
 | `model/bidirectional.py` | [model/bidirectional.md](model/bidirectional.md) | >100; segment training and generation |
 | `model/causal.py` | [model/causal.md](model/causal.md) | >100; block and cache operations |
 | `model/sampling.py` | [model/sampling.md](model/sampling.md) | >100; exact denoising levels and steps |
 | `training/config.py` | [training/config.md](training/config.md) | >100; typed settings and initial checks |
 | `training/engine.py` | [training/engine.md](training/engine.md) | >100; setup, weight updates, logs, saves, preview jobs |
+| `training/runtime.py` | [training/runtime.md](training/runtime.md) | >100; actual Accelerator/FSDP policy capture, rank agreement and replay validation |
+| `training/resources.py` | [training/resources.md](training/resources.md) | >100; exact budget identity, synchronized local CUDA phase peaks/time and complete rank/phase validation |
 | `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | >100; save/read/check settings and derive checked legacy metadata |
 | `subset.py` | [subset.md](subset.md) | >100; fixed videos, person groups, hashes |
 | `evaluate.py` | [evaluate.md](evaluate.md) | >100; same-input comparisons, training previews, fusion and eight-block causality diagnostics |
@@ -135,6 +164,28 @@ converter exist. Complete input production and native acceptance remain pending.
 If a thin file needs over 100 lines, write its matching doc before implementation.
 
 ## Small-file header designs and migration notes
+
+- **[`training/numerics.py`](../training/numerics.py):** one import-light
+  deterministic training policy and required cuBLAS child environment. Configure
+  that environment before native imports, apply the proven Torch/cuDNN/matmul
+  flags before model work, and capture complete actual native/serial settings.
+  Refuse late workspace configuration after CUDA initialization. Preserve and
+  compare cuDNN's separate observed TF32 setting. Historical missing policy facts
+  cannot acquire current defaults. The implemented small-file design lives in
+  its header. Focused CPU controls pass; fresh four-rank acceptance is pending.
+
+- **`training/update_state.py`:** reusable optional named Adam-state export.
+  Gather unsharded optimizer moments through native FSDP, or map ordinary
+  optimizer parameters to model names. Write only main-rank finite fp32 adapter
+  moments with exact optimizer/step metadata. No frozen-weight gathering, training
+  loop, experiment imports or resume protocol. Small-file design lives in its header.
+
+- **`training_update_check.py` (implemented root owner; native gates open):** bounded
+  serial replay of one saved distributed update using public shared preparation,
+  model-loading, token construction and mode functions. Reuse original rank/slot
+  noise seeds. Compare named clipped gradients, gradient norm, loss and actual
+  exported adapters under predeclared tolerances. [Design](training_update_check.md).
+  Proposed Stage D destination: `experiments/training_update_check.py`.
 
 - **`sigma_sweep_jobs.py` (generation/dependent decoder preparation implemented;
   native acceptance pending):** [design](sigma_sweep_jobs.md).
@@ -159,7 +210,9 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
   [design](future_noise_study.md). Reconstruct exact saved noise and prepare
   package jobs for the historical intervention/repeat/causal controls. Current
   real conversion refuses a changed guide-render pin in the old subset. Keep
-  the old executor until checked data and required parity are established.
+  a still-required old executor only through its recorded native/recovery gate;
+  apply the handoff's bounded recovery/disposition rule instead of retaining a
+  broken command indefinitely. Planned owner: `experiments/future_noise_study.py`.
 
 - **`convert_progress_jobs.py`:** data-only conversion of historical progress
   rows to package evaluation jobs. Preserve both fixed views, seed 42, sigma
@@ -172,6 +225,35 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
 - **`queue_protocol.py` (implemented):** small constant owner for queue token/job
   environment names and the startup-event prefix. Import no model libraries.
   `training/startup.py` retains its public imported names for existing consumers.
+- **`training_slice_check.py` (bounded diagnostic; native acceptance pending):**
+  [One-rank update localization](training_slice_check.md) calls shared training
+  owners with exact original visits. Ordinary runtime does not import it.
+- **`adapter_effect_check.py` (bounded E2 comparison; native acceptance pending):**
+  [Saved adapter correction](adapter_effect_check.md) compares the shared training
+  reference, ordinary evaluation and product APIs with independent supplied c0,
+  fixed guide/text/noise and original native numerical policy. It checks the fixed
+  under-5% effect criterion and measures original-budget process resources. Fusion
+  stays diagnostic. Saved verification performs no model/decoder work. This
+  experiment owner moves only after Stage D; ordinary runtime does not import it.
+- **`continuation_check.py` (bounded E3 observation; native acceptance pending):**
+  [Native history observations](continuation_check.md) delegate unchanged cached
+  and recomputed sampling, snapshot real K/V and observe native attention inputs
+  before/after eviction. Public future/capture controls use the ordinary evaluator.
+  Shared resources and own-process supervision preserve the original E3 limits.
+  CPU preflight and tiny-native controls do not prove full-weight or seven-frame
+  pilot acceptance. The owner moves during gated Stage D; ordinary runtime does
+  not import it.
+- **`process_registry.py` (implemented, native launch evidence in progress):**
+  [Own-process tracking](process_registry.md) in one shared JSON file, direct GPU
+  queries and exact targeted descendant identities. No privilege or unrelated
+  environment scans. Closed attempt history remains immutable.
+- **`supervision.py` (implemented, native acceptance in progress):**
+  [Bounded observation](supervision.md) of registered children, rank phases and
+  exact descendant shutdown. Resource journals own allocator measurements.
+- **`training/consumer_trace.py` (implemented, native comparison in progress):**
+  [Consumer observations](training/consumer_trace.md) record actual transformed
+  conditioning, adapter storage and forward compute separately. Failed runs keep
+  incomplete observations; trace hashes alone do not prove gradient agreement.
 - **`queue_launch.py` (implemented and integrated with persistent dispatch):** launch gate, with [queue_launch.md](queue_launch.md).
   A child registers its stable process identity, waits for a journal-bound grant,
   then replaces itself with the exact recorded command. Import no models.
@@ -232,6 +314,13 @@ explain their logic; larger sources use the mirrored docs above.
 | `hashing.py` | [source docstrings](../hashing.py) | keep the shared content hash |
 | `qa.py` | [source docstrings](../qa.py) | keep mask comparison; caller rules above |
 
+The architecture contract also requires study/diagnostic orchestration to leave
+ordinary `evaluate.py`, A1/B1c orchestration to leave the shared root, and historical
+adapter conversion orchestration to leave the normal checkpoint owner. Shared
+measurement/model/validation primitives keep one common owner. Sweep/progress/
+stock-check files move into `experiments/` only after the defined native gates;
+their current root paths and docs stay truthful until then.
+
 Current commands remain in [configs/README](../configs/README.md).
 Explicit `--mode` and the shared `fsdp.yaml` are implemented.
 Internal imports use the extracted owners. The subset conversion CLI is runnable.
@@ -249,17 +338,27 @@ Transfer required module explanations into source-mirrored package docs or small
 Remove old `expr/code/doc/` pages for deleted model executors.
 Retained report code keeps only its own report-generation explanation.
 If a required queue needs a new package executor, establish its design doc before source changes.
-The package executor is specified in [queue](queue.md). GPU claim helpers are
-implemented; execution requires `--execute`, `--once` or `--loop`, and `--claims-dir` with the shared
-reservation directory. The loop rereads append-only jobs, waits without claims,
+The package executor is specified in [queue](queue.md). Execution requires
+`--execute`, exactly one of `--once` or `--loop`, and
+`--process-ledger <SHARED_PROCESS_LEDGER.json>`. Current attempts share
+`expr/onestep_avatar/processes.json`, query `nvidia-smi` directly and record only
+their own PID/start/command/GPU identities and descendants. The loop rereads
+append-only jobs and waits without an active process record,
 verifies dependency/completion receipts and refuses failed or unrecovered work.
 Bounded startup retries preserve failed attempts; historical job conversion
 and native retry/live handoff acceptance remain pending.
 The design defines saved job settings, exact completion
-evidence, GPU restrictions, claims, child ownership and recovery. Live queue
+evidence, GPU restrictions, own-process tracking, child ownership and recovery.
+The retained legacy `GPUClaims` helper and reservation files describe historical
+attempts; new dispatch does not read them or unrelated process environments.
+Live queue
 migration remains pending and must preserve recorded scientific conditions.
 The initial inventory includes active and archived sources. Ownership classification
 and execution migration remain incomplete.
+Classify mixed study branches separately: saved-result rebuilding can coexist
+with explicit model generation or historical-byte import in the same source.
+Stage D must prevent discovery, import and rebuild from restoring retired execution,
+in addition to removing its current paths and forwarding wrappers.
 
 ## Artifact owners
 
@@ -289,7 +388,9 @@ Readers check missing producer output instead of reconstructing it.
 - Exact arithmetic checked V1–V3. Integer frame/cache traces checked V4–V6.
   The Euler example also matched.
   Added seed, schedule, crop, mask, array-shape, plot, RMS, and frame-rate examples were checked separately.
-- V7–V8 are planned checker/conversion tests, not implemented results.
+- V7–V8 define checker/conversion controls now covered by scoped CPU tests.
+  Their current implementation is recorded in [verification](verification.md);
+  full native adapter/update and ownership acceptance remain separate.
 - Cited current symbols were checked against source.
   Removed small-module docs correspond to files with existing logic docstrings and at most 100 lines.
 - The initial 42 inventoried source/test/launcher/config hashes matched during documentation checks.

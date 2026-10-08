@@ -1,5 +1,11 @@
 # `visualize_d0.py` — the decoded checkpoint probe
 
+Status: **Legacy model/media orchestration; replacement and retirement remain gated.**
+Current sources import `model.causal` as the local alias `causal_core`.
+The old `scripts.onestep_avatar.causal_core` module path is removed.
+Use the typed `evaluate.py` path for ordinary evaluation. Preserve historical
+conditions and source bytes until native replacement acceptance permits Stage D.
+
 > **Both arms, since 2026-09-21.** `--guide-mode d1` noises the guide `z_g` instead of the
 > capture, which is what [G4](known_gaps.md#g4--no-d1-probe) was owed; the file keeps its
 > `visualize_d0` name. The tool still does not *validate* an adapter's recorded conditions
@@ -50,12 +56,12 @@ A fixed clip and fixed seeds make a sequence of checkpoints directly comparable.
 
 The shared `run_chain` helper also accepts internal `history_mode` and `max_blocks` arguments
 for `visualize_d1.py`'s matched diagnostics. This CLI remains cached; explicit causal-prefix
-and joint-window modes are inference-only references in `causal_core.rollout`.
+and joint-window modes are inference-only references in `model.causal.rollout`.
 
 `--base-only` removes the checkpoint requirement. With two or more sigma arms it also writes
 `capture | first sigma | second sigma`, plus an uncaptioned capture and uncaptioned individual
 base videos. `--block-latent-frames` and `--context-latent-frames` override the deployed
-defaults through `causal_core.CausalGeometry`; the manifest records the resolved geometry.
+defaults through `model.causal.CausalGeometry`; the manifest records the resolved geometry.
 
 The matched sigma-1 experiment from the 2026-09-20 plan is:
 
@@ -73,7 +79,7 @@ Omit `--teacher-forcing` for the corresponding generated-history arms.
 
 ## Data flow
 
-LoRA checkpoint or frozen base + corpus masters → one `causal_core` rollout per probe σ, over the span
+LoRA checkpoint or frozen base + corpus masters → one `model.causal.rollout` per probe σ, over the span
 `--span` selects → VAE decode (offline, no FSDP resident) →
 `runs/<name>/probes/step_<N>/<σ>.mp4`. Each rollout is `2·len(plan)` forwards: one denoise and
 one refresh per block, with no priming, since it starts at block 0.
@@ -88,7 +94,7 @@ noise is identical rather than becoming an unrecorded difference between sigma a
 
 ## Organization logic
 
-**It rolls out through `causal_core`**, so the cached context, the mask and the RoPE positions
+**It rolls out through `model.causal.rollout`**, so the cached context, the mask and the RoPE positions
 are the deployed ones. It does **not** call `onestep_core`, which refuses D0 — a probe for a
 non-deployable arm cannot go through a deployment-only path.
 
@@ -113,7 +119,7 @@ It is an **offline** probe: no VAE is resident while FSDP training is stepping.
   [`core_algorithm.md` §3](core_algorithm.md#3-the-conditioning-contract) requires of every
   caller of the rollout.
 - **Every sigma arm uses the same epsilon tensors.** The probe creates the tensors once with
-  the established `seed + block_index` convention and passes them to `causal_core.rollout`.
+  the established `seed + block_index` convention and passes them to `model.causal.rollout`.
   `c0` is restored after mixing, so changing sigma cannot change the first-frame condition.
 - **Sigma values belong to the selected checkpoint's schedule.** Zero, duplicates and values
   off the model schedule fail before the transformer is loaded.
@@ -127,7 +133,7 @@ It is an **offline** probe: no VAE is resident while FSDP training is stepping.
 - D0 must be probed in its **own** state (capture-noised), not a guide-noised approximation —
   that is the whole reason this script exists rather than reusing a deployment renderer.
 - **`--teacher-forcing` must match how the checkpoint was trained, or the probe is measuring
-  the wrong regime.** It threads straight into `causal_core.rollout`'s own `teacher_forcing`
+  the wrong regime.** It threads straight into `model.causal.rollout`'s own `teacher_forcing`
   flag — refresh is fed the explicit capture target `z_y` instead of the model's own denoised
   output. Off (the default) is the
   self-forced regime deployment has to use; a run trained with `train.py --teacher-forcing`

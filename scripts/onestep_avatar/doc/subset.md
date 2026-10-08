@@ -1,7 +1,11 @@
 # `subset.py` — write a fixed video list
 
-Status: **Version-two conversion implemented; corpus survey and engine integration pending.**
-`windows.py` remains the original producer until its survey callers move.
+Status: **Version-two conversion, saved-probe membership and typed runtime integration implemented.**
+`convert_legacy` creates membership and reproduction records from an old subset.
+`from_saved_probe` creates one-view membership from original paired evidence.
+Typed training and ordinary evaluation use these version-two records.
+`windows.py` still owns the legacy corpus survey. A direct version-two survey
+producer and legacy caller retirement remain incomplete.
 
 ## Objective
 
@@ -13,15 +17,17 @@ Both modes reuse this list and select their own encoded frame ranges.
 
 ```mermaid
 flowchart LR
-  M[("crop record and masters")] --> S["survey_sources"]
-  S --> A["split_actors"] --> H["pin_content"] --> O[("fixed video list JSON")]
-  O --> P["mode.plan_samples"] --> R(["frame selection plan"])
+  S[("original block-chain subset")] --> C["convert_legacy"]
+  M[("checked crop records and masters")] --> C
+  C --> O[("fixed video membership")]
+  C --> R[("original selection reproduction record")]
+  O --> P["training.config.build_frame_plan"] --> F(["mode frame selection plan"])
   classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
   classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
   classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
-  class S,A,H,P proc;
-  class M,O disk;
-  class R out;
+  class C,P proc;
+  class S,M,O,R disk;
+  class F out;
 ```
 
 The code calls the fixed video list `membership`.
@@ -30,12 +36,19 @@ Neither operation changes the crop or runs the VAE again.
 
 ## Organization logic
 
-Survey videos, split people, freeze the list, hash files, and verify the result.
-Keep current exclusion rules and person IDs across parts/views.
-Read encoded frame counts from masters, not raw-video length.
-Check guide availability when creating a list for D1 or a paired D0/D1 comparison.
+Current conversion keeps the old selection, people, groups and content pins.
+It reads encoded frame counts from masters, not raw-video length.
+It adds a separate reproduction record for the old frame selections.
+Saved-probe conversion checks exact paired input pins and records its historical
+group. No current conversion reselects or surveys the corpus.
 
 ### Select and group videos
+
+**Required direct survey; not yet implemented.**
+The following procedure defines the eventual version-two survey producer.
+The current module has no `survey_sources`, `split_actors` or `pin_content`
+functions. Until this producer exists, use checked conversion or saved-probe
+membership. Do not describe the old `windows.py` survey as a new schema producer.
 
 1. Discover relative video/view paths in stable order and read the saved crop/master records.
 2. Apply the current crop, completeness, and guide/provenance checks.
@@ -75,7 +88,7 @@ returning the membership. Recheck the original probe bytes after those reads.
 Tests require exact source/person/hash retention and fail on changed capture,
 guide or inconsistent manifest rows before any model execution.
 
-Proposed schema version two has kind `onestep_avatar_membership`.
+Implemented schema version two has kind `onestep_avatar_membership`.
 It records background, corpus root, crop-record identity, sorted video IDs, person/group,
 frame rate, dimensions, encode records, hashes, exclusions, and hash scope.
 It has no attention, cache depth, block size, block chains, or K.
@@ -132,8 +145,10 @@ The same video list does not prove the same selected frames.
 
 ## Tests
 
-[V8](verification.md) checks unchanged people, videos, and encoded data.
-After implementation, preserve current grouping, hash, and exclusion tests.
+[V8](verification.md) defines unchanged people, videos, and encoded data.
+`tests/test_subset.py` checks exact old people, pins and frame ranges, changed
+producer bytes or coverage, duplicate groups, D0 without guides, and CLI
+preservation/refusal behavior. Preserve those controls through source migration.
 Compare two frame-selection rules over one fixed list.
 Reject missing guides and outdated encode records.
 Keep original subset files unchanged.

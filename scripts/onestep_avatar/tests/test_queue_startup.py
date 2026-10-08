@@ -146,12 +146,18 @@ def test_nonqueued_startup_failure_has_no_protocol(monkeypatch, capsys):
 
 @pytest.mark.parametrize('success_after', [None, 2])
 def test_loop_retries_at_most_three_times_with_new_claims_and_preserved_attempts(tmp_path, monkeypatch, success_after, controlled_queue_launch):
+    from scripts.onestep_avatar import process_registry
     job = {'id': 'training', 'kind': 'train', 'sha256': 'a' * 64, 'dependencies': [],
-           'output': str(tmp_path / 'runs/training'), 'arguments': ['--mode', 'causal']}
+           'output': str(tmp_path / 'runs/training'),
+           'arguments': ['--mode', 'causal', '--subset', str(tmp_path / 'membership.json'),
+                         '--output', str(tmp_path / 'runs/training')]}
     state_path, claims = tmp_path / 'state.json', tmp_path / 'claims'
     claims.mkdir(); (claims / '5').write_text('legacy foreign claim')
+    ledger = claims / 'processes.json'
     monkeypatch.setattr(queue, 'prepare_jobs', lambda *_: [job])
     monkeypatch.setattr(queue, 'job_command', lambda *_: (['controlled child'], {'CUDA_VISIBLE_DEVICES': '0,1,2,3'}))
+    # This immediate fake-Popen control tests retries, not canonical launch acceptance.
+    monkeypatch.setattr(queue, 'training_launch_record', lambda *_: {'command': ['controlled child']})
     monkeypatch.setattr(subprocess, 'run', lambda *_a, **_k: SimpleNamespace(stdout='\n'.join(f'{g}, 0' for g in range(8))))
     launches = []
     def launch(command, **kwargs):
@@ -164,14 +170,20 @@ def test_loop_retries_at_most_three_times_with_new_claims_and_preserved_attempts
         kwargs['stdout'].write(event('startup_contended', token=token)); kwargs['stdout'].flush()
         return SimpleNamespace(pid=99999999, poll=lambda: code, wait=lambda: code)
     monkeypatch.setattr(subprocess, 'Popen', launch)
+    # This immediate fake child has no OS lifetime. The controlled exact handle
+    # keeps this fixture scoped to retry/archive transactions, not containment.
+    original_identity = process_registry._identity
+    monkeypatch.setattr(process_registry, '_identity', lambda pid: (
+        {'pid': pid, 'start_ticks': 1, 'command': ['controlled child'], 'terminal': True}
+        if pid == 99999999 else original_identity(pid)))
     monkeypatch.setattr(queue, 'completion_receipt', lambda *_: {'job_sha256': job['sha256'], 'evidence': []})
     monkeypatch.setattr(queue, 'verify_receipt', lambda *_: True)
     if success_after is None:
         with pytest.raises(queue.QueueChildError, match='failed with exit 1'):
-            queue.execute_jobs(tmp_path / 'jobs.json', state_path, claims, once=False)
+            queue.execute_jobs(tmp_path / 'jobs.json', state_path, ledger, once=False)
         assert len(launches) == 4
     else:
-        assert queue.execute_jobs(tmp_path / 'jobs.json', state_path, claims, once=False) == 0
+        assert queue.execute_jobs(tmp_path / 'jobs.json', state_path, ledger, once=False) == 0
         assert len(launches) == success_after
     row = json.loads(state_path.read_text())['jobs']['training']
     assert len(row['attempts']) == len(launches)
@@ -182,10 +194,14 @@ def test_loop_retries_at_most_three_times_with_new_claims_and_preserved_attempts
         assert old['error'].startswith('QueueChildError:') and old['returncode'] == 1
     assert sorted(p.name for p in claims.iterdir() if p.name.isdigit()) == ['5']
     assert (claims / '5').read_text() == 'legacy foreign claim'
+    attempts = json.loads(ledger.read_text())['attempts']
+    assert set(attempts) == set(launches)
+    assert all(item['state'] == 'closed' and item['gpus'] == [0, 1, 2, 3] for item in attempts.values())
 
 
 @pytest.mark.parametrize('new_session', [False, True])
-def test_surviving_worker_keeps_claim_and_refuses_adoption_after_leader_exit(tmp_path, monkeypatch, new_session):
+def test_surviving_own_worker_keeps_ledger_and_refuses_adoption_after_leader_exit(tmp_path, monkeypatch, new_session):
+    from scripts.onestep_avatar import process_registry, supervision
     pid_file = tmp_path / 'worker.pid'
     code = (
         'import subprocess,sys; from pathlib import Path; '
@@ -195,9 +211,12 @@ def test_surviving_worker_keeps_claim_and_refuses_adoption_after_leader_exit(tmp
     )
     job = {'id': 'owned', 'kind': 'evaluate', 'sha256': 'a' * 64,
            'output': str(tmp_path / 'output'), 'arguments': ['--mode', 'causal'], 'dependencies': []}
-    claims = queue.GPUClaims(tmp_path / 'claims')
+    ledger = tmp_path / 'own_processes.json'
+    claims = process_registry.ProcessRegistry(ledger, inventory=lambda: dict.fromkeys(range(8), 0))
     assert claims.acquire((4,), job='owned')
     monkeypatch.setattr(queue, 'job_command', lambda *_: ([sys.executable, '-c', code], {}))
+    monkeypatch.setattr(queue, 'live_session_processes', lambda *_a, **_k: pytest.fail('broad session scan used'))
+    monkeypatch.setattr(queue, 'live_attempt_processes', lambda *_a, **_k: pytest.fail('unrelated environment scan used'))
     state_path = tmp_path / 'state.json'
     worker = None
     try:
@@ -207,32 +226,43 @@ def test_surviving_worker_keeps_claim_and_refuses_adoption_after_leader_exit(tmp
         row = json.loads(state_path.read_text())['jobs']['owned']
         assert row['returncode'] == 0 and row['state'] == 'running'
         assert queue.inspect_child(row) == 'live'
-        assert queue.live_session_processes(row['child_session']) == ([] if new_session else [worker])
-        assert queue.live_attempt_processes(row['environment_changes'][startup.TOKEN_ENV],
-            started_ticks=row['attempt_started_ticks']) == [worker]
-        assert claims.owned == {4} and (tmp_path / 'claims/4').is_file()
+        assert row['process_ledger'] == str(ledger.resolve())
+        observed = claims.observe_workers(timeout=1)
+        assert observed['complete'] is True and observed['workers_live'] is True
+        assert worker in [identity['pid'] for identity in observed['identities']]
+        saved = json.loads(ledger.read_text())['attempts'][claims.token]
+        assert saved['state'] == 'active' and saved['processes'][str(worker)]['identity']['pid'] == worker
+        assert claims.owned == {4} and not (tmp_path / 'claims').exists()
         original = state_path.read_bytes()
         with pytest.raises(ValueError, match='surviving child'):
             with queue.queue_state(state_path, [job], recover=True):
                 pytest.fail('adopted surviving worker')
         assert state_path.read_bytes() == original
-        with pytest.raises(ValueError, match='live child'):
+        with pytest.raises(ValueError, match='remain live'):
             claims.release()
-        # A dead launcher/owner cannot cause this session's reservation to expire.
-        monkeypatch.setattr(queue, 'process_alive', lambda *_: False)
-        os.utime(tmp_path / 'claims/4', (time.time() - 1000, time.time() - 1000))
+        # Idle device memory cannot supersede our exact live worker record.
         memory = dict.fromkeys(range(8), 2048); memory[4] = 0
-        assert queue.GPUClaims(tmp_path / 'claims').choose(memory, training=False) is None
+        assert process_registry.ProcessRegistry(ledger, inventory=lambda: memory).choose(memory, training=False) is None
     finally:
         if worker is None and pid_file.exists(): worker = int(pid_file.read_text())
         if worker is not None:
             import signal
-            try: os.kill(worker, signal.SIGTERM)
-            except ProcessLookupError: pass
-            for _ in range(100):
-                if not queue.owned_workers_live(row): break
+            identity = queue.process_identity(worker)
+            if identity is not None and not identity['terminal']:
+                descriptor = supervision._pidfd_open(worker)
+                try:
+                    current = queue.process_identity(worker)
+                    assert current['pid'] == identity['pid'] and current['start_ticks'] == identity['start_ticks']
+                    supervision._pidfd_signal(descriptor, signal.SIGTERM)
+                finally:
+                    os.close(descriptor)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if os.waitpid(worker, os.WNOHANG)[0] == worker:
+                    break
                 time.sleep(0.01)
         if claims.owned: claims.release()
+        assert json.loads(ledger.read_text())['attempts'][claims.token]['state'] == 'closed'
 
 
 def test_session_scan_distinguishes_live_terminal_and_unknown_handles(tmp_path):
@@ -283,9 +313,11 @@ def test_claim_free_wait_after_preserved_retry_creates_no_additional_attempt(tmp
     monkeypatch.setattr(queue, 'prepare_jobs', lambda *_: [job])
     monkeypatch.setattr(subprocess, 'run', lambda *_a, **_k: SimpleNamespace(stdout='\n'.join(f'{g}, 2048' for g in range(8))))
     monkeypatch.setattr(queue, 'run_child', lambda *_a, **_k: pytest.fail('launched on busy device'))
-    assert queue.execute_jobs(tmp_path / 'jobs.json', state_path, tmp_path / 'claims', once=True) == 2
+    ledger = tmp_path / 'own_processes.json'
+    assert queue.execute_jobs(tmp_path / 'jobs.json', state_path, ledger, once=True) == 2
     assert state_path.read_bytes() == original and not output.exists()
-    assert not any(p.name.isdigit() for p in (tmp_path / 'claims').iterdir())
+    assert not ledger.exists()
+    assert not any(p.name.isdigit() for p in tmp_path.iterdir())
 
 
 def test_attempt_worker_scan_requires_exact_token_and_skips_older_handles(tmp_path):

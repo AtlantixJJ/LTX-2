@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.onestep_avatar import queue, queue_launch as launch
+from scripts.onestep_avatar import process_registry, queue, queue_launch as launch, supervision
 from scripts.onestep_avatar.queue_protocol import JOB_ENV, LAUNCH_PROTOCOL, TOKEN_ENV
 
 
@@ -55,6 +55,159 @@ def register(path, bootstrap):
 def stop(child):
     if child.poll() is None: child.terminate()
     child.wait(timeout=5)
+
+
+def ended_owned_attempt(tmp_path, monkeypatch):
+    """A completed two-rank workload whose exact original subreaper has ended."""
+    owner = {'pid': 2147483601, 'start_ticks': 10, 'command': ['original-owner'], 'terminal': False}
+    child = {'pid': 2147483602, 'start_ticks': 11, 'command': [sys.executable, '-m',
+             'accelerate.commands.launch', '--num_processes', '2', '-m', 'scripts.onestep_avatar.train'],
+             'terminal': False}
+    ranks = [{'pid': 2147483603 + rank, 'start_ticks': 12, 'command': ['original-rank', str(rank)],
+              'terminal': False} for rank in range(2)]
+    request = launch.prepare_request(tmp_path / 'launch', token='b' * 32, job_sha256='a' * 64,
+        owner_identity=owner, job_id='case', journal=tmp_path / 'journal.json', command=child['command'])
+    bootstrap = {'schema_version': 1, 'token': 'b' * 32, 'job_sha256': 'a' * 64,
+                 'request_sha256': launch.digest(request),
+                 'identity': {**child, 'command': launch.guard_command(request)}}
+    for name in ('bootstrap.json', 'grant.json'):
+        (request.parent / name).write_text(json.dumps(bootstrap))
+    notifications = tmp_path / 'phases.json'
+    changes = supervision.prepare_notifications(notifications, token='b' * 32, job_sha256='a' * 64,
+        world=2, phases=['load', 'export:0'], budget_sha256='c' * 64)
+    changes.update({TOKEN_ENV: 'b' * 32, JOB_ENV: 'a' * 64})
+    for rank, identity in enumerate(ranks):
+        monkeypatch.setattr(queue, 'process_identity', lambda pid, identity=identity: identity)
+        for phase in ('load', 'export:0'):
+            for event in ('begin', 'end'):
+                supervision.notify_phase(phase, event, rank, budget_sha256='c' * 64,
+                    environment={**changes, 'RANK': str(rank)})
+    state = register(request, bootstrap)
+    ledger = tmp_path / 'processes.json'
+    row = state['jobs']['case']
+    row.update(owner_pid=owner['pid'], gpus=[0, 1], process_ledger=str(ledger),
+        environment_changes=changes, supervision_contract=str(notifications), attempt_started_ticks=9)
+    row['attempts'] = [json.loads(json.dumps(row))]
+    (tmp_path / 'journal.json').write_text(json.dumps(state))
+    owned = {'state': 'active', 'owner': owner, 'child_pid': child['pid'], 'gpus': [0, 1], 'job': 'case',
+        'attempt_started_ticks': 9, 'baseline': [], 'containment': 'linux_subreaper_v1',
+        'processes': {str(identity['pid']): {'identity': identity, 'roles': [role],
+            'commands': [identity['command']]} for identity, role in [(child, 'child'),
+            *[(rank, 'descendant') for rank in ranks]]}, 'reported_rank_identities': [],
+        'observations': [{'complete': True, 'error': None, 'identities': [child, *ranks],
+                          'schema_version': 1, 'workers_live': True}]}
+    ledger.write_text(json.dumps({'schema_version': 1, 'attempts': {'b' * 32: owned,
+        'unrelated-history': {'state': 'closed', 'preserved': 'original unrelated bytes'}}}))
+    monkeypatch.setattr(launch, 'process_identity', lambda pid: None)
+    monkeypatch.setattr(process_registry, 'gpu_memory', lambda **kwargs: {gpu: 0 for gpu in range(6)})
+    return ledger, request, owned, ranks, notifications
+
+
+def test_ended_owned_recovery_preserves_original_evidence_and_states_scope(tmp_path, monkeypatch):
+    ledger, request, owned, ranks, notifications = ended_owned_attempt(tmp_path, monkeypatch)
+    original_files = {path: path.read_bytes() for path in tmp_path.rglob('*') if path.is_file() and path != ledger}
+    result = launch.recover_owned_attempt(ledger, request, timeout=2)
+    assert result['basis'] == 'bounded_dead_owner_recovery'
+    assert result['registered_workers_absent'] is True
+    assert result['continuous_supervision'] is False and result['containment_complete'] is False
+    assert len(result['notifications']['event_sha256']) == 8
+    assert [item['identity'] for item in result['notifications']['rank_identities']] == ranks
+    record = json.loads(ledger.read_bytes())
+    changed = record['attempts']['b' * 32]
+    assert {key: value for key, value in changed.items() if key not in ('state', 'recovery')} == {
+        key: value for key, value in owned.items() if key != 'state'}
+    assert changed['state'] == 'closed' and changed['recovery'] == result
+    assert record['attempts']['unrelated-history'] == {'state': 'closed', 'preserved': 'original unrelated bytes'}
+    assert all(path.read_bytes() == data for path, data in original_files.items())
+
+
+@pytest.mark.parametrize('failure', [
+    'missing_rank_end', 'changed_rank', 'wrong_contract_hash', 'missing_contract_hash', 'extra_event', 'wrong_world',
+    'live_owner', 'live_child', 'live_rank', 'reused_rank', 'denied_rank', 'uncontained_rank',
+    'incomplete_containment', 'busy_gpu', 'incomplete_gpu', 'invalid_gpu', 'wrong_ledger',
+    'changed_attempt', 'unapproved_grant', 'expired',
+])
+def test_ended_owned_recovery_refuses_uncertainty_without_ledger_mutation(tmp_path, monkeypatch, failure):
+    ledger, request, owned, ranks, notifications = ended_owned_attempt(tmp_path, monkeypatch)
+    state_path = tmp_path / 'journal.json'
+    state = json.loads(state_path.read_bytes())
+    record = json.loads(ledger.read_bytes())
+    changed = record['attempts']['b' * 32]
+    events = notifications.with_name(notifications.name + '.events')
+    if failure == 'missing_rank_end':
+        (events / 'rank0001.phase000001.end.json').unlink()
+    elif failure == 'changed_rank':
+        target = events / 'rank0001.phase000001.end.json'
+        event = json.loads(target.read_bytes()); event['identity']['start_ticks'] += 1
+        target.write_text(json.dumps(event))
+    elif failure in ('wrong_contract_hash', 'missing_contract_hash'):
+        for item in (state['jobs']['case'], state['jobs']['case']['attempts'][-1]):
+            item['environment_changes'][supervision.SUPERVISION_SHA_ENV] = (
+                'd' * 64 if failure == 'wrong_contract_hash' else None)
+    elif failure == 'extra_event':
+        (events / 'unknown.json').write_text('{}')
+    elif failure == 'wrong_world':
+        original = json.loads(request.read_bytes()); original['command'][4] = '3'
+        request.write_text(json.dumps(original))
+    elif failure in ('live_owner', 'live_child', 'live_rank', 'reused_rank', 'denied_rank'):
+        identity = (owned['owner'] if failure == 'live_owner' else
+            owned['processes'][str(owned['child_pid'])]['identity'] if failure == 'live_child' else ranks[0])
+        def observe(pid):
+            if pid != identity['pid']: return None
+            if failure == 'denied_rank': raise PermissionError('controlled exact-handle denial')
+            return {**identity, 'start_ticks': identity['start_ticks'] + int(failure == 'reused_rank')}
+        monkeypatch.setattr(launch, 'process_identity', observe)
+    elif failure == 'uncontained_rank':
+        del changed['processes'][str(ranks[1]['pid'])]
+        changed['reported_rank_identities'].append({'identity': ranks[1], 'role': 'rank:1'})
+    elif failure == 'incomplete_containment':
+        changed['observations'][0]['complete'] = False
+    elif failure in ('busy_gpu', 'incomplete_gpu', 'invalid_gpu'):
+        memory = {gpu: 0 for gpu in range(6)}
+        if failure == 'busy_gpu': memory[1] = 1024
+        elif failure == 'incomplete_gpu': del memory[1]
+        else: memory[1] = True
+        monkeypatch.setattr(process_registry, 'gpu_memory', lambda **kwargs: memory)
+    elif failure == 'wrong_ledger':
+        for item in (state['jobs']['case'], state['jobs']['case']['attempts'][-1]):
+            item['process_ledger'] = str(tmp_path / 'another.json')
+    elif failure == 'changed_attempt':
+        state['jobs']['case']['attempts'][-1]['attempt_started_ticks'] += 1
+    elif failure == 'unapproved_grant':
+        (request.parent / 'grant.json').unlink()
+    state_path.write_text(json.dumps(state))
+    ledger.write_text(json.dumps(record))
+    original_bytes = ledger.read_bytes()
+    with pytest.raises((ValueError, OSError, TimeoutError)):
+        launch.recover_owned_attempt(ledger, request, timeout=1e-12 if failure == 'expired' else 2)
+    assert ledger.read_bytes() == original_bytes
+
+
+def test_ended_owned_recovery_rechecks_handles_after_direct_inventory(tmp_path, monkeypatch):
+    ledger, request, owned, ranks, notifications = ended_owned_attempt(tmp_path, monkeypatch)
+    original_bytes = ledger.read_bytes()
+    def inventory(**kwargs):
+        monkeypatch.setattr(launch, 'process_identity', lambda pid: ranks[0] if pid == ranks[0]['pid'] else None)
+        return {gpu: 0 for gpu in range(6)}
+    monkeypatch.setattr(process_registry, 'gpu_memory', inventory)
+    with pytest.raises(ValueError, match='remains live'):
+        launch.recover_owned_attempt(ledger, request, timeout=2)
+    assert ledger.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize('special', ['fifo', 'oversized'])
+def test_owned_recovery_rejects_nonregular_or_oversized_input(tmp_path, monkeypatch, special):
+    ledger, request, owned, ranks, notifications = ended_owned_attempt(tmp_path, monkeypatch)
+    target = notifications.with_name(notifications.name + '.events') / 'rank0001.phase000001.end.json'
+    target.unlink()
+    if special == 'fifo': os.mkfifo(target)
+    else: target.write_bytes(b' ' * 65537)
+    original_bytes = ledger.read_bytes()
+    started = time.monotonic()
+    with pytest.raises(ValueError, match='bounded regular file'):
+        launch.recover_owned_attempt(ledger, request, timeout=2)
+    assert time.monotonic() - started < 1
+    assert ledger.read_bytes() == original_bytes
 
 
 @pytest.mark.parametrize('approval', [None, 'valid', 'bad_grant', 'bad_journal', 'bad_request'])

@@ -26,6 +26,8 @@ from ltx_core.utils import to_denoised
 
 MAX_ROPE_SECONDS = 20.0
 FULL_FRAME_X0_MSE = "full_frame_x0_mse"
+SIGMA_DTYPE = torch.float32
+SIGMA_PRECISION = str(SIGMA_DTYPE).removeprefix("torch.")
 
 
 class ScaleGeometry(Protocol):
@@ -202,11 +204,11 @@ def block_modality(
         raise ValueError("clean_prefix_tokens must be within this modality's token span")
     # Whole-clip probes match stock pipelines, which retain float32 schedule
     # precision even when weights and noisy latents are BF16.
-    timesteps = denoise.to(sigma_dtype or denoise.dtype) * sigma
+    timesteps = denoise.to(sigma_dtype or SIGMA_DTYPE) * sigma
     if clean_prefix_tokens:
         timesteps = timesteps.clone()
         timesteps[:, :clean_prefix_tokens] = 0
-    sigma_tensor = torch.tensor([sigma], device=device, dtype=sigma_dtype or tokens.dtype)
+    sigma_tensor = torch.tensor([sigma], device=device, dtype=sigma_dtype or SIGMA_DTYPE)
     return Modality(
         latent=tokens,
         sigma=sigma_tensor,

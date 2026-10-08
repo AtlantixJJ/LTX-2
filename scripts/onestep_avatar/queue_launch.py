@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import stat
 import sys
 import tempfile
 import time
@@ -305,13 +306,245 @@ def run_guard(path: Path, *, timeout: float = 60, poll_seconds: float = 0.1) -> 
     os.execvpe(request['command'][0], request['command'], os.environ.copy())
 
 
+def _bounded_bytes(path: Path, deadline: float, *, limit: int = 65536) -> bytes:
+    """Read recovery input without blocking on a FIFO or accepting unbounded bytes."""
+    if time.monotonic() >= deadline:
+        raise TimeoutError('owned recovery observation deadline exceeded')
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError('owned recovery input must be a bounded regular file')
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError('owned recovery input exceeds its byte bound')
+    if time.monotonic() >= deadline:
+        raise TimeoutError('owned recovery observation deadline exceeded')
+    return data
+
+
+def _saved_notification_bytes(path: Path, deadline: float) -> dict[str, bytes]:
+    records = {'contract': _bounded_bytes(path, deadline)}
+    total = len(records['contract'])
+    events = path.with_name(path.name + '.events')
+    for index, target in enumerate(events.iterdir()):
+        if index >= 8192:
+            raise ValueError('owned recovery notification inventory exceeds 8192 files')
+        if target.name.startswith('.supervision-'):
+            continue
+        data = _bounded_bytes(target, deadline)
+        total += len(data)
+        if total > 8 * 1024 * 1024:
+            raise ValueError('owned recovery notification inventory exceeds 8 MiB')
+        records[target.name] = data
+    return records
+
+
+def read_completed_notifications(
+    path: Path, *, contract_sha256: str, token: str, job_sha256: str, world: int, timeout: float = 5,
+) -> dict:
+    """Check saved rank events with existing supervisor rules; infer no live timing."""
+    from scripts.onestep_avatar import supervision  # noqa: PLC0415 -- scoped recovery compatibility
+
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError('owned recovery timeout must be finite and positive')
+    if not isinstance(contract_sha256, str) or re.fullmatch('[0-9a-f]{64}', contract_sha256) is None:
+        raise ValueError('owned recovery requires the original frozen notification hash')
+    deadline = time.monotonic() + timeout
+    records = _saved_notification_bytes(path, deadline)
+    with tempfile.TemporaryDirectory(prefix='onestep-owned-recovery-') as directory:
+        copied = Path(directory) / 'contract.json'
+        copied.write_bytes(records['contract'])
+        copied.with_name(copied.name + '.events').mkdir()
+        for name, data in records.items():
+            if name != 'contract':
+                (copied.with_name(copied.name + '.events') / name).write_bytes(data)
+        contract, contract_hash = supervision._contract(copied, contract_sha256)
+        if (type(world) is not int or world < 1 or contract['world'] != world
+                or contract['token'] != token or contract['job_sha256'] != job_sha256
+                or world * len(contract['phases']) * 2 > 8192):
+            raise ValueError('saved notifications differ from the original attempt/rank inventory')
+        progress = {rank: {'index': 0, 'active': None, 'identity': None, 'awaiting_since': 0}
+                    for rank in range(world)}
+        seen = {}
+        supervision._consume(copied, contract, contract_hash, progress, seen, 0)
+        if any(item['index'] != len(contract['phases']) or item['active'] is not None
+               for item in progress.values()):
+            raise ValueError('saved notifications lack the complete expected rank/phase inventory')
+    if records != _saved_notification_bytes(path, deadline):
+        raise ValueError('owned recovery notification bytes changed during inspection')
+    return {'schema_version': 1, 'contract_sha256': contract_hash, 'token': token,
+            'job_sha256': job_sha256, 'world': world, 'phases': contract['phases'],
+            'rank_identities': [{'rank': rank, 'identity': item['identity']} for rank, item in progress.items()],
+            'event_sha256': seen, 'continuous_supervision': False}
+
+
+def _ended_handles(identities: list[dict], deadline: float) -> list[dict]:
+    observations = []
+    for saved in identities:
+        if time.monotonic() >= deadline:
+            raise TimeoutError('owned recovery observation deadline exceeded')
+        current = process_identity(saved['pid'])
+        if current is not None:
+            if any(current.get(key) != saved.get(key) for key in ('pid', 'start_ticks')):
+                raise ValueError('owned recovery registered PID was reused')
+            if not current['terminal']:
+                raise ValueError('owned recovery registered handle remains live')
+            if current['command'] not in ([], saved['command']):
+                raise ValueError('owned recovery terminal command differs')
+        observations.append({'saved_identity': saved, 'current_identity': current})
+    return observations
+
+
+def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closure, original artifacts retained
+    process_ledger: Path, request_path: Path, *, timeout: float = 10,
+) -> dict:
+    """Close an ended approved registered workload; preserve lost-supervision scope."""
+    from scripts.onestep_avatar import process_registry, supervision  # noqa: PLC0415 -- operational owners
+
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError('owned recovery timeout must be finite and positive')
+    deadline = time.monotonic() + timeout
+    request_path, process_ledger = request_path.resolve(), process_ledger.resolve()
+    original_bytes = {request_path: _bounded_bytes(request_path, deadline)}
+    request = json.loads(original_bytes[request_path])
+    validate_request(request)
+    request_hash = hashlib.sha256(original_bytes[request_path]).hexdigest()
+    for name in ('bootstrap.json', 'grant.json'):
+        path = request_path.parent / name
+        original_bytes[path] = _bounded_bytes(path, deadline)
+    bootstrap = json.loads(original_bytes[request_path.parent / 'bootstrap.json'])
+    grant = json.loads(original_bytes[request_path.parent / 'grant.json'])
+    if (bootstrap != grant or not isinstance(bootstrap, dict)
+            or type(bootstrap.get('schema_version')) is not int or bootstrap['schema_version'] != 1
+            or bootstrap.get('request_sha256') != request_hash or bootstrap.get('token') != request['token']
+            or bootstrap.get('job_sha256') != request['job_sha256']
+            or not isinstance(bootstrap.get('identity'), dict)
+            or bootstrap['identity'].get('command') != guard_command(request_path)):
+        raise ValueError('owned recovery launch approval bindings differ')
+    journal = Path(request['journal'])
+    original_bytes[journal] = _bounded_bytes(journal, deadline, limit=8 * 1024 * 1024)
+    state = json.loads(original_bytes[journal])
+    # Validate the exact journal byte snapshot through the existing launch gate.
+    with tempfile.TemporaryDirectory(prefix='onestep-owned-journal-') as directory:
+        copied = Path(directory) / 'journal.json'
+        copied.write_bytes(original_bytes[journal])
+        verify_journal(request_path, {**request, 'journal': str(copied)}, bootstrap)
+    row = state['jobs'][request['job_id']]
+    attempts = row.get('attempts')
+    if not isinstance(attempts, list) or not attempts or not isinstance(attempts[-1], dict):
+        raise ValueError('owned recovery has no original attempt')
+    for field in ('child_pid', 'child_identity', 'command', 'owner_pid', 'gpus', 'process_ledger',
+                  'environment_changes', 'supervision_contract', 'launch_protocol',
+                  'launch_request', 'launch_request_sha256', 'attempt_started_ticks'):
+        if row.get(field) != attempts[-1].get(field):
+            raise ValueError('owned recovery journal and original attempt differ')
+    if row.get('process_ledger') != str(process_ledger):
+        raise ValueError('owned recovery process ledger path differs')
+    environment = row['environment_changes']
+    notification_path = Path(row['supervision_contract'])
+    if environment.get(supervision.SUPERVISION_ENV) != str(notification_path):
+        raise ValueError('owned recovery notification path differs')
+    # The original canonical launch states the exact process count.
+    command = request['command']
+    if command.count('--num_processes') != 1:
+        raise ValueError('owned recovery requires an explicit original rank count')
+    try:
+        world = int(command[command.index('--num_processes') + 1])
+    except (IndexError, ValueError) as error:
+        raise ValueError('owned recovery original rank count is invalid') from error
+    remaining = deadline - time.monotonic()
+    notifications = read_completed_notifications(
+        notification_path, contract_sha256=environment[supervision.SUPERVISION_SHA_ENV],
+        token=request['token'], job_sha256=request['job_sha256'], world=world, timeout=remaining,
+    )
+    registry = object.__new__(process_registry.ProcessRegistry)
+    registry.path = process_ledger
+    with registry._lock(timeout=max(deadline - time.monotonic(), 1e-12)):
+        record = registry._read()
+        owned = record['attempts'].get(request['token'])
+        if (not isinstance(owned, dict) or owned.get('state') != 'active'
+                or owned.get('containment') != 'linux_subreaper_v1'
+                or owned.get('owner') != request['owner_identity']
+                or owned.get('child_pid') != bootstrap['identity']['pid']
+                or owned.get('gpus') != row.get('gpus') or owned.get('job') != request['job_id']
+                or owned.get('attempt_started_ticks') != row.get('attempt_started_ticks')):
+            raise ValueError('owned recovery ledger differs from the original launch')
+        processes = owned.get('processes')
+        if not isinstance(processes, dict) or not processes or len(processes) > 4096:
+            raise ValueError('owned recovery registered descendant inventory is invalid')
+        identities = [item['identity'] for item in processes.values()]
+        for item in notifications['rank_identities']:
+            identity = item['identity']
+            saved = processes.get(str(identity['pid']))
+            if saved is None or saved['identity'] != identity:
+                raise ValueError('owned recovery rank is not an exact previously contained descendant')
+        child = processes.get(str(owned['child_pid']))
+        if (child is None or 'child' not in child.get('roles', [])
+                or child['identity']['start_ticks'] != bootstrap['identity'].get('start_ticks')
+                or child['identity']['command'] != command):
+            raise ValueError('owned recovery original launch child differs')
+        complete = [observation for observation in owned.get('observations', [])
+                    if observation.get('complete') is True and observation.get('error') is None]
+        if not any(all(any(all(seen.get(key) == identity.get(key) for key in ('pid', 'start_ticks', 'command'))
+                           for seen in observation.get('identities', [])) for identity in identities)
+                   for observation in complete):
+            raise ValueError('owned recovery lacks original complete registered containment')
+        handles = [owned['owner'], *identities]
+        before = _ended_handles(handles, deadline)
+        memory = process_registry.gpu_memory(timeout=max(deadline - time.monotonic(), 1e-12))
+        gpus = owned['gpus']
+        if (not gpus or not set(gpus).issubset(memory)
+                or any(type(value) is not int or value < 0 for value in memory.values())
+                or any(memory[gpu] >= 1024 for gpu in gpus)):
+            raise ValueError('owned recovery requires complete currently idle selected GPU inventory')
+        after = _ended_handles(handles, deadline)
+        for path, data in original_bytes.items():
+            if data != _bounded_bytes(path, deadline, limit=8 * 1024 * 1024 if path == journal else 65536):
+                raise ValueError('owned recovery original launch or journal bytes changed')
+        if notifications != read_completed_notifications(
+            notification_path, contract_sha256=notifications['contract_sha256'], token=request['token'],
+            job_sha256=request['job_sha256'], world=world, timeout=max(deadline - time.monotonic(), 1e-12),
+        ):
+            raise ValueError('owned recovery saved notification evidence changed')
+        result = {'schema_version': 1, 'basis': 'bounded_dead_owner_recovery',
+                  'token': request['token'], 'job_sha256': request['job_sha256'],
+                  'request': str(request_path), 'request_sha256': request_hash,
+                  'journal': str(journal), 'journal_sha256': hashlib.sha256(original_bytes[journal]).hexdigest(),
+                  'original_row_sha256': hashlib.sha256(json.dumps(
+                      owned, sort_keys=True, allow_nan=False, separators=(',', ':')).encode()).hexdigest(),
+                  'recovery_source_sha256': digest(Path(__file__)), 'observer': process_identity(os.getpid()),
+                  'notifications': notifications, 'handle_observations': [before, after],
+                  'sampled_gpu_memory_mib': {str(gpu): memory[gpu] for gpu in gpus},
+                  'registered_workers_absent': True, 'continuous_supervision': False,
+                  'containment_complete': False,
+                  'scope_limit': 'Unknown descendants after original owner loss are not certified absent; '
+                                 'the legacy closed-row reader basis adds no containment evidence.',
+                  'recovered_at': time.time()}
+        if time.monotonic() >= deadline:
+            raise TimeoutError('owned recovery observation deadline exceeded')
+        owned.update(state='closed', recovery=result)
+        registry._write(record)
+        return result
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--request', type=Path, required=True)
+    parser.add_argument('--recover-owned', action='store_true', help='close an ended approved own attempt')
+    parser.add_argument('--process-ledger', type=Path)
     parser.add_argument('--timeout', type=float, default=60)
     parser.add_argument('--poll-seconds', type=float, default=0.1)
     args = parser.parse_args(argv)
-    run_guard(args.request, timeout=args.timeout, poll_seconds=args.poll_seconds)
+    if args.recover_owned:
+        if args.process_ledger is None:
+            parser.error('--recover-owned requires --process-ledger')
+        print(json.dumps(recover_owned_attempt(  # noqa: T201 -- explicit operational evidence
+            args.process_ledger, args.request, timeout=args.timeout), indent=2))
+    else:
+        if args.process_ledger is not None:
+            parser.error('--process-ledger requires --recover-owned')
+        run_guard(args.request, timeout=args.timeout, poll_seconds=args.poll_seconds)
 
 
 if __name__ == '__main__':

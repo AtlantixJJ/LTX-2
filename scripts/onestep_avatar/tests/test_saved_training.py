@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,11 +19,22 @@ FIXTURES = dataset.WORKSPACE_ROOT / "expr/onestep_avatar/two_mode_restructure_20
 @pytest.mark.parametrize(
     "case", ["bidirectional_reference", "causal_blocks_zero_one", "causal_later_start", "causal_cache_removal"]
 )
-def test_mode_matches_saved_prediction_loss_gradient_and_cache(case: str) -> None:
+@pytest.mark.parametrize("precision", ["historical_bfloat16", "ordinary_float32"])
+def test_mode_matches_saved_prediction_loss_gradient_and_cache(case: str, precision: str, monkeypatch) -> None:
     path = FIXTURES / f"{case}.pt"
     if not path.exists():
         pytest.skip(f"saved baseline fixture is not installed: {path}")
     saved = torch.load(path, map_location="cpu", weights_only=True)
+    if precision == "historical_bfloat16":
+        original_modality = common.block_modality
+        def historical_modality(*args, **kwargs):
+            modality = original_modality(*args, **kwargs)
+            # Exact old producer: only global sigma inherited the latent dtype.
+            # Token timestep precision remains float32, as in the saved calls.
+            return replace(modality, sigma=modality.sigma.to(modality.latent.dtype))
+        monkeypatch.setattr(common, "block_modality", historical_modality)
+        monkeypatch.setattr(causal, "block_modality", historical_modality)
+
     model = _model(prompt_adaln=True).bfloat16()
     model.load_state_dict(saved["model_state"])
     settings = saved["geometry"]
@@ -97,6 +109,17 @@ def test_mode_matches_saved_prediction_loss_gradient_and_cache(case: str) -> Non
         assert result["prime_calls"] == 1
         assert result["refresh_calls"] == len(saved["blocks"]) - 1
     handle.remove()
+    if precision == "ordinary_float32":
+        assert all(call["sigma"].dtype == call["timesteps"].dtype == torch.float32 for call in calls)
+        assert torch.isfinite(torch.tensor(result["loss"]))
+        assert all(parameter.grad is None or torch.isfinite(parameter.grad).all()
+                   for parameter in model.parameters())
+        first = next(call for call in calls if call["sigma"].item() > 0)
+        old_first = next(call for call in expected_calls if call["sigma"].item() > 0)
+        for field in ("latent", "timesteps", "positions"):
+            assert torch.equal(first[field], old_first[field]), (case, field)
+        assert not torch.equal(first["sigma"].float(), old_first["sigma"].float())
+        return
     assert result["loss"] == saved["metrics"]["loss"]
     assert result["mse"] == saved["metrics"]["mse"]
     assert len(calls) == len(expected_calls)

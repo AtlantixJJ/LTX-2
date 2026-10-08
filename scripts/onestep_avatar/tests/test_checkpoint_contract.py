@@ -115,6 +115,7 @@ def test_random_full_master_templates_have_only_zero_start() -> None:
 def _request(record: dict) -> dict:
     requested = {
         "application_method": "peft_unmerged_fp32",
+        "global_sigma_dtype": "float32",
         "mode": record["mode"],
         "model": copy.deepcopy(record["model"]),
         "task": copy.deepcopy(record["task"]),
@@ -332,3 +333,29 @@ def test_atomic_save_records_actual_shapes_and_preserves_destination_on_failure(
         checkpoints.save_lora(torch.nn.Linear(1, 1), accelerator, tmp_path, 0, metadata)
     assert path.read_bytes() == before
     assert not list(tmp_path.glob(".*.tmp.*"))
+
+
+@pytest.mark.parametrize("mode", ["bidirectional", "causal"])
+def test_sigma_precision_contract_preserves_history_but_requires_known_execution(mode):
+    record = _contract(mode)
+    assert record["training"]["global_sigma_dtype"] == "float32"
+    requested = _request(record)
+    assert checkpoints.check_contract(record, requested) == []
+    historical = copy.deepcopy(record)
+    del historical["training"]["global_sigma_dtype"]
+    checkpoints.validate_contract(historical)
+    for override in (False, True):
+        with pytest.raises(ValueError, match="global_sigma_dtype is unknown"):
+            checkpoints.check_contract(historical, requested, override=override)
+    calibrated = copy.deepcopy(record)
+    calibrated["training"]["global_sigma_dtype"] = "bfloat16"
+    with pytest.raises(ValueError, match="incompatible.*global_sigma_dtype"):
+        checkpoints.check_contract(calibrated, requested)
+    differences = checkpoints.check_contract(calibrated, requested, override=True)
+    assert len(differences) == 1 and "global_sigma_dtype" in differences[0]
+    with pytest.raises(ValueError, match="incompatible.*global_sigma_dtype"):
+        checkpoints.check_contract(calibrated, requested, override=True, product=True)
+    for value in (None, "float16", "", 32):
+        requested["global_sigma_dtype"] = value
+        with pytest.raises(ValueError, match="requested global_sigma_dtype"):
+            checkpoints.check_contract(record, requested, override=True)

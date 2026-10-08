@@ -9,10 +9,11 @@ from safetensors.torch import save_file
 
 from scripts.onestep_avatar import queue
 from scripts.onestep_avatar.hashing import sha256
+from scripts.onestep_avatar.tests.test_applied_runtime import inventory
 from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B
 from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- fixture dependency
 from scripts.onestep_avatar.tests.test_training_preflight import checked_settings  # noqa: F401
-from scripts.onestep_avatar.training import checkpoints, config, engine
+from scripts.onestep_avatar.training import checkpoints, config, engine, resources
 
 
 @pytest.fixture
@@ -24,7 +25,7 @@ def completed(checked_settings, monkeypatch):
     monkeypatch.setattr(engine.backbone, 'identity', lambda path, *_a, **_k: {
         'base_transformer_file': Path(path).name, 'base_transformer_sha256': sha256(Path(path))})
     fsdp = initial.output.parent/'fsdp.yaml'
-    fsdp.write_text('distributed_type: FSDP\nnum_processes: 4\n')
+    fsdp.write_text('distributed_type: FSDP\nnum_processes: 4\nmixed_precision: bf16\n')
 
     def produce(*, mode='bidirectional', extra=()):
         arguments = ['--mode', mode, '--subset', str(initial.subset), '--output', str(initial.output),
@@ -40,7 +41,10 @@ def completed(checked_settings, monkeypatch):
         jobs_path = initial.output.parent/'jobs.json'
         jobs_path.write_text(json.dumps({'schema_version': 1, 'jobs': [raw_job]}))
         job = queue.prepare_jobs(jobs_path)[0]
+        launch = queue.training_launch_record(job)
+        applied_runtime = inventory(numerical=True)
         settings.world_size = 4
+        budget = resources.read_budget(settings.resource_budget)
         contract = checkpoints.make_contract(settings, store.membership, plan, settings.steps)
         contract['adapter']['tensor_shapes'] = {A: [2, 4], B: [4, 2]}
         checkpoint.parent.mkdir(parents=True)
@@ -51,6 +55,7 @@ def completed(checked_settings, monkeypatch):
                     'software': engine.software.capture('training', settings.mode),
                     'frame_plan_sha256': plan['sha256'], 'samples': samples, 'loss': engine.FULL_FRAME_X0_MSE,
                     'queue_job_sha256': job['sha256'], 'producer_source_sha256': sha256(Path(engine.__file__)),
+                    'queue_launch': launch, 'runtime': applied_runtime, 'resource_budget': budget,
                     'samples_per_update': 4*settings.chains_per_rank,
                     'sample_tiling': max(1, math.ceil(4*settings.chains_per_rank/samples)),
                     'optimizer': {'name': 'AdamW', 'betas': [0.9, 0.999], 'eps': 1e-8, 'weight_decay': 0.0},
@@ -58,10 +63,30 @@ def completed(checked_settings, monkeypatch):
                     'lora_target_counts': {target: int(target == 'to_q') for target in config.LORA_TARGETS['attn']}}
         (settings.output/'config.json').write_text(json.dumps(resolved, default=str))
         (settings.output/'frame_plan.json').write_text(json.dumps(plan))
+        resource_evidence = {}
+        if budget is not None:
+            # Controlled metadata verifies completion binding; no CUDA work runs.
+            saves = ([0] if settings.save_initial else []) + [
+                step for step in range(1, settings.steps + 1)
+                if step % settings.save_every == 0 or step == settings.steps or (settings.save_initial and step == 1)]
+            phases = ['load', *[f'update:{step}' for step in range(1, settings.steps + 1)],
+                      *[f'export:{step}' for step in saves]]
+            for rank in range(settings.world_size):
+                records = [
+                    {'schema_version': 1, 'rank': rank, 'phase': phase, 'device': f'cuda:{rank}',
+                     'elapsed_s': 10, 'peak_allocated_bytes': 1000, 'peak_reserved_bytes': 2000,
+                     'budget_sha256': budget['sha256'], 'state': 'passed', 'error': None}
+                    for phase in phases]
+                (settings.output/f'resources_rank{rank}.jsonl').write_text(
+                    '\n'.join(json.dumps(record) for record in records) + '\n')
+                resources.save_snapshot(settings.output, rank, settings.steps)
+            resource_evidence = resources.read_records(settings.output, settings.world_size, step=settings.steps)[1]
         marker = {'schema_version': 2, 'step': 2, 'path': str(checkpoint), 'sha256': sha256(checkpoint),
                   'state': 'complete', 'queue_job_sha256': job['sha256'],
                   'producer_source_sha256': resolved['producer_source_sha256'],
                   'software': resolved['software'],
+                  'queue_launch': launch, 'runtime': applied_runtime,
+                  'resource_budget': budget, 'resource_evidence': resource_evidence,
                   'training_record': {'config_sha256': sha256(settings.output/'config.json'),
                                       'frame_plan_sha256': sha256(settings.output/'frame_plan.json')}}
         checkpoint.with_suffix('.complete.json').write_text(json.dumps(marker))
@@ -78,9 +103,31 @@ def test_both_training_modes_verify_without_models_and_keep_fresh_output_gate(co
     with pytest.raises(ValueError, match='output already has a run'):
         engine.prepare_run(settings)
     assert queue.verify_completion(job)
+    resolved = json.loads((settings.output/'config.json').read_text())
+    assert resolved['resource_budget'] is None
+    assert 'resource_budget_sha256' not in job
+    assert not list(settings.output.glob('resources_rank*.jsonl'))
     receipt = queue.completion_receipt(job)
     assert len(receipt['evidence']) == 4
     assert queue.verify_receipt(job, receipt)
+
+
+@pytest.mark.parametrize('mode', ['bidirectional', 'causal'])
+def test_budget_backed_completion_binds_record_and_complete_rank_phase_evidence(completed, mode):
+    produce, initial, _ = completed
+    budget_path = initial.output.parent/'resource_budget.json'
+    budget_path.write_text(json.dumps({'wall_seconds_per_phase': 1800, 'memory_limit_allocated_bytes': 48000000000}))
+    job, settings, checkpoint = produce(mode=mode, extra=['--resource-budget', str(budget_path)])
+    resolved = json.loads((settings.output/'config.json').read_text())
+    marker = json.loads(checkpoint.with_suffix('.complete.json').read_text())
+    assert resolved['resource_budget'] == resources.read_budget(budget_path)
+    assert marker['resource_budget'] == resolved['resource_budget']
+    assert job['resource_budget_sha256'] == sha256(budget_path)
+    records, evidence = resources.read_records(settings.output, 4, step=2)
+    assert len(records) == 16
+    assert {record['phase'] for record in records} == {'load', 'update:1', 'update:2', 'export:2'}
+    assert marker['resource_evidence'] == evidence
+    assert queue.verify_receipt(job, queue.completion_receipt(job))
 
 
 @pytest.mark.parametrize('option,value', [

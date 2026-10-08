@@ -1139,3 +1139,29 @@ def test_fusion_parity_block_matches_original_real_model_path(kind: str) -> None
         assert not extracted.requires_grad
     finally:
         hook.remove()
+
+
+def test_bf16_cached_calls_keep_float32_global_and_token_sigmas():
+    geometry = _geometry()
+    grid = _grid(geometry)
+    model = _model(prompt_adaln=True).bfloat16()
+    context = _context().bfloat16()
+    clean = torch.randn(1, LATENT_FRAMES * grid.tokens_per_latent_frame, CHANNELS).bfloat16()
+    cache = BlockCache.allocate(grid, geometry, num_layers=2, inner_dim=8,
+                                device=DEVICE, dtype=torch.bfloat16)
+    seen = []
+    native = common.denoised_from_velocity_model(model)
+    def predict(modality):
+        seen.append(modality)
+        assert modality.latent.dtype == torch.bfloat16
+        assert modality.sigma.dtype == modality.timesteps.dtype == torch.float32
+        return native(modality)
+    causal_core.prime_cache(predict, grid, cache, clean, geometry, context, upto_latent_frame=3)
+    span = (3, 5)
+    lo, hi = grid.token_span(*span)
+    predicted = causal_core.denoise_block(predict, grid, cache, clean[:, lo:hi], context, 0.6315688490867615, span)
+    causal_core.refresh_block(predict, grid, cache, predicted, context, span)
+    assert len(seen) == 3
+    assert [call.sigma.item() for call in seen] == [0., 0.6315688490867615, 0.]
+    assert seen[0].kv_write and not seen[1].kv_write and seen[2].kv_write
+    assert torch.count_nonzero(seen[0].timesteps) == torch.count_nonzero(seen[2].timesteps) == 0

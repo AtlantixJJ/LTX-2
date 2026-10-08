@@ -1,5 +1,19 @@
 # CLAUDE.md — `LTX-2/scripts/onestep_avatar/`
 
+**Current GPU dispatch policy — user amendment, 2026-10-07:** query
+`nvidia-smi` directly and use one shared JSON file to record only processes this
+pipeline starts (PID, start ticks, command, GPU IDs and owned descendants).
+New launches do not consult reservation files or unrelated process environments.
+No privileged access is required. Older stale-claim recovery requirements below
+are historical and are superseded for new attempts. Preserve original claim,
+launch, result and acceptance files unchanged. Scientific inputs, budgets,
+tolerances and native E1–E5 gates remain unchanged.
+
+**Concurrent runs — user amendment, 2026-10-08:** independent runs may execute
+at the same time on GPUs 0–3. Query direct occupancy before each launch and
+register each original owner in the shared process ledger. Keep the prescribed
+four-rank training topology; concurrent ordinary checks do not change it.
+
 Guidance for Claude Code when working inside this package: the one-step LTX-2.5 avatar
 renderer, corpus tooling and model training in **one tree**.
 
@@ -7,21 +21,29 @@ renderer, corpus tooling and model training in **one tree**.
 two-mode plan. The review boundary is passed. Read `doc/README.md` for the current
 implemented/proposed mapping. Model execution and launchers belong in this package;
 `expr/` code only generates reports from saved results.
+The user-directed 2026-10-07 [architecture amendment](doc/architecture.md)
+defines the internal boundary and permits a proposed `experiments/` subpackage.
+Document/inventory it now. The October 8 handoff amendment permits the unchanged
+tiny-set E5 pilot at current paths after native update/short-workflow correctness,
+before broad characterization and Stage D moves. Relevant native replacement
+gates still precede source separation/removal. Do not treat proposed paths as shipped.
 
 ## Reading order — binding
 
 Before editing anything here, in this order:
 
-1. [`doc/core_algorithm.md`](doc/core_algorithm.md) — symbols, the conditioning contract, the
+1. [`doc/architecture.md`](doc/architecture.md) — common versus experiment owners, allowed
+   dependencies, proposed destinations and native migration gates.
+2. [`doc/core_algorithm.md`](doc/core_algorithm.md) — symbols, the conditioning contract, the
    block-by-block algorithm, train/probe/deploy parity.
-2. [`doc/experiments.md`](doc/experiments.md) — D0/D1, `bg`/`white`, teacher/self forcing, and
+3. [`doc/experiments.md`](doc/experiments.md) — D0/D1, `bg`/`white`, teacher/self forcing, and
    what is implemented, deferred or historical.
-3. [`doc/known_gaps.md`](doc/known_gaps.md) — the open contract violations.
-4. [`doc/README.md`](doc/README.md) — the per-module index, and the module doc for the file you
+4. [`doc/known_gaps.md`](doc/known_gaps.md) — the open contract violations.
+5. [`doc/README.md`](doc/README.md) — the per-module index, and the module doc for the file you
    are touching.
-5. [`configs/README.md`](configs/README.md) — before writing or quoting any run command.
+6. [`configs/README.md`](configs/README.md) — before writing or quoting any run command.
 
-Items 1–3 and 5 are **required** before changing conditioning, noising, the cache, the loss,
+Items 1–4 and 6 are **required** before changing conditioning, noising, the cache, the loss,
 configuration, a probe, or deployment. Everything a reader needs is in this package: workspace
 `plans/` are historical and progress records, not the explanation of record, and `SS…` markers
 in older prose are citations into them.
@@ -72,6 +94,13 @@ and does not import executable study code. Report rebuilds read saved results; m
 fail instead of launching training, generation, evaluation, or decoding. Move required logic
 out of current `expr/` executors during the reviewed implementation and remove obsolete copies
 and their docs. Do not leave forwarding execution wrappers in `expr/`.
+
+**Internal boundary:** core training and ordinary evaluation/product must not
+depend on experiment modules. Comparison orchestration and historical converters
+move to `experiments/` after the relevant native gates; they call shared public
+owners. Numerical diagnostic kernels can stay with their model owner. The existing
+queue can explicitly dispatch an experiment job without making ordinary jobs
+depend on it. Follow `doc/architecture.md` for the map, provenance and worked checks.
 
 Practical consequence: **corpus-side changes move the LTX-2 submodule pin.** The workspace
 `CLAUDE.md` asks for explicit approval before moving that pin, so say so when a change here

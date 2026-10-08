@@ -33,6 +33,20 @@ Current completion verifiers require the same current profile manifest.
 
 ## Organization logic
 
+An explicit experiment can add its own relative source owners through
+`capture(..., extra_sources=(...))`. The sorted unique paths are saved only when
+nonempty. They must remain inside the LTX-2 tree and name Python source files.
+Current checks recalculate the same profile plus those saved owners. Ordinary
+calls use no extras and do not bind experiment files. This extends the one
+manifest calculation; it creates no second provenance format or registry.
+The training profile includes the reusable optional Adam-state exporter,
+applied-runtime recorder and synchronized process-resource measurement owner.
+It also pins the canonical queue launch authority used by current training.
+The optional actual-consumer trace and bounded supervisor are reusable support
+owners. The same profile pins the current shared own-process ledger, whose direct
+GPU inventory and targeted descendant tracking replace reservation files for
+new launches. Old manifests retain their original owner lists and scope.
+
 Use explicit owners for package data/config/checkpoints and capture preprocessing,
 common/noise/sampling,
 adapter loading and the selected mode. Add the entry/runtime owner for the chosen
@@ -92,3 +106,8 @@ Worked check: capture an evaluation/causal manifest, then change only
 `validate` succeeds for the intact saved record; `check_current` raises before
 launch, publication or a current receipt. Similarly, changing a video-VAE owner
 during video writing leaves partial media but no accepted rendering record.
+
+The deterministic numerical repair adds `training/numerics.py` to the
+training source inventory. Historical producer profiles keep their original
+bytes and remain integrity-readable; current typed training and replay capture
+the new owner with the current queue, engine and runtime sources.

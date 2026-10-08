@@ -82,6 +82,8 @@ def inputs(tmp_path, old_subset, mode='bidirectional', guide_mode='d0', random_w
     for key in ('guide_mode', 'objective', 'loss', 'first_frame_conditioning'):
         metadata[f'onestep_avatar_{key}'] = record['task'][key]
         config[key] = record['task'][key]
+    config['global_sigma_dtype'] = record['training']['global_sigma_dtype']
+    metadata['onestep_avatar_global_sigma_dtype'] = config['global_sigma_dtype']
     config['noise_policy'] = record['training']['noise_policy']
     metadata['onestep_avatar_noise_policy'] = config['noise_policy']
     config['sigma_sampling'] = record['training']['sigma_sampling']
@@ -302,3 +304,21 @@ def test_exclusive_publication_preserves_competing_result(tmp_path, old_subset, 
     assert output.read_bytes() == b'competing result'
     assert sorted(path.name for path in tmp_path.glob('*.safetensors')) == [
         'base.safetensors', 'derived.safetensors', 'original.safetensors']
+
+
+@pytest.mark.parametrize("missing", ["config", "metadata"])
+def test_conversion_cannot_invent_global_sigma_precision(tmp_path, old_subset, missing):
+    source, record, evidence = inputs(tmp_path, old_subset, "bidirectional", "d0")
+    if missing == "config":
+        path = evidence["config_path"]
+        config = json.loads(path.read_text())
+        del config["global_sigma_dtype"]
+        path.write_text(json.dumps(config))
+    else:
+        metadata = checkpoints.read_adapter_metadata(source)
+        del metadata["onestep_avatar_global_sigma_dtype"]
+        save_file(load_file(source), source, metadata=metadata)
+    output = tmp_path / "derived.safetensors"
+    with pytest.raises(ValueError, match="global_sigma_dtype differs"):
+        checkpoints.convert_legacy_adapter(source, output, record, **evidence)
+    assert not output.exists()

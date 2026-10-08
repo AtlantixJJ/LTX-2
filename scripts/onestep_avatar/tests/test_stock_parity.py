@@ -129,3 +129,81 @@ def test_stock_titles_are_readable_without_browser_upscaling():
     natural_width = record['display_size'][0]
     assert record['font_size']*min(480, natural_width)/natural_width >= 16
     assert len(pixels) == 1
+
+
+def reference_case(tmp_path):
+    grid, image, context = inputs()
+    levels = torch.tensor([1., .8670830726623535, .6315688490867615, .1, 0.])
+    outputs, traces, noise, _ = stock_parity.sample_paths(ControlledX0(), context, grid, image, levels, 42)
+    for name, value in outputs.items():
+        torch.save(grid.unpatchify_block(value, 3), tmp_path/(name+'.pt'))
+    torch.save(traces, tmp_path/'traces.pt')
+    torch.save(noise, tmp_path/'noise.pt')
+    protocol = dict(stock_parity.PROTOCOL, software=stock_parity.software.capture('evaluation','bidirectional',decoder=True),
+                    schedule=levels.tolist(), seed=42, frames=3, fps=30., prompt='checked prompt', input_files={})
+    record = {'protocol':protocol, 'raw':stock_parity.compare_paths(outputs,traces),
+              'decoded':{'stock_repeat':{'unequal_elements':0}},
+              'output_files':{path.name:stock_parity.sha256(path) for path in tmp_path.glob('*.pt')},
+              'noise_tensor_sha256':stock_parity.evaluate.tensor_sha256(noise),
+              'image_tensor_sha256':stock_parity.evaluate.tensor_sha256(image),
+              'text_tensor_sha256':stock_parity.evaluate.tensor_sha256(context)}
+    (tmp_path/'result.json').write_text(json.dumps(record))
+    return grid,image,context,levels,protocol,record
+
+
+def test_reference_reuse_loads_exact_noise_and_preserves_original_identity(tmp_path):
+    grid,image,context,_,protocol,record=reference_case(tmp_path)
+    outputs,traces,noise,identities,reference=stock_parity.load_reference(tmp_path,protocol,image,context,grid)
+    assert torch.equal(noise,torch.load(tmp_path/'noise.pt',weights_only=True))
+    assert stock_parity.compare_paths(outputs,traces)['terminal_difference_only']
+    assert reference['original_software']==record['protocol']['software']
+    assert str((tmp_path/'result.json').resolve()) in identities
+
+
+@pytest.mark.parametrize('defect',['kernel','runtime','schedule','failed_control','raw_file','image'])
+def test_reference_reuse_rejects_mismatched_evidence(tmp_path,defect):
+    from copy import deepcopy
+    grid,image,context,_,protocol,record=reference_case(tmp_path)
+    protocol=deepcopy(protocol)
+    if defect=='kernel':
+        protocol['software']['sources']['scripts/onestep_avatar/model/common.py']='0'*64
+    elif defect=='runtime':
+        protocol['software']['runtime']['python']='different'
+    elif defect=='schedule':
+        protocol['schedule']=[1.,0.]
+    elif defect=='failed_control':
+        record['raw']['stock_repeat_calls_exact']=False
+        (tmp_path/'result.json').write_text(json.dumps(record))
+    elif defect=='raw_file':
+        (tmp_path/'noise.pt').write_bytes(b'changed saved noise')
+    else:
+        image=image+1
+    with pytest.raises(ValueError,match={'kernel':'owners','runtime':'runtime','schedule':'schedule',
+                                        'failed_control':'controls','raw_file':'raw file','image':'image tensor'}[defect]):
+        stock_parity.load_reference(tmp_path,protocol,image,context,grid)
+
+
+def test_default_precision_is_explicit_and_first_inputs_stay_fixed(tmp_path):
+    grid,image,context,levels,protocol,_=reference_case(tmp_path)
+    outputs,traces,noise,_,_=stock_parity.load_reference(tmp_path,protocol,image,context,grid)
+    class SigmaSensitiveX0(ControlledX0):
+        def forward(self,video,audio=None,perturbations=None):
+            prediction,_=super().forward(video,audio,perturbations)
+            shifted=prediction.float()+torch.sin(video.sigma.float()*1000).view(1,1,1)
+            return torch.where(video.timesteps==0,video.latent,shifted.to(video.latent.dtype)),None
+    # Recompute this controlled fixture's float32 arm because its x0 model differs.
+    outputs,traces,noise,_=stock_parity.sample_paths(SigmaSensitiveX0(),context,grid,image,levels,42)
+    trace=stock_parity.Trace(SigmaSensitiveX0())
+    source=grid.tools.create_initial_state('cpu',torch.bfloat16).latent
+    output,_=stock_parity.bidirectional.sample(common.denoised_from_x0_model(trace),context,grid,source,
+                                              grid.patchify(image),schedule=levels.tolist(),seed=42,epsilon=noise)
+    outputs['bidirectional_default']=output
+    traces['bidirectional_default']=trace.calls
+    comparison=stock_parity.compare_paths(outputs,traces)['global_sigma_precision']
+    assert comparison['outputs']['unequal_elements']==0
+    assert all(field['unequal_elements']==0 for call in comparison['calls'] for field in call['fields'].values())
+    first=comparison['calls'][0]['fields']
+    for field in ('latent','timesteps','positions','keyframes_mask'):
+        assert first[field]['unequal_elements']==0
+    assert first['sigma']['baseline_dtype']=='torch.float32'
+    assert first['sigma']['changed_dtype']=='torch.float32'

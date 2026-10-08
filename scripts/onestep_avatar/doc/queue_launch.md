@@ -31,6 +31,13 @@ The queue produces the request, journal and grant. The guard produces only its
 bootstrap identity. Each file has one producer and an exclusive publication path.
 These records are launch evidence, not model results or completion receipts.
 
+The explicit `--recover-owned` route consumes an existing approved launch
+request and the shared process ledger. It does not enter `run_guard` or launch
+anything. It adds a separately attributed operational closure record only after
+checking bound complete rank notifications, ended exact registered handles and
+current direct GPU inventory. Its source identity is recorded separately from
+the unchanged original training producer.
+
 ## Organization logic
 
 If owner inspection finds the original owner missing, terminal or replaced,
@@ -49,7 +56,7 @@ Resolve paths and publish `request.json` exclusively. The queue selects the
 command through its fixed package owners; the gate does not select models,
 settings, GPUs or scientific inputs. Tests use CPU commands as controlled consumers.
 
-The child CLI accepts only `--request`, a finite positive wait timeout and poll
+The child CLI's ordinary route accepts `--request`, a finite positive wait timeout and poll
 interval. It checks the inherited token/job environment against the request.
 Before opening model libraries, publish `bootstrap.json` with its PID, start
 ticks and actual command. While waiting for `grant.json`, verify the exact owner
@@ -79,9 +86,51 @@ registration and grant publication, the file must not exist. After a matching
 journal and grant, the child writes it and exits. If the owner disappears first,
 there is no grant and the child exits without writing the file.
 
+### Ended owned-attempt recovery
+
+`recover_owned_attempt` requires the original request, bootstrap and matching
+grant. Read bounded regular files and validate the immutable request hash,
+token/job, exact original owner, child and approved command against the saved
+running journal and its latest attempt. Require the journal's original
+notification hash and exact process-ledger path. Copy bounded notification bytes
+to a private snapshot and apply the unchanged supervision `_contract`/`_consume`
+rules. All expected ranks and phases must be complete. Recheck original event
+and journal hashes before publication. No external phase timing is inferred.
+
+Under the ledger's stable lock, require an active original subreaper attempt,
+matching owner/launch child/GPU list and previously complete containment covering
+every registered descendant. All rank producer handles must exactly match those
+contained descendants. Check owner, launcher and every registered descendant
+twice around a bounded direct `nvidia-smi` sample. Missing or exact terminal
+handles qualify; live, denied or reused handles refuse. Require every selected
+GPU below 1024 MiB, as for existing dispatch. Observation timeouts and invalid
+inventory refuse without writing the ledger.
+
+Use the existing registry lock/read/write implementation as an internal
+compatibility interface for this one recovery transaction; do not implement a
+second ledger format or writer. Keep `process_registry.py` and `supervision.py`
+bytes unchanged during original source-bound native replay. This scoped route
+does not alter their scientific producer manifests or relax source verification.
+
+Successful recovery changes only the selected ledger row's state and adds a
+`recovery` record. Preserve all original identities, commands and observations.
+The new record binds original row/launch/journal/notification/event hashes,
+recovery source, observer and both handle/GPU observations. It states
+`continuous_supervision=false`, `containment_complete=false` and
+`registered_workers_absent=true`. Unknown descendants after owner loss remain
+outside that proof. Preserve interrupted supervision and scientific artifacts.
+The existing queue's explicit `--recover` can then verify the original saved
+completion; it does not manufacture successful external supervision.
+
+Worked case: four bound ranks finish all four declared phases, all five saved
+launcher/rank handles and the owner are absent on both passes, and GPU memory is
+`[276,4,4,4]` MiB. Close only that row with the scope above. A missing rank end,
+uncontained rank, live worker, reused PID or busy device leaves it active.
+
 ## Invariants
 
-No model imports, GPU discovery or scientific parameter changes occur here.
+No model imports or scientific parameter changes occur here. Ordinary launch
+does not discover GPUs; explicit ended-attempt recovery samples direct inventory.
 Publication never replaces another record. Model execution requires a matching
 persisted journal and grant. Request, bootstrap and grant have distinct producers.
 Owner absence before approval never authorizes work. Guarded recovery requires
@@ -107,6 +156,10 @@ launch-control protocol. Real dispatcher checks also prove journal-before-grant 
 command transition, changed-evidence refusal and claim retention on interrupted
 registration. They do not prove model execution, native GPU behavior, FSDP
 correctness or safe recovery of old unguarded entries.
+Bounded ended-attempt controls check complete rank inventory, exact handle
+absence/terminal state, live/reused/denied refusal, bound approval/journal bytes,
+busy/incomplete devices and unchanged original-row evidence. The returned scope
+explicitly excludes continuous supervision and complete post-owner containment.
 
 ### Dispatcher integration design
 

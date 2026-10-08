@@ -1,4 +1,4 @@
-"""A second GPU observation precedes every launch and rolls back owned claims."""
+"""Direct availability checks preserve history and close only our own idle records."""
 
 import json
 import subprocess
@@ -35,6 +35,9 @@ def assert_no_launch_artifacts(tmp_path, state_path, original, claims):
     assert not (tmp_path / 'output').exists() and not (tmp_path / 'logs').exists()
     assert sorted(p.name for p in claims.iterdir() if p.name.isdigit()) == ['5']
     assert (claims / '5').read_text() == 'foreign legacy reservation'
+    ledger = claims / 'processes.json'
+    if ledger.exists():
+        assert all(row['state'] == 'closed' for row in json.loads(ledger.read_text())['attempts'].values())
 
 
 @pytest.mark.parametrize('kind', ['evaluate', 'render', 'decode', 'train'])
@@ -42,23 +45,24 @@ def assert_no_launch_artifacts(tmp_path, state_path, original, claims):
 def test_contended_claim_set_is_released_before_any_attempt(tmp_path, monkeypatch, kind, memory):
     job, state_path, claims = setup_dispatch(tmp_path, kind)
     original = state_path.read_bytes()
-    expected = {0, 1, 2, 3} if kind == 'train' else {4}
+    expected = {0, 1, 2, 3} if kind == 'train' else {5}
     calls = []
 
     def query(*args, **kwargs):
         assert kwargs['check'] and kwargs['capture_output'] and kwargs['text']
         calls.append(args)
-        if len(calls) == 1:
+        if len(calls) <= 2:
             return inventory()
-        assert {int(p.name) for p in claims.iterdir() if p.name.isdigit()} == expected | {5}
-        assert all(json.loads((claims / str(gpu)).read_text())['job'] == 'case' for gpu in expected)
+        active = [row for row in json.loads((claims / 'processes.json').read_text())['attempts'].values()
+                  if row['state'] == 'active']
+        assert len(active) == 1 and set(active[0]['gpus']) == expected and active[0]['job'] == 'case'
         return inventory(**{str(min(expected)): memory})
 
     monkeypatch.setattr(subprocess, 'run', query)
     monkeypatch.setattr(queue, 'run_child', lambda *_a, **_k: pytest.fail('started contended child'))
     state = queue.read_queue_state(state_path, [job])
-    assert not queue.dispatch_ready([job], state, state_path, claims)
-    assert len(calls) == 2
+    assert not queue.dispatch_ready([job], state, state_path, claims / 'processes.json')
+    assert len(calls) == 3
     assert_no_launch_artifacts(tmp_path, state_path, original, claims)
 
 
@@ -71,9 +75,11 @@ def test_failed_second_observation_releases_claims_and_preserves_journal(tmp_pat
 
     def query(*_args, **_kwargs):
         calls.append(1)
-        if len(calls) == 1:
+        if len(calls) <= 2:
             return inventory()
-        assert (claims / ('0' if kind == 'train' else '4')).is_file()
+        active = [row for row in json.loads((claims / 'processes.json').read_text())['attempts'].values()
+                  if row['state'] == 'active']
+        assert len(active) == 1
         if error == 'command':
             raise subprocess.CalledProcessError(1, 'nvidia-smi')
         if error == 'interrupt':
@@ -84,8 +90,8 @@ def test_failed_second_observation_releases_claims_and_preserves_journal(tmp_pat
     monkeypatch.setattr(queue, 'run_child', lambda *_a, **_k: pytest.fail('started child without inventory'))
     expected = {'command': subprocess.CalledProcessError, 'interrupt': KeyboardInterrupt}.get(error, ValueError)
     with pytest.raises(expected):
-        queue.dispatch_ready([job], queue.read_queue_state(state_path, [job]), state_path, claims)
-    assert len(calls) == 2
+        queue.dispatch_ready([job], queue.read_queue_state(state_path, [job]), state_path, claims / 'processes.json')
+    assert len(calls) == 3
     assert_no_launch_artifacts(tmp_path, state_path, original, claims)
 
 
@@ -97,14 +103,12 @@ def test_subsequent_selection_uses_changed_inventory_and_rechecks_it(tmp_path, m
     observations, launches = [], []
 
     def query(*_args, **_kwargs):
-        observations.append({int(p.name) for p in claims.iterdir() if p.name.isdigit()})
-        if len(observations) == 1:
-            return inventory(**{'3': 1024})
-        if len(observations) == 2:
-            assert observations[-1] == {4, 5}
-            return inventory(**{'4': 1024})
-        assert observations[-1] == {3, 5}
-        return inventory(**{'4': 1024})
+        ledger = claims / 'processes.json'
+        records = [] if not ledger.exists() else json.loads(ledger.read_text())['attempts'].values()
+        observations.append({gpu for row in records if row['state'] == 'active' for gpu in row['gpus']})
+        if len(observations) <= 2:
+            return inventory()
+        return inventory(**{'5': 1024})
 
     def launch(job, owned, _log, **_kwargs):
         launches.append((job['id'], set(owned.owned)))
@@ -112,8 +116,8 @@ def test_subsequent_selection_uses_changed_inventory_and_rechecks_it(tmp_path, m
 
     monkeypatch.setattr(subprocess, 'run', query)
     monkeypatch.setattr(queue, 'run_child', launch)
-    assert queue.dispatch_ready(jobs, state, state_path, claims)
-    assert launches == [('second', {3})]
-    assert observations == [{5}, {4, 5}, {3, 5}]
+    assert queue.dispatch_ready(jobs, state, state_path, claims / 'processes.json')
+    assert launches == [('second', {4})]
+    assert observations == [set(), set(), {5}, set(), {4}]
     assert state['jobs']['case']['state'] == 'pending'
     assert sorted(p.name for p in claims.iterdir() if p.name.isdigit()) == ['5']

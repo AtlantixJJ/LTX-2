@@ -9,7 +9,15 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import evaluate, queue
+from scripts.onestep_avatar import evaluate, process_registry, queue
+
+
+def controlled_terminal_child(monkeypatch):
+    """Immediate fake Popen has no OS lifetime; retain real identity for our owner."""
+    original = process_registry._identity
+    monkeypatch.setattr(process_registry, '_identity', lambda pid: (
+        {'pid': pid, 'start_ticks': 1, 'command': ['controlled child'], 'terminal': True}
+        if pid == 99999999 else original(pid)))
 
 
 def job(name, dependencies=()):
@@ -36,6 +44,8 @@ def test_loop_waits_then_dispatches_appended_dependency_and_verifies_all_receipt
     write_jobs(jobs_path, [first])
     claims_dir.mkdir()
     (claims_dir / '5').write_text('historical evaluation')
+    ledger = tmp_path / 'processes.json'
+    controlled_terminal_child(monkeypatch)
     launched, sleeps, queries = [], [], []
 
     def gpu_query(*_args, **_kwargs):
@@ -49,10 +59,11 @@ def test_loop_waits_then_dispatches_appended_dependency_and_verifies_all_receipt
 
     def launch(command, **kwargs):
         output = tmp_path / command[command.index('--output') + 1]
-        assert kwargs['env']['CUDA_VISIBLE_DEVICES'] == '4'
+        assert kwargs['env']['CUDA_VISIBLE_DEVICES'] == '5'
         assert command[-2:] == ['--gpu-id', '0']
         assert (claims_dir / '5').read_text() == 'historical evaluation'
-        assert json.loads((claims_dir / '4').read_text())['job'] == output.name
+        saved = json.loads(ledger.read_text())['attempts'][kwargs['env']['ONESTEP_AVATAR_QUEUE_TOKEN']]
+        assert saved['job'] == output.name and saved['gpus'] == [5] and saved['state'] == 'active'
         if launched:
             state = json.loads(state_path.read_text())
             assert state['jobs']['first']['state'] == 'complete'
@@ -66,14 +77,15 @@ def test_loop_waits_then_dispatches_appended_dependency_and_verifies_all_receipt
     monkeypatch.setattr(subprocess, 'Popen', launch)
     monkeypatch.setattr(queue.time, 'sleep', sleep)
     assert queue.main(['--jobs', str(jobs_path), '--state', str(state_path), '--execute', '--loop',
-                       '--claims-dir', str(claims_dir), '--poll-seconds', '0.5']) == 0
-    assert launched == ['first', 'second'] and sleeps == [0.5] and len(queries) == 5
+                       '--process-ledger', str(ledger), '--poll-seconds', '0.5']) == 0
+    assert launched == ['first', 'second'] and sleeps == [0.5] and len(queries) == 7
     state = json.loads(state_path.read_text())
     prepared = queue.prepare_jobs(jobs_path)
     assert state['job_order'] == ['first', 'second']
     assert all(queue.verify_receipt(item, state['jobs'][item['id']]['receipt']) for item in prepared)
     assert len(list((tmp_path / 'logs').glob('*.log'))) == 2
     assert reservations(claims_dir) == ['5']
+    assert all(row['state'] == 'closed' for row in json.loads(ledger.read_text())['attempts'].values())
 
 
 def test_loop_refuses_edits_while_waiting_before_any_claim_or_state(tmp_path, monkeypatch):
@@ -123,7 +135,7 @@ def test_loop_does_not_accept_complete_label_with_missing_evidence(tmp_path, mon
     original = state_path.read_bytes()
     monkeypatch.setattr(subprocess, 'run', lambda *_args, **_kwargs: pytest.fail('queried inventory'))
     with pytest.raises(ValueError, match='missing verified evidence'):
-        queue.execute_jobs(path, state_path, tmp_path / 'claims', once=False)
+        queue.execute_jobs(path, state_path, tmp_path / 'processes.json', once=False)
     assert state_path.read_bytes() == original
 
 
@@ -155,6 +167,7 @@ def test_child_failure_stops_loop_and_preserves_partial_outputs(tmp_path, monkey
     write_jobs(path, [job('first'), job('second', ['first'])])
     monkeypatch.setattr(subprocess, 'run', lambda *_args, **_kwargs: inventory())
     launched = []
+    controlled_terminal_child(monkeypatch)
 
     def fail(command, **_kwargs):
         output = tmp_path / command[command.index('--output') + 1]
@@ -165,13 +178,14 @@ def test_child_failure_stops_loop_and_preserves_partial_outputs(tmp_path, monkey
 
     monkeypatch.setattr(subprocess, 'Popen', fail)
     with pytest.raises(ValueError, match='failed with exit 1'):
-        queue.execute_jobs(path, state_path, tmp_path / 'claims', once=False)
+        queue.execute_jobs(path, state_path, tmp_path / 'processes.json', once=False)
     state = json.loads(state_path.read_text())
     assert launched == ['first']
     assert state['jobs']['first']['state'] == 'failed'
     assert state['jobs']['second']['state'] == 'pending'
     assert (tmp_path / 'first/partial.txt').read_text() == 'preserved failed scientific output'
     assert reservations(tmp_path / 'claims') == []
+    assert all(row['state'] == 'closed' for row in json.loads((tmp_path / 'processes.json').read_text())['attempts'].values())
 
 
 @pytest.mark.parametrize('interval', ['0', '-1', 'nan', 'inf', '61'])

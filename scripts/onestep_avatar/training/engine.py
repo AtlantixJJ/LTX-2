@@ -33,6 +33,7 @@ from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.model.causal import BlockCache, CausalGeometry
 from scripts.onestep_avatar.model.common import FULL_FRAME_X0_MSE, ClipGrid
 from scripts.onestep_avatar.training import checkpoints as sampling
+from scripts.onestep_avatar.training import numerics, resources, runtime
 from scripts.onestep_avatar.training.checkpoints import load_stage_init, save_lora
 from scripts.onestep_avatar.training.config import (
     LORA_TARGETS,
@@ -51,6 +52,50 @@ from scripts.prune.core.session import DEFAULT_PROMPT
 from scripts.prune.data import prompt_cache
 
 LOGGER = logging.getLogger("onestep_avatar.train")
+
+
+def _launch_evidence(settings: RunSettings, job_digest: str | None) -> tuple[dict | None, Path | None]:
+    """Read dispatch authority before model setup; never infer a missing launch."""
+    from scripts.onestep_avatar import queue  # noqa: PLC0415 -- public canonical launch authority
+    from scripts.onestep_avatar.queue_protocol import LAUNCH_ENV  # noqa: PLC0415 -- model-free protocol
+    from scripts.onestep_avatar.training.config import parse_settings  # noqa: PLC0415
+
+    path = os.environ.get(LAUNCH_ENV)
+    if path is None:
+        if job_digest is not None:
+            raise ValueError("queued training requires original dispatch launch evidence")
+        return None, None
+    launch = queue.read_training_launch(Path(path))
+    if launch["schema_version"] != 2:
+        raise ValueError("current typed training requires schema-two numerical launch evidence")
+    numerics.require_environment(launch["numerical_environment"])
+    if launch["job"]["sha256"] != job_digest:
+        raise ValueError("dispatch launch identity differs from queued attempt")
+    requested = parse_settings(launch["job"]["arguments"])
+    ignored = {"base_identity", "parent_contract", "world_size", "preview_record"}
+    def normalized(value: object) -> object:
+        if isinstance(value, Path):
+            return str(value.resolve())
+        if isinstance(value, dict):
+            return {key: normalized(item) for key, item in value.items() if key not in ignored}
+        return value
+    if normalized(requested.as_dict()) != normalized(settings.as_dict()):
+        raise ValueError("dispatch training arguments differ from actual settings")
+    return launch, Path(path).resolve()
+
+
+def _check_launch_current(launch: dict | None, path: Path | None) -> None:
+    if launch is not None:
+        from scripts.onestep_avatar import queue  # noqa: PLC0415 -- same preflight/publication authority
+        if queue.read_training_launch(path) != launch:
+            raise ValueError("original dispatch launch changed during training")
+
+
+def _launch_precision(launch: dict) -> str:
+    import base64  # noqa: PLC0415 -- original bytes, never today's requested precision
+
+    import yaml  # noqa: PLC0415 -- installed Accelerate YAML dependency
+    return yaml.safe_load(base64.b64decode(launch["accelerate_config_bytes_base64"]))["mixed_precision"]
 
 
 @contextlib.contextmanager
@@ -510,6 +555,26 @@ def build_transformer(
         # bf16 base. This policy wraps the trainable leaves separately, which is what lets the
         # base stay bf16 instead of being promoted to a full fp32 host copy before sharding.
         accelerator.state.fsdp_plugin.auto_wrap_policy = fsdp_auto_wrap_policy(transformer)
+        if isinstance(args, RunSettings):
+            plugin = accelerator.state.fsdp_plugin
+            from torch.distributed.fsdp.wrap import CustomPolicy  # noqa: PLC0415 -- typed FSDP only
+
+            peft_policy = plugin.auto_wrap_policy
+
+            def typed_policy(module: torch.nn.Module) -> bool | dict:
+                if not peft_policy(module=module, recurse=False, nonwrapped_numel=0):
+                    return False
+                parameters = list(module.parameters())
+                if parameters and all(parameter.requires_grad for parameter in parameters):
+                    return {"mixed_precision": None}
+                return True
+
+            plugin.auto_wrap_policy = CustomPolicy(typed_policy)
+            if plugin.mixed_precision_policy is not None:
+                # FSDP otherwise recursively rounds sigma/timesteps/positions in Modality.
+                plugin.mixed_precision_policy = replace(
+                    plugin.mixed_precision_policy, cast_root_forward_inputs=False
+                )
     transformer.get_base_model().set_gradient_checkpointing(not args.no_gradient_checkpointing)
     return transformer
 
@@ -1246,7 +1311,7 @@ def prepare_run(  # noqa: PLR0912 -- fail all input/parent conditions before run
     return store, plan, specification, bool(used)
 
 
-def verify_training_conditions(job: dict, checkpoint: Path, contract: dict) -> None:
+def verify_training_conditions(job: dict, checkpoint: Path, contract: dict) -> None:  # noqa: PLR0915 -- sequential evidence gates
     """Recheck queued scientific evidence without models, updates or output mutation."""
     from scripts.onestep_avatar.training.config import parse_settings  # noqa: PLC0415 -- typed command owner
 
@@ -1263,6 +1328,22 @@ def verify_training_conditions(job: dict, checkpoint: Path, contract: dict) -> N
     config_path, plan_path = settings.output / "config.json", settings.output / "frame_plan.json"
     resolved = json.loads(config_path.read_text())
     software.check_current(resolved.get("software"))
+    from scripts.onestep_avatar import queue  # noqa: PLC0415 -- current launch authority
+    launch = resolved.get("queue_launch")
+    queue.verify_training_launch(launch, job)
+    runtime.validate(resolved.get("runtime"), settings.world_size, _launch_precision(launch), native=True,
+                     numerical_policy=True)
+    budget = resources.read_budget(settings.resource_budget)
+    if resolved.get("resource_budget") != budget:
+        raise ValueError("training resource budget differs from original run")
+    resource_evidence = {}
+    if budget is not None:
+        measurements, _journal_identities = resources.read_records(settings.output, settings.world_size)
+        snapshot, resource_evidence = resources.read_records(settings.output, settings.world_size, step=settings.steps)
+        if measurements != snapshot:
+            raise ValueError("final checkpoint resource snapshot differs from rank journals")
+        phases = resources.training_phases(settings)
+        resources.validate_records(measurements, settings.world_size, phases, budget)
     saved_plan = json.loads(plan_path.read_text())
     sample_count = sum(s["split"] == settings.split for s in plan["samples"])
     tensor_shapes = contract["adapter"]["tensor_shapes"]
@@ -1274,6 +1355,7 @@ def verify_training_conditions(job: dict, checkpoint: Path, contract: dict) -> N
         "optimizer": {"name": "AdamW", "betas": [0.9, 0.999], "eps": 1e-8, "weight_decay": 0.0},
         "queue_job_sha256": job["sha256"], "producer_source_sha256": sha256(Path(__file__)),
         "software": software.capture("training", settings.mode),
+        "resource_budget": budget,
         "sample_tiling": max(1, math.ceil(settings.world_size * settings.chains_per_rank / sample_count)),
         "trainable_params": sum(math.prod(shape) for shape in tensor_shapes.values()),
         "lora_modules": len(modules),
@@ -1285,18 +1367,42 @@ def verify_training_conditions(job: dict, checkpoint: Path, contract: dict) -> N
     expected = json.loads(json.dumps(expected, default=str))
     if saved_plan != plan or any(key not in resolved or resolved[key] != value for key, value in expected.items()):
         raise ValueError("queue training saved configuration or frame plan differs from requested run")
-    marker = json.loads(checkpoint.with_suffix(".complete.json").read_text())
+    marker = queue.read_training_marker(checkpoint, settings.steps)
     software.check_current(marker.get("software"))
     identities = {
         "queue_job_sha256": job["sha256"], "producer_source_sha256": expected["producer_source_sha256"],
         "software": expected["software"],
+        "queue_launch": launch, "runtime": resolved["runtime"],
+        "resource_budget": budget, "resource_evidence": resource_evidence,
         "training_record": {"config_sha256": sha256(config_path), "frame_plan_sha256": sha256(plan_path)},
     }
+    if settings.consumer_trace:
+        identities["consumer_trace_evidence"] = _read_consumer_evidence(
+            settings.output, settings.steps, settings.world_size,
+            None if resolved.get("queue_launch_path") is None else Path(resolved["queue_launch_path"]),
+            job["sha256"], resolved.get("queue_attempt_token"), settings.chains_per_rank,
+        )
     if any(marker.get(key) != value for key, value in identities.items()):
         raise ValueError("queue training completed marker has different run provenance")
+    if settings.save_update_state:
+        text = resolved.get("update_text", {})
+        text_path = settings.output / "update_states/text.pt"
+        if text.get("path") != str(text_path.resolve()) or text.get("sha256") != sha256(text_path):
+            raise ValueError("training update text evidence differs")
+        for step in range(1, settings.steps + 1):
+            path = settings.output / "update_states" / f"step_{step:05d}.pt"
+            state = json.loads(path.with_suffix(".json").read_text())
+            if (state.get("step") != step or state.get("sha256") != sha256(path)
+                    or state.get("shapes") != tensor_shapes or state.get("software") != expected["software"]
+                    or state.get("world_size") != settings.world_size
+                    or state.get("accumulation") != settings.chains_per_rank
+                    or state.get("optimizer") != expected["optimizer"]
+                    or not isinstance(state.get("grad_norm"), (int, float))
+                    or not math.isfinite(state["grad_norm"])):
+                raise ValueError("training Adam update evidence differs")
 
 
-def _tokens_for_sample(
+def tokens_for_sample(
     video: dataset.EncodedVideo,
     sample: dict,
     settings: RunSettings,
@@ -1336,6 +1442,31 @@ def _tokens_for_sample(
     return grid, grid.patchify(capture), None if guide is None else grid.patchify(guide), start, end
 
 
+def _read_consumer_evidence(
+    output: Path, step: int, world: int, launch_path: Path | None,
+    job: str | None, token: str | None, accumulation: int | None = None,
+) -> dict[str, str]:
+    """Require actual complete observations, immutable bytes and the original launch."""
+    from scripts.onestep_avatar.training.consumer_trace import validate  # noqa: PLC0415 -- selected diagnostic
+    evidence = {}
+    for rank in range(world):
+        path = output / "consumer_traces" / f"step_{step:05d}" / f"rank{rank}.json"
+        data = path.read_bytes()
+        record = json.loads(data)
+        validate(record, {"rank": rank, "world_size": world, "queue_job_sha256": job,
+                          "queue_attempt_token": token,
+                          "launch_sha256": None if launch_path is None else sha256(launch_path)})
+        if accumulation is not None:
+            expected_visits = [(update, slot) for update in range(1, step + 1) for slot in range(accumulation)]
+            if [(sample["step"], sample["slot"]) for sample in record["samples"]] != expected_visits:
+                raise ValueError("consumer trace sample coverage differs from completed updates")
+        digest = hashlib.sha256(data).hexdigest()
+        if sha256(path) != digest:
+            raise ValueError("consumer trace changed during verification")
+        evidence[str(path.resolve())] = digest
+    return evidence
+
+
 def run_settings(settings: RunSettings) -> int:
     """Record queued startup failures around the typed runtime, never retry here."""
     from scripts.onestep_avatar.training.startup import StartupEvents  # noqa: PLC0415 -- queue protocol only
@@ -1344,8 +1475,15 @@ def run_settings(settings: RunSettings) -> int:
         return _run_settings(settings, events)
 
 
-def _run_settings(settings: RunSettings, events) -> int:  # noqa: ANN001, PLR0912, PLR0915 -- linear runtime and startup boundary
+def _run_settings(settings: RunSettings, events) -> int:  # noqa: ANN001 -- startup event owner
+    with contextlib.ExitStack() as lifecycle:
+        return _run_settings_body(settings, events, lifecycle)
+
+
+def _run_settings_body(settings: RunSettings, events, lifecycle: contextlib.ExitStack) -> int:  # noqa: ANN001, PLR0912, PLR0915 -- linear runtime and startup boundary
     """Run the typed two-mode engine; previews execute in their own model sessions."""
+    launch, launch_path = _launch_evidence(settings, events.job)
+    budget = resources.read_budget(settings.resource_budget)
     store, plan, specification, needs_archive = prepare_run(settings)
     producer_software = software.capture("training", settings.mode)
     samples = [sample for sample in plan["samples"] if sample["split"] == settings.split]
@@ -1356,12 +1494,17 @@ def _run_settings(settings: RunSettings, events) -> int:  # noqa: ANN001, PLR091
         "samples": len(samples),
         "loss": FULL_FRAME_X0_MSE,
         "queue_job_sha256": events.job,
+        "queue_attempt_token": events.token,
         "producer_source_sha256": sha256(Path(__file__)),
         "software": producer_software,
+        "queue_launch": launch,
+        "queue_launch_path": None if launch_path is None else str(launch_path),
+        "resource_budget": budget,
     }
     if settings.dry_run:
         print(json.dumps(resolved, indent=2, default=str))  # noqa: T201 -- requested CLI plan
         return 0
+    applied_numerics = numerics.apply(environment_required=launch is not None)
     if settings.reserve_gpu_gib > 0:
         local = int(os.environ.get("LOCAL_RANK", "0"))
         torch.cuda.set_device(local)
@@ -1372,23 +1515,74 @@ def _run_settings(settings: RunSettings, events) -> int:  # noqa: ANN001, PLR091
     settings.world_size = accelerator.num_processes
     device = accelerator.device
     rank = accelerator.process_index
-    software.check_current(producer_software)
-    with timed("prompt cache (text encoder)"):
-        context = prompt_cache.get_or_build(specification, DEFAULT_PROMPT, DTYPE, device)
-    with timed("transformer load + LoRA injection"):
+    if launch is not None:
+        runtime.check_accelerator(accelerator, launch["job"]["processes"], _launch_precision(launch),
+                                  distributed_type=DistributedType.FSDP)
+    _check_launch_current(launch, launch_path)
+    measurements = []
+    def preserve_measurement(record: dict) -> None:
+        measurements.append(record)
+        LOGGER.info("resource | %s", json.dumps(record, sort_keys=True))
+        if settings.output.is_dir() and not needs_archive:
+            dataset.atomic_write(settings.output / f"resources_rank{rank}.jsonl",
+                                 lambda temporary: temporary.write_text(
+                                     "".join(json.dumps(item) + "\n" for item in measurements)))
+        if record["state"] != "passed":
+            raise ValueError(record["error"])
+
+    @contextlib.contextmanager
+    def measured(phase: str) -> Iterator[None]:
+        if budget is None:
+            yield
+            return
+        observation = resources.Phase(device, phase, rank, budget)
+        try:
+            observation.start()
+            yield
+        except BaseException as error:
+            if observation.started is None:
+                raise
+            record = observation.finish(error=f"{type(error).__name__}: {error}")
+            measurements.append(record)
+            LOGGER.error("resource | %s", json.dumps(record, sort_keys=True))
+            if settings.output.is_dir() and not needs_archive:
+                dataset.atomic_write(settings.output / f"resources_rank{rank}.jsonl",
+                                     lambda temporary: temporary.write_text(
+                                         "".join(json.dumps(item) + "\n" for item in measurements)))
+            raise
+        else:
+            preserve_measurement(observation.finish())
+    with measured("load"):
         software.check_current(producer_software)
-        transformer = build_transformer(specification, settings, accelerator)
-    trainable = [p for p in transformer.parameters() if p.requires_grad]
-    lora_modules = sorted(
-        {name.rsplit(".lora_", 1)[0] for name, p in transformer.named_parameters() if p.requires_grad}
-    )
-    target_counts = {
-        target: sum(name.endswith(target) for name in lora_modules) for target in LORA_TARGETS[settings.lora_target]
-    }
-    trainable_count = sum(p.numel() for p in trainable)
-    optimizer = torch.optim.AdamW(trainable, lr=settings.lr, weight_decay=0.0, betas=(0.9, 0.999), eps=1e-8)
-    with timed("accelerator.prepare (FSDP shard)"):
-        transformer, optimizer = accelerator.prepare(transformer, optimizer)
+        with timed("prompt cache (text encoder)"):
+            context = prompt_cache.get_or_build(specification, DEFAULT_PROMPT, DTYPE, device)
+        with timed("transformer load + LoRA injection"):
+            software.check_current(producer_software)
+            transformer = build_transformer(specification, settings, accelerator)
+        trainable = [p for p in transformer.parameters() if p.requires_grad]
+        lora_modules = sorted(
+            {name.rsplit(".lora_", 1)[0] for name, p in transformer.named_parameters() if p.requires_grad}
+        )
+        target_counts = {
+            target: sum(name.endswith(target) for name in lora_modules) for target in LORA_TARGETS[settings.lora_target]
+        }
+        trainable_count = sum(p.numel() for p in trainable)
+        optimizer = torch.optim.AdamW(trainable, lr=settings.lr, weight_decay=0.0, betas=(0.9, 0.999), eps=1e-8)
+        with timed("accelerator.prepare (FSDP shard)"):
+            transformer, optimizer = accelerator.prepare(transformer, optimizer)
+    applied_runtime = runtime.gather(runtime.capture(transformer, accelerator, common.SIGMA_PRECISION), accelerator)
+    runtime.validate(applied_runtime, settings.world_size, accelerator.mixed_precision,
+                     numerical_policy=applied_numerics)
+    if launch is not None:
+        runtime.validate(applied_runtime, settings.world_size, _launch_precision(launch), native=True)
+    resolved["runtime"] = applied_runtime
+    trace = None
+    if settings.consumer_trace:
+        from scripts.onestep_avatar.training.consumer_trace import Trace  # noqa: PLC0415 -- selected diagnostic
+        trace = lifecycle.enter_context(Trace(transformer, {"rank": rank, "world_size": settings.world_size,
+                                   "queue_job_sha256": events.job, "queue_attempt_token": events.token,
+                                   "launch_sha256": None if launch_path is None else sha256(launch_path)},
+                                   failure_path=settings.output / f"consumer_trace_failed_rank{rank}.json"))
     world = settings.world_size
     tiling = max(1, math.ceil(world * settings.chains_per_rank / len(samples)))
     per_rank = len(samples) * tiling // world
@@ -1396,14 +1590,29 @@ def _run_settings(settings: RunSettings, events) -> int:  # noqa: ANN001, PLR091
     if per_rank == 0:
         raise ValueError("sample plan cannot supply the requested ranks and accumulation")
     order = list(range(len(samples))) * tiling
+    software.check_current(producer_software)
+    _check_launch_current(launch, launch_path)
+    resources.check_budget(budget)
     if needs_archive:
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
             archive_existing_run(settings.output)
         accelerator.wait_for_everyone()
+        needs_archive = False
     if accelerator.is_main_process:
         settings.output.mkdir(parents=True, exist_ok=True)
         software.check_current(producer_software)
+        _check_launch_current(launch, launch_path)
+        resources.check_budget(budget)
+        if settings.save_update_state:
+            text_path = settings.output / "update_states" / "text.pt"
+            text_path.parent.mkdir(parents=True, exist_ok=True)
+            text_cpu = context.detach().cpu().contiguous()
+            dataset.atomic_write(text_path, lambda temporary: torch.save(text_cpu, temporary))
+            text_digest = hashlib.sha256(text_cpu.view(torch.uint8).numpy().tobytes()).hexdigest()
+            resolved["update_text"] = {"path": str(text_path.resolve()), "sha256": sha256(text_path),
+                                       "tensor_sha256": text_digest,
+                                       "shape": list(text_cpu.shape), "dtype": str(text_cpu.dtype)}
         resolved.update(
             world_size=world,
             trainable_params=trainable_count,
@@ -1422,21 +1631,45 @@ def _run_settings(settings: RunSettings, events) -> int:  # noqa: ANN001, PLR091
             lambda temporary: temporary.write_text(json.dumps(plan, indent=2) + "\n"),
         )
     accelerator.wait_for_everyone()
+    if budget is not None:
+        dataset.atomic_write(settings.output / f"resources_rank{rank}.jsonl",
+                             lambda temporary: temporary.write_text(
+                                 "".join(json.dumps(item) + "\n" for item in measurements)))
+    accelerator.wait_for_everyone()
     wandb_run = init_wandb(settings, config=resolved) if accelerator.is_main_process else None
 
     def save(step: int, *, verify_noop: bool = False) -> None:
+        numerics.validate(numerics.capture(), required=True, expected=applied_numerics)
         software.check_current(producer_software)
+        _check_launch_current(launch, launch_path)
+        resources.check_budget(budget)
         contract = sampling.make_contract(settings, store.membership, plan, step)
-        path = save_lora(
-            transformer,
-            accelerator,
-            settings.output / "checkpoints",
-            step,
-            {sampling.CONTRACT_KEY: json.dumps(contract, sort_keys=True)},
-            verify_noop=verify_noop,
-        )
+        with measured(f"export:{step}"):
+            path = save_lora(
+                transformer,
+                accelerator,
+                settings.output / "checkpoints",
+                step,
+                {sampling.CONTRACT_KEY: json.dumps(contract, sort_keys=True)},
+                verify_noop=verify_noop,
+            )
+            if trace is not None:
+                trace.write(settings.output / "consumer_traces" / f"step_{step:05d}" / f"rank{rank}.json")
+        if budget is not None:
+            resources.save_snapshot(settings.output, rank, step)
+        accelerator.wait_for_everyone()
         if path is not None:
             software.check_current(producer_software)
+            _check_launch_current(launch, launch_path)
+            resources.check_budget(budget)
+            resource_evidence = {}
+            consumer_evidence = (_read_consumer_evidence(settings.output, step, world, launch_path,
+                                 events.job, events.token, settings.chains_per_rank)
+                                 if settings.consumer_trace else {})
+            if budget is not None:
+                records, resource_evidence = resources.read_records(settings.output, world, step=step)
+                phases = resources.training_phases(settings, step=step)
+                resources.validate_records(records, world, phases, budget)
             dataset.atomic_write(
                 path.with_suffix(".complete.json"),
                 lambda temporary: temporary.write_text(
@@ -1450,6 +1683,11 @@ def _run_settings(settings: RunSettings, events) -> int:  # noqa: ANN001, PLR091
                             "queue_job_sha256": events.job,
                             "producer_source_sha256": resolved["producer_source_sha256"],
                             "software": producer_software,
+                            "queue_launch": launch,
+                            "runtime": applied_runtime,
+                            "resource_budget": budget,
+                            "resource_evidence": resource_evidence,
+                            "consumer_trace_evidence": consumer_evidence,
                             "training_record": {
                                 "config_sha256": sha256(settings.output / "config.json"),
                                 "frame_plan_sha256": sha256(settings.output / "frame_plan.json"),
@@ -1490,75 +1728,94 @@ def _run_settings(settings: RunSettings, events) -> int:  # noqa: ANN001, PLR091
                 if step >= settings.steps:
                     break
                 indices = shard[begin : begin + settings.chains_per_rank]
+                numerics.validate(numerics.capture(), required=True, expected=applied_numerics)
                 lr = settings.lr * min(1.0, (step + 1) / max(settings.warmup_steps, 1))
                 for group in optimizer.param_groups:
                     group["lr"] = lr
                 sigma = sigma_for_rank(levels, rank, step, settings.noise_seed)
-                update_started = time.time()
-                metrics = {"loss": 0.0, "mse": 0.0}
-                details = []
-                counts = {"prime": 0, "denoise": 0, "backward": 0, "refresh": 0}
-                for slot, index in enumerate(indices):
-                    sample = samples[index]
-                    video = store.load(sample["source"], require_guide=settings.guide_mode == "d1")
-                    grid, capture, guide, start, end = _tokens_for_sample(
-                        video, sample, settings, specification, device, step=step, rank=rank, slot=slot
-                    )
-                    expected = 1 if settings.mode == "bidirectional" else 2 * len(sample["blocks"])
-                    assert_rank_lockstep(accelerator, expected, sample["source"])
-                    noise_seed = training_noise_seed(settings, step=step, rank=rank, slot=slot, chain_index=index)
-                    if settings.mode == "bidirectional":
-                        result = bidirectional.train_sample(
-                            transformer,
-                            context,
-                            grid,
-                            capture,
-                            guide,
-                            accelerator.backward,
-                            sigma=sigma,
-                            seed=noise_seed,
-                            guide_mode=settings.guide_mode,
-                            accumulation=len(indices),
+                with measured(f"update:{step + 1}"):
+                    update_started = time.time()
+                    metrics = {"loss": 0.0, "mse": 0.0}
+                    details = []
+                    counts = {"prime": 0, "denoise": 0, "backward": 0, "refresh": 0}
+                    for slot, index in enumerate(indices):
+                        sample = samples[index]
+                        video = store.load(sample["source"], require_guide=settings.guide_mode == "d1")
+                        grid, capture, guide, start, end = tokens_for_sample(
+                            video, sample, settings, specification, device, step=step, rank=rank, slot=slot
                         )
-                    else:
-                        result = causal_core.train_sample(
-                            transformer,
-                            context,
-                            grid,
-                            capture,
-                            guide,
-                            geometry,
-                            sample["blocks"],
-                            accelerator.backward,
-                            sigma=sigma,
-                            seed=noise_seed,
-                            cache=cache,
-                            guide_mode=settings.guide_mode,
-                            teacher_forcing=mode.teacher_forcing,
-                            accumulation=len(indices),
-                            timing=settings.timing,
-                            capacity_latent_frames=longest,
+                        expected = 1 if settings.mode == "bidirectional" else 2 * len(sample["blocks"])
+                        assert_rank_lockstep(accelerator, expected, sample["source"])
+                        noise_seed = training_noise_seed(settings, step=step, rank=rank, slot=slot, chain_index=index)
+                        trace_scope = (contextlib.nullcontext() if trace is None else
+                                       trace.sample(mode=settings.mode, step=step + 1, slot=slot, index=index))
+                        with trace_scope:
+                            if settings.mode == "bidirectional":
+                                result = bidirectional.train_sample(
+                                    transformer,
+                                    context,
+                                    grid,
+                                    capture,
+                                    guide,
+                                    accelerator.backward,
+                                    sigma=sigma,
+                                    seed=noise_seed,
+                                    guide_mode=settings.guide_mode,
+                                    accumulation=len(indices),
+                                )
+                            else:
+                                result = causal_core.train_sample(
+                                    transformer,
+                                    context,
+                                    grid,
+                                    capture,
+                                    guide,
+                                    geometry,
+                                    sample["blocks"],
+                                    accelerator.backward,
+                                    sigma=sigma,
+                                    seed=noise_seed,
+                                    cache=cache,
+                                    guide_mode=settings.guide_mode,
+                                    teacher_forcing=mode.teacher_forcing,
+                                    accumulation=len(indices),
+                                    timing=settings.timing,
+                                    capacity_latent_frames=longest,
+                                )
+                                cache = result.pop("cache")
+                        for key in metrics:
+                            metrics[key] += result[key] / len(indices)
+                        for key in counts:
+                            counts[key] += result.get(key + "_calls", 0)
+                        details.append(
+                            {
+                                "source": sample["source"],
+                                "start": start,
+                                "end": end,
+                                "ranges": [[start, end]]
+                                if settings.mode == "bidirectional" or mode.start_policy == "random"
+                                else sample["ranges"],
+                                "noise_seed": noise_seed,
+                                "per_block": result.get("per_block", []),
+                            }
                         )
-                        cache = result.pop("cache")
-                    for key in metrics:
-                        metrics[key] += result[key] / len(indices)
-                    for key in counts:
-                        counts[key] += result.get(key + "_calls", 0)
-                    details.append(
-                        {
-                            "source": sample["source"],
-                            "start": start,
-                            "end": end,
-                            "ranges": [[start, end]]
-                            if settings.mode == "bidirectional" or mode.start_policy == "random"
-                            else sample["ranges"],
-                            "noise_seed": noise_seed,
-                            "per_block": result.get("per_block", []),
-                        }
-                    )
-                grad_norm = accelerator.clip_grad_norm_(transformer.parameters(), settings.max_grad_norm)
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
+                    grad_norm = accelerator.clip_grad_norm_(transformer.parameters(), settings.max_grad_norm)
+                    optimizer.step()
+                    if settings.save_update_state:
+                        from scripts.onestep_avatar.training.update_state import save_adam_state  # noqa: PLC0415
+                        software.check_current(producer_software)
+                        state_path = settings.output / "update_states" / f"step_{step + 1:05d}.pt"
+                        shapes = save_adam_state(transformer, optimizer, accelerator, state_path, step + 1)
+                        if shapes is not None:
+                            software.check_current(producer_software)
+                            state_json = json.dumps({"step": step + 1, "sha256": sha256(state_path), "shapes": shapes,
+                                                     "grad_norm": float(grad_norm), "world_size": world,
+                                                     "accumulation": settings.chains_per_rank,
+                                                     "optimizer": resolved["optimizer"],
+                                                     "software": producer_software}, indent=2) + "\n"
+                            dataset.atomic_write(state_path.with_suffix(".json"),
+                                                 lambda temporary, payload=state_json: temporary.write_text(payload))
+                    optimizer.zero_grad(set_to_none=True)
                 step += 1
                 record = {
                     "schema_version": 2,
@@ -1574,6 +1831,9 @@ def _run_settings(settings: RunSettings, events) -> int:  # noqa: ANN001, PLR091
                     "samples": details,
                     "call_counts": counts,
                 }
+                if settings.save_update_state:
+                    record["text_tensor_sha256"] = hashlib.sha256(
+                        context.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()).hexdigest()
                 log.write(json.dumps(record) + "\n")
                 log.flush()
                 if step % settings.log_every == 0 and wandb_is_enabled(settings):

@@ -294,6 +294,8 @@ class RunSettings:
     frame_plan: Path | None = None
     preview_inputs: Path | None = None
     preview_record: dict | None = None
+    resource_budget: Path | None = None
+    consumer_trace: bool = False
     model: str = "2.5"
     variant: str = "distilled"
     objective: str = "bg"
@@ -317,6 +319,7 @@ class RunSettings:
     save_every: int = 100
     log_every: int = 1
     save_initial: bool = False
+    save_update_state: bool = False
     init_adapter: Path | None = None
     allow_cross_mode_init: bool = False
     overwrite: bool = False
@@ -391,7 +394,7 @@ def parse_settings(argv: list[str] | None = None) -> RunSettings:
     parser.add_argument("--mode", choices=("bidirectional", "causal"), required=True)
     parser.add_argument("--subset", type=Path, required=True, help="Version-two fixed video list.")
     parser.add_argument("--output", type=Path, required=True)
-    for option in ("corpus-root", "frame-plan", "init-adapter", "preview-inputs"):
+    for option in ("corpus-root", "frame-plan", "init-adapter", "preview-inputs", "resource-budget"):
         parser.add_argument("--" + option, type=Path)
     parser.add_argument("--model", choices=model_registry.SUPPORTED_MODELS, default="2.5")
     parser.add_argument("--variant", choices=backbone.VARIANTS, default=backbone.DEFAULT_VARIANT)
@@ -428,6 +431,8 @@ def parse_settings(argv: list[str] | None = None) -> RunSettings:
         "dry-run",
         "timing",
         "save-initial",
+        "save-update-state",
+        "consumer-trace",
         "no-gradient-checkpointing",
         "no-wandb",
     ):

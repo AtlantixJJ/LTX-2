@@ -5,6 +5,7 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from scripts.onestep_avatar import evaluate, queue
 from scripts.onestep_avatar.tests.test_saved_comparisons import (
@@ -54,7 +55,10 @@ def test_render_completion_rejects_changed_evidence(rendered,tmp_path,defect):
     elif defect=='request':
         row['caption']='changed'
     elif defect=='input':
-        (tmp_path/'generated.pt').write_bytes(b'changed')
+        # Keep the input readable so this proves changed tensor identity rather
+        # than depending on the current Torch unpickler's corrupt-byte exception.
+        value=torch.load(tmp_path/'generated.pt',weights_only=True)
+        torch.save(value+1,tmp_path/'generated.pt')
     elif defect in ('video','poster'):
         (tmp_path/'rendered'/row[defect]).write_bytes(b'changed')
     elif defect=='frames':
@@ -126,12 +130,18 @@ def test_only_one_render_spec_and_no_gpu_override_are_accepted(rendered,tmp_path
 
 
 def test_render_dispatch_claims_one_device_and_publishes_verified_receipt(rendered,tmp_path,monkeypatch, controlled_queue_launch):
+    from scripts.onestep_avatar import process_registry
     output=tmp_path/'rendered'
     prepared=tmp_path/'held_render'
     output.rename(prepared)
     claims=tmp_path/'claims'
     claims.mkdir()
     (claims/'5').write_text('legacy reservation')
+    ledger=claims/'processes.json'
+    original_identity=process_registry._identity
+    monkeypatch.setattr(process_registry,'_identity',lambda pid:(
+        {'pid':pid,'start_ticks':1,'command':['controlled child'],'terminal':True}
+        if pid==99999999 else original_identity(pid)))
     state_path=tmp_path/'state.json'
     state=queue.read_queue_state(state_path,[rendered])
     monkeypatch.setattr(subprocess,'run',lambda *_args,**_kwargs:SimpleNamespace(
@@ -139,14 +149,15 @@ def test_render_dispatch_claims_one_device_and_publishes_verified_receipt(render
 
     def launch(command,**kwargs):
         assert command[1:3]==['-m','scripts.onestep_avatar.evaluate']
-        assert command[-2:]==['--gpu-id','0'] and kwargs['env']['CUDA_VISIBLE_DEVICES']=='4'
-        assert json.loads((claims/'4').read_text())['job']=='saved_render'
+        assert command[-2:]==['--gpu-id','0'] and kwargs['env']['CUDA_VISIBLE_DEVICES']=='5'
+        own=json.loads(ledger.read_text())['attempts'][kwargs['env']['ONESTEP_AVATAR_QUEUE_TOKEN']]
+        assert own['job']=='saved_render' and own['gpus']==[5]
         assert (claims/'5').read_text()=='legacy reservation'
         prepared.rename(output)
         return SimpleNamespace(pid=99999999,poll=lambda:0,wait=lambda:0)
 
     monkeypatch.setattr(subprocess,'Popen',launch)
-    assert queue.dispatch_ready([rendered],state,state_path,claims)
+    assert queue.dispatch_ready([rendered],state,state_path,ledger)
     completed=json.loads(state_path.read_text())['jobs']['saved_render']
     assert completed['state']=='complete' and queue.verify_receipt(rendered,completed['receipt'])
     assert (claims/'5').read_text()=='legacy reservation' and not (claims/'4').exists()

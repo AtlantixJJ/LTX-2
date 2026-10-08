@@ -17,6 +17,7 @@ from pathlib import Path
 
 import torch
 
+from ltx_core.components.patchifiers import VideoLatentPatchifier
 from scripts.onestep_avatar import dataset, software, subset
 from scripts.onestep_avatar.dataset import atomic_write
 from scripts.onestep_avatar.hashing import sha256
@@ -774,6 +775,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:  # noqa: PL
     parser.add_argument("--guide-mode", choices=("d0", "d1"), default="d1")
     parser.add_argument("--schedule", nargs="+", type=float, required=True)
     parser.add_argument("--span-latent-frames", type=int)
+    parser.add_argument("--output-latent-frames", type=int,
+                        help="causal physical prefix; keep the adapter's recorded training span unchanged")
     parser.add_argument("--block-latent-frames", type=int)
     parser.add_argument("--blocks-per-sample", type=int)
     parser.add_argument("--context-latent-frames", type=int)
@@ -814,6 +817,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:  # noqa: PL
     args.schedule = list(validate_schedule(args.schedule))
     if args.span_latent_frames is not None and args.span_latent_frames < 1:
         parser.error("--span-latent-frames must be positive")
+    if args.output_latent_frames is not None:
+        if args.output_latent_frames < 1:
+            parser.error("--output-latent-frames must be positive")
+        if args.mode != "causal":
+            parser.error("--output-latent-frames is only supported for causal mode")
+        if args.span_latent_frames is not None and args.span_latent_frames != args.output_latent_frames:
+            parser.error("explicit output and training span lengths must match")
     if args.mode == "bidirectional":
         if any(
             getattr(args, key) is not None
@@ -909,7 +919,9 @@ def prepare_evaluation(args: argparse.Namespace, *, require_fresh_output: bool =
         raise ValueError("a saved noise file belongs to exactly one selected video")
     for source in ids:
         video = store.load(source, require_guide=args.guide_mode == "d1")
-        frames = video.z_y.shape[1] if args.span_latent_frames is None else args.span_latent_frames
+        output_frames = getattr(args, "output_latent_frames", None)
+        frames = (output_frames if output_frames is not None else
+                  video.z_y.shape[1] if args.span_latent_frames is None else args.span_latent_frames)
         if not 1 <= frames <= video.z_y.shape[1]:
             raise ValueError("requested range does not fit a selected video")
         if args.mode == "causal":
@@ -921,6 +933,8 @@ def prepare_evaluation(args: argparse.Namespace, *, require_fresh_output: bool =
             plan = geometry.plan(frames)
             if not plan:
                 raise ValueError("selected range has no complete causal block")
+            if output_frames is not None and plan[-1][1] != output_frames:
+                raise ValueError("explicit output range must contain complete causal blocks with that exact frame count")
             frames = plan[-1][1]
         if video.z_y.shape[0] != specification.caps.latent_channels:
             raise ValueError("encoded channels differ from the selected base model")
@@ -942,6 +956,7 @@ def prepare_evaluation(args: argparse.Namespace, *, require_fresh_output: bool =
             raise ValueError("selected range exceeds the model position limit")
         requested = {
             "application_method": args.adapter_application,
+            "global_sigma_dtype": common.SIGMA_PRECISION,
             "mode": args.mode,
             "mode_settings": asdict(args.mode_settings),
             "schedule": args.schedule,
@@ -1215,7 +1230,18 @@ def saved_comparison_inputs_ready(spec_path: Path) -> bool:
         panels = comparison.get("panels")
         if not isinstance(panels, list) or not panels:
             raise ValueError("saved comparison requires panels")
-        paths.extend(_saved_panel_path(panel, spec_path.resolve().parent)[0] for panel in panels)
+        root = spec_path.resolve().parent
+        if "reference_bundle" in comparison:
+            reference_path = (root / comparison["reference_bundle"]).resolve()
+            paths.append(reference_path)
+            if reference_path.is_file():
+                reference = json.loads(reference_path.read_text())
+                paths.extend(Path(row["path"]) for row in reference.get("panels", []) if row.get("path") is not None)
+        for panel in panels:
+            if "reference_role" not in panel:
+                paths.append(_saved_panel_path(panel, root)[0])
+            if "result" in panel:
+                paths.append((root / panel["result"]).resolve())
     return all(path.is_file() for path in paths)
 
 
@@ -1244,6 +1270,93 @@ def _saved_panel_input(item: dict, root: Path, span: int, fps: float) -> tuple[t
     if sha256(path) != fingerprint:
         raise ValueError("saved comparison latent changed while loading")
     return latent, {"path": str(path), "sha256": fingerprint, "shape": list(latent.shape), "master": master}
+
+
+def _saved_comparison_inputs(  # noqa: PLR0912 -- all saved RGB/result gates precede decoder work
+    comparison: dict, root: Path, model: str, seed: int
+) -> list[tuple[torch.Tensor, dict]]:
+    """Read latent-only panels or exactly matched, already-prepared RGB references."""
+    from scripts.onestep_avatar import media  # noqa: PLC0415 -- checked saved RGB reader
+    from scripts.prune.core import model_registry  # noqa: PLC0415 -- geometry only
+
+    span, fps = comparison.get("span", 17), comparison.get("fps", 30)
+    panels = comparison["panels"]
+    if "reference_bundle" not in comparison:
+        if any("reference_role" in panel for panel in panels):
+            raise ValueError("saved RGB panels require a reference bundle")
+        return [_saved_panel_input(panel, root, span, fps) for panel in panels]
+    if "view" in comparison:
+        raise ValueError("saved RGB reference comparisons do not use legacy view metrics")
+    path = (root / comparison["reference_bundle"]).resolve()
+    manifest_hash = sha256(path)
+    references, producer = media.load_training_references(path)
+    manifest = json.loads(path.read_text())
+    if sha256(path) != manifest_hash:
+        raise ValueError("saved reference bundle changed while loading")
+    software.check_current(producer.get("software"))
+    scale = model_registry.resolve(model).scale_factors
+    frames = 1 + (span - 1) * scale.time
+    if (producer.get("fps") != fps or producer.get("source_frames") != list(range(frames))
+            or producer.get("decode_seed") != seed
+            or producer.get("decoder_settings") != media.native_decoder_settings()
+            or producer.get("vae_sha256") != sha256(Path(model_registry.resolve(model).paths.video_vae()))):
+        raise ValueError("saved reference source mapping, timebase or decoder settings differ")
+    if (len(panels) < 4 or [item.get("reference_role") for item in panels[:3]] != ["recorded", "decoded", "guide"]
+            or any("reference_role" in item for item in panels[3:])):
+        raise ValueError("saved reference panels require recorded, decoded, guide before outputs")
+    inputs, records = [], []
+    for item, panel, row in zip(panels[:3], references, manifest["panels"], strict=True):
+        pixels = panel.pixels
+        if (item.get("role") != panel.role or "latent" in item or pixels is None
+                or pixels.ndim != 4 or pixels.shape[:2] != (frames, 3)
+                or not (pixels.is_floating_point() or pixels.dtype == torch.uint8)
+                or not torch.isfinite(pixels).all()):
+            raise ValueError("saved reference RGB values or panel roles are invalid")
+        inputs.append((pixels, {"path": row["path"], "sha256": row["sha256"], "shape": list(pixels.shape),
+                               "kind": "rgb_reference", "reference_bundle": {"path": str(path),
+                                                                                "sha256": manifest_hash}}))
+    for item in panels[3:]:
+        latent, evidence = _saved_panel_input(item, root, span, fps)
+        if "result" not in item:
+            raise ValueError("saved reference output requires its executed result record")
+        result_path = (root / item["result"]).resolve()
+        result_hash = sha256(result_path)
+        record = json.loads(result_path.read_text())
+        software.validate(record.get("software"))
+        if (record.get("state") != "complete" or record.get("source") != producer.get("source")
+                or record.get("fps") != fps or record.get("frames") != span
+                or record.get("input_file_hashes", {}).get("capture") != producer.get("capture_encoding_sha256")
+                or record.get("input_file_hashes", {}).get("render") != producer.get("guide_rgb_sha256")
+                or record.get("membership_sha256") != producer.get("membership_sha256")
+                or record.get("conditions", {}).get("task", {}).get("objective") != producer.get("objective")
+                or record.get("guide_mode") != "d1"
+                or Path(record.get("output", {}).get("path", "")).resolve() != Path(evidence["path"])
+                or record.get("output", {}).get("sha256") != evidence["sha256"]
+                or record.get("output", {}).get("shape") != list(latent.shape)
+                or tensor_sha256(VideoLatentPatchifier(patch_size=1).patchify(latent[:, :, :1]))
+                != record.get("c0_sha256")):
+            raise ValueError("saved output result differs from its RGB references or encoding")
+        if any(pixels.shape[-2:] != (latent.shape[-2] * scale.height, latent.shape[-1] * scale.width)
+               for pixels, _ in inputs[:3]):
+            raise ValueError("saved reference RGB dimensions differ from output encoding")
+        evidence["result"] = {"path": str(result_path), "sha256": result_hash}
+        inputs.append((latent, evidence))
+        records.append(record)
+    if len(records) > 1:
+        validate_comparison(records, comparison.get("changed_factor"))
+        if any(record.get("software") != records[0].get("software") for record in records[1:]):
+            raise ValueError("saved comparison output producers differ")
+    return inputs
+
+
+def _saved_input_bytes_current(inputs: list[tuple[torch.Tensor, dict]]) -> bool:
+    """Check every bound pixel, latent, manifest and executed-result file once."""
+    files = {}
+    for _, record in inputs:
+        for evidence in (record, record.get("reference_bundle"), record.get("result")):
+            if evidence is not None:
+                files[evidence["path"]] = evidence["sha256"]
+    return all(sha256(Path(path)) == digest for path, digest in files.items())
 
 
 def parse_saved_comparison_args(argv: list[str], *, require_gpu: bool = False) -> argparse.Namespace:
@@ -1330,14 +1443,14 @@ def render_saved_comparisons(  # noqa: PLR0912, PLR0915 -- preflight, decode, QA
         panels = comparison.get("panels")
         if not isinstance(panels, list) or not panels:
             raise ValueError("saved comparison requires panels")
-        inputs = []
         for panel in panels:
             if not isinstance(panel, dict) or not isinstance(panel.get("title"), str):
                 raise ValueError("saved comparison panel metadata is invalid")
-            inputs.append(_saved_panel_input(panel, spec_root, span, fps))
-        if any(latent.shape != inputs[0][0].shape for latent, _ in inputs):
+        inputs = _saved_comparison_inputs(comparison, spec_root, spec.get("model", "2.5"), seed)
+        latents = [value for value, record in inputs if record.get("kind") != "rgb_reference"]
+        if any(latent.shape != latents[0].shape for latent in latents):
             raise ValueError("saved comparison panels must have identical encoded geometry")
-        if "view" in comparison and inputs[0][0].shape[2] < 2:
+        if "view" in comparison and latents[0].shape[2] < 2:
             raise ValueError("saved comparison metrics require frames after the first image")
         metadata = [media.Panel(item.get("role", f"panel_{index}"), item["title"], None, (),
                                 value=item.get("value", "")) for index, item in enumerate(panels)]
@@ -1351,6 +1464,8 @@ def render_saved_comparisons(  # noqa: PLR0912, PLR0915 -- preflight, decode, QA
     identity = saved_comparison_identity(spec_path, spec, seed)
     if identity["spec_sha256"] != spec_hash:
         raise ValueError("saved comparison specification changed during preflight")
+    if any(not _saved_input_bytes_current(inputs) for inputs in prepared):
+        raise ValueError("saved comparison inputs changed during preflight")
     software.check_current(identity["software"])
     session = media.open_decoder_session(
         spec.get("model", "2.5"), gpu_id, script="onestep_avatar.evaluate.saved_comparisons"
@@ -1365,8 +1480,8 @@ def render_saved_comparisons(  # noqa: PLR0912, PLR0915 -- preflight, decode, QA
     with session.decoder() as decoder, torch.inference_mode():
         for comparison, inputs, compact_layout in zip(spec["comparisons"], prepared, compact_layouts, strict=True):
             panels = []
-            for index, (item, (latent, _)) in enumerate(zip(comparison["panels"], inputs, strict=True)):
-                pixels = media.decode(session, latent, decoder, seed)
+            for index, (item, (value, record)) in enumerate(zip(comparison["panels"], inputs, strict=True)):
+                pixels = value if record.get("kind") == "rgb_reference" else media.decode(session, value, decoder, seed)
                 panels.append(
                     media.Panel(
                         item.get("role", f"panel_{index}"),
@@ -1383,7 +1498,7 @@ def render_saved_comparisons(  # noqa: PLR0912, PLR0915 -- preflight, decode, QA
                 mask = subject_mask(view / "capture_mask_crop.mp4", len(reference), *reference.shape[-2:])
                 for item, panel in zip(comparison["panels"], panels, strict=True):
                     metrics.append({
-                        "title": item["title"], "latent": item["latent"],
+                        "title": item["title"], "latent": item.get("latent"),
                         "psnr_full": rgb_metrics(panel.pixels[1:], reference[1:])["psnr"],
                         "psnr_subject": None if mask is None else subject_rgb_metrics(
                             panel.pixels[1:], reference[1:], mask[1:]
@@ -1414,9 +1529,8 @@ def render_saved_comparisons(  # noqa: PLR0912, PLR0915 -- preflight, decode, QA
             del compact_pixels
             manifest.append({**comparison, **full, "compact": compact, "inputs": [row for _, row in inputs],
                              "frames": len(panels[0].pixels), "metrics": metrics})
-    if saved_comparison_identity(spec_path, spec, seed) != identity or any(
-        sha256(Path(record["path"])) != record["sha256"] for inputs in prepared for _, record in inputs
-    ):
+    if (saved_comparison_identity(spec_path, spec, seed) != identity
+            or any(not _saved_input_bytes_current(inputs) for inputs in prepared)):
         raise ValueError("saved comparison inputs changed before publication")
     result = {"schema_version": 3, **identity, "comparisons": manifest, "results": manifest}
     atomic_write(
@@ -1518,17 +1632,14 @@ def verify_saved_comparison_completion(  # noqa: PLR0912 -- exact rendering evid
         saved_inputs = row.get("inputs")
         if not isinstance(saved_inputs, list) or len(saved_inputs) != len(request["panels"]):
             raise ValueError("saved comparison completion input inventory differs")
-        inputs = []
-        for panel, saved in zip(request["panels"], saved_inputs, strict=True):
-            source, _ = _saved_panel_path(panel, spec_path.resolve().parent)
-            if Path(saved.get("path", "")).resolve() != source or sha256(source) != saved.get("sha256"):
-                raise ValueError("saved comparison completion input hash or path differs")
-            try:
-                latent, record = _saved_panel_input(panel, spec_path.resolve().parent, span, fps)
-            except FileNotFoundError:
-                return False
-            del latent
-            inputs.append(record)
+        try:
+            prepared = _saved_comparison_inputs(request, spec_path.resolve().parent, spec.get("model", "2.5"), seed)
+        except FileNotFoundError:
+            return False
+        inputs = [record for _, record in prepared]
+        if not _saved_input_bytes_current(prepared):
+            raise ValueError("saved comparison completion input hash or path differs")
+        del prepared
         if row.get("inputs") != inputs:
             raise ValueError("saved comparison completion input inventory differs")
         frames = 1 + (span - 1) * scale

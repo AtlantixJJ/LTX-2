@@ -1,11 +1,23 @@
 # `onestep_avatar` — prepare video data and train an avatar model
 
+**Current GPU dispatch policy — user amendment, 2026-10-07:** query
+`nvidia-smi` directly and use one shared JSON file to record only processes this
+pipeline starts (PID, start ticks, command, GPU IDs and owned descendants).
+New launches do not consult reservation files or unrelated process environments.
+No privileged access is required. Older stale-claim recovery requirements below
+are historical and are superseded for new attempts. Preserve original claim,
+launch, result and acceptance files unchanged. Scientific inputs, budgets,
+tolerances and native E1–E5 gates remain unchanged.
+
 The model receives a real first image and an ARGAvatar guide video.
 It uses an LTX-2.5 LoRA adapter to generate video.
 A LoRA adapter is a small set of trainable weights added to the base model.
 
 **Implementation is authorized and in progress. Final integration and acceptance checks remain.**
 See [doc/README.md](doc/README.md) for implemented owners and pending integration.
+Read [the architecture contract](doc/architecture.md) for common versus experiment
+code, allowed dependencies and the source-separation gates. The proposed
+`experiments/` subpackage is a documented target; its migration is not complete.
 Shared model helpers, schedules, mode functions, training owners, and the fixed-list
 converter exist. Explicit-mode training/evaluation/product CLIs, strict adapter
 checks and shared media are implemented. Preview rendering and decoded product
@@ -301,6 +313,12 @@ Keep still-needed explanations and original evidence before removing their old l
 ## Environment and ownership
 
 ### Code ownership
+
+The [architecture contract](doc/architecture.md) separates core runtime, reusable
+support, experiment comparison/conversion code and report code. Experiments call
+public shared owners; core training and ordinary evaluation/product do not depend
+on experiments. Finish bounded native E1–E4 before the planned source moves and
+duplicate-runtime removal, then run the existing seven-frame E5 pilot.
 
 All avatar training code stays in this LTX-2 package.
 That includes training launchers, required queues, evaluation, model probes, and adapter saves.

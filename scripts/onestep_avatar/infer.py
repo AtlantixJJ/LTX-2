@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import torch
@@ -107,6 +107,7 @@ def generate(  # noqa: PLR0912, PLR0913 -- explicit product inputs and mode disp
         "mode": mode,
         "mode_settings": asdict(settings),
         "guide_mode": "d1",
+        "global_sigma_dtype": common.SIGMA_PRECISION,
         "schedule": levels,
         "seed": seed,
         "frames": frames,
@@ -162,7 +163,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             3 if args.blocks_per_sample is None else args.blocks_per_sample,
             8 if args.context_latent_frames is None else args.context_latent_frames,
             False,
-            args.span_latent_frames,
+            None,
         )
         if args.mode_settings.block_latent_frames < 1 or args.mode_settings.blocks_per_sample < 1:
             parser.error("block length and K must be positive")
@@ -171,7 +172,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def prepare_product(args: argparse.Namespace) -> tuple:
+def prepare_product(args: argparse.Namespace) -> tuple:  # noqa: PLR0912 -- ordered input and calibration gates
     """Check files and exact adapter conditions without opening any model session."""
     guide_record = torch.load(args.guide, map_location="cpu", weights_only=True)
     image_record = torch.load(args.first_image, map_location="cpu", weights_only=True)
@@ -203,6 +204,14 @@ def prepare_product(args: argparse.Namespace) -> tuple:
         if not plan:
             raise ValueError("product input has no complete causal block")
         frames = plan[-1][1]
+        if args.checkpoint is not None and args.mode_settings.span_latent_frames is None:
+            from scripts.onestep_avatar.training.checkpoints import read_contract  # noqa: PLC0415 -- header preflight
+
+            contract = read_contract(args.checkpoint)
+            if contract["mode"] == "causal" and contract["mode_settings"]["span_latent_frames"] == frames:
+                # Coverage and training selection are separate; represent an
+                # explicit calibration only when the actual input equals it.
+                args.mode_settings = replace(args.mode_settings, span_latent_frames=frames)
     if ((frames - 1) * specification.scale_factors.time + 1) / fps > common.MAX_ROPE_SECONDS:
         raise ValueError("product guide exceeds the model position limit")
     if args.variant == "distilled" and any(level not in specification.sigmas for level in args.schedule[:-1]):
@@ -216,6 +225,7 @@ def prepare_product(args: argparse.Namespace) -> tuple:
     base = backbone.identity(specification.paths.transformer(), args.variant, args.model, full_hash=True)
     requested = {
         "application_method": "peft_unmerged_fp32",
+        "global_sigma_dtype": common.SIGMA_PRECISION,
         "mode": args.mode,
         "mode_settings": asdict(args.mode_settings),
         "schedule": args.schedule,

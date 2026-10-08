@@ -22,7 +22,10 @@ COMMON = ('software.py', 'hashing.py', 'dataset.py', 'subset.py', 'precompute.py
           'geometry.py', 'mask_video.py', 'training/config.py',
           'training/checkpoints.py', 'model/common.py', 'model/sampling.py', 'model/backbone.py',
           'model/adapters.py')
-ENTRIES = {'training': ('train.py', 'training/engine.py', 'training/startup.py'),
+ENTRIES = {'training': ('train.py', 'training/engine.py', 'training/startup.py', 'training/update_state.py',
+                        'training/resources.py', 'training/runtime.py', 'training/consumer_trace.py',
+                        'training/numerics.py',
+                        'supervision.py', 'process_registry.py', 'queue.py', 'queue_protocol.py'),
            'evaluation': ('evaluate.py', 'stock_parity.py'), 'inference': ('infer.py', 'evaluate.py'),
            'decoding': ('media.py', 'evaluate.py', 'decode_saved.py', 'sigma_sweep.py', 'sigma_sweep_results.py'),
            'preparation': ('prepare_inputs.py', 'media.py', 'evaluate.py', 'training/engine.py')}
@@ -81,26 +84,40 @@ def source_files(profile: str, mode: str | None, *, decoder: bool = False) -> li
     return sorted(files)
 
 
-def capture(profile: str, mode: str | None = None, *, decoder: bool = False) -> dict:
+def capture(profile: str, mode: str | None = None, *, decoder: bool = False,
+            extra_sources: tuple[str, ...] = ()) -> dict:
+    extras = sorted(set(extra_sources))
+    if any(not isinstance(name, str) or Path(name).is_absolute() or '..' in Path(name).parts
+           or Path(name).suffix != '.py' or not (ROOT/name).is_file()
+           or not (ROOT/name).resolve().is_relative_to(ROOT) for name in extras):
+        raise ValueError('extra software owners must be contained Python source files')
     record = {'schema_version': 1, 'kind': 'onestep_avatar.software', 'profile': profile,
               'mode': mode, 'decoder': decoder,
               'sources': {name: sha256(ROOT / name) for name in source_files(profile, mode, decoder=decoder)},
               'runtime': runtime_versions()}
+    if extras:
+        record['extra_sources'] = extras
+        record['sources'].update({name: sha256(ROOT/name) for name in extras})
     record['sha256'] = _digest(record)
     return record
 
 
 def validate(record: dict) -> None:
     """Check saved integrity without requiring today's source or installed runtime."""
-    if not isinstance(record, dict) or record.get('schema_version') != 1 or record.get('kind') != 'onestep_avatar.software':
+    if (not isinstance(record, dict) or record.get('schema_version') != 1
+            or record.get('kind') != 'onestep_avatar.software'):
         raise ValueError('software manifest schema is invalid')
     if (record.get('profile') not in PROFILES or record.get('mode') not in (None, 'bidirectional', 'causal')
             or type(record.get('decoder')) is not bool
-            or record['profile'] not in ('decoding', 'preparation') and record['mode'] is None):
+            or (record['profile'] not in ('decoding', 'preparation') and record['mode'] is None)):
         raise ValueError('software manifest profile/mode is invalid')
     sources = record.get('sources')
     if not isinstance(sources, dict) or not sources:
         raise ValueError('software manifest sources are missing')
+    extras = record.get('extra_sources', [])
+    if (not isinstance(extras, list) or any(not isinstance(name, str) for name in extras)
+            or extras != sorted(set(extras)) or any(name not in sources for name in extras)):
+        raise ValueError('software manifest extra owners are malformed')
     for name, digest in sources.items():
         if (not isinstance(name, str) or Path(name).is_absolute() or '..' in Path(name).parts
                 or not isinstance(digest, str) or re.fullmatch('[0-9a-f]{64}', digest) is None):
@@ -108,7 +125,7 @@ def validate(record: dict) -> None:
     runtime = record.get('runtime')
     if (not isinstance(runtime, dict) or set(runtime) != {'python', 'torch_cuda_build', 'distributions'}
             or not isinstance(runtime.get('python'), str)
-            or runtime.get('torch_cuda_build') is not None and not isinstance(runtime['torch_cuda_build'], str)
+            or (runtime.get('torch_cuda_build') is not None and not isinstance(runtime['torch_cuda_build'], str))
             or not isinstance(runtime.get('distributions'), dict)
             or set(runtime['distributions']) != set(DISTRIBUTIONS)
             or any(value is not None and not isinstance(value, str) for value in runtime['distributions'].values())):
@@ -120,6 +137,7 @@ def validate(record: dict) -> None:
 def check_current(record: dict) -> None:
     """Refuse changed owners or runtime before current launch/publication/completion."""
     validate(record)
-    actual = capture(record['profile'], record['mode'], decoder=record['decoder'])
+    actual = capture(record['profile'], record['mode'], decoder=record['decoder'],
+                     extra_sources=tuple(record.get('extra_sources', [])))
     if actual != record:
         raise ValueError('software source owners or runtime changed since preflight')

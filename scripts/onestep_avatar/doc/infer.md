@@ -2,6 +2,11 @@
 
 Status: Input checks and two-mode generation API implemented. Product CLI, pre-weight adapter checks and generated-only rendering are implemented. Optional decoded-input review panels are implemented; real-weight checks remain pending. Source exceeds 100 lines.
 
+Ordinary execution requests `global_sigma_dtype` from `model.common`'s float32
+contract. Adapter preflight rejects unknown historical precision before weights
+load; research may explicitly acknowledge a known differing calibration, while
+product refuses it. Saved conditions preserve the requested precision.
+
 ## Objective
 
 Product runtime snapshots its software profile before input preflight, rechecks
@@ -41,6 +46,23 @@ actual matrices before opening a transformer. Product mode has generated history
 only. Reject teacher-trained calibration unless its contract matches the requested
 generated-history conditions; no product override exists.
 
+For causal CLI input, `--span-latent-frames` selects output coverage from the
+continuous guide. It does not set the training segment-selection field in
+`CausalSettings`; that field defaults to `None`. A default-span B2/K3 adapter
+can therefore request seven encoded frames from a longer guide without changing
+its recorded training settings. The actual complete frame count remains a
+separate required adapter condition. Preserve explicit-span causal adapters:
+when a validated adapter records a non-null training span equal to the selected
+complete frame count, represent that same span in the request. Adopt no other
+adapter setting. Different B/K/D, history, forcing, start policy, schedule or
+supported frame count still fails the unchanged checker before weight loading.
+
+Worked check: a 17-frame guide and independently encoded one-frame image,
+`--span-latent-frames 7`, B2/K3/D8 and a matching default-span adapter produce a
+checked seven-frame request with training span `None`. A matching explicit-span
+seven-frame adapter produces a checked request with training span `7`. Asking
+for nine complete frames from either seven-frame calibration fails.
+
 Generation patchifies the guide and the supplied image separately. The supplied
 image becomes c0, at zero token noise but with the global sigma active. Both mode
 samplers preserve c0. Bidirectional sampling has no cache. Causal sampling draws
@@ -70,6 +92,9 @@ provenance. A sliced video master cannot replace this producer.
 Use small real models to verify both modes, exact c0 preservation and actual
 call counts. Prove bidirectional sampling calls no cache allocator. Reject
 mismatched metadata and adapter conditions before any transformer loader.
+The causal coverage preflight controls use real safetensors contracts and
+17-frame guide/one-frame image bundles. They cover default and explicit training
+spans and reject changed frame counts, geometry, schedule and teacher forcing.
 No result or metric may describe an absent capture target.
 The review orchestration check uses a controlled decoder and the real shared
 renderer/writer. It verifies the one-row role order, still-image flag, nine-frame

@@ -16,8 +16,10 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedType
 from peft import get_peft_model_state_dict
 from safetensors.torch import save_file
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP  # noqa: N817 -- conventional native name
 
 from scripts.onestep_avatar.dataset import atomic_write
+from scripts.onestep_avatar.model.common import SIGMA_PRECISION
 from scripts.onestep_avatar.training.config import LORA_TARGETS, RunSettings
 
 LOGGER = logging.getLogger("onestep_avatar.checkpoints")
@@ -133,6 +135,33 @@ def load_stage_init(transformer: torch.nn.Module, path: Path) -> None:
     LOGGER.info("initialized LoRA from parent adapter %s", path)
 
 
+def _fsdp_adapter_state(transformer: torch.nn.Module, accelerator: Accelerator) -> dict:
+    """Gather only separately wrapped trainable matrices, with no frozen-weight copy."""
+    if not isinstance(transformer, FSDP) or not transformer.check_is_root():
+        raise ValueError('adapter export requires the initialized outer FSDP root')
+
+    def canonical(name: str) -> str:
+        return '.'.join(part for part in name.split('.') if part != '_fsdp_wrapped_module')
+
+    expected = {canonical(name) for name, _parameter in transformer.named_parameters()
+                if '.lora_A.' in name or '.lora_B.' in name}
+    observed, state = set(), {}
+    for name, module in transformer.named_modules():
+        if not isinstance(module, FSDP) or not ('.lora_A.' in name or '.lora_B.' in name):
+            continue
+        with FSDP.summon_full_params(module, recurse=False, writeback=False):
+            for suffix, parameter in module.module.named_parameters(recurse=False):
+                key = canonical(name + '.' + suffix)
+                if key in observed or not parameter.requires_grad:
+                    raise ValueError('adapter export found duplicate or frozen matrix ownership')
+                observed.add(key)
+                if accelerator.is_main_process:
+                    state[key] = parameter.detach().cpu().clone()
+    if not expected or observed != expected:
+        raise ValueError('FSDP adapter export has incomplete separately wrapped matrix ownership')
+    return state
+
+
 def save_lora(
     transformer: torch.nn.Module,
     accelerator: Accelerator,
@@ -151,11 +180,11 @@ def save_lora(
     inference, including FSDP's gathered representation.
     """
     accelerator.wait_for_everyone()
-    state_dict = accelerator.get_state_dict(transformer)
+    is_fsdp = accelerator.distributed_type == DistributedType.FSDP
+    state_dict = _fsdp_adapter_state(transformer, accelerator) if is_fsdp else None
     if not accelerator.is_main_process:
         return None
     unwrapped = accelerator.unwrap_model(transformer, keep_torch_compile=False)
-    is_fsdp = accelerator.distributed_type == DistributedType.FSDP
     state_dict = get_peft_model_state_dict(unwrapped, state_dict=state_dict if is_fsdp else None)
     state_dict = {f"diffusion_model.{k.replace('base_model.model.', '', 1)}": v for k, v in state_dict.items()}
     state_dict = {k: v.to(torch.bfloat16).contiguous() for k, v in state_dict.items()}
@@ -228,6 +257,7 @@ def make_contract(settings: RunSettings, membership: dict, frame_plan: dict, ste
             "sigma_levels": levels,
             "schedules": [[level, 0.0] for level in levels],
             "sigma_sampling": SIGMA_SAMPLING,
+            "global_sigma_dtype": SIGMA_PRECISION,
             "noise_policy": settings.noise_policy,
             "seeds": {"init": settings.init_seed, "data": settings.data_seed, "noise": settings.noise_seed},
         },
@@ -326,6 +356,8 @@ def _validate_model_task_shape(record: dict) -> None:
 
 def _validate_training_data(record: dict) -> None:
     training = record["training"]
+    if "global_sigma_dtype" in training and training["global_sigma_dtype"] not in ("float32", "bfloat16"):
+        raise ValueError("adapter global_sigma_dtype is unsupported")
     levels = training.get("sigma_levels")
     if (
         not isinstance(levels, list)
@@ -520,7 +552,7 @@ def read_contract(path: Path) -> dict:
     return record
 
 
-def contract_condition_problems(record: dict, requested: dict) -> list[str]:  # noqa: PLR0912 -- report each differing condition
+def contract_condition_problems(record: dict, requested: dict) -> list[str]:  # noqa: PLR0912, PLR0915 -- report each condition
     """Compare complete execution conditions, excluding evaluation people and data hashes."""
     from scripts.onestep_avatar.model.sampling import validate_schedule  # noqa: PLC0415
 
@@ -537,6 +569,14 @@ def contract_condition_problems(record: dict, requested: dict) -> list[str]:  # 
         raise ValueError("requested encoded shape must contain positive integers")
     schedule = list(validate_schedule(requested["schedule"]))
     problems = []
+    precision = requested.get("global_sigma_dtype")
+    trained_precision = record["training"].get("global_sigma_dtype")
+    if precision not in ("float32", "bfloat16"):
+        raise ValueError("requested global_sigma_dtype is missing or unsupported")
+    if trained_precision not in ("float32", "bfloat16"):
+        raise ValueError("adapter global_sigma_dtype is unknown; historical calibration needs producer evidence")
+    if precision != trained_precision:
+        problems.append(f"global_sigma_dtype: adapter {trained_precision!r}, requested {precision!r}")
     method = requested.get("application_method")
     if method not in ("peft_unmerged_fp32", "fused_bf16"):
         raise ValueError("requested application_method is missing or unsupported")
@@ -774,6 +814,8 @@ def convert_legacy_adapter(  # noqa: PLR0912, PLR0915 -- explicit original evide
         "first_frame_conditioning": converted["task"]["first_frame_conditioning"],
         "noise_policy": converted["training"]["noise_policy"],
     }
+    if "global_sigma_dtype" in converted["training"]:
+        conditions["global_sigma_dtype"] = converted["training"]["global_sigma_dtype"]
     for key, value in conditions.items():
         if meta.get(f"onestep_avatar_{key}") != str(value):
             raise ValueError(f"legacy adapter {key} differs")

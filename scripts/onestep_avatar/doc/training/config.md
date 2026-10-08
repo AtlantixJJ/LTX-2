@@ -5,13 +5,14 @@ transitional parsing. Old saved configurations remain historical input records;
 they do not authorize restoring the deleted offline-teacher path.
 
 Status: **Typed settings, mode plans, and explicit-mode CLI integration implemented. Fixed preview settings are implemented; preview execution and removal of live-queue transitional parsing remain pending.**
-Extract `parse_args`, `training_sigmas`, `training_noise_seed`, and `sigma_for_rank`
-without changing their calculations. The engine imports these functions.
-Initial source still accepts the old subset settings until mode integration.
+`parse_args`, `training_sigmas`, `training_noise_seed`, and `sigma_for_rank`
+are extracted without changing their calculations. The engine imports them.
+The transitional mode-less route still accepts old subset settings.
 
 `parse_settings` produces `RunSettings` with a `BidirectionalSettings` or
 `CausalSettings` value. The old parser remains temporarily while existing live
-queues finish or transfer ownership. It is removed when the public CLI switches.
+queues finish or transfer ownership. Its removal remains a Stage D gate;
+explicit-mode commands already use the typed public CLI.
 `--frame-plan` can select a saved reproduction plan. The reader checks its hash,
 membership hash, mode, geometry, and sample lengths before model loading.
 For a random-start plan, `window_start_draw` owns the saved draw descriptor:
@@ -27,6 +28,25 @@ the same base, rank, alpha, and targets. Record the parent mode; do not call thi
 
 ## Objective
 
+`save_update_state` defaults to false. The explicit `--save-update-state` flag
+requests diagnostic named Adam moments from the shared engine after updates.
+It changes saved evidence only; it changes no noise, sample, optimizer or adapter
+contract. Record it with the resolved run settings. The artifact is not optimizer
+resume support. Older/default jobs do not request the extra collection.
+
+`--resource-budget PATH` optionally pins the existing frozen protocol bytes.
+It adds no experiment loader or new limits. The resource owner reads the exact
+allocated-memory and per-phase wall-time limits before execution and measures
+load, update and export phases. Current native replay requires this evidence;
+ordinary CPU controls and older runs without the option keep their original scope.
+
+`--consumer-trace` is an optional diagnostic flag, default false. It records
+actual model-consumer conditioning and adapter compute through observational
+hooks after wrapping. It changes evidence and measured overhead, not the
+training calculation. Completion binds each checkpoint's immutable per-rank
+trace. Incomplete or changed requested traces refuse completion. It does not
+establish native numerical agreement by itself.
+
 Resolve one explicit mode before loading model weights or changing output files.
 Keep command-line configuration. Do not introduce an experiment-YAML loader or implicit resume.
 
@@ -41,7 +61,7 @@ The engine receives those checked records.
 Require `--mode bidirectional` or `--mode causal` in `train.py`, `evaluate.py`, and `infer.py`.
 Training selects `plan_samples` and `train_sample` from that mode.
 Evaluation and product generation select its `sample` function and check adapter settings.
-See the [README workflows](../../README.md#proposed-workflow).
+See the [README workflows](../../README.md#explicit-training-and-generation-workflows).
 
 Common settings include paths, train/evaluation group, model version, base variant,
 D0/D1, background, noise levels, seeds, LoRA, optimizer, accumulation, and logging.
@@ -66,6 +86,13 @@ Check settings in this order:
 A dry run prints resolved settings.
 It does not archive files, create text caches, or load model weights.
 Save resolved settings in `config.json`.
+
+Queued training also saves `queue_launch`, the original dispatch binding from
+the queue owner. It includes exact normalized arguments/processes/port/command
+and original Accelerate bytes/hash. Applied runtime evidence is separate from
+CLI settings: the engine records actual world and each rank's precision policy
+after Accelerator/FSDP setup. Readers compare those facts with the launch;
+they cannot infer missing historical settings from today's file.
 
 Keep current random start and noise-seed rules.
 Each update/GPU process draws one sigma uniformly from its levels.
@@ -144,7 +171,8 @@ Worked side-effect check: an existing output directory and invalid D1 guide must
 A valid dry run prints the same mode/frame plan as execution but creates no model/cache/output files.
 Worked seed check: `noise_seed=2`, `chain_index=3` gives fixed base seed `200309`.
 Changing only sigma does not change that base seed.
-Explicit-mode train commands run through the typed engine. They require a version-two fixed video list. Preview CLI settings remain pending.
+Explicit-mode train commands run through the typed engine. They require a version-two fixed video list.
+Preview CLI settings and checked input records are implemented. Native preview output remains an acceptance gate.
 
 `preview_inputs` is an optional JSON path. `preview_record` is the checked,
 immutable input record retained by preflight. A dry run reads and validates it

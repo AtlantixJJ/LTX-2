@@ -102,6 +102,8 @@ def test_same_inputs_match_original_prediction_loss_and_gradient(guide_mode, sig
     assert counts == {"denoise_calls": 1, "prime_calls": 0, "refresh_calls": 0}
     assert len(modalities) == 1
     modality = modalities[0]
+    assert modality.sigma.dtype == torch.float32 and modality.timesteps.dtype == torch.float32
+    assert modality.sigma.item() == torch.tensor(sigma, dtype=torch.float32).item()
     assert modality.kv_caches is None and not modality.kv_write and modality.attention_mask is None
     assert torch.equal(modality.latent[:, :4], target[:, :4])
     assert torch.count_nonzero(modality.timesteps[:, :4]) == 0

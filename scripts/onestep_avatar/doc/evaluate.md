@@ -44,6 +44,11 @@ Reusable historical sigma-sweep boundary/transition measurements are now owned
 here. Their expr analyzer uses these helpers; decoding/launcher migration is
 still incomplete.
 
+Ordinary execution requests `global_sigma_dtype` from `model.common`'s float32
+contract. Adapter preflight rejects unknown historical precision before weights
+load; research may explicitly acknowledge a known differing calibration, while
+product refuses it. Saved conditions preserve the requested precision.
+
 ## Objective
 
 Ordinary evaluation snapshots `software.capture("evaluation", mode)` before
@@ -113,6 +118,64 @@ Report code may read that manifest; it does not
 open a model session or recover missing outputs. An empty specification fails
 before model loading.
 
+### Prepared RGB references in saved comparisons
+
+A comparison may set `reference_bundle` to a checked `references.json` produced
+by `media --prepare-training-references`. A panel then selects `reference_role`
+(`recorded`, `decoded`, or `guide`) instead of `latent`. These are saved pixels:
+recorded RGB in the capture crop, the VAE reconstruction of the recording, and
+the recorded RGB motion guide. They do not pass through the decoder again.
+This form is for D1. All three roles are required, in that order, before the generated output panels.
+Use short presentation titles without changing their recorded roles.
+
+Each generated panel in this form must name its saved `result` JSON and `latent`.
+Preflight checks the result's output path/hash/shape, source, frame rate, encoded
+coverage, capture-master hash, guide-render hash, membership identity, objective and D1 choice
+against the reference producer. It checks the old result's software integrity,
+not current completion: historical model output remains attributed to its own
+producer. The new references and rendering use current decoding software.
+For two or more generated outputs, `changed_factor` names the one supported
+comparison difference and invokes `validate_comparison` before a decoder opens.
+It also hashes each output's first encoded frame against its recorded `c0`.
+The optional historical `view` metrics are unavailable in this form; they assume
+all panels were decoded float RGB. Use a separate checked RGB metric owner when
+needed, rather than mixing saved uint8 recording pixels with float output pixels.
+
+References must cover exactly the requested RGB frame mapping `0..(span-1)*8`
+at the requested rate, with the same VAE identity, decode seed and settings as
+the new output decoding. Their pixel dimensions must equal the output encoding
+dimensions multiplied by the selected VAE spatial factors. Reject missing
+pixels, changed reference files, a different crop/source producer, malformed
+values or a second changed factor before opening a session or creating output.
+Bind the reference manifest, all pixel files and each result JSON in the input
+inventory. Recheck those bytes before publication and in queued completion.
+Full and compact media share the exact same saved reference pixels and newly
+decoded output pixels. Ordinary latent-only specifications retain their schema
+and behavior.
+
+Worked E3 check: prepare 17 encoded frames for one source, giving 129 RGB frames
+at 30 fps. Select recorded, decoded and guide references, followed by cached and
+recomputed output results. Set `changed_factor="history_mode"` and fix schedule,
+source, c0, noise and text. Both results must bind the same continuous capture
+master and guide render as the references. A seven-frame reference bundle covers
+only 49 RGB frames and must fail before decoding. This reference check does not
+establish perceptual quality or layerwise K/V agreement.
+
+```mermaid
+flowchart LR
+  refs[(Prepared RGB reference bundle)] --> read[Check saved reference pixels]
+  outputs[(Saved output encodings and result records)] --> match[Check source and changed factor]
+  read --> match
+  match --> decode[Decode output encodings only]
+  read --> render[Render synchronized panels]
+  decode --> render
+  render --> media[(Full and compact media)]
+  classDef code fill:#dbe7ff,stroke:#3b5ea8,color:#10203f
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937
+  class read,match,decode,render code
+  class refs,outputs,media disk
+```
+
 Compare the base model and named adapters with one fixed input set.
 Select bidirectional or causal mode explicitly.
 Save encoded outputs and actual run records before optional video rendering.
@@ -150,6 +213,54 @@ and `eval_queue.py` records are input evidence only and are not execution
 owners.
 
 ## Organization logic
+
+### Causal physical output coverage — proposed repair
+
+**Required; production source pending.** A native causal fixed preview failed
+before transformer loading. Its original E4 adapter records
+`mode_settings.span_latent_frames=null` and `shape.frame_counts=[6,7]`.
+The preview's `--span-latent-frames 7` changed the requested mode setting to 7.
+The strict checker correctly rejected that changed training-selection setting.
+E2 and product already distinguish the physical seven-frame input from the
+recorded null setting. Ordinary evaluation must expose that same distinction.
+
+Add causal-only `--output-latent-frames <N>` for the physical prefix to generate.
+Keep `--span-latent-frames` as the recorded training-selection setting. Never
+copy the new option into `CausalSettings`, alter an adapter, or add a research
+override. The ordered decisions are:
+
+1. Parse a positive integer. Refuse this option in bidirectional mode. If both
+   length options are explicit, require equal values before any data/model work.
+2. Select physical frames from the new option when present. Otherwise keep
+   current behavior: use the recorded span when given, or the complete master.
+3. Check that this prefix fits every selected capture and guide master. For an
+   explicit physical count, require complete causal blocks with that exact last
+   frame. Refuse a request such as 8 that would produce only 7. Omitted options
+   retain the current incomplete-tail trimming behavior.
+4. Build requested conditions with the unchanged `CausalSettings` and the actual
+   physical frame count. Call the existing strict `check_adapter` for every
+   adapter. Channels, image grid, sigma, noise, background, history, precision
+   and application method retain their existing gates.
+5. Derive saved-noise token shape from that physical prefix. Generation, fixed
+   preview preparation and saved completion all use `prepare_evaluation`; they
+   must derive the same inputs and count. Bind the new explicit option through
+   the existing command/job/fixed-input record, not a new provenance owner.
+
+Worked check: an 18-frame continuous master and the original E4 null-span
+adapter receive `--output-latent-frames 7`. The request has
+`shape.frames=7`, `mode_settings.span_latent_frames=null`, saved-noise shape
+`[1,7*H*W,C]`, and strict acceptance without overrides. With B2/K3/D8, the
+sampler reads `[0,3)`, `[3,5)`, `[5,7)` and produces 49 RGB frames. A separate
+pilot adapter trained with span 7 requires its own `--span-latent-frames 7`;
+adding equal output 7 is permitted. Null-span and span-seven requests cannot
+replace each other's recorded settings. Output 6, changed image dimensions,
+changed history, missing guide or wrong noise fails before model loading.
+
+Current failed preview evidence remains intact. Reprepare the fixed record with
+the new option and publish fresh successor outputs after implementation. Keep
+the original E4 job, launch, visits and adapter evidence unchanged. E2 and other
+evaluation-profile receipts must retain old attribution and be rechecked against
+their current producer; do not restamp them.
 
 ### Queued scientific completion
 
@@ -467,6 +578,11 @@ Evaluation can use people excluded from training.
 
 ## Invariants
 
+Saved result `c0_sha256` identifies patchified first-image tokens, as produced
+by `sample_case`. When checking an unpatchified saved encoding, reconstruct its
+first frame with the native patchifier before comparing that hash. A hash of
+`B,C,1,H,W` is a different coordinate representation and cannot verify this field.
+
 - Do not import `train.py` or private visualization functions.
 - Records describe executed inputs and levels, not directory-name assumptions.
 - Input hashes prove that comparisons reuse the same data.
@@ -484,6 +600,15 @@ Keep fused/unmerged LoRA application fixed when comparing old and new code.
 G8 remains an independent numerical issue.
 
 ## Tests
+
+`test_saved_comparison_references.py` checks the real saved-reference reader,
+input matching, renderer and queued completion with small RGB/encoding fixtures.
+Only the two generated encodings are decoded; all three reference pixel hashes
+stay exact. Coverage/source/master/guide/membership/c0/decoder or second-factor
+changes fail before a VAE session or output directory. A result change during
+decode prevents manifest publication. Completion refuses changed reference,
+pixel or result bytes without opening a decoder. These controls do not provide
+native perceptual or model-memory evidence.
 
 `test_causality_diagnostic.py` compares both generated outputs bit-for-bit with
 the original rollout, for 17-frame and longer masters, using a real small

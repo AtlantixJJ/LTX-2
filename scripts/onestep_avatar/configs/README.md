@@ -21,6 +21,37 @@ gathering (`FULL_STATE_DICT`), FSDP version 1, original parameters, and the
 `BasicAVTransformerBlock` wrap policy. Its default process count is four.
 Pass `--num_processes` to match the selected devices. Installed Accelerate's
 launch parser must resolve that override before any model process starts.
+Typed training's shared model builder disables mixed precision's root-input
+casting before FSDP wrapping. The YAML's bf16 parameter/reduction policy remains;
+the incoming modality's float32 sigma, timesteps and positions must survive it.
+Do not infer effective forward precision from the YAML or saved scalar alone.
+
+Queued training snapshots the canonical command and original Accelerate bytes at
+dispatch. Actual world size, distributed type and mixed precision must match
+before model loading. After wrapping, all ranks record matching FSDP policies
+and fp32 adapter storage in config and checkpoint markers.
+
+For bounded native update acceptance, add `--resource-budget <FROZEN_PROTOCOL_JSON>`
+to the original training job. The existing protocol declares
+`wall_seconds_per_phase` and `memory_limit_allocated_bytes`. Queue identity pins
+the exact budget bytes; the trainer records synchronized allocated/reserved peaks
+for load, each update and each export. Markers bind immutable per-checkpoint
+rank snapshots. Sampled total-device occupancy remains a separate observation.
+Current native execution still requires authoritative worker ownership and a
+package-owned bounded external startup/phase supervisor. The historical
+supervisor source snapshots do not satisfy that gate.
+
+After a valid one-update run, check its original job before serial replay:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.training_update_check \
+  --job <CHECKED_ORIGINAL_JOB_JSON> --output <FRESH_SERIAL_OUT> --world-size 4 --dry-run
+```
+
+This checks completed scientific evidence and current launch/runtime/resource
+identities; it does not start a model. Historical runs missing those facts fail
+current acceptance and retain their original scope. Reprepare source-bound jobs
+after repairs rather than restamping historical records.
 
 For example, from `LTX-2`, after checking free devices:
 
@@ -89,6 +120,14 @@ conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.prepare_in
 ```
 
 For causal, select `--mode causal` with the intended block/history settings.
+**Known native failure; proposed repair:** the original one-update E4 causal
+adapter records a null training span and frame counts `[6,7]`. Passing
+`--span-latent-frames 7` changes that recorded setting and its strict preview
+preflight fails. Preserve that failed attempt. The planned causal-only
+`--output-latent-frames 7` selects physical coverage while leaving the recorded
+span null. This flag is not runnable until the evaluation repair lands.
+For a pilot adapter actually trained with span 7, retain its
+`--span-latent-frames 7`. When both flags are supplied their values must match.
 References must cover the selected 49 RGB frames. `--include-base` requests the
 base comparison; without it the baseline cell is explicitly not requested.
 Both positive and, when needed, negative text are pinned. Supply the resulting
@@ -146,7 +185,7 @@ decoders for new outputs.
 Four checked specs are under
 `expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/configs/`.
 This command uses the original raw tensors and masters and requires a fresh
-destination. Check that the selected GPU is free and use shared reservations
+destination. Check that the selected GPU is free and use the shared own-process ledger
 before native execution. From `LTX-2`:
 
 ```bash
@@ -301,6 +340,17 @@ sigma. Inspect repeated-control, intermediate-call, raw and decoded evidence
 before accepting it. Ordinary product precision, adapters and the seven-frame
 pilot remain separate checks. See [the module design](../doc/stock_parity.md).
 
+To check ordinary global-sigma precision, add `--reference-run
+<CHECKED_STOCK_CHECK>` and choose a fresh output. This reuses verified stock
+controls and fixed noise and generates only the ordinary arm. The corrected
+shared default is float32 global sigma and token timesteps. Full fresh checks
+run stock, stock repeat, explicit float32 and ordinary default together. Changed
+computation owners, runtime or inputs refuse reuse; historical bf16 diagnostics
+retain their original software identity. New adapter/execution contracts bind
+precision, and unknown historical calibration refuses execution even with a
+research override. Fresh native acceptance remains tracked in
+[G12](../doc/known_gaps.md#g12--ordinary-global-sigma-loses-stock-precision).
+
 ## 3. Evaluation and previews
 
 Evaluation writes encoded results and numeric records. It currently does not
@@ -315,6 +365,12 @@ conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.evaluate \
 ```
 
 Use the causal mode and its explicit block/cache settings for a causal adapter.
+The proposed `--output-latent-frames` option separates a causal output prefix
+from its adapter's recorded `--span-latent-frames`. Omission preserves current
+selection. Explicit output must be positive, fit complete causal blocks and fit
+the master. Bidirectional mode rejects it. Strict adapter checks and saved-noise
+shape checks still run before model sessions; the option is not an override.
+See [the proposed design](../doc/evaluate.md#causal-physical-output-coverage--proposed-repair).
 A saved noise file belongs to one video and must match its full token range.
 Adapters are checked before loading weights. Research overrides are recorded;
 product inference does not permit them. Do not reinterpret historical G7/G8
@@ -460,6 +516,30 @@ research override. Real-weight product/review acceptance remains pending.
 
 ## 4. Remaining migration
 
+### Bounded first-update numerical reference
+
+For the native E4 check, use the ordinary explicit-mode four-process training
+recipe with `--steps 1 --save-initial --save-update-state --chains-per-rank 2`
+and no preview input. Keep gradient checkpointing enabled. The existing queue
+uses the fixed training pool 0–3; idle GPUs outside that pool do not change it.
+`--save-update-state` writes the actual training text and named fp32 Adam moments.
+It changes evidence only and is not a resume option.
+
+After the distributed job completes, save its exact `arguments` in a JSON job.
+Run the bounded serial reference in the `ltx` environment on one independently
+claimed free device, with `CUDA_VISIBLE_DEVICES` set to that physical device:
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.training_update_check \
+  --job <ORIGINAL_TRAIN_JOB_JSON> --world-size 4 --output <FRESH_SERIAL_DIRECTORY>
+```
+
+`--dry-run` verifies the completed distributed inputs/logs/exports/moments and
+prints fixed visits and tolerances without opening a model or writing output.
+Actual replay compares gradients, norms, loss, export and distributed step-one
+reload. A failed comparison exits 2 and retains measured failed evidence.
+Native previews/product and perceptual quality are separate acceptance gates.
+
 Review a normalized package queue without starting children:
 
 ```bash
@@ -489,18 +569,20 @@ It preserves eight specifications and seed 42, with fresh outputs beneath the
 study's `media/videos/package/`. Review it with `--dry-run`; this recipe does
 not start a campaign or replace historical media.
 
-Dispatch normalized jobs continuously with the shared reservations directory:
+Dispatch normalized jobs with direct GPU queries and one shared process ledger:
 
 ```bash
 conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.queue \
   --jobs <QUEUE_JSON> --state <STATE_JSON> --execute --loop \
-  --claims-dir <SHARED_CLAIMS> --poll-seconds 30
+  --process-ledger <SHARED_PROCESS_LEDGER.json> --poll-seconds 30
 ```
 
-Use `--once` instead of `--loop` for at most one dispatch. Every queue using
-the same GPUs must share `<SHARED_CLAIMS>`; during historical migration this
-is the study's existing `runs/.gpu_claims` directory. The loop waits without
-reservations, accepts appended jobs with unchanged prior identities, and exits
+Use `--once` instead of `--loop` for at most one dispatch. Every current queue
+shares the single `<SHARED_PROCESS_LEDGER.json>` file, currently
+`expr/onestep_avatar/processes.json`, and queries `nvidia-smi` directly. Historical
+`runs/.gpu_claims` files remain unchanged evidence and are not read by new attempts.
+The loop waits without an active own-process record, accepts appended jobs with
+unchanged prior identities, and exits
 only after verified completion. Failed or running journal entries stop the
 loop. Explicit recovery checks terminated child handles and saved outputs:
 
@@ -510,8 +592,8 @@ conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.queue \
 ```
 
 Recovery needs an existing journal. It refuses live children, unresolved launch
-windows and changed output content. It neither starts processes nor releases
-reservations nor retries failed work. Typed training has a separate automatic
+windows and changed output content. It neither starts processes nor closes
+active process records nor retries failed work. Typed training has a separate automatic
 startup contention path: at most three retries, with original failed outputs
 and logs preserved under `superseded_startup_contention/`. A token-bound
 CUDA OOM or typed port-in-use event must precede every rank's update boundary;
