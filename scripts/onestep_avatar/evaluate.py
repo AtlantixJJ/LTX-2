@@ -934,7 +934,7 @@ def prepare_evaluation(args: argparse.Namespace, *, require_fresh_output: bool =
             if not plan:
                 raise ValueError("selected range has no complete causal block")
             if output_frames is not None and plan[-1][1] != output_frames:
-                raise ValueError("explicit output range must contain complete causal blocks with that exact frame count")
+                raise ValueError("explicit output range requires complete causal blocks with that exact frame count")
             frames = plan[-1][1]
         if video.z_y.shape[0] != specification.caps.latent_channels:
             raise ValueError("encoded channels differ from the selected base model")
@@ -1100,7 +1100,7 @@ def evaluation_evidence_paths(arguments: list[str], record_paths: list[Path]) ->
     return sorted(paths)
 
 
-def render_preview_outputs(path: Path, *, gpu_id: int) -> dict:
+def render_preview_outputs(path: Path, *, gpu_id: int) -> dict:  # noqa: PLR0915 -- ordered decoder/media lifecycle
     """Render owned saved preview results without another transformer call."""
     from scripts.onestep_avatar import media  # noqa: PLC0415 -- saved-output rendering
     from scripts.prune.core.session import Session  # noqa: PLC0415 -- decoder-only session
