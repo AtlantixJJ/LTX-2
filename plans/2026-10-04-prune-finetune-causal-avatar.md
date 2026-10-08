@@ -94,11 +94,12 @@ render initialization too. Neither a successful low-sigma D0 adapter nor a
 smaller D0 model establishes the intended avatar product.
 
 Use the [pruning methods review](../scripts/prune/doc/METHODS.md), the prior
-[workspace method plan](../../plans/2026-10-01-prune-method-comparison.md), the
-[dev training plan](../../plans/2026-10-01-ltx25-dev-onestep-avatar-training.md)
-and [capped-sigma D0 plan](../../plans/2026-10-03-ltx25-dev-d0-capped-sigma-wholeclip.md)
+[archived workspace method plan](../../plans/history/2026-10-08-superseded/2026-10-01-prune-method-comparison.md)
+and [archived capped-sigma D0 plan](../../plans/history/2026-10-08-superseded/2026-10-03-ltx25-dev-d0-capped-sigma-wholeclip.md)
 as supporting context. October evidence supersedes older unrun-status statements
 in [D1 next actions](d1-next-actions.md); retain its useful cache/decoder controls.
+The cited `2026-10-01-ltx25-dev-onestep-avatar-training.md` is unavailable in
+the current workspace; use the saved dev-training report above for its evidence.
 
 ## 2. First deliverable: a current decision report
 
@@ -315,7 +316,7 @@ Before training the causal student, close relevant integration gaps:
 - `backbone.py` accepts explicit pruned weights, but current sparse active-head
   attention [rejects K/V caches](../packages/ltx-core/src/ltx_core/model/transformer/attention.py).
   Physical compact head widths also conflict with
-  [the shared-width cache allocator](../scripts/onestep_avatar/causal_core.py).
+  [the shared-width cache allocator](../scripts/onestep_avatar/model/causal.py).
   Prefer depth or FFN-only students for the first bridge. Supporting heads needs
   per-layer K/V shapes, head identities and native cache parity; it is new work.
 - Use one checkpoint-condition reader in trainer, probes and deployment: base

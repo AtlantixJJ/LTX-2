@@ -5,7 +5,9 @@ use the shared `fsdp.yaml` and an explicit process count. The old mode-less
 entry is temporary for live queues and is not a new-run recipe.
 
 Use the `ltx` environment from the LTX-2 root. Only guide rendering uses
-`argavatar`. Check available GPUs before execution. These recipes describe
+`argavatar`. Query `nvidia-smi` directly and register starts in the single
+shared own-process ledger. Independent checks may run concurrently on GPUs
+0–3; four-rank training still requires all four. These recipes describe
 commands; this refactor does not start campaigns or bulk preprocessing.
 
 Read [core rules](../doc/core_algorithm.md), [mode settings](../doc/training/config.md)
@@ -120,14 +122,19 @@ conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.prepare_in
 ```
 
 For causal, select `--mode causal` with the intended block/history settings.
-**Known native failure; proposed repair:** the original one-update E4 causal
+The original one-update E4 causal
 adapter records a null training span and frame counts `[6,7]`. Passing
 `--span-latent-frames 7` changes that recorded setting and its strict preview
-preflight fails. Preserve that failed attempt. The planned causal-only
+preflight rejected that changed setting. The causal-only
 `--output-latent-frames 7` selects physical coverage while leaving the recorded
-span null. This flag is not runnable until the evaluation repair lands.
+span null. Public preparation and fresh causal preview execution pass; complete
+workflow acceptance and full/narrow inspection are tracked in
+[current acceptance](../doc/known_gaps.md#current-acceptance-and-next-step).
 For a pilot adapter actually trained with span 7, retain its
 `--span-latent-frames 7`. When both flags are supplied their values must match.
+Preparation preserves the causal training span and pins physical coverage
+separately in its emitted arguments. Fresh preparation records carry the new
+producer identity; retain historical records with their original attribution.
 References must cover the selected 49 RGB frames. `--include-base` requests the
 base comparison; without it the baseline cell is explicitly not requested.
 Both positive and, when needed, negative text are pinned. Supply the resulting
@@ -164,7 +171,7 @@ conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.sigma_swee
 ```
 
 This prepares data only. Review `jobs.json` through the package queue's
-`--dry-run`; actual execution uses its documented shared claims and device
+`--dry-run`; actual execution uses its documented shared own-process ledger and device
 policy. Historical GPU numbers are evidence only. The preparation record binds
 the thirteen derived files, original inputs and producer sources. Each decoder
 waits for eight unchanged verified generation receipts. Its version-two spec
@@ -178,7 +185,7 @@ Native replacement parity remains an open acceptance gate.
 The package owns saved sweep decoding; reports read its saved PNG samples.
 The four historical decodes also have package queue data in
 `expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/configs/saved_decode_jobs.json`.
-These `sigma_sweep` jobs use shared claims, pin their specs and verify all saved
+These `sigma_sweep` jobs use shared own-process tracking, pin their specs and verify all saved
 media and metric controls before publishing receipts. They decode existing
 historical tensors. Generation preparation also creates result-bound dependent
 decoders for new outputs.
@@ -353,8 +360,10 @@ research override. Fresh native acceptance remains tracked in
 
 ## 3. Evaluation and previews
 
-Evaluation writes encoded results and numeric records. It currently does not
-prepare all reference RGB or complete comparison rendering automatically:
+Ordinary evaluation writes encoded results and numeric records. Prepare RGB
+references with `media` and fixed preview records with `prepare_inputs`.
+The preview-job route generates and renders using those pinned records;
+ordinary raw evaluation does not invent missing references:
 
 ```bash
 conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.evaluate \
@@ -365,12 +374,12 @@ conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.evaluate \
 ```
 
 Use the causal mode and its explicit block/cache settings for a causal adapter.
-The proposed `--output-latent-frames` option separates a causal output prefix
+The `--output-latent-frames` option separates a causal output prefix
 from its adapter's recorded `--span-latent-frames`. Omission preserves current
 selection. Explicit output must be positive, fit complete causal blocks and fit
 the master. Bidirectional mode rejects it. Strict adapter checks and saved-noise
 shape checks still run before model sessions; the option is not an override.
-See [the proposed design](../doc/evaluate.md#causal-physical-output-coverage--proposed-repair).
+See [the coverage design](../doc/evaluate.md#causal-physical-output-coverage).
 A saved noise file belongs to one video and must match its full token range.
 Adapters are checked before loading weights. Research overrides are recorded;
 product inference does not permit them. Do not reinterpret historical G7/G8
@@ -390,7 +399,7 @@ that method. To measure bf16 fusion as a changed research condition, pass
 `--adapter-application fused_bf16 --research-override` in evaluation; the
 preflight and saved results record the method difference. Neither ordinary
 evaluation nor product silently falls back to fusion on a memory failure.
-Native E2 effect/cost acceptance remains pending.
+Full E2 views/trained steps and measured-cost acceptance remain required.
 
 Prepare the three fixed reference roles with the package's decoder-only command:
 
@@ -408,8 +417,8 @@ checked. The command uses the saved crop and background and creates
 This is the reference bundle, not the complete fixed preview record. That record
 also pins capture, optional guide, first-image, text and noise identities and
 evaluation arguments; bind `reference_bundle.path` to the absolute manifest path
-and `reference_bundle.sha256` to its file hash. A checked automatic producer for
-the complete fixed record remains open.
+and `reference_bundle.sha256` to its file hash. `prepare_inputs preview`, shown
+above, produces this complete fixed record through the public checked path.
 
 Training can pin `--preview-inputs <FIXED_PREVIEW_RECORD>`. A completed adapter
 save may enqueue a preview job. Its raw generation stage runs outside training:
@@ -527,7 +536,7 @@ It changes evidence only and is not a resume option.
 
 After the distributed job completes, save its exact `arguments` in a JSON job.
 Run the bounded serial reference in the `ltx` environment on one independently
-claimed free device, with `CUDA_VISIBLE_DEVICES` set to that physical device:
+registered free device, with `CUDA_VISIBLE_DEVICES` set to that physical device:
 
 ```bash
 conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.training_update_check \

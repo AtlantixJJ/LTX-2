@@ -21,6 +21,11 @@ from scripts.onestep_avatar.queue_protocol import JOB_ENV, LAUNCH_PROTOCOL, TOKE
 if TYPE_CHECKING:
     import subprocess
 
+REGISTERED_RECOVERY_MODULES = frozenset({
+    'adapter_effect_check', 'bench', 'continuation_check', 'decode_saved', 'evaluate',
+    'infer', 'media', 'prepare_inputs', 'stock_parity',
+})
+
 
 def guard_command(path: Path) -> list[str]:
     """Use the current conda interpreter; no model command runs at process creation."""
@@ -396,6 +401,127 @@ def _ended_handles(identities: list[dict], deadline: float) -> list[dict]:
     return observations
 
 
+def _row_digest(row: dict) -> str:
+    return hashlib.sha256(json.dumps(row, sort_keys=True, allow_nan=False, separators=(',', ':')).encode()).hexdigest()
+
+
+def _recovery_identity(identity: dict) -> None:
+    if (not isinstance(identity, dict) or type(identity.get('pid')) is not int or identity['pid'] <= 0
+            or type(identity.get('start_ticks')) is not int or identity['start_ticks'] < 0
+            or identity.get('terminal') is not False or not isinstance(identity.get('command'), list)
+            or not identity['command'] or any(not isinstance(value, str) for value in identity['command'])):
+        raise ValueError('registered bookkeeping recovery requires exact original live identities')
+
+
+def recover_registered_attempt(  # noqa: PLR0912, PLR0913, PLR0915 -- explicit bounded operational closure
+    process_ledger: Path, token: str, *, expected_row_sha256: str, launch_evidence: Path,
+    expected_launch_sha256: str, timeout: float = 10,
+) -> dict:
+    """Close ended registered non-training handles; certify no unknown workers or result."""
+    from scripts.onestep_avatar import process_registry  # noqa: PLC0415 -- one existing ledger transaction
+    from scripts.onestep_avatar.queue import ALLOWED_GPUS  # noqa: PLC0415 -- existing dispatch device scope
+
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError('registered bookkeeping recovery timeout must be finite and positive')
+    for name, value, length in (('token', token, 32), ('row hash', expected_row_sha256, 64),
+                                ('launch hash', expected_launch_sha256, 64)):
+        if not isinstance(value, str) or re.fullmatch('[0-9a-f]{' + str(length) + '}', value) is None:
+            raise ValueError('registered bookkeeping recovery requires exact original ' + name)
+    deadline = time.monotonic() + timeout
+    if launch_evidence.is_symlink() or process_ledger.is_symlink():
+        raise ValueError('registered bookkeeping recovery paths must not be symlinks')
+    launch_evidence, process_ledger = launch_evidence.absolute(), process_ledger.absolute()
+    launch_bytes = _bounded_bytes(launch_evidence, deadline)
+    if hashlib.sha256(launch_bytes).hexdigest() != expected_launch_sha256:
+        raise ValueError('registered bookkeeping recovery original launch hash differs')
+    launch = json.loads(launch_bytes)
+    registry = object.__new__(process_registry.ProcessRegistry)
+    registry.path = process_ledger
+    with registry._lock(timeout=max(deadline - time.monotonic(), 1e-12)):
+        record = registry._read()
+        row = record['attempts'].get(token)
+        if (not isinstance(row, dict) or _row_digest(row) != expected_row_sha256
+                or row.get('state') != 'active' or row.get('containment') != 'linux_subreaper_v1'
+                or row.get('reported_rank_identities') != []):
+            raise ValueError('registered bookkeeping recovery original row is changed or unsupported')
+        _recovery_identity(row.get('owner'))
+        processes = row.get('processes')
+        if not isinstance(processes, dict) or not processes or len(processes) > 4096:
+            raise ValueError('registered bookkeeping recovery descendant inventory is invalid')
+        child = processes.get(str(row.get('child_pid')))
+        if not isinstance(child, dict) or 'child' not in child.get('roles', []):
+            raise ValueError('registered bookkeeping recovery has no exact recorded child')
+        identities = []
+        for key, process in processes.items():
+            if not isinstance(process, dict):
+                raise ValueError('registered bookkeeping recovery process entry is invalid')
+            identity, roles = process.get('identity'), process.get('roles')
+            _recovery_identity(identity)
+            if (key != str(identity['pid']) or not isinstance(roles, list) or not roles
+                    or any(role not in ('child', 'descendant', 'observed') for role in roles)
+                    or ('child' in roles and identity['pid'] != row['child_pid'])
+                    or identity['pid'] == row['owner']['pid']):
+                raise ValueError('registered bookkeeping recovery has ranks or ambiguous ownership')
+            identities.append(identity)
+        command = child['identity']['command']
+        if (len(command) < 3 or not Path(command[0]).is_absolute()
+                or re.fullmatch(r'python(?:3(?:\.\d+)?)?', Path(command[0]).name) is None
+                or command[1] != '-m'
+                or command[2] not in {'scripts.onestep_avatar.' + name for name in REGISTERED_RECOVERY_MODULES}
+                or any(flag in command[3:] for flag in ('--supervise', '--execute', '--loop', '--recover'))):
+            raise ValueError('registered bookkeeping recovery requires an allowed direct non-training command')
+        gpus = row.get('gpus')
+        if (not isinstance(gpus, list) or len(gpus) != 1 or type(gpus[0]) is not int
+                or not set(gpus).issubset(ALLOWED_GPUS)):
+            raise ValueError('registered bookkeeping recovery requires one allowed physical GPU')
+        environment = launch.get('environment_changes') if isinstance(launch, dict) else None
+        if (not isinstance(launch, dict) or launch.get('command') != command
+                or launch.get('physical_gpu') != gpus[0] or type(launch.get('physical_gpu')) is not int
+                or type(launch.get('visible_gpu')) is not int or launch['visible_gpu'] != 0
+                or not isinstance(environment, dict) or environment.get(TOKEN_ENV) != token
+                or not isinstance(environment.get(JOB_ENV), str)
+                or re.fullmatch('[0-9a-f]{64}', environment[JOB_ENV]) is None
+                or environment.get('CUDA_VISIBLE_DEVICES') != str(gpus[0])):
+            raise ValueError('registered bookkeeping recovery launch identity or device mapping differs')
+        complete = [observation for observation in row.get('observations', [])
+                    if isinstance(observation, dict) and observation.get('complete') is True
+                    and observation.get('error') is None]
+        if not any(all(any(isinstance(seen, dict) and all(seen.get(key) == identity.get(key)
+                       for key in ('pid', 'start_ticks', 'command'))
+                       for seen in observation.get('identities', [])) for identity in identities)
+                   for observation in complete):
+            raise ValueError('registered bookkeeping recovery lacks complete original registered containment')
+        handles = [row['owner'], *identities]
+        before = _ended_handles(handles, deadline)
+        memory = process_registry.gpu_memory(timeout=max(deadline - time.monotonic(), 1e-12))
+        if (gpus[0] not in memory or any(type(value) is not int or value < 0 for value in memory.values())
+                or memory[gpus[0]] >= 1024):
+            raise ValueError('registered bookkeeping recovery requires complete currently idle GPU inventory')
+        after = _ended_handles(handles, deadline)
+        if (launch_evidence.is_symlink() or process_ledger.is_symlink()
+                or launch_bytes != _bounded_bytes(launch_evidence, deadline)
+                or _row_digest(registry._read()['attempts'].get(token)) != expected_row_sha256):
+            raise ValueError('registered bookkeeping recovery original bytes or paths changed')
+        result = {'schema_version': 1, 'basis': 'registered_handle_bookkeeping_recovery',
+                  'token': token, 'job': row.get('job'), 'original_row_sha256': expected_row_sha256,
+                  'launch_evidence': str(launch_evidence), 'launch_evidence_sha256': expected_launch_sha256,
+                  'recovery_source_sha256': digest(Path(__file__)), 'observer': process_identity(os.getpid()),
+                  'handle_observations': [before, after],
+                  'sampled_gpu_memory_mib': {str(gpus[0]): memory[gpus[0]]},
+                  'registered_processes_absent': True, 'continuous_supervision': False,
+                  'containment_complete': False, 'unknown_descendants_unproven': True,
+                  'original_exitcode': None,
+                  'scope_limit': 'Only exact registered handles were observed ended. Unknown descendants '
+                                 'after owner loss, original exit and scientific success are unproven. '
+                                 'The legacy closed-row containment label adds no evidence.',
+                  'recovered_at': time.time()}
+        if time.monotonic() >= deadline:
+            raise TimeoutError('registered bookkeeping recovery observation deadline exceeded')
+        row.update(state='closed', recovery=result)
+        registry._write(record)
+        return result
+
+
 def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closure, original artifacts retained
     process_ledger: Path, request_path: Path, *, timeout: float = 10,
 ) -> dict:
@@ -530,13 +656,31 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--request', type=Path, required=True)
-    parser.add_argument('--recover-owned', action='store_true', help='close an ended approved own attempt')
+    parser.add_argument('--request', type=Path)
+    recovery = parser.add_mutually_exclusive_group()
+    recovery.add_argument('--recover-owned', action='store_true', help='close an ended approved own attempt')
+    recovery.add_argument('--recover-registered-owned', action='store_true', help='close ended direct non-training handles')
     parser.add_argument('--process-ledger', type=Path)
+    parser.add_argument('--token')
+    parser.add_argument('--expected-row-sha256')
+    parser.add_argument('--launch-evidence', type=Path)
+    parser.add_argument('--expected-launch-sha256')
     parser.add_argument('--timeout', type=float, default=60)
     parser.add_argument('--poll-seconds', type=float, default=0.1)
     args = parser.parse_args(argv)
-    if args.recover_owned:
+    registered_options = (args.token, args.expected_row_sha256, args.launch_evidence, args.expected_launch_sha256)
+    if args.recover_registered_owned:
+        if args.request is not None or args.process_ledger is None or any(value is None for value in registered_options):
+            parser.error('--recover-registered-owned requires ledger, token, original row hash and launch evidence/hash')
+        print(json.dumps(recover_registered_attempt(  # noqa: T201 -- explicit operational evidence
+            args.process_ledger, args.token, expected_row_sha256=args.expected_row_sha256,
+            launch_evidence=args.launch_evidence, expected_launch_sha256=args.expected_launch_sha256,
+            timeout=args.timeout), indent=2))
+    elif any(value is not None for value in registered_options):
+        parser.error('registered recovery options require --recover-registered-owned')
+    elif args.request is None:
+        parser.error('ordinary launch and approved recovery require --request')
+    elif args.recover_owned:
         if args.process_ledger is None:
             parser.error('--recover-owned requires --process-ledger')
         print(json.dumps(recover_owned_attempt(  # noqa: T201 -- explicit operational evidence

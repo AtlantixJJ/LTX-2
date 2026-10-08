@@ -20,7 +20,12 @@ For D1, a reference bundle with no guide is invalid even when a malformed
 guide bundle also omits its render fingerprint. Null values do not establish
 matching guide identity. Reject this before a decoder or transformer is opened.
 
-Status: **Partially implemented.** Explicit-mode CLI/session setup, strict input/adapter preflight, saved-noise sampling, native guidance, comparison validation, metrics, raw saves, queued scientific result verification and raw preview execution exist. Queued verification has real small-transformer CPU evidence for both modes and D0/D1 inputs. Full-weight verification, automatic reference preparation/rendering, full preview completion and historical study migration remain incomplete.
+Status: **Implemented ordinary evaluation and preview execution; full acceptance
+and source separation remain incomplete.** Explicit modes, strict preflight,
+saved-noise sampling, guidance, raw saves, queued verification and automatic
+rendering from pinned references exist. `media` prepares reference RGB and
+`prepare_inputs` assembles complete fixed records. Read
+[current acceptance](known_gaps.md#current-acceptance-and-next-step) for scope.
 Old visualizers remain temporary callers until their required behavior moves.
 
 Causal preflight includes explicit `history_mode` and `kv_source` in the
@@ -40,9 +45,10 @@ wrapper; all guidance passes keep that same function. Explicit
 the existing research override. Bind the selected method in preflight conditions
 and the output record. Base-only execution still uses the native Session path.
 Historical fusion diagnostics keep their explicit method and original tolerance.
-Reusable historical sigma-sweep boundary/transition measurements are now owned
-here. Their expr analyzer uses these helpers; decoding/launcher migration is
-still incomplete.
+Historical sigma-sweep measurements currently remain in this mixed owner.
+The package sweep owner uses them; its old expr analyzer/launchers are retired.
+Stage D moves fixed-study orchestration and score inventory to `experiments/`
+while general transition measurements keep one shared owner.
 
 Ordinary execution requests `global_sigma_dtype` from `model.common`'s float32
 contract. Adapter preflight rejects unknown historical precision before weights
@@ -214,17 +220,17 @@ owners.
 
 ## Organization logic
 
-### Causal physical output coverage — proposed repair
+### Causal physical output coverage
 
-**Required; production source pending.** A native causal fixed preview failed
-before transformer loading. Its original E4 adapter records
+**Implemented and CPU checked; fresh native preview execution passes.** A native
+causal fixed preview failed before transformer loading. Its original E4 adapter records
 `mode_settings.span_latent_frames=null` and `shape.frame_counts=[6,7]`.
 The preview's `--span-latent-frames 7` changed the requested mode setting to 7.
 The strict checker correctly rejected that changed training-selection setting.
 E2 and product already distinguish the physical seven-frame input from the
 recorded null setting. Ordinary evaluation must expose that same distinction.
 
-Add causal-only `--output-latent-frames <N>` for the physical prefix to generate.
+Use causal-only `--output-latent-frames <N>` for the physical prefix to generate.
 Keep `--span-latent-frames` as the recorded training-selection setting. Never
 copy the new option into `CausalSettings`, alter an adapter, or add a research
 override. The ordered decisions are:
@@ -256,11 +262,22 @@ adding equal output 7 is permitted. Null-span and span-seven requests cannot
 replace each other's recorded settings. Output 6, changed image dimensions,
 changed history, missing guide or wrong noise fails before model loading.
 
-Current failed preview evidence remains intact. Reprepare the fixed record with
-the new option and publish fresh successor outputs after implementation. Keep
+The public `prepare_inputs.preview_arguments` producer preserves the parsed
+causal training span and emits the actual physical count using the new option.
+It removes both length spellings, including equals forms, before appending each
+canonical option once. Bidirectional preparation keeps its explicit selected
+span. This covers the existing `prepare_inputs -> enqueue_preview -> evaluate`
+path; changing only the evaluator would still publish a span-seven request for
+the original null-span adapter.
+
+Current failed preview evidence remains intact. Fresh prepared records and
+causal preview output use the new option; media inspection remains a separate
+gate. Keep
 the original E4 job, launch, visits and adapter evidence unchanged. E2 and other
 evaluation-profile receipts must retain old attribution and be rechecked against
-their current producer; do not restamp them.
+their current producer; do not restamp them. Focused tests use actual checked D1
+masters and real adapter contracts/matrices. A small-transformer roundtrip also
+checks physical output count, null mode setting, c0, calls and saved completion.
 
 ### Queued scientific completion
 
@@ -548,7 +565,8 @@ plus a 0.01 jump at each boundary. With a full mask, each boundary ratio is
 11, each capture ratio is 1, interior change is 0.001, motion-over-capture is
 0.8125, and final drift is 0.198. Constant videos have undefined motion ratios.
 The expr analyzer may assemble report-specific figures and read saved scores;
-its decoder/session ownership still requires migration before retirement.
+its retired decoder/session source remains non-executable provenance. Stage D
+must still move this study-specific measurement inventory out of the ordinary owner.
 For pixel MSE on `[0,1]` RGB, PSNR is `-10*log10(MSE)`.
 An exact match has infinite PSNR; save an explicit exact-match status rather than invalid JSON infinity.
 An optional foreground score requires the recorded capture mask and a declared threshold/pooling rule.
@@ -655,9 +673,9 @@ Positive `--stg` requires explicit unique nonnegative `--stg-blocks`.
 Preflight checks indices against the selected base layer count. `--rescale`
 accepts a native rescale fraction in `[0,1]`. Use the existing shared guidance
 helper and native guider calculation; record STG scale/blocks and rescale with
-CFG. Fixed previews currently reject any changed guidance settings until that
-condition is part of their pinned input contract. Real-weight acceptance is
-still required for these diagnostic paths.
+CFG. Fixed previews pin guidance settings and, when CFG uses it, negative text.
+Execution accepts those unchanged pinned conditions and rejects a different
+request before model sessions. Real-weight acceptance remains separate.
 
 `--cfg` selects the native classifier-free guidance scale (default 1).
 Non-unit scales use a separately encoded `--negative-prompt`, or the native
@@ -665,8 +683,8 @@ default negative prompt. Call the existing common guided X0 helper and native
 guider calculation; do not add a second formula. Save scale and negative text
 tensor identity. The underlying forward hook counts both conditional and
 unconditional passes. Reject nonfinite/negative scales at argument parsing.
-The current fixed-preview schema has no pinned negative text role, so preview
-execution rejects changed guidance before model sessions. Controlled comparisons keep guidance facts fixed unless
+Fixed-preview records pin negative text whenever CFG uses it; execution loads
+and checks that saved tensor without rebuilding it. Controlled comparisons keep guidance facts fixed unless
 `guidance` is explicitly the sole changed factor.
 
 The CLI requires mode, a version-two fixed video list, output, and an exact

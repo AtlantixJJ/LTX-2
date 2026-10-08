@@ -1,6 +1,6 @@
 # `queue_launch.py` — register the child before model execution
 
-Status: **Persistent dispatch uses the launch gate. Real CPU-process dispatch and guarded recovery checks pass; native acceptance remains pending.**
+Status: **Persistent dispatch uses the launch gate. Real CPU-process dispatch and guarded recovery checks pass; full native integration remains separate; read [current acceptance](known_gaps.md#current-acceptance-and-next-step).**
 Transient internal calls without a journal are outside the persisted protocol.
 
 ## Objective
@@ -79,7 +79,8 @@ pair settings from one file version with the hash of another.
 environment. The PID and start ticks remain the same; the command changes once
 from the guard command to the approved command. `verify_command_transition` explicitly
 checks that transition against request, bootstrap, grant and running journal. The guard starts
-no second process and does not kill workers. `publish_grant` does not release claims.
+no second process and does not kill workers. `publish_grant` does not close
+the own-process record.
 
 Worked check: a CPU child would write `executed.txt`. Before durable PID
 registration and grant publication, the file must not exist. After a matching
@@ -127,6 +128,43 @@ launcher/rank handles and the owner are absent on both passes, and GPU memory is
 `[276,4,4,4]` MiB. Close only that row with the scope above. A missing rank end,
 uncontained rank, live worker, reused PID or busy device leaves it active.
 
+### Registered-process bookkeeping recovery
+
+`recover_registered_attempt` is a separate explicit route for a direct
+single-process non-training command whose owner ended without an approved queue
+request or final observer result. It requires the shared ledger, token, exact
+expected original-row hash, original launch-evidence path and its expected hash.
+The original launch evidence must bind the child command, token, physical GPU
+and local-to-physical device mapping. Its command must be a direct Python `-m`
+call to an explicitly allowed package non-training owner. Refuse training,
+Accelerate, queue dispatch, supervisory child launch, rank roles and uncontained
+reported identities. No scientific result is interpreted as process exit proof.
+
+Under the same stable ledger lock, require an active original subreaper row with
+one launch child and valid exact identities. Require a complete previous owner
+observation covering every saved child/descendant handle. Check the original
+owner and all registered handles twice around one bounded direct GPU inventory.
+Only missing or exact terminal handles qualify; live, reused, denied or ambiguous
+handles refuse. Every recorded GPU must be currently below 1024 MiB. Recheck
+original launch bytes and the expected row hash before publication. Deadline,
+invalid byte sizes, changed paths or altered bindings leave the row unchanged.
+
+Successful recovery closes only the selected operational row and adds a record
+with original row/launch hashes, observer, recovery-source hash and both handle
+passes plus GPU sample. Preserve its original identities, observations and launch
+bytes. Set `registered_processes_absent=true`, `continuous_supervision=false`,
+`containment_complete=false`, `unknown_descendants_unproven=true` and
+`original_exitcode=null`. This is stale own-process bookkeeping cleanup. It does
+not prove unknown descendants absent, original continuous supervision or a
+scientific acceptance result. The legacy closed-row reader's containment label
+adds no evidence. Source/profile owners and scientific artifacts stay unchanged.
+
+Worked case: an original `adapter_effect_check` owner and its one registered
+child are absent, the saved complete observation covers that child, exact original
+row/launch hashes match, and its physical GPU uses 272 MiB. Close that row only
+with the limited scope above. Missing launch evidence, an extra uncontained rank,
+a live handle or GPU use of 1024 MiB refuses without changing the ledger.
+
 ## Invariants
 
 No model imports or scientific parameter changes occur here. Ordinary launch
@@ -160,16 +198,21 @@ Bounded ended-attempt controls check complete rank inventory, exact handle
 absence/terminal state, live/reused/denied refusal, bound approval/journal bytes,
 busy/incomplete devices and unchanged original-row evidence. The returned scope
 explicitly excludes continuous supervision and complete post-owner containment.
+Registered-process recovery controls cover the direct E2 case, missing/changed
+row or launch hash, unsupported module/training/dispatch, rank roles, uncontained
+identities, live/reused/denied handles, mutation between passes, nonregular input,
+device mapping, busy or missing inventory, original-row/launch preservation and
+the explicitly limited closure result.
 
 ### Dispatcher integration design
 
 Implemented dispatcher order: publish a fresh request under the queue state's
 `launches/<token>/` directory; save a running attempt with protocol, request
 path/hash and intended command; spawn the model-free guard in a new session;
-refresh owned claims with its PID; wait for a valid bootstrap. Require the
+refresh the owned process-ledger record with its PID; wait for a valid bootstrap. Require the
 bootstrap's PID to equal the child returned by Popen and its actual command to
 equal the guard command. Require a stable live handle, exact request hash,
-token and job hash. Bound the wait and refresh reservations while waiting.
+token and job hash. Bound the wait and refresh the owned process-ledger record while waiting.
 A timeout, nonzero guard exit or mismatch publishes no approval.
 
 Save the bootstrap identity in the running row and latest attempt using the
@@ -183,14 +226,14 @@ exception. A grant never authorizes a different command or a different handle.
 Persistent queued dispatch must use this protocol for all prepared job kinds.
 The transient internal run_child interface without a journal cannot produce a
 bound approval and remains explicitly outside persisted launch recovery.
-Registration failure keeps a still-live guard and its owned claims until it
+Registration failure keeps a still-live guard and its owned process record until it
 exits; never kill or adopt an unrelated process to make a timeout succeed.
 Guarded unapproved recovery is implemented below. Old unguarded recovery stays conservative.
 
 
 Before returning from exclusive publication, fsync the file and its containing
 directory. The queue likewise syncs its JSON bytes and atomic replacement before
-`publish_grant`. `wait_registration` refreshes reservations and checks the actual
+`publish_grant`. `wait_registration` calls the owner's refresh callback and checks the actual
 Popen child against the bootstrap; malformed or changed registration refuses.
 `guard_command` selects only this model-free CLI using the current interpreter.
 
@@ -206,8 +249,10 @@ approval evidence and cannot authorize takeover.
 
 If a bootstrap exists, require its exact token/job/request identity and guard
 command. Inspect its PID/start ticks. A live guard or changed handle refuses;
-a terminal matching guard may have an empty Linux zombie command line. Scan
-session/token workers before recovery. Observation errors remain errors.
+a terminal matching guard may have an empty Linux zombie command line. Require
+complete owned-worker absence through the current targeted ledger observation;
+historical rows retain their original conservative reader. Observation errors
+remain errors.
 Without a bootstrap, absence of a token alone does not prove no child exists:
 a child can still be between fork and exec. The missing grant plus terminated
 original owner proves that such a guard can never start model work. Report this
@@ -218,7 +263,7 @@ Explicit recovery records an unapproved attempt as failed, with attributed
 recovery evidence in its row and latest attempt. Do not run completion checks
 or accept old output as a completion of work that was never authorized. Preserve
 partial files, logs, request and attempts. Recovery neither launches a retry nor
-removes claims. Normal reservation ownership still blocks surviving workers.
+closes active process records. Owned-worker observations still block duplicate launches.
 Old unguarded missing-PID rows retain the original refusal rule.
 
 The same proof also covers an interrupted registration whose exception handler

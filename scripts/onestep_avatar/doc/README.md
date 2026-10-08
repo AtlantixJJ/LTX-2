@@ -4,8 +4,7 @@
 `nvidia-smi` directly and use one shared JSON file to record only processes this
 pipeline starts (PID, start ticks, command, GPU IDs and owned descendants).
 New launches do not consult reservation files or unrelated process environments.
-No privileged access is required. Older stale-claim recovery requirements below
-are historical and are superseded for new attempts. Preserve original claim,
+No privileged access is required. Preserve original claim,
 launch, result and acceptance files unchanged. Scientific inputs, budgets,
 tolerances and native E1–E5 gates remain unchanged.
 
@@ -39,13 +38,14 @@ The [cleanup list](../README.md#remove-old-code-and-docs) names old files and re
 The [repository boundary](../README.md#code-ownership) keeps training and model execution in LTX-2.
 `expr/` code is only for report generation from saved results.
 
-Explicit-mode training/evaluation/product, shared fp32 adapters, preview rendering,
-and software manifests are implemented and CPU checked. Supplied-image encoding,
-fixed preview inputs and bidirectional base video-component precision have scoped
-native evidence. Full native E1–E4, complete checked input production and legacy
-cleanup remain open. The [implementation ledger](../../../../plans/assets/2026-10-07-onestep-avatar-implementation-ledger.md)
-owns current acceptance evidence; source presence alone does not establish it.
-Individual docs distinguish implemented behavior from remaining acceptance.
+Explicit-mode training/evaluation/product, shared fp32 adapters, input preparation,
+preview rendering and software manifests are implemented. Read
+[current acceptance and next step](known_gaps.md#current-acceptance-and-next-step)
+for verified scope and remaining gates. The
+[active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#current-progress-and-revised-work-order--2026-10-08)
+owns exact current evidence; source presence alone does not establish acceptance.
+Individual docs explain module behavior and link to that status instead of
+repeating a changing run timeline.
 `subset.py` converts old records into new files without repairing input bytes.
 The workspace plan records migration progress; these docs explain the module logic.
 
@@ -172,7 +172,8 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
   Refuse late workspace configuration after CUDA initialization. Preserve and
   compare cuDNN's separate observed TF32 setting. Historical missing policy facts
   cannot acquire current defaults. The implemented small-file design lives in
-  its header. Focused CPU controls pass; fresh four-rank acceptance is pending.
+  its header. Both modes pass the original four-rank numerical comparison;
+  complete workflow acceptance remains separate. See the current gap summary.
 
 - **`training/update_state.py`:** reusable optional named Adam-state export.
   Gather unsharded optimizer moments through native FSDP, or map ordinary
@@ -180,11 +181,12 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
   moments with exact optimizer/step metadata. No frozen-weight gathering, training
   loop, experiment imports or resume protocol. Small-file design lives in its header.
 
-- **`training_update_check.py` (implemented root owner; native gates open):** bounded
+- **`training_update_check.py` (implemented root owner):** bounded
   serial replay of one saved distributed update using public shared preparation,
   model-loading, token construction and mode functions. Reuse original rank/slot
   noise seeds. Compare named clipped gradients, gradient norm, loss and actual
-  exported adapters under predeclared tolerances. [Design](training_update_check.md).
+  exported adapters under predeclared tolerances. Both modes' numerical gates
+  pass; preview/product scope remains separate. [Design](training_update_check.md).
   Proposed Stage D destination: `experiments/training_update_check.py`.
 
 - **`sigma_sweep_jobs.py` (generation/dependent decoder preparation implemented;
@@ -225,10 +227,10 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
 - **`queue_protocol.py` (implemented):** small constant owner for queue token/job
   environment names and the startup-event prefix. Import no model libraries.
   `training/startup.py` retains its public imported names for existing consumers.
-- **`training_slice_check.py` (bounded diagnostic; native acceptance pending):**
+- **`training_slice_check.py` (bounded numerical localization controls pass):**
   [One-rank update localization](training_slice_check.md) calls shared training
   owners with exact original visits. Ordinary runtime does not import it.
-- **`adapter_effect_check.py` (bounded E2 comparison; native acceptance pending):**
+- **`adapter_effect_check.py` (bounded E2 comparison; full E2 incomplete):**
   [Saved adapter correction](adapter_effect_check.md) compares the shared training
   reference, ordinary evaluation and product APIs with independent supplied c0,
   fixed guide/text/noise and original native numerical policy. It checks the fixed
@@ -259,7 +261,8 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
   then replaces itself with the exact recorded command. Import no models.
   Persistent dispatch saves registration before approval and checks command transitions.
   Guarded recovery proves absent approval before marking interrupted work failed.
-  Old unguarded recovery remains conservative; native acceptance is pending.
+  Explicit ended-attempt recovery has limited bookkeeping scope and cannot
+  manufacture continuous supervision. Exact current receipts are in the active handoff.
 
 - **`train.py`:** parse/check settings through `training.config`.
   Print dry runs or call `training.engine`.
@@ -305,7 +308,7 @@ explain their logic; larger sources use the mirrored docs above.
 | `train.py` | source header | thin CLI implemented; [engine](training/engine.md) and [config](training/config.md) extracted; remaining owners pending |
 | `model/causal.py` | [model/causal.md](model/causal.md) | typed training/evaluation/product integrated; native quality/cost acceptance pending |
 | `windows.py` | [windows.md](windows.md) | replace with video list and mode plans, then delete |
-| `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | version-two records, tensor preflight and checked fixed/random legacy conversion implemented; ambiguous evidence and bulk conversion pending |
+| `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | version-two records, tensor preflight and checked fixed/random legacy conversion implemented; unsupported evidence is refused, historical callers await gated retirement |
 | removed `onestep_core.py` | [infer.md](infer.md) | explicit-mode product CLI/API and shared model/media owners |
 | `visualize_d0.py` | [visualize_d0.md](visualize_d0.md) | replace with evaluate/media, then delete |
 | `visualize_d1.py` | [visualize_d1.md](visualize_d1.md) | replace with evaluate/media, then delete |
@@ -374,34 +377,15 @@ Evaluation writes model-result records; media writes rendering records.
 `expr/` report code reads those saved records and media; it does not generate missing results.
 Readers check missing producer output instead of reconstructing it.
 
-## Review gate and evidence
+## Verification and evidence
 
 [verification.md](verification.md) lists V1–V8 and their expected results.
+The [current gap summary](known_gaps.md#current-acceptance-and-next-step) separates
+CPU behavior, scoped native acceptance and remaining full requirements. Exact
+receipts and preserved failed attempts belong to the active handoff.
+Diagram checks and documentation links do not prove numerical or video quality.
 
-- The original review rendered and inspected twelve algorithm/visualization diagrams and four README diagrams.
-  The 2026-10-06 core-logic revision rendered and inspected the revised common-input and training-plot diagrams.
-  Temporary checkpoint/history/inference layout sketches passed title bounds and scaled-font checks.
-  The sketches contain no actual source or generated video; they check the proposed presentation.
-- Local Markdown links and heading anchors resolved.
-  At the original review, eleven large-module designs had the six sections.
-  Module headers now record their individual implementation status.
-- Exact arithmetic checked V1–V3. Integer frame/cache traces checked V4–V6.
-  The Euler example also matched.
-  Added seed, schedule, crop, mask, array-shape, plot, RMS, and frame-rate examples were checked separately.
-- V7–V8 define checker/conversion controls now covered by scoped CPU tests.
-  Their current implementation is recorded in [verification](verification.md);
-  full native adapter/update and ownership acceptance remain separate.
-- Cited current symbols were checked against source.
-  Removed small-module docs correspond to files with existing logic docstrings and at most 100 lines.
-- The initial 42 inventoried source/test/launcher/config hashes matched during documentation checks.
-  Subsequent separate edits changed source/tests and added `model/common.py`.
-  This task edited no source, tests, launchers, or runtime configuration. Existing edits are preserved.
-
-After implementation, audit `expr/` imports and subprocess calls for model execution.
-Rebuild reports from saved results with training, generation, and decoder loaders disabled.
-Missing results must fail without starting a job.
-
-These checks validate documented examples and presentation sketches.
-They do not establish renderer/model/distributed implementation correctness.
-Implementation validation is recorded separately in the plan's progress section.
-The user authorized implementation. Remaining checks must establish the full design.
+Final migration must audit `expr/` imports and subprocess calls for model
+execution, remove obsolete runnable paths, and prevent import/rebuild from
+restoring them. Rebuild reports from saved results with training, generation and
+decoder loaders disabled. Missing results must fail without starting a job.

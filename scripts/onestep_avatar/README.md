@@ -4,8 +4,7 @@
 `nvidia-smi` directly and use one shared JSON file to record only processes this
 pipeline starts (PID, start ticks, command, GPU IDs and owned descendants).
 New launches do not consult reservation files or unrelated process environments.
-No privileged access is required. Older stale-claim recovery requirements below
-are historical and are superseded for new attempts. Preserve original claim,
+No privileged access is required. Preserve original claim,
 launch, result and acceptance files unchanged. Scientific inputs, budgets,
 tolerances and native E1–E5 gates remain unchanged.
 
@@ -18,13 +17,11 @@ See [doc/README.md](doc/README.md) for implemented owners and pending integratio
 Read [the architecture contract](doc/architecture.md) for common versus experiment
 code, allowed dependencies and the source-separation gates. The proposed
 `experiments/` subpackage is a documented target; its migration is not complete.
-Shared model helpers, schedules, mode functions, training owners, and the fixed-list
-converter exist. Explicit-mode training/evaluation/product CLIs, strict adapter
-checks and shared media are implemented. Preview rendering and decoded product
-review are implemented and CPU checked. Checked fixed-preview and supplied-image
-input assembly are implemented; ownership migration and native/FSDP acceptance remain pending.
-The actual supplied-image VAE producer is implemented; native acceptance is
-recorded separately from complete product generation.
+Shared mode functions, typed training, strict adapter checks, fixed-input
+preparation, preview rendering and product review are implemented.
+[Known gaps](doc/known_gaps.md#current-acceptance-and-next-step) gives current
+acceptance scope and the next unmet gate. Numerical distributed-update acceptance
+is separate from complete workflows, learned quality and final source migration.
 
 ## Terms used here
 
@@ -100,8 +97,9 @@ Then select `--mode bidirectional` or `--mode causal` in `train.py`.
 Use the same mode in `evaluate.py` or `infer.py`.
 
 These owners and mode flags are implemented. CPU checks establish routing and
-contracts; required full-weight numerical, distributed and quality checks remain
-open. See [known gaps](doc/known_gaps.md) for the limits of saved acceptance.
+contracts; scoped native numerical checks are recorded separately. Complete
+workflows, learned quality, longer-cache checks and final migration remain open.
+See [known gaps](doc/known_gaps.md) for the limits of saved acceptance.
 
 Start a separate run when you change modes.
 Reuse the masters and fixed video list.
@@ -186,7 +184,7 @@ python -m scripts.onestep_avatar.train --mode bidirectional \
 
 python -m scripts.onestep_avatar.train --mode causal \
   --subset <video-list.json> --guide-mode d1 --objective white --variant dev \
-  --block-latent-frames 2 --blocks-per-sample 3 --context-latent-frames 8 \
+  --span-latent-frames 7 --block-latent-frames 2 --blocks-per-sample 3 --context-latent-frames 8 \
   --start-policy clip_start --output <causal-run>
 ```
 
@@ -248,8 +246,8 @@ historical validation preserves recorded evidence without restamping it.
 **New commands require an explicit `--mode` switch.**
 Bidirectional training uses its own segment function with no cache or discarded
 priming call. Causal training uses immediate per-block backward and its existing
-cache calculations. The mode-less training path remains temporarily for live
-queues; old visualizers await full historical-runner migration.
+cache calculations. The mode-less training path and old visualizers remain
+transitional callers until their native replacement gates and caller migration pass.
 See [current commands](configs/README.md) and the
 [configuration](doc/training/config.md), [bidirectional](doc/model/bidirectional.md),
 and [causal](doc/model/causal.md) designs.
@@ -271,8 +269,8 @@ and [preview rendering](doc/media.md#training-previews).
 For inference, save the generated encoding and run record before rendering.
 `media.py` creates the generated video and poster.
 The implemented `infer.py --decode --review` view compares guide and generated
-video and shows the supplied image separately. Native input and quality acceptance
-remain pending.
+video and shows the supplied image separately. Complete product/media and learned
+quality acceptance remain pending; input preparation has its own scoped evidence.
 No capture target is available in product inference.
 See [inference output design](doc/media.md#inference-output).
 
@@ -315,10 +313,12 @@ Keep still-needed explanations and original evidence before removing their old l
 ### Code ownership
 
 The [architecture contract](doc/architecture.md) separates core runtime, reusable
-support, experiment comparison/conversion code and report code. Experiments call
-public shared owners; core training and ordinary evaluation/product do not depend
-on experiments. Finish bounded native E1–E4 before the planned source moves and
-duplicate-runtime removal, then run the existing seven-frame E5 pilot.
+support, experiment comparison/conversion code and report code. Experiments must
+call public shared owners; ordinary runtime must not depend on experiments.
+The seven-frame E5 pilot follows numerical updates and short-workflow correctness
+at current paths. Complete broad characterization and relevant replacement gates
+before Stage D source moves and duplicate-runtime removal. Recheck affected
+workflows on the final source; do not restamp earlier pilot outputs.
 
 All avatar training code stays in this LTX-2 package.
 That includes training launchers, required queues, evaluation, model probes, and adapter saves.

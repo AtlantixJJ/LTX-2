@@ -55,8 +55,22 @@ Load and verify the supplied reference bundle before text work. Bind its source,
 objective, capture/guide content, FPS, VAE and exact selected RGB frame coverage.
 Freeze membership, optional frame plan, source bundle bytes and reference
 manifest. Canonicalize path arguments to absolute paths and write the effective
-selected encoded-frame count explicitly. Generate native-bf16 noise on the
-selected GPU with the ordinary sampler's seed, or reuse a checked supplied noise
+selected encoded-frame count explicitly. For causal previews, preserve the
+parsed training span exactly: omit `--span-latent-frames` when it is null and
+retain its explicit value otherwise. Pin physical coverage using
+`--output-latent-frames`, taking the explicit requested count or the actual
+complete-block count from evaluation preflight. Bidirectional previews retain
+their existing explicit selected span. Remove all original path, noise and both
+length spellings, including `--flag=value`, before appending the canonical
+arguments once. The original E4 null-span contract therefore stays null when
+physical seven-frame noise is prepared; an explicit span-seven pilot keeps its
+own training settings. Reparse canonical arguments before text/GPU work: an
+explicit span 8 that ordinary evaluation trims to 7 cannot be prepared as
+span 8/output 7, because explicit paired lengths must agree. Ordinary evaluation
+without the new option keeps its historical trimming behavior. Do not rewrite
+historical prepared records: this changes the preparation software identity and
+requires fresh records and acceptance. Generate native-bf16 noise on the selected
+GPU with the ordinary sampler's seed, or reuse a checked supplied noise
 tensor; save the actual token tensor. Patchify through the same native grid as
 evaluation, and pin capture, guide when used, clean first capture frame, positive
 text and noise tensor hashes. The preview first frame is the training capture
@@ -156,11 +170,20 @@ and negative text, exact selected noise/image hashes, and trainer/job reader
 acceptance. Reject wrong reference coverage before text work, multiple sources,
 owned flags, changed membership/frame plan and changed software before the final
 record. A prepared fixed record alone does not prove native preview generation.
+Coverage tests use real eighteen-frame masters and the original E4
+null-span/frame-counts `[6,7]` contract. Prepare physical seven-frame inputs,
+roundtrip the emitted arguments through ordinary evaluation and the strict
+adapter checker, and require the trainer reader to accept the unchanged null
+span. Explicit span-seven pilot preparation remains strict under its own
+contract. Check both split and equals flag spellings, no duplicates, historical
+bidirectional selection, and rejection of transferred settings before weights.
 
-Native fixed preparation on 2026-10-07 used the same seven-frame D1 pilot source
-in both modes. The actual trainer reader accepts both records. Capture, guide,
-clean image, text and `[1,7168,128]` noise tensor hashes match across modes; both
-use `[0.725,0]` and the same checked 49-frame references. GPU 3 was claimed and
-released; elapsed preparation was 38.84/41.41 seconds. Evidence is in
-`native_fixed_preparation_acceptance.json` under the workspace handoff evidence
-directory. No transformer, adapter or end-to-end preview ran in this acceptance.
+Fresh public fixed preparation passes both modes through the trainer reader
+and strict adapter preflight. Capture, guide, clean image, text and
+`[1,7168,128]` noise tensors match the original fixed inputs; both use
+`[0.725,0]` and checked 49-frame references. The original causal E4 selection
+remains span-null with physical output seven; the separate pilot stays span-seven.
+`current_fixed_preparation_readback_20261008.json` under the workspace handoff
+evidence directory binds this scope. Preparation opens no transformer; preview
+execution and media acceptance are tracked in
+[current acceptance](known_gaps.md#current-acceptance-and-next-step).

@@ -1,6 +1,8 @@
 # Core algorithm — shared rules and two modes
 
-Status: **Shared helpers, both mode functions and typed training implemented; native acceptance and legacy migration pending.**
+Status: **Shared helpers, both mode functions and typed training implemented;
+full acceptance and legacy migration incomplete.** Read
+[current acceptance](known_gaps.md#current-acceptance-and-next-step) for scope.
 The training CLI supports explicit modes. The extracted mode-less loop remains
 transitional for callers that still need migration.
 Start with the [design index](README.md).
@@ -149,16 +151,13 @@ Direct causal generation has K denoises and K refreshes.
 Direct bidirectional execution has one denoise and no prime/refresh.
 Guidance and gradient checkpointing add actual work.
 
-FSDP distributes training across GPU processes.
-They must agree on calls, backward calculations, reductions, and saves.
-Equal K alone is not sufficient.
-Typed FSDP preserves float32 modality sigma, token timesteps and positions by
-disabling root-input casting. This rule is a runtime setting, not merely a
-checkpoint field. A fresh distributed update still needs the E4 serial check.
-Typed training preserves the incoming modality's float32 sigma, timesteps and
-positions through FSDP wrapping. Disable root-input casting without changing the
-bf16 parameter/reduction policy; otherwise recursively casting the dataclass
-silently changes this contract at the model boundary.
+FSDP distributes training across GPU processes. They must agree on calls,
+backward calculations, reductions and saves; equal K alone is not sufficient.
+Typed FSDP disables root-input casting to preserve float32 modality sigma,
+timesteps and positions. Keep the bf16 parameter/reduction policy and fp32
+adapter storage. These are actual runtime settings, not merely checkpoint
+fields. Original four-rank updates in both modes pass their fixed E4 serial
+comparisons. Current complete workflow and final-source checks remain separate.
 
 Typed evaluation and product files use one [adapter checker](training/checkpoints.md).
 They call the selected mode's generation function.
@@ -177,7 +176,7 @@ Quality and cost before/after eviction still need native E3 measurements.
 Required adapter application is frozen bf16 base weights with unmerged fp32 PEFT
 adapters, matching training. Current typed evaluation/inference use the shared
 `model.adapters` path. [G8](known_gaps.md#g8--bf16-lora-fusion-weakens-the-trained-adapter)
-remains open for native E2 effect and cost verification. Fusion remains
+remains open for full E2 views/trained steps and cost verification. Fusion remains
 an explicitly changed research condition. Do not silently fall back to it.
 Current product acceptance is limited to clip-start inputs and the recorded
 frame counts. The pilot uses seven encoded frames in both modes; longer or
@@ -218,4 +217,4 @@ G9: a random-start segment can have a different first-image encoding.
 Moving code does not fix these differences.
 
 Documentation size rules are in [README](README.md).
-Planned tests and the review stop are in [verification](verification.md).
+Required checks are in [verification](verification.md).

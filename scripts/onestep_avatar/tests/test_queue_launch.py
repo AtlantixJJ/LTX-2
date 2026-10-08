@@ -210,6 +210,167 @@ def test_owned_recovery_rejects_nonregular_or_oversized_input(tmp_path, monkeypa
     assert ledger.read_bytes() == original_bytes
 
 
+def direct_registered_attempt(tmp_path, monkeypatch):
+    ledger, request, owned, _ranks, _notifications = ended_owned_attempt(tmp_path, monkeypatch)
+    child = owned['processes'][str(owned['child_pid'])]
+    command = [sys.executable, '-m', 'scripts.onestep_avatar.adapter_effect_check',
+               '--output', str(tmp_path / 'scientific-result'), '--gpu-id', '0', '--decode']
+    child['identity']['command'] = command
+    child['commands'] = [command]
+    owned['processes'] = {str(owned['child_pid']): child}
+    owned['observations'][0]['identities'] = [child['identity']]
+    record = json.loads(ledger.read_bytes()); record['attempts']['b' * 32] = owned
+    ledger.write_text(json.dumps(record))
+    launch_path = tmp_path / 'direct-launch.json'
+    launch_path.write_text(json.dumps({'command': command, 'physical_gpu': 0, 'visible_gpu': 0,
+        'environment_changes': {TOKEN_ENV: 'b' * 32, JOB_ENV: 'a' * 64, 'CUDA_VISIBLE_DEVICES': '0'}}))
+    # Existing own attempt is one selected physical device.
+    owned['gpus'] = [0]
+    record['attempts']['b' * 32] = owned
+    ledger.write_text(json.dumps(record))
+    return ledger, launch_path, owned
+
+
+def registered_recovery(ledger, launch_path, owned, **changes):
+    row_hash = changes.pop('expected_row_sha256') if 'expected_row_sha256' in changes else launch._row_digest(owned)
+    launch_hash = changes.pop('expected_launch_sha256') if 'expected_launch_sha256' in changes else launch.digest(launch_path)
+    return launch.recover_registered_attempt(ledger, 'b' * 32,
+        expected_row_sha256=row_hash,
+        launch_evidence=launch_path,
+        expected_launch_sha256=launch_hash,
+        timeout=changes.pop('timeout', 2), **changes)
+
+
+def test_registered_nontraining_recovery_preserves_original_row_and_limited_scope(tmp_path, monkeypatch):
+    ledger, launch_path, owned = direct_registered_attempt(tmp_path, monkeypatch)
+    original_launch = launch_path.read_bytes()
+    result = registered_recovery(ledger, launch_path, owned)
+    assert result['basis'] == 'registered_handle_bookkeeping_recovery'
+    assert result['registered_processes_absent'] is True
+    assert result['continuous_supervision'] is False and result['containment_complete'] is False
+    assert result['unknown_descendants_unproven'] is True and result['original_exitcode'] is None
+    assert 'workers_absent' not in result and 'scientific_acceptance' not in result
+    record = json.loads(ledger.read_bytes()); recovered = record['attempts']['b' * 32]
+    assert recovered == {**owned, 'state': 'closed', 'recovery': result}
+    assert record['attempts']['unrelated-history'] == {'state': 'closed', 'preserved': 'original unrelated bytes'}
+    assert launch_path.read_bytes() == original_launch
+
+
+@pytest.mark.parametrize('failure', [
+    'wrong_row_hash', 'wrong_launch_hash', 'missing_row_hash', 'missing_launch_hash', 'wrong_token',
+    'train', 'accelerate', 'unsupported_module', 'supervise', 'multiple_gpus', 'wrong_gpu_mapping',
+    'boolean_gpu', 'rank_role', 'reported_rank', 'uncontained_descendant', 'extra_child',
+    'incomplete_containment', 'bad_identity', 'live_owner', 'live_child', 'reused_child', 'denied_child',
+    'busy_gpu', 'missing_gpu', 'invalid_gpu', 'launch_symlink', 'ledger_symlink', 'nonregular_launch', 'expired',
+])
+def test_registered_nontraining_recovery_refuses_ambiguous_evidence(tmp_path, monkeypatch, failure):
+    ledger, launch_path, owned = direct_registered_attempt(tmp_path, monkeypatch)
+    saved_launch = json.loads(launch_path.read_bytes()); changes = {}
+    child = owned['processes'][str(owned['child_pid'])]
+    if failure in ('wrong_row_hash', 'missing_row_hash'):
+        changes['expected_row_sha256'] = 'd' * 64 if failure == 'wrong_row_hash' else None
+    elif failure in ('wrong_launch_hash', 'missing_launch_hash'):
+        changes['expected_launch_sha256'] = 'd' * 64 if failure == 'wrong_launch_hash' else None
+    elif failure == 'wrong_token': saved_launch['environment_changes'][TOKEN_ENV] = 'd' * 32
+    elif failure in ('train', 'accelerate', 'unsupported_module', 'supervise'):
+        command = child['identity']['command']
+        if failure == 'train': command[2] = 'scripts.onestep_avatar.train'
+        elif failure == 'accelerate': command[2] = 'accelerate.commands.launch'
+        elif failure == 'unsupported_module': command[2] = 'scripts.onestep_avatar.queue'
+        else: command.append('--supervise')
+        saved_launch['command'] = command
+    elif failure == 'multiple_gpus': owned['gpus'] = [0, 1]
+    elif failure == 'wrong_gpu_mapping': saved_launch['environment_changes']['CUDA_VISIBLE_DEVICES'] = '1'
+    elif failure == 'boolean_gpu': saved_launch['physical_gpu'] = False
+    elif failure == 'rank_role': child['roles'].append('rank:0')
+    elif failure == 'reported_rank': owned['reported_rank_identities'] = [{'identity': child['identity'], 'role': 'rank:0'}]
+    elif failure in ('uncontained_descendant', 'extra_child'):
+        identity = {**child['identity'], 'pid': child['identity']['pid'] + 1, 'command': ['contained-worker']}
+        owned['processes'][str(identity['pid'])] = {'identity': identity,
+            'roles': ['child' if failure == 'extra_child' else 'descendant'], 'commands': [identity['command']]}
+    elif failure == 'incomplete_containment': owned['observations'][0]['complete'] = False
+    elif failure == 'bad_identity': child['identity']['start_ticks'] = True
+    elif failure in ('live_owner', 'live_child', 'reused_child', 'denied_child'):
+        identity = owned['owner'] if failure == 'live_owner' else child['identity']
+        def observe(pid):
+            if pid != identity['pid']: return None
+            if failure == 'denied_child': raise PermissionError('controlled registered-handle denial')
+            return {**identity, 'start_ticks': identity['start_ticks'] + int(failure == 'reused_child')}
+        monkeypatch.setattr(launch, 'process_identity', observe)
+    elif failure in ('busy_gpu', 'missing_gpu', 'invalid_gpu'):
+        memory = {gpu: 0 for gpu in range(6)}
+        if failure == 'busy_gpu': memory[0] = 1024
+        elif failure == 'missing_gpu': del memory[0]
+        else: memory[0] = True
+        monkeypatch.setattr(process_registry, 'gpu_memory', lambda **kwargs: memory)
+    elif failure == 'expired': changes['timeout'] = 1e-12
+    record = json.loads(ledger.read_bytes()); record['attempts']['b' * 32] = owned
+    ledger.write_text(json.dumps(record)); launch_path.write_text(json.dumps(saved_launch))
+    if failure in ('launch_symlink', 'ledger_symlink'):
+        target = launch_path if failure == 'launch_symlink' else ledger
+        other = target.with_name(target.name + '.original'); target.rename(other); target.symlink_to(other)
+    elif failure == 'nonregular_launch':
+        original_hash = launch.digest(launch_path); launch_path.unlink(); os.mkfifo(launch_path)
+        changes['expected_launch_sha256'] = original_hash
+    original_ledger = ledger.read_bytes()
+    with pytest.raises((ValueError, OSError, TimeoutError)):
+        registered_recovery(ledger, launch_path, owned, **changes)
+    assert ledger.read_bytes() == original_ledger
+
+
+@pytest.mark.parametrize('mutation', ['launch', 'row', 'live_child'])
+def test_registered_recovery_rechecks_original_handles_and_bytes(tmp_path, monkeypatch, mutation):
+    ledger, launch_path, owned = direct_registered_attempt(tmp_path, monkeypatch)
+    row_hash, launch_hash = launch._row_digest(owned), launch.digest(launch_path)
+    def inventory(**kwargs):
+        if mutation == 'launch': launch_path.write_text('{}')
+        elif mutation == 'row':
+            record = json.loads(ledger.read_bytes()); record['attempts']['b' * 32]['job'] = 'changed'
+            ledger.write_text(json.dumps(record))
+        else:
+            identity = owned['processes'][str(owned['child_pid'])]['identity']
+            monkeypatch.setattr(launch, 'process_identity', lambda pid: identity if pid == identity['pid'] else None)
+        return {gpu: 0 for gpu in range(6)}
+    monkeypatch.setattr(process_registry, 'gpu_memory', inventory)
+    with pytest.raises(ValueError):
+        registered_recovery(ledger, launch_path, owned, expected_row_sha256=row_hash, expected_launch_sha256=launch_hash)
+    row = json.loads(ledger.read_bytes())['attempts']['b' * 32]
+    assert row['state'] == 'active' and 'recovery' not in row
+
+
+def test_registered_recovery_covers_ended_real_package_child(tmp_path, monkeypatch):
+    ledger = tmp_path / 'real-processes.json'; identity_file = tmp_path / 'token.json'
+    owner_source = (
+        'import json, subprocess, sys\nfrom pathlib import Path\n'
+        'from scripts.onestep_avatar.process_registry import ProcessRegistry\n'
+        f'owner=ProcessRegistry(Path({str(ledger)!r}),inventory=lambda:{{gpu:0 for gpu in range(6)}})\n'
+        'assert owner.acquire((0,),job="real-direct-media")\n'
+        'child=subprocess.Popen([sys.executable,"-m","scripts.onestep_avatar.media","--help"],'
+        'stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n'
+        'owner.refresh(child_pid=child.pid)\n'
+        f'Path({str(identity_file)!r}).write_text(json.dumps({{"token":owner.token}}))\n'
+        'child.wait(timeout=20)\n'
+        '# Deliberately preserve interrupted owner bookkeeping.\n'
+    )
+    owner = subprocess.Popen([sys.executable, '-c', owner_source])
+    try:
+        assert owner.wait(timeout=30) == 0
+    finally:
+        stop(owner)
+    token = json.loads(identity_file.read_bytes())['token']
+    row = json.loads(ledger.read_bytes())['attempts'][token]
+    assert queue.process_identity(row['owner']['pid']) is None
+    assert queue.process_identity(row['child_pid']) is None
+    launch_path = tmp_path / 'real-launch.json'
+    command = row['processes'][str(row['child_pid'])]['identity']['command']
+    launch_path.write_text(json.dumps({'command': command, 'physical_gpu': 0, 'visible_gpu': 0,
+        'environment_changes': {TOKEN_ENV: token, JOB_ENV: 'a' * 64, 'CUDA_VISIBLE_DEVICES': '0'}}))
+    monkeypatch.setattr(process_registry, 'gpu_memory', lambda **kwargs: {gpu: 0 for gpu in range(6)})
+    result = launch.recover_registered_attempt(ledger, token, expected_row_sha256=launch._row_digest(row),
+        launch_evidence=launch_path, expected_launch_sha256=launch.digest(launch_path), timeout=2)
+    assert result['registered_processes_absent'] is True and result['original_exitcode'] is None
+
+
 @pytest.mark.parametrize('approval', [None, 'valid', 'bad_grant', 'bad_journal', 'bad_request'])
 def test_grant_published_during_owner_inspection_keeps_all_approval_gates(tmp_path, monkeypatch, approval):
     path, executed = request_for(tmp_path)

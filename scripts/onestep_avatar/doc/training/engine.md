@@ -6,7 +6,7 @@ non-tensor preparation inputs. The producer is `prepare_inputs.py preview`;
 training consumes its checked record and does not prepare text/reference pixels
 inside FSDP.
 
-Status: **Typed two-mode runtime, version-two data/adapters, numeric logs, completed-checkpoint markers and scientific queued-completion checks implemented. CPU checks cover full settings, data/parent provenance, config/plan bytes and small-model update markers. Native FSDP completion, live queue migration, and old-path deletion remain pending. Preview scheduling is implemented.**
+Status: **Typed two-mode runtime, version-two data/adapters, numeric logs, completed-checkpoint markers and scientific queued-completion checks implemented. CPU checks cover full settings, data/parent provenance, config/plan bytes and small-model update markers. Native numerical updates pass in both modes; complete workflows, caller migration and old-path deletion remain pending. Preview scheduling is implemented. Read [current acceptance](../known_gaps.md#current-acceptance-and-next-step).**
 The training body moves from `train.py` into this owner. The CLI delegates to it.
 Typed preflight compares every checked capture/guide encoding VAE fingerprint
 with the selected base's VAE, using the producer's file identity rule. Missing
@@ -380,5 +380,6 @@ Accelerator, prompt or model work. Record actual flags through runtime schema
 two and require the supported policy across ranks. Recheck observed flags before
 updates, exports and publication. The mode-less historical engine is unchanged.
 The policy changes no data, seed, sigma, budget, optimizer or tolerance.
-Focused CPU controls verify the current path. Fresh four-rank native acceptance
-remains pending.
+Focused CPU controls verify the current path. Original four-rank/serial
+numerical comparison passes in both modes. The active handoff records complete
+workflow and final-source requirements separately.

@@ -19,7 +19,9 @@ Training supports explicit bidirectional and causal modes.
 A transitional mode-less loop still uses causal block sequences.
 The old loop's one-block complete-video path and `--whole-clip` visualizer
 are legacy behavior. Typed bidirectional execution has no cache or priming.
-The `--mode` switch is implemented. Native acceptance remains pending.
+The `--mode` switch is implemented. See
+[current acceptance](known_gaps.md#current-acceptance-and-next-step) for the
+verified numerical scope and remaining workflow/quality gates.
 
 Bidirectional mode processes one segment together.
 Causal mode processes blocks in order with stored past-frame data.
@@ -112,11 +114,11 @@ acceptance, remaining input preparation and legacy ownership cleanup are open.
 Required ordinary adapter application uses the same unmerged fp32 PEFT adapter
 function as training, against frozen bf16 base weights. Current ordinary
 typed evaluation/inference use the shared unmerged loader; G8 remains open
-pending native matched effect and cost measurement. Keep historical fused results labeled
+for full matched views/trained-step coverage and cost measurement. Keep historical fused results labeled
 with that original method. Memory failure does not authorize a fused fallback.
 
 Remove disabled anchor plumbing during cleanup.
 Masks and alpha are data-quality records, not loss weights.
 Old sliding-window designs and dropped choices are not active defaults.
 [Known gaps](known_gaps.md) records fixed defects and unresolved limits.
-Documentation adds no new model-test results.
+The active handoff binds acceptance to saved results and original sources.

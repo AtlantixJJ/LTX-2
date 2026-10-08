@@ -2,7 +2,9 @@
 
 Status: implemented and checked with real tiny native CPU attention/cache;
 full-weight GPU observations and E3 acceptance remain pending.
-This temporary package-root experiment owner moves only after the E1–E4 gates.
+This temporary package-root experiment owner moves only after its relevant
+native replacement gates. See [architecture](architecture.md#work-order-and-gates)
+and [current acceptance](known_gaps.md#current-acceptance-and-next-step).
 
 ## Objective
 
@@ -177,8 +179,9 @@ bytes and input hashes before a reference forward. Check bounded chunk metrics
 against direct float64 calculations, including a zero denominator. Do not infer
 full-weight acceptance or perceptual quality from CPU controls.
 The eight tiny native future-noise controls also exercise the public sampler at
-both noise levels, both history calculations and both exact boundaries. Package
-Ruff checks and the 20 new CPU controls pass. CPU-only preparation also checked
+both noise levels, both history calculations and both exact boundaries.
+CPU-only preparation also checked
 the actual original one-view capture and a future-noise job, with all source,
-base checkpoint, master, c0, text and noise hashes retained. Native commands are
-prepared separately; no GPU launch occurred.
+base checkpoint, master, c0, text and noise hashes retained. Full native 17-frame
+commands remain a separate acceptance requirement; short seven-frame controls
+from another owner cannot replace these observations.

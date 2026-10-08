@@ -51,8 +51,9 @@ conditioning policy. Missing historical facts fail current acceptance; they
 remain readable historical evidence. A serial reference records its own ordinary
 policy and compares the explicitly relevant requested precision separately.
 Policy records establish setup, not numerical equivalence or actual consumer
-field precision. R3 still requires instrumentation inside the model consumer,
-including nested wrapping and checkpoint recomputation, before native acceptance.
+field precision. Native acceptance also requires observations inside the model
+consumer, including nested wrapping and checkpoint recomputation; setup records
+alone cannot replace that evidence.
 
 Worked check: four rank records with bf16 parameter/reduction policy and
 `cast_root_forward_inputs=false` agree. Changing only rank two's reduction dtype
@@ -80,10 +81,10 @@ trainer's publication and marker binding; it does not prove native FSDP.
 
 ## Deterministic training policy
 
-Status: Implemented and verified by focused CPU controls after the bounded
-native one-slot and two-slot controls. Fresh four-rank native acceptance is
-pending. Keep the original failed native records and their applied-runtime
-schema unchanged.
+Status: Implemented; original four-rank/serial numerical comparisons pass in
+both modes. Complete workflow acceptance remains separate; read
+[current acceptance](../known_gaps.md#current-acceptance-and-next-step). Keep
+original failed records and their applied-runtime schemas unchanged.
 
 The small shared owner `training/numerics.py` declares one required
 child environment: `CUBLAS_WORKSPACE_CONFIG=:4096:8`. It applies strict Torch
@@ -124,5 +125,6 @@ CPU controls cover real Torch flag setters/readers, strict warning mode,
 environment binding and late-application refusal; launch schemas one and two;
 missing, malformed or differing rank observations; engine failure before model
 loading for a wrong inherited workspace; and replay refusal of an undeclared or
-different original policy. Fresh native four-rank runs in both modes, followed
-by the original fixed serial update comparison, remain the acceptance test.
+different original policy. Numerical acceptance additionally requires the actual
+four-rank updates and fixed serial comparisons; both modes' saved receipts pass.
+These checks do not establish preview/product or learned video quality.

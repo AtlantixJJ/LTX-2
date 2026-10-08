@@ -8,7 +8,7 @@ Read the [symbols](core_algorithm.md#1-symbols) first.
 The equations and frame traces in V1–V6 were checked mechanically.
 V7–V8 define condition and conversion checks. Current CPU tests cover these
 paths. Their existence does not certify the full native handoff. The
-[implementation ledger](../../../../plans/assets/2026-10-07-onestep-avatar-implementation-ledger.md)
+[active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#current-progress-and-revised-work-order--2026-10-08)
 records current executed evidence and remaining native scope.
 
 ## V1 — Is the first image a clean model input?
@@ -98,10 +98,10 @@ Two bidirectional samples require two model calls and two backward calls.
 Equal explicit counts are necessary but not sufficient.
 Repeated checkpointed calculations, reductions, and saves also need compatible order.
 **Required implementation check:** record call order and compare the first
-distributed update against the fixed serial reference. The initial native
-bidirectional comparison failed. The root-input precision correction requires
-fresh four-process acceptance in both modes. See G12 and the ledger; do not
-treat compatible call counts or exact adapter reload as E4 acceptance.
+distributed update against the fixed serial reference. Both modes now pass
+that original four-rank numerical comparison; full workflows remain separate.
+See G12 and the active handoff for exact scope. Compatible call counts or an
+exact adapter reload alone cannot prove numerical E4 acceptance.
 
 ## V7 — Does an incompatible request fail before model loading?
 

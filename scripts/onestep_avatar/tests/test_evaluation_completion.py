@@ -132,6 +132,37 @@ def test_both_modes_publish_verifiable_real_small_transformer_outputs(completed,
             queue.verify_completion(job)
 
 
+def test_causal_physical_prefix_roundtrip_preserves_null_span_c0_calls_and_saved_completion(completed):
+    execute, _arguments, settings, membership, calls = completed
+    # Extend checked continuous masters; the selected generation still covers only [0,7).
+    for source in membership['sources']:
+        path = Path(membership['corpus_root']) / source['relative_dir'] / dataset.capture_bundle_name('white')
+        bundle = torch.load(path, weights_only=True)
+        bundle['master'] = torch.arange(144).reshape(2, 18, 2, 2).float()
+        torch.save(bundle, path)
+        source.update(n_latent_frames=18, shape=[2, 18, 2, 2], capture_latent_sha256=sha256(path))
+    membership['sha256'] = subset.membership_hash(membership)
+    settings.subset.write_text(json.dumps(membership))
+    job, paths = execute(['--output-latent-frames', '7'], mode='causal')
+    for path in paths:
+        record = json.loads(path.read_text())
+        assert record['frames'] == 7
+        assert record['mode_settings']['span_latent_frames'] is None
+        assert record['conditions']['mode_settings']['span_latent_frames'] is None
+        assert record['conditions']['shape']['frames'] == 7
+        assert record['call_counts']['model_calls'] == 6
+        generated = torch.load(path.parent / 'generated.pt', weights_only=True)
+        assert generated.shape == (1, 2, 7, 2, 2)
+        assert evaluate.tensor_sha256(generated[:, :, :1].permute(0, 2, 3, 4, 1).reshape(1, 4, 2)) == record['c0_sha256']
+    before = list(calls)
+    assert queue.verify_completion(job)
+    assert calls == before
+    job['arguments'][job['arguments'].index('--output-latent-frames') + 1] = '9'
+    with pytest.raises(ValueError, match='saved noise differs from requested input'):
+        queue.verify_completion(job)
+    assert calls == before
+
+
 @pytest.mark.parametrize('field,value', [
     ('seed', 43), ('schedule', [0.5, 0]), ('source', 'other/video'), ('fps', 24), ('frames', 5),
     ('mode_settings', {'span_latent_frames': 5}), ('conditions', {}), ('input_file_hashes', {}),

@@ -4,7 +4,7 @@ The unsupported `--anchor-weight` option is removed from both explicit-mode and
 transitional parsing. Old saved configurations remain historical input records;
 they do not authorize restoring the deleted offline-teacher path.
 
-Status: **Typed settings, mode plans, and explicit-mode CLI integration implemented. Fixed preview settings are implemented; preview execution and removal of live-queue transitional parsing remain pending.**
+Status: **Typed settings, mode plans, and explicit-mode CLI integration implemented. Fixed preview settings and execution are implemented; complete native workflow acceptance and removal of transitional parsing remain pending. Read [current acceptance](../known_gaps.md#current-acceptance-and-next-step).**
 `parse_args`, `training_sigmas`, `training_noise_seed`, and `sigma_for_rank`
 are extracted without changing their calculations. The engine imports them.
 The transitional mode-less route still accepts old subset settings.

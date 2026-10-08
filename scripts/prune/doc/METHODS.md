@@ -465,7 +465,7 @@ from study-specific implementations. Gradient, reconstruction/rotation and recov
 training methods remain unmeasured; results from a training-free screen do not
 establish their performance.
 
-The [1 October experiment plan](../../../../plans/2026-10-01-prune-method-comparison.md)
+The [archived 1 October experiment plan](../../../../plans/history/2026-10-08-superseded/2026-10-01-prune-method-comparison.md)
 executes a bounded training-free comparison of rankings, compensation,
 allocation and static block removal using isolated calibration, validation and
 blind-test actors. Its study helpers live under ignored `expr/`; they do not

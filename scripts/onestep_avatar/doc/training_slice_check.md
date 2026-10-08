@@ -1,6 +1,8 @@
 # `training_slice_check.py` — localize one native update
 
-Status: Bounded R3 diagnostic; native acceptance pending. Move this experiment
+Status: Bounded R3 diagnostic; original one-/two-slot numerical controls pass.
+They do not substitute for complete workflow acceptance. Read
+[current acceptance](known_gaps.md#current-acceptance-and-next-step). Move this experiment
 owner to `experiments/` only after the Stage C gates. Ordinary training imports
 none of this module.
 

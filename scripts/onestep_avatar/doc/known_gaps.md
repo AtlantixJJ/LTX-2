@@ -1,12 +1,51 @@
 # Known gaps — where the code does not meet the contract
 
-Each entry states the **required behavior**, the **current implementation** with its source
-symbols, the **impact**, the **acceptance criteria** for a future fix, and a **status**. An entry
-stays here, prominently, until a fix is implemented *and* verified. Nothing below is fixed by
-this documentation; do not read an acceptance criterion as a passing test.
+Each entry separates required behavior, current implementation and remaining
+acceptance. A passing check has the scope stated in its original evidence.
+This page summarizes current gaps; the
+[active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#current-progress-and-revised-work-order--2026-10-08)
+owns exact receipts and live progress. Historical failures retain their original
+bytes and attribution outside this current summary.
 
 Status vocabulary: **open** (no fix), **in progress** (a fix is partially landed),
 **verified** (fixed and checked; only a brief historical invariant is retained).
+
+## Current acceptance and next step
+
+Shared model calculations, typed training, unmerged fp32 adapters, strict input
+and adapter checks, fixed preparation, previews and product review are implemented.
+Both modes pass the native four-rank/serial numerical update comparison (E4
+numerical scope), including all named matrices and exact export/reload. This
+does not close preview, product, appearance or whole-plan acceptance.
+
+The causal physical-coverage defect is repaired in evaluation and preparation.
+The full CPU suite passes, and fresh public preparation preserves the original
+capture/guide/image/text/noise tensors while keeping the original causal
+training span null. A fresh causal public preview completes raw generation,
+rendering, allocator checks and bounded owned-worker supervision. Full/narrow
+media inspection remains required. Fresh current-source first-update E2 in both
+modes passes the public saved verifier on one camera at steps zero/one.
+Short causal controls and both corrected public preview/product executions
+pass their scoped scientific and bounded-supervision checks. Full-clip media
+inspection remains separate. Older results retain original attribution
+and are not receipts for changed producers.
+
+The immediate gate is to inspect complete matched videos from the current-source
+short workflows, including readable playback at 480 pixels wide.
+Then run the unchanged four-rank seven-frame E5 pilots through steps 20/60.
+Learning acceptance remains open. Full E2 still needs two camera views and both trained steps.
+E3 still needs original 17-frame history/K/V and before/after-eviction coverage,
+held-out people/seeds and measured cost. Stage D still must move experiment
+orchestration, retire the duplicate runtime/parser and remove obsolete executors.
+No user decision or access change is required for these steps.
+
+Current evidence is under workspace
+`expr/onestep_avatar/handoff_implementation_20261007/`: numerical receipts in
+`native_training_deterministic/`, full CPU validation in
+`causal_output_coverage_20261008/`,
+`current_fixed_preparation_readback_20261008.json`, and causal preview execution
+in `native_short_preview_causal_current_20261008.supervision/` and
+`native_short_preview_causal_current_20261008.resources/`.
 
 | | Gap | Severity | Status |
 |---|---|---|---|
@@ -20,7 +59,7 @@ Status vocabulary: **open** (no fix), **in progress** (a fix is partially landed
 | [G9](#g9--a-random-window-c0-is-not-a-keyframe-encode) | a random-window `c0` is not a keyframe encode | training conditions on 8-frame latents that deployment never supplies | **open (accepted 2026-10-05)** |
 | [G8](#g8--bf16-lora-fusion-weakens-the-trained-adapter) | bf16 LoRA fusion weakens the trained adapter | shared unmerged path needs native effect/cost verification | **in progress** |
 | [G11](#g11--euler-rounding-differs-from-the-stock-step) | Euler rounding differs from the stock step | measured terminal difference; full E1 scope remains open | **in progress** |
-| [G12](#g12--ordinary-global-sigma-loses-stock-precision) | Ordinary global sigma loses stock precision | shared correction verified; fresh distributed update acceptance remains open | **in progress** |
+| [G12](#g12--ordinary-global-sigma-loses-stock-precision) | Precision/runtime acceptance is incomplete | shared precision and numerical updates pass; complete workflows remain required | **in progress** |
 | [G10](#g10--saved-comparisons-have-unreadable-titles-at-narrow-widths) | Saved render text shrinks below the narrow-width requirement | preserve matched readable formats | **verified** |
 
 ---
@@ -40,9 +79,12 @@ and token timesteps in both modes. New adapter contracts and ordinary execution
 conditions declare that precision. Historical unknown precision is readable but
 cannot execute; research overrides only acknowledge explicitly known differences.
 Legacy conversion requires matching original config and metadata precision.
-Small-model checks cover both modes. Fresh native ordinary-default and explicit-
-float32 bidirectional video-component sampling agree exactly. Typed FSDP also
-disables root-input casting; fresh distributed-update acceptance remains open.
+Small-model checks cover both modes. Native ordinary-default and explicit-
+float32 bidirectional video-component sampling agree exactly. Typed FSDP
+disables root-input casting, preserves fp32 adapter leaves and applies the
+measured deterministic numerical policy. Both four-rank numerical update
+comparisons and serial references pass. Complete native workflows remain
+separate acceptance.
 
 **Evidence.** A native 17-frame D0 comparison reused the verified stock controls
 and exactly the same image, text, saved noise, schedule, geometry and fps. It
@@ -64,25 +106,9 @@ unknown historical precision. Test first-image/timestep/cache invariants in both
 modes and train/evaluation/product parity. Then run a fresh ordinary native
 stock check with the new source identity. The old bf16 result remains historical.
 
-**Status.** The shared precision correction is verified for both small-model modes
-and the native bidirectional stock video-component check. Full E1 and native
-training/evaluation/product acceptance remain open.
-
-**FSDP boundary finding.** A native four-rank bidirectional update followed by
-the fixed serial replay failed the declared 2% gradient gate (norm gap 6.08%;
-301 moment-derived gradient tensors and 384 exported matrices fail). Reload of
-the actual step-one export is exact. This is a failed update comparison, not
-acceptance. A separate native one-rank FSDP observer proves the installed bf16
-policy recursively casts `Modality` fields: sigma 0.725 becomes 0.7265625,
-and float32 timesteps/positions become bf16. Disabling root-input casting
-preserves them while retaining the parameter/reduction policy. This confirms a
-contract violation; it does not prove this violation explains the entire failed
-gradient comparison. Typed training now disables that root cast. Fresh
-four-process updates and serial comparisons are required. The old update's
-float32 metadata is not evidence of its actual forward precision; preserve its
-original bytes and mark it invalid for current acceptance. Evidence lives under
-`expr/onestep_avatar/handoff_implementation_20261007/`: `fsdp_root_precision_probe.json`
-and `native_training_design/bidirectional_serial/result.json`.
+**Status.** Shared precision, the scoped stock video-component comparison and
+both E4 numerical update comparisons are verified. Full E1 and complete current-
+source evaluation/product workflow acceptance remain open.
 
 **Fresh native evidence.** Ordinary-default and explicit-float32 custom outputs
 are bit-identical. Their four calls have identical inputs and predictions,
@@ -100,30 +126,16 @@ in the workspace.
 Historical precision diagnosis:
 `expr/onestep_avatar/handoff_implementation_20261007/native_stock_default_precision_acceptance.json`.
 
-**Distributed update localization — 2026-10-08.** Correcting root input casts
-alone did not pass E4. Preserving fp32 adapter leaves also left numerical failures
-in both four-rank comparisons. A repeated serial sample failed before distributed
-averaging, so those failures cannot be attributed solely to FSDP reduction.
-With fixed deterministic Torch/cuDNN settings and the inherited cuBLAS workspace,
-fresh serial repeats and one-rank FSDP/serial controls match bit-for-bit for all
-768 named clipped gradients, optimizer moments and exports, loss and norm.
-The one-slot and two-slot controls preserve the original input visits, memory
-budget and numerical tolerances. Adapter-only export now initializes the outer
-FSDP root before gathering separately wrapped adapter leaves.
-
-The shared `training.numerics` owner now applies that measured policy before
-model work. Current launches and actual per-rank runtime records explicitly bind
-the policy; serial replay requires the original native observations. Historical
-records remain readable in their original scope and cannot acquire current
-defaults. Both original four-rank jobs and their fixed serial references now
-pass complete numerical update comparison, exact exports/reload and the
-original allocator bounds. Independent readback checks all 768 named matrices
-in each comparison group. Original native/serial software identities remain
-bound; earlier failed comparisons remain failures. Actual short previews and
-public product generations still must pass before full E4 or this native
-runtime gap closes. The current ledger records their separate scope and files.
-Evidence is in `native_r3_slice/` and `native_training_deterministic/` under the
-workspace handoff directory. CPU validation is separate from native acceptance.
+**Numerical runtime evidence.** `training.numerics` applies the measured
+deterministic policy before model work. Original launches and actual per-rank
+records bind the policy; serial replay requires those observations. Both modes'
+four-rank/serial comparisons pass all 768 named clipped gradients, moments and
+exports, with exact exported/reloaded output and original allocator bounds.
+The measured norms are below the clipping threshold, so these native cases do
+not demonstrate active clipping. Independent readback binds original inputs,
+software and output bytes. Earlier failed comparisons remain failed provenance;
+they do not describe current numerical acceptance. The active handoff links diagnosis
+and current receipts. Complete current-source workflows remain separate.
 
 ## G11 — Euler rounding differs from the stock step
 
@@ -192,7 +204,10 @@ within bf16 rounding of the *delta*, not just of the weights.
 adapter weights against frozen bf16 base weights. Inference wraps that velocity
 function once in stock x0. CPU controls with real small LTX/PEFT models match the
 loaded training reference bit-for-bit in both modes, including zero adapters.
-Native E2 effect, views/checkpoint steps, decoded appearance and cost remain open.
+Fresh first-update comparisons pass the public saved verifier in both modes on
+one camera view, with successful bounded supervision. Full E2 still needs
+two views, steps 20/60,
+decoded inspection and measured cost; see the current acceptance summary.
 `--adapter-application fused_bf16` is an explicit evaluation diagnostic requiring
 a recorded research override. Product exposes no fusion choice.
 
@@ -214,7 +229,8 @@ an explicit near-zero-effect rule). Compare fusion separately. An fp32 sum
 rounded into bf16 base weights is not the accepted normal function. Run the
 bounded native E2 views/checkpoint-step, zero-effect, appearance and cost controls.
 
-**Status.** In progress: shared application implemented and CPU checked; native E2 open.
+**Status.** In progress: shared application and scoped first-update effect
+comparison pass; full E2 acceptance remains open.
 
 ---
 
@@ -243,20 +259,21 @@ contribution to appearance jumps remains unmeasured. Teacher-forced cache histor
 from the displayed output by definition;
 that separate source mismatch is tested by dropping `--teacher-forcing`.
 
-**Acceptance.** Block-1 output and layerwise K/V checks are complete at 0.909375 and sigma 1.
-Compare boundary quality under both history policies and both forcing policies on held-out
-views. Select the continuation
-computation before training a new adapter or changing deployment semantics.
+**Acceptance.** Preserve the selected sigma-zero cached refresh calculation.
+Compare native block output and layerwise K/V under matched inputs before and
+after eviction at 0.909375 and sigma 1. Compare boundary quality under both
+history calculations and both forcing policies on held-out views. Measure
+generated-history quality and actual cost; do not claim cache/recalculation
+equivalence from earlier block-one observations.
 
-**Status:** in progress. CPU tests, real-weight computation checks and the explicit diagnostic
-are present. A same-GPU eight-block raw-only control measured 77.12 s for recomputation versus
-26.23 s for caching, with only a small change in latent boundary residual on one view.
-The separate joint-window reference improved GT-history latent metrics on three actors, but
-generated-history boundary residual was mixed and its one measured full rollout cost 2.66×
-cached inference. Visual appearance, motion, additional seeds and broader latency comparisons
-are still owed. The
-one-view exploratory run is in the workspace
-[`expr/onestep_avatar/d1_diagnostic/REPORT.md`](../../../../expr/onestep_avatar/d1_diagnostic/REPORT.md).
+**Status.** In progress. The selected default is established; its numerical
+difference from diagnostics remains. CPU controls and scoped earlier native
+observations do not replace full E3. Current original-source short seven-frame
+controls and fresh current-source successors show repeat/c0/prefix invariance
+before eviction. The original 17-frame
+K/V and capture/generated-history controls, before/after eviction, plus held-out
+appearance, motion, seeds and cost remain required. The active handoff links the exact
+protocol and scoped saved observations.
 
 ---
 
@@ -310,20 +327,23 @@ including causal history/KV choices and adapter precision/application. Legacy
 consumers remain separate from the typed path until Stage D migration. Native
 adapter acceptance remains E2/E4; metadata checks alone do not prove it.
 
-**Native causal preview coverage failure — 2026-10-08.** The original E4
+**Causal preview physical coverage.** The original E4
 adapter correctly records a null training span and frame counts `[6,7]` from
-continuous masters. Ordinary evaluation has only `--span-latent-frames` for
-physical prefix selection. A seven-frame fixed preview therefore requests
-span 7 and fails the strict checker before loading a transformer. E2 and product
+continuous masters. Ordinary evaluation previously had only `--span-latent-frames` for
+physical prefix selection. The first seven-frame fixed preview requested
+span 7 and failed the strict checker before loading a transformer. E2 and product
 already select physical seven-frame input under the original null setting.
 This is an ordinary CLI selection defect, not permission to weaken the checker
-or change E4 inputs. Required repair: causal-only `--output-latent-frames` selects
+or change E4 inputs. Implemented repair: causal-only `--output-latent-frames` selects
 physical coverage independently, with positive/exact-block/paired-length checks,
 unchanged settings and strict shape/noise/adapter preflight. The
-[proposed evaluation design](evaluate.md#causal-physical-output-coverage--proposed-repair)
-states decisions and worked outcomes. Production implementation and fresh
-native preview acceptance remain pending. Preserve failed runs and source-bound
-receipts; the pilot's explicit span-seven lineage stays separate.
+[evaluation design](evaluate.md#causal-physical-output-coverage)
+states decisions and worked outcomes. The full CPU suite, fresh public input
+preparation and fresh causal public preview execution now pass. Full/narrow
+media inspection and complete workflow acceptance remain required. The public fixed-preview argument producer
+preserves the causal training span and emits physical coverage separately;
+fresh preparation records bind the new producer bytes. Preserve failed runs and
+source-bound receipts; the pilot's explicit span-seven lineage stays separate.
 
 ---
 
@@ -377,11 +397,11 @@ package closure is still open; the removed product validator is historical evide
 **Required.** Every guide latent used for D1 was composited under the current contract,
 `dataset.GUIDE_COMPOSITING_VERSION` (2).
 
-**Current.** The v2 replacement formula and producer guard are implemented. Some earlier
-inventories recorded stale bg guides; the 2026-10-02 status below records white guides built
-under v2. These dated inventories are not a live readiness check. Every selected D1 source
-must have current render/latent/crop/VAE provenance; documentation design does not regenerate
-or validate the full corpus and does not claim that white guide count is zero.
+**Current.** The v2 replacement formula and producer guard are implemented.
+Every selected D1 source must have current render/latent/crop/VAE provenance.
+Current typed runs check version-two membership and selected producers through
+dataset and training/evaluation preflight. Corpus-wide historical inventory
+counts cannot establish readiness for a selected run.
 
 **Impact.** A D1 run that selects a stale guide latent would train on the old compositing
 contract. Readiness must be checked for that run's selected sources. D0 reads no guide artifact.
@@ -389,14 +409,10 @@ contract. Readiness must be checked for that run's selected sources. D0 reads no
 **Acceptance.** All guides required by a subset rebuilt under v2 before that subset is used for a
 D1 run; the subset's readiness checked against guide *latents*, not just render MP4s.
 
-**Status.** In progress (audit F1/F5, Stage B). **White objective, 2026-10-02:** 51 white guide
-renders carry `compositing_version` 2 and all 51 now have guide latents (21 newly encoded; 21
-existing ones were re-encoded by a fresh-manifest `precompute --process_syn_latent` pass, not
-bit-identically, list in `expr/onestep_avatar/dev_training_20261001/provenance/`).
-The historical `windows.py --require-guide-latent` freeze checks latent presence
-and sidecar version. Current typed runs use version-two membership, checked
-dataset readers and training/evaluation preflight. The dated `bg` inventory had
-18 stale guides among 19; it is not a current corpus readiness assertion.
+**Status.** Selected-source readiness is checked; complete input-production and
+caller migration acceptance remain open. Preserve old render/encoding records
+with their original attribution. Reprepare invalid selected inputs through their
+one producer; never weaken provenance checks or repair bytes in a reader.
 
 ---
 
@@ -467,7 +483,7 @@ specification and four input hashes remain unchanged. The guarded queue finished
 with a verified receipt and released its GPU-4 claim.
 
 Workspace evidence: `expr/onestep_avatar/two_mode_restructure_20261005/compact_presentation_acceptance.json`.
-The 789-test suite includes compact-selection, pre-decode refusal, altered format
+CPU controls include compact-selection, pre-decode refusal, altered format
 and saved-only report-reader cases. This closes the presentation defect for the
 implemented saved-render path. It does not establish transformer/FSDP, adapter
 quality, stock sampling or whole-study scientific acceptance.

@@ -4,14 +4,12 @@
 `nvidia-smi` directly and use one shared JSON file to record only processes this
 pipeline starts (PID, start ticks, command, GPU IDs and owned descendants).
 New launches do not consult reservation files or unrelated process environments.
-No privileged access is required. Older stale-claim recovery requirements below
-are historical and are superseded for new attempts. Preserve original claim,
+No privileged access is required. Preserve original claim,
 launch, result and acceptance files unchanged. Scientific inputs, budgets and
 tolerances remain unchanged. The October 8 handoff revises pilot ordering;
 missing native acceptance and architecture work remain required.
 
-Date: 2026-10-07.
-Status: **Required design; source separation and native acceptance remain incomplete.**
+Status: **Required design; source separation and full acceptance remain incomplete.**
 The user directed this amendment after reviewing the current implementation.
 It permits one `experiments/` subpackage inside `scripts/onestep_avatar/`.
 That replaces the October 5 restriction to adding only `model/` and `training/`.
@@ -30,15 +28,13 @@ This document owns the internal code boundary and migration destinations.
 it is not the architecture document for the proposed `experiments/` directory.
 Per-module docs explain current calculations and must be updated before source moves.
 The [October 7 handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md)
-owns E1–E5 acceptance and work order. Its
-[implementation ledger](../../../../plans/assets/2026-10-07-onestep-avatar-implementation-ledger.md)
-owns current evidence and the next unmet check. Do not copy changing test counts
-or native status into this design.
-The [current implementation repair review](../../../../plans/assets/2026-10-07-onestep-avatar-current-implementation-review.md)
-specifies the R1–R6 prerequisite fixes within Stages A–C. It does not relax the
-source-migration gates. In particular, native replay must bind the original
-canonical launch and actual applied runtime settings; a saved result's own hash
-cannot establish those facts. Follow the latest ledger for current verification.
+is the only active planning file. Its [current progress](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#current-progress-and-revised-work-order--2026-10-08),
+[acceptance requirements](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#acceptance-requirements)
+and [next actions](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#next-actions)
+own mutable progress and work order. Do not copy changing test counts or a run
+timeline into this design. Native replay must bind the original canonical launch
+and actual applied runtime settings; a saved result's own hash cannot establish
+those facts. Superseded reviews remain historical evidence under `plans/history/`.
 
 Required means the agreed target. Current means inspected source behavior.
 Verified means a check with saved evidence and an explicit scope.
@@ -82,7 +78,7 @@ Do not quote them as runnable until source, callers and command recipes have mov
 | Shared training | `train.py`, `training/config.py`, `training/engine.py`, `training/checkpoints.py`, `training/startup.py`, `training/runtime.py`, `training/resources.py`, `training/update_state.py` | Explicit mode, typed settings, distributed updates, logs, adapter export/checks, applied-policy and process-resource evidence, optional reusable Adam/text evidence and preview scheduling. Retire the duplicate old runtime. |
 | Corpus preparation | `precompute.py`, `build_guidance.py`, `geometry.py`, `motion.py`, `mask_video.py`, `qa.py` | Produce checked data with one crop/background/VAE contract. Only guide rendering uses the ARGAvatar environment. |
 | Ordinary run support | `prepare_inputs.py`, ordinary functions in `evaluate.py`, `infer.py`, `media.py`, `decode_saved.py`, `bench.py`, `plot_training.py` | Prepare inputs, evaluate or generate, measure general metrics, render and review saved outputs. |
-| Execution and provenance | `queue.py`, `queue_launch.py`, `queue_protocol.py`, `hashing.py`, `software.py` | Existing device claims, process lifecycle, dispatch, completion and relevant source/runtime identity. |
+| Execution and provenance | `queue.py`, `queue_launch.py`, `queue_protocol.py`, `process_registry.py`, `supervision.py`, `hashing.py`, `software.py` | Direct device queries, one shared own-process ledger, bounded lifecycle, dispatch, completion and relevant source/runtime identity. |
 | Experiments | Sweep/future-noise/progress owners, `stock_parity.py`, study orchestration in `evaluate.py`, parts of `stats.py` and historical converters | Prepare or execute a declared comparison through public shared owners; preserve its exact inputs and evidence. |
 | Reports | Report-only sources under `expr/onestep_avatar/` | Sections, captions, plots, saved-result summaries and validation. Missing results fail without model work. |
 
@@ -229,7 +225,7 @@ A matching near-zero one-update adapter control is distinct from demonstrated
 learned effect; the latter remains required on trained pilot checkpoints.
 
 1. **Document and inventory now (Stage A).** Read current instructions, this
-   document, the handoff and its latest ledger. Record Git status, current owners,
+   document and the active handoff's current progress. Record Git status, current owners,
    live job handles and the old-to-new caller map. Reconcile stale descriptions.
    This is documentation and inventory work; do not restart already verified fixes.
 2. **Establish native correctness at current paths (Stage C).** Reuse valid scoped
@@ -259,10 +255,14 @@ learned effect; the latter remains required on trained pilot checkpoints.
    study. Use the handoff's bounded recovery rule for blocked reproductions.
    A failed old guide pin or unknown calibration does not block fresh validation.
 
+Independent native checks may run concurrently on GPUs 0–3. Query occupancy
+before each launch and register exact owned handles in the shared ledger. A
+prescribed four-rank training job still requires the complete 0–3 pool.
+
 If devices prevent native checks, continue documentation, caller classification,
 bounded recovery and saved-only report checks. Record the exact missing native
 check. Do not replace that milestone with more queue features, bulk conversion
-or a larger historical job campaign. Preserve already-running work and claims.
+or a larger historical job campaign. Preserve already-running work and original ownership records.
 
 The native acceptance meanings are unchanged: E1 covers real sampling calls and
 declared endpoint/precision differences; E2 checks the learned correction against

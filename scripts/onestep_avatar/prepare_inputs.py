@@ -163,7 +163,7 @@ def preview_arguments(arguments: list[str], args: argparse.Namespace, noise: Pat
     while index < len(arguments):
         token = arguments[index]
         flag = token.split('=', 1)[0]
-        if flag in {*path_flags, '--noise-file', '--span-latent-frames'}:
+        if flag in {*path_flags, '--noise-file', '--span-latent-frames', '--output-latent-frames'}:
             index += 1 if '=' in token else 2
         else:
             stripped.append(token)
@@ -171,7 +171,15 @@ def preview_arguments(arguments: list[str], args: argparse.Namespace, noise: Pat
     for flag, path in path_flags.items():
         if path is not None:
             stripped.extend((flag, str(path.resolve())))
-    return stripped + ['--noise-file', str(noise.resolve()), '--span-latent-frames', str(frames)]
+    stripped.extend(('--noise-file', str(noise.resolve())))
+    if args.mode == 'causal':
+        if args.span_latent_frames is not None:
+            stripped.extend(('--span-latent-frames', str(args.span_latent_frames)))
+        output_frames = getattr(args, 'output_latent_frames', None)
+        stripped.extend(('--output-latent-frames', str(frames if output_frames is None else output_frames)))
+    else:
+        stripped.extend(('--span-latent-frames', str(frames)))
+    return stripped
 
 
 def prepare_preview(args: argparse.Namespace) -> dict:
@@ -195,6 +203,8 @@ def prepare_preview(args: argparse.Namespace) -> dict:
     identities = {str(path.resolve()): sha256(path) for path in initial_paths}
     specification, _, cases, membership = evaluate.prepare_evaluation(evaluation)
     video, frames, _, _ = cases[0]
+    evaluation_arguments = preview_arguments(args.evaluation_arguments, evaluation, args.output/'noise.pt', frames)
+    evaluate.parse_args([*evaluation_arguments, '--output', str(args.output/'unexecuted')])
     panels, references = media.load_training_references(args.references)
     del panels
     if (references['source'] != video.source or references['fps'] != video.fps
@@ -252,7 +262,7 @@ def prepare_preview(args: argparse.Namespace) -> dict:
               'schedule': evaluation.schedule, 'input_files': files, 'software': producer_software,
               'producer_inputs': {path: {'path': path, 'sha256': digest} for path, digest in identities.items()},
               'reference_bundle': {'path': str(args.references.resolve()), 'sha256': identities[str(args.references.resolve())]},
-              'evaluation_arguments': preview_arguments(args.evaluation_arguments, evaluation, args.output/'noise.pt', frames)}
+              'evaluation_arguments': evaluation_arguments}
     temporary = args.output/'preview.pending.json'
     dataset.atomic_write(temporary, lambda path: path.write_text(json.dumps(record, indent=2, allow_nan=False)+'\n'))
     settings = config.RunSettings(evaluation.mode, evaluation.subset, args.output/'unexecuted_training',

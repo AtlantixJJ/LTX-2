@@ -1,6 +1,8 @@
 # `adapter_effect_check.py` — preserve the saved adapter correction
 
-Status: Bounded E2 comparison owner; native acceptance pending. Keep this root
+Status: Bounded E2 comparison owner; full E2 acceptance remains incomplete.
+Read [current acceptance](known_gaps.md#current-acceptance-and-next-step) for
+first-update versus two-view/trained-step scope. Keep this root
 path until Stage D permits migration to `experiments/`. Ordinary runtime imports
 none of this module. The owner adds no trainer, forward or cache algorithm.
 
@@ -239,8 +241,10 @@ seven, product CLI `--span-latent-frames 7` now selects physical guide coverage
 without changing that training-selection setting. A recorded explicit training
 span remains compatible only when it equals the selected complete frames. The
 helper/API comparison records the explicit prefix under unchanged settings.
-CPU controls cover both contracts and reject mismatched conditions; actual
-native CLI and training-preview integration remain open until fresh evidence.
+CPU controls cover both contracts and reject mismatched conditions. The
+ordinary causal evaluator uses its separate `--output-latent-frames` flag;
+the preparation producer preserves the training setting. Current CLI/preview
+acceptance is separate from this API correction comparison; see the gap summary.
 
 Matching raw output can hide loss of a small correction. Compare corrections
 against each method's own base. Full resident parameter counts are not allocator

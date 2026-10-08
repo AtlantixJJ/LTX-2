@@ -1,6 +1,8 @@
 # `training_update_check.py` — replay one distributed update in serial
 
-Status: Implemented bounded E4 owner; native acceptance pending. Stage D moves this owner
+Status: Implemented bounded E4 owner; both original numerical comparisons pass.
+Complete preview/product acceptance is separate; read
+[current acceptance](known_gaps.md#current-acceptance-and-next-step). Stage D moves this owner
 to `experiments/training_update_check.py` after native replacement acceptance.
 
 ## Objective
@@ -196,5 +198,6 @@ preparation and require its complete numerical observation to match every
 original native rank, including cuDNN's separate TF32 setting. Bind that serial
 runtime in protocol/result and recheck before update, export and publication.
 Original failed records remain unchanged. CPU controls verify the policy binding.
-Fresh four-rank updates in both modes and their fixed serial comparisons remain
-the pending native acceptance test.
+Original four-rank updates in both modes and their fixed serial comparisons
+pass. Preserve their source-bound receipts; changed producers require affected
+fresh checks. Full workflows and final-source acceptance remain separate.

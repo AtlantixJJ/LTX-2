@@ -29,7 +29,6 @@ one of `--once` or `--loop`,
 and `--process-ledger <SHARED_PROCESS_LEDGER.json>`. All current queue processes
 use the same file. Old per-GPU claim files are preserved as historical data and
 are not read by new dispatch.
-Historical queue processes were absent at the last audit; no replacement was started.
 
 ## Objective
 
@@ -250,7 +249,7 @@ named video/poster hashes and containment. Missing files are incomplete;
 conflicting evidence fails. A historical unbound manifest is not adopted.
 The manifest is the completion receipt; verification rechecks its media and
 source bytes. Rendering shares evaluation/decoder priority and the existing
-single-device reservation rules. Pending render jobs wait for every saved panel
+single-device own-process registration rules. Pending render jobs wait for every saved panel
 file before reserving a device; dependencies remain explicit. It never runs report code.
 Training preparation requires an existing Accelerate file and records its full
 SHA-256 in the normalized job. Include this content hash in canonical identity.
@@ -448,43 +447,20 @@ means no device can be selected, not an empty GPU. Require memory below 1024 MiB
 Current dispatch uses `process_registry` for targeted own-process tracking and
 direct GPU availability. It never calls the legacy scanner below.
 
-#### Historical reservation implementation (not used by new dispatch)
+#### Current dispatch ownership
 
-The retained `GPUClaims` helper originally coordinated historical text claims.
-The old writers do not take the new lock or create claims exclusively. These
-helpers therefore cannot establish race-free concurrent launching with a legacy
-parent. Historical handoff remains pending until it retires those writers;
-controlled executor tests do not prove concurrent safety with them.
-A fresh legacy claim is still respected during inventory/claim checks.
-A recent legacy claim (600-second TTL) reserves that GPU. New claims contain a
-random token, owner/child PID and timestamp. Create them exclusively, without
-replacing another owner. Four-GPU acquisition is all-or-nothing; if one claim
-fails, release only this attempt's prior claims. Write each new record to a temporary sibling, flush it, then
-publish it with an exclusive hard link. A GPU path never exposes partial JSON.
-Remove the temporary sibling on success or failure. Any acquisition exception
-rolls back previously published token-owned claims before propagating. A busy
-exclusive destination returns false and leaves the foreign file unchanged.
-This publication rule coordinates new writers only; unlocked legacy writers
-still require the documented handoff.
-Refresh claims while waiting
-for the child, and remove them only when their token still matches. A claim
-whose recorded owner or child is live cannot expire into another job's use.
-Never remove a foreign claim during cleanup. Recheck memory after acquisition
-before child launch; on contention release owned claims and leave work pending.
-`dispatch_ready` queries all devices again after acquiring the complete claim set.
-Each claimed device must still have memory use strictly below 1024 MiB.
-Use this second inventory for subsequent selections in the same dispatch pass.
-A failed or malformed second query releases only this attempt's claims and raises
-the inventory error. It starts no child, log or journal attempt. A busy claimed
-device releases the whole set and leaves the job pending. Other ready jobs can
-then use devices that are free in the second inventory. This is a launch-time
-observation, not exclusive control over external processes that ignore claims.
+Current `dispatch_ready` constructs `ProcessRegistry`, chooses devices from
+direct inventory and acquires one token-bound ledger row. It queries occupancy
+again before creating a child. A busy device leaves the job pending; an invalid
+query refuses without a launch. Only this attempt's record can be released.
+Independent checks may use GPUs 0–3 concurrently, but a four-rank training job
+requires the whole prescribed pool. External programs can still start after a
+query; the ledger coordinates only this pipeline's own starts.
 
-Worked outcome: evaluation reserves GPU 5 after an initial zero-memory reading.
-The second query reports 1024 MiB on GPU 5. Release claim 5, do not create a log
-or attempt, and leave evaluation pending. If another evaluation job is ready,
-it can reserve GPU 4, but must pass its own second query. For training, one busy
-device in the four-card set releases all four reservations.
+The retained `GPUClaims` helper and original reservation files are historical
+compatibility code/data, awaiting gated retirement. New dispatch neither reads
+nor creates those files and never uses their TTL as permission to adopt a GPU.
+Current worker observations use exact owned handles and descendant containment.
 
 Pass an argument array to `subprocess.Popen`; use no shell interpolation.
 Run from the LTX-2 root with the current conda environment. Record the complete
@@ -512,27 +488,20 @@ exceptions report nonretryable `startup_failed`. Traceback text, including
 network-library messages, cannot authorize a retry. Each event binds
 the attempt token, job hash and global rank. Text traceback matching is insufficient.
 
-The child starts in its own Linux session. Record the session ID with the attempt.
-Claims also record that session. Live workers retain its reservations even if
-the launcher and queue owner have exited. Recovery checks the session as well
-as the leader identity; it cannot adopt a surviving worker as terminal.
-Do not kill these workers automatically.
-Torch Elastic starts each rank in its own session. Session checks alone cannot
-prove that distributed workers ended. Also inspect current-user processes for
-the exact inherited attempt environment token. Compare start ticks around
-environment reads; missing handles are terminal, unreadable or changing handles
-refuse the observation. Both session and token checks must find no live worker
-before completion, claim release or retry. Claims keep their token active while
-any matching worker is live, even after the queue/launcher exit.
-Record boot-clock start ticks when creating each token. A process born before
-those ticks cannot inherit this token and is outside its ownership observation.
-This also avoids reading protected environments of older unrelated services.
-Eligible unreadable handles still refuse observation. Pass the token and job
-hash to every prepared child, not only training, so an escaping decoder worker
-also retains its reservation. Only typed training can emit retry authority.
-If any worker survives leader exit, keep the journal running with its error and
-retained claims. Explicit recovery remains required after the full session ends.
-Before retry, require a reaped nonzero child, no live process in that session,
+The child starts in its own Linux session. Record its session and exact
+PID/start/command identity with the attempt. Current rows also bind the shared
+process-ledger path. The launch owner acts as a Linux subreaper and observes
+only registered children and targeted descendants, including orphan ranks in
+new sessions. A leader's exit cannot prove workers ended.
+
+`owned_workers_live` selects the targeted ledger observation for current rows.
+Incomplete or live-worker observations retain the active record and block
+completion/retry. Historical rows without a ledger keep their conservative
+original session/token reader; that reader is not a new-dispatch procedure.
+Observation errors or timeouts cannot authorize takeover. Pass token/job
+identity to each child, and preserve all original identities on interruption.
+
+Before retry, require a reaped nonzero child, a complete absent owned-worker observation,
 at least one valid matching contention event, no update-boundary event from any
 rank, and no nonempty `metrics_rank*.jsonl`. Unknown or malformed event evidence
 refuses retry. Typed training only can use this automatic path. Decoder/evaluation,
@@ -546,7 +515,7 @@ the child log, and write a README and hashed preservation record. Check source
 bytes before and after the move. Publish the archive identity and reset the job
 to pending only after preservation succeeds. A failed publication restores the
 original output location; never replace a newly occupied output path. All previous
-attempts remain in the journal. Retry requires fresh claims and both GPU checks;
+attempts remain in the journal. Retry requires fresh own-process registration and both GPU checks;
 it can wait without holding devices. The loop still prioritizes ready evaluations.
 `--once` performs one launch and may leave an eligible retry pending. It does not
 execute the retry itself. Exit 2 means an eligible retry is pending, not successful
@@ -573,17 +542,19 @@ session processes terminate, preserve attempt one and leave its unchanged job
 pending. If rank 0 already crossed the update boundary, keep the job failed even
 when rank 2 reports startup contention. The fourth failed launch cannot retry.
 
-Worked outcome: if GPU 4 is free but has a recent legacy claim, GPU 5 can be
-selected; 4 remains reserved. If training acquires claims for 0 and 1 but claim
-2 fails, its own 0/1 claims are removed, 2 is untouched, and no child starts.
+Worked outcome: an idle GPU is eligible only when no active own-process row
+conflicts with it. An old reservation file has no authority for a new attempt.
+If any GPU in a required four-rank set is busy at the second query, close only
+the fresh unlaunched record and leave training pending; start no child.
 If a training child exits zero with a missing final checkpoint marker, the job
 fails and dependent evaluation remains pending.
 
 ## Invariants
 
 Study configuration and original scientific records retain their identities.
-Completed checkpoints are immutable. Report code cannot start jobs. GPU claims
-and state have explicit owners. No new compatibility executors remain in expr.
+Completed checkpoints are immutable. Report code cannot start jobs. The shared
+own-process ledger and queue state have explicit owners. Stage D must remove
+remaining compatibility executors from expr.
 The live historical handoff occurs only after command/data conversion and
 child ownership have been verified; this design is not evidence of that handoff.
 
@@ -597,79 +568,32 @@ A GPU-count override does not authorize changing a recorded FSDP configuration.
 
 ## Tests
 
-`test_queue_startup.py` checks exact attempt/rank/reason events and runtime
-failure propagation, refuses update-boundary, validation, changed-log and
-ambiguous evidence, and verifies preservation hashes and journal rollback.
-A controlled loop allows three retries, releases claims between attempts and
-retains all errors. Busy-device waiting creates no additional attempt. A real
-Linux worker outlives its launcher, in either the original or a new session;
-session/token checks block completion/retry, retain
-the reservation and prevents stale-claim expiry. The fixture terminates only
-its own worker. These checks start no model or GPU work and do not establish
-native distributed contention/retry acceptance.
+Current dispatch controls exercise direct inventory, exact owned-process
+registration, the second occupancy query, guarded bootstrap/grant ordering and
+persistent journals. Busy/malformed/failed inventory starts no child or attempt.
+Check all-or-nothing four-device selection and ownership-safe release. These
+CPU controls cannot prove isolation from external programs.
 
-`test_training_launch_binding.py` reconstructs raw and prepared jobs through the
-same public owner. Changed resource-budget bytes reject command construction and
-launch reconstruction before a child starts. Changed valid snapshot JSON rejects
-its bound byte hash, rather than relying on a parsing failure.
-`test_training_completion.py` supplies a canonical four-rank launch and the actual
-applied-runtime schema in each controlled completion fixture. Default ordinary
-fixtures have no budget and no resource-evidence files. A budget-backed fixture
-also supplies every rank's complete phase journal and immutable final snapshot.
-Its resolved config stores the checked budget record rather than the CLI path.
-Existing scientific-setting,
-parent-lineage, input, config and marker mutations still reject completion.
-These are CPU record checks, not evidence of an actual distributed run.
-Marker controls reject changed state, schema, step, path and checkpoint hash
-through the shared readiness reader. They also reject boolean schema/step values.
-Real canonical launch files also drive both modes' actual engine startup gates.
-Controlled Accelerator world, precision and distributed-type mismatches refuse
-before text/model loading or scientific output creation.
+Scientific completion tests use actual serialized settings, tensors and
+markers. They reject changed schedules, input/source/adapter/runtime/budget
+identities, incomplete rank phase journals, redirected artifacts and missing
+completion evidence. Saved-render controls cover exact spec/VAE/software/media
+bindings, geometry, labels, timing and readable full/compact output.
 
-Post-reservation inventory tests cover single-device evaluation/render/decode
-and four-device training. A busy selected device, failed query, malformed query
-or interrupted observation creates no child, log or journal and releases only
-owned claims. A changed inventory guides the next eligible job's selection.
-The query fixture inspects real claim files, proving the second observation
-happens after reservation. These CPU tests do not prove external GPU isolation.
+Startup tests check token/job/rank-bound events, pre-update-only authority,
+complete ended-worker evidence, three-retry limit, exclusive preservation of
+each attempt and rollback on failed archive publication. Validation failure,
+any update boundary, surviving worker or unknown evidence forbids retry.
+Real owned Linux children prove that leader exit cannot authorize another job.
 
-`test_queue_render.py` exercises real controlled-render manifests, saved specs,
-input files and encoded video/poster bytes. Changed specs change canonical job
-identity and fail launch rechecks. Changed seed, VAE/software identity, input,
-request fields, coverage, titles/roles/values/positions, layout/sizing or media
-hashes fail completion. Missing artifacts remain incomplete. Missing panel files
-cause no GPU query or reservation. Controlled child dispatch reserves GPU 4,
-preserves a legacy GPU-5 claim, verifies the render receipt and releases its own
-claim. That test uses a mocked child and decoder; it is not native queue evidence.
-
-`test_queue_loop.py` uses real job preparation, reservation files, persisted
-journals and completion receipts with controlled child/inventory fixtures.
-A busy first pass holds no reservation; after it waits, two dependent jobs
-complete in order, including one appended during the first child. A legacy
-GPU-5 claim stays unchanged and each child uses GPU 4. Other cases reject
-edited jobs while waiting, unrecovered/failed attempts, completed labels with
-missing artifacts and invalid polling intervals; interruption leaves no
-reservation or journal, and child failure preserves partial output and prevents
-the dependent launch. Lock files are coordination artifacts, not reservations.
-The empty loop creates no state or claims directory. These checks do not prove
-native execution, start-up retries or legacy handoff.
-
-Recovery CLI tests verify valid completion receipts versus incomplete outputs,
-unknown launch-window refusal for the current owner, missing-journal refusal,
-read-only summaries without running work and unchanged journal/output bytes on
-corrupt evidence. Two tests use real Linux children, with the current owner or
-a missing previous owner, and prove recovery refuses each surviving child.
-Those child processes are reaped by the fixtures; no GPU/model work is started.
-
-Use controlled subprocess and GPU inventory fixtures to check selection,
-legacy claims, exclusive all-or-nothing claims, ownership-safe release and
-claim refresh. Validate append-only lists, command/output agreement and mode
-checks without opening models. Simulate owner death with a surviving child and
-prove no duplicate launch. Verify zero-exit/missing-marker failure, dependency
-ordering, startup-only retries, complete-artifact skipping and immutable outputs.
-Use one bounded package job for native acceptance after all data conversion.
-No new campaign or queue restart is performed by these design checks.
-
+Loop controls check append-only jobs, dependencies, immutable prior identities,
+waiting without an active record and refusal of failed/unrecovered work.
+Recovery controls distinguish valid saved completion, incomplete output,
+unknown launch windows, changed/reused/live handles and missing journals.
+Controlled historical `GPUClaims` fixtures test only the retained compatibility
+helper. Their reservation files and environment scans do not describe current
+dispatch or establish current native acceptance. Native receipts retain their
+explicit launch, scientific and supervision scopes.
 
 Real Linux zombie regression cases leave the child unreaped while inspecting
 its empty command line. They verify explicit failed-attempt recovery, changed
@@ -734,4 +658,5 @@ missing historical numerical facts are never replaced with current defaults.
 Current typed execution and serial native acceptance require version two.
 These fields bind numerical kernel settings, not new scientific inputs or limits.
 CPU controls verify the exact environment and strict readers for both schemas.
-Fresh four-rank native acceptance remains pending.
+Both original four-rank numerical comparisons pass. Complete workflow and
+final-source acceptance remain separate; see the active handoff.

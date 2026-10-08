@@ -4,8 +4,7 @@
 `nvidia-smi` directly and use one shared JSON file to record only processes this
 pipeline starts (PID, start ticks, command, GPU IDs and owned descendants).
 New launches do not consult reservation files or unrelated process environments.
-No privileged access is required. Older stale-claim recovery requirements below
-are historical and are superseded for new attempts. Preserve original claim,
+No privileged access is required. Preserve original claim,
 launch, result and acceptance files unchanged. Scientific inputs, budgets,
 tolerances and native E1–E5 gates remain unchanged.
 
@@ -44,9 +43,10 @@ Before editing anything here, in this order:
 6. [`configs/README.md`](configs/README.md) — before writing or quoting any run command.
 
 Items 1–4 and 6 are **required** before changing conditioning, noising, the cache, the loss,
-configuration, a probe, or deployment. Everything a reader needs is in this package: workspace
-`plans/` are historical and progress records, not the explanation of record, and `SS…` markers
-in older prose are citations into them.
+configuration, a probe, or deployment. The single active workspace handoff in
+`plans/` owns progress, acceptance and work order.
+Algorithm and ownership explanations live here. Superseded plans are under
+`plans/history/`; `SS…` markers in older prose are historical citations.
 
 ## One package, two conda envs
 
@@ -102,9 +102,10 @@ owners. Numerical diagnostic kernels can stay with their model owner. The existi
 queue can explicitly dispatch an experiment job without making ordinary jobs
 depend on it. Follow `doc/architecture.md` for the map, provenance and worked checks.
 
-Practical consequence: **corpus-side changes move the LTX-2 submodule pin.** The workspace
-`CLAUDE.md` asks for explicit approval before moving that pin, so say so when a change here
-needs committing.
+Corpus and model edits live in the LTX-2 submodule worktree. A commit changes
+that submodule's history. Updating the workspace's recorded commit pin is a
+separate change and requires explicit authorization; do not stage or update
+the pin automatically.
 
 ## The documentation contract
 
@@ -237,7 +238,9 @@ at them.
    not prove parity. No CLI may create a second block-state or input path.
 2. **One producer per artifact.** The crop box comes from `precompute.py --process_gt_latent`'s
    manifest; `z_y` from the capture pass; the guide and its alpha from `build_guidance.py`;
-   the subset from `windows.py`. Readers never recompute and never "reconstruct if missing" —
+   current membership from `subset.py` and frame selection from the selected mode.
+   `windows.py` is a remaining historical caller. Readers never recompute and
+   never "reconstruct if missing" —
    they raise with a pointed error.
 3. **Shared knowledge has exactly one spelling.** Artifact names live in `dataset.py`, the
    crop box in `geometry.py`, the block plan in `model/causal.py`, the mask codec in
