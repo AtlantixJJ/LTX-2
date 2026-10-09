@@ -51,7 +51,7 @@ def test_actual_prepared_jobs_preserve_all_historical_inputs_and_schedules(  # n
     for name, digest in provenance["derived_file_hashes"].items():
         assert sha256(prepared / name) == digest
     for name, digest in provenance["input_file_hashes"].items():
-        assert sha256(Path(name)) == digest
+        assert sha256(sigma_sweep_jobs.saved_location(Path(name))) == digest
     # The retired kind remains historical data; only fresh jobs enter today's queue.
     jobs = (json.loads((prepared / "jobs.json").read_text())["jobs"]
             if preparation_kind == "historical" else queue.prepare_jobs(prepared / "jobs.json"))
@@ -187,3 +187,25 @@ def test_replay_membership_preserves_source_and_refuses_conflicting_rows(tmp_pat
     changed.write_text(json.dumps(record))
     with pytest.raises(ValueError, match="different input sources"):
         subset.from_saved_probe(changed)
+
+
+def test_retired_source_evidence_is_read_from_its_recorded_location(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renamed = tmp_path / "expr/old/visualize_d1.py.txt"
+    live = tmp_path / "expr/report/study.py"
+    for path, content in ((renamed, b"historical source"), (live, b"live saved-only module")):
+        path.parent.mkdir(parents=True)
+        path.write_bytes(content)
+    record = tmp_path / "retired_executors.json"
+    record.write_text(json.dumps({"files": [
+        {"original_path": "expr/old/visualize_d1.py", "new_path": "expr/old/visualize_d1.py.txt"},
+        {"original_path": "expr/report/study.py", "new_path": "expr/report/study.pre_refactor.py.txt",
+         "original_path_is_live": True},
+    ]}))
+    monkeypatch.setattr(sigma_sweep_jobs, "WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(sigma_sweep_jobs, "RETIRED_EXECUTORS", record)
+    assert sigma_sweep_jobs.saved_location(tmp_path / "expr/old/visualize_d1.py") == renamed
+    assert sigma_sweep_jobs.saved_location(live) == live
+    unknown = tmp_path / "expr/other/run.py"
+    assert sigma_sweep_jobs.saved_location(unknown) == unknown

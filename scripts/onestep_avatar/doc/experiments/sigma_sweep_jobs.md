@@ -41,6 +41,12 @@ Older manifests omit guidance fields. Require an explicit cases-file declaration
 in that situation, attributed to the inspected historical unguided source hash;
 require its source path and verify that hash, and include it in the final
 input recheck. Do not silently assume defaults from a missing field.
+The declared source is a historical source snapshot that refactor group G13
+renamed to `<name>.py.txt` with unchanged bytes. `saved_location` reads any
+evidence path recorded in `expr/onestep_avatar/retired_executors.json` from its
+recorded new path. The SHA-256 check is unchanged, and the input record keeps
+the original path, so a current preparation still matches the historical
+`input_file_hashes`.
 Use subset.from_saved_probe for canonical paired-source checks; preserve the
 original master hashes. The replay group is historical bookkeeping, not a
 new train/validation split. Current raw/crop metadata is labeled separately
@@ -88,7 +94,9 @@ bytes/hashes are preserved as provenance text; native parity remains separate.
 
 ## Tests
 
-Check exact eight-job coverage, arms, source, geometry, prompt, seed, schedules,
+Check that retired-source evidence resolves to its recorded new path, and that
+live saved-only modules and unknown paths are left alone. Check exact eight-job
+coverage, arms, source, geometry, prompt, seed, schedules,
 shared saved noise and result paths. Reject changed manifests, raw noise,
 conflicting paired inputs, wrong forcing/guidance, wrong weights and existing
 output. Check the saved historical preparation against its original producer

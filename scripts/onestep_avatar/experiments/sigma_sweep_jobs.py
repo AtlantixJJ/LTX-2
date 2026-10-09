@@ -7,13 +7,32 @@ from pathlib import Path
 
 import torch
 
-from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar import WORKSPACE_ROOT, evaluate
 from scripts.onestep_avatar.corpus import dataset, precompute, subset
 from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.experiments import sigma_sweep
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import backbone
 from scripts.prune.core.provenance import checkpoint_fingerprint
+
+RETIRED_EXECUTORS = WORKSPACE_ROOT / "expr/onestep_avatar/retired_executors.json"
+
+
+def saved_location(path: Path) -> Path:
+    """Where the saved bytes of a historical evidence file named by `path` live now.
+
+    Refactor group G13 renamed retired `expr/` executors and runnable source snapshots to
+    `<name>.txt` with unchanged bytes and recorded each move in RETIRED_EXECUTORS. Evidence
+    that names an original path is read from its recorded new path. Callers still compare
+    the bytes with their recorded SHA-256 and keep the original path as the record key.
+    """
+    if path.exists() or not RETIRED_EXECUTORS.is_file():
+        return path
+    target = path.resolve()
+    for row in json.loads(RETIRED_EXECUTORS.read_text())["files"]:
+        if not row.get("original_path_is_live") and (WORKSPACE_ROOT / row["original_path"]).resolve() == target:
+            return WORKSPACE_ROOT / row["new_path"]
+    return path
 
 
 def prepare(cases_path: Path, output: Path) -> dict:  # noqa: PLR0912, PLR0915 -- ordered original-evidence gates and publication
@@ -76,7 +95,7 @@ def prepare(cases_path: Path, output: Path) -> dict:  # noqa: PLR0912, PLR0915 -
                 if not guidance.get("source") or not guidance.get("source_sha256"):
                     raise ValueError("historical guidance declaration requires checked source evidence")
                 evidence_path = Path(guidance["source"]).resolve()
-                original_hashes[str(evidence_path)] = sha256(evidence_path)
+                original_hashes[str(evidence_path)] = sha256(saved_location(evidence_path))
                 if original_hashes[str(evidence_path)] != guidance["source_sha256"]:
                     raise ValueError("historical guidance source bytes changed")
             for row in manifest["videos"]:
@@ -139,7 +158,7 @@ def prepare(cases_path: Path, output: Path) -> dict:  # noqa: PLR0912, PLR0915 -
     queue.validate_job_list(record)
     for job in jobs:
         (evaluate.parse_args if job["kind"] == "evaluate" else sigma_sweep.parse_args)(job["arguments"])
-    if any(sha256(Path(path)) != digest for path, digest in original_hashes.items()):
+    if any(sha256(saved_location(Path(path))) != digest for path, digest in original_hashes.items()):
         raise ValueError("historical generation inputs changed during preparation")
     output.mkdir(parents=True, exist_ok=False)
     for membership_path, membership, prefix_path, prefix, spec_path, spec in prepared:
@@ -149,7 +168,7 @@ def prepare(cases_path: Path, output: Path) -> dict:  # noqa: PLR0912, PLR0915 -
     jobs_text = json.dumps(record, indent=2) + "\n"
     derived_hashes = {path.name: sha256(path) for row in prepared for path in (row[0], row[2], row[4])}
     derived_hashes["jobs.json"] = bytes_sha256(jobs_text.encode()).hexdigest()
-    if any(sha256(Path(path)) != digest for path, digest in original_hashes.items()):
+    if any(sha256(saved_location(Path(path))) != digest for path, digest in original_hashes.items()):
         raise ValueError("historical generation inputs changed during publication")
     provenance = {"schema_version": 2, "input_file_hashes": original_hashes,
                   "derived_file_hashes": derived_hashes,
