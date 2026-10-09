@@ -25,8 +25,9 @@ from accelerate.utils import DistributedType
 from peft.utils.other import fsdp_auto_wrap_policy
 
 from ltx_trainer.model_loader import load_transformer
-from scripts.onestep_avatar import dataset, windows
-from scripts.onestep_avatar import subset as video_lists
+from scripts.onestep_avatar import windows
+from scripts.onestep_avatar.corpus import dataset
+from scripts.onestep_avatar.corpus import subset as video_lists
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, backbone, bidirectional, common
@@ -37,7 +38,6 @@ from scripts.onestep_avatar.training import checkpoints as sampling
 from scripts.onestep_avatar.training import numerics, resources, runtime
 from scripts.onestep_avatar.training.checkpoints import load_stage_init, save_lora
 from scripts.onestep_avatar.training.config import (
-    LORA_TARGETS,
     SIGMA_SAMPLING,
     BidirectionalSettings,
     CausalSettings,
@@ -857,7 +857,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
         {name.rsplit(".lora_", 1)[0] for name, p in transformer.named_parameters() if p.requires_grad}
     )
     target_counts = {
-        target: sum(1 for name in lora_modules if name.endswith(target)) for target in LORA_TARGETS[args.lora_target]
+        target: sum(1 for name in lora_modules if name.endswith(target))
+            for target in adapters.LORA_TARGETS[args.lora_target]
     }
     # Counted BEFORE `prepare`: FSDP with `use_orig_params=True` reshapes each parameter to
     # this rank's shard in place, so the same expression afterwards reports total/world_size
@@ -1251,7 +1252,7 @@ def prepare_run(  # noqa: PLR0912 -- fail all input/parent conditions before run
     store = dataset.ClipStore(membership, settings.corpus_root)
     store.verify(require_guide=settings.guide_mode == "d1")
     specification = backbone.resolve(settings.model, settings.variant)
-    from scripts.onestep_avatar.precompute import file_fingerprint  # noqa: PLC0415 -- producer identity
+    from scripts.onestep_avatar.corpus.precompute import file_fingerprint  # noqa: PLC0415 -- producer identity
 
     vae_fingerprint = file_fingerprint(Path(specification.paths.video_vae()))
     for source_id, source in store.sources.items():
@@ -1361,7 +1362,8 @@ def verify_training_conditions(job: dict, checkpoint: Path, contract: dict) -> N
         "trainable_params": sum(math.prod(shape) for shape in tensor_shapes.values()),
         "lora_modules": len(modules),
         "lora_target_counts": {
-            target: sum(name.endswith(target) for name in modules) for target in LORA_TARGETS[settings.lora_target]
+            target: sum(name.endswith(target) for name in modules)
+                for target in adapters.LORA_TARGETS[settings.lora_target]
         },
     }
     # Resolve the same JSON representation used by the producer (paths and tuples).
@@ -1565,7 +1567,8 @@ def _run_settings_body(settings: RunSettings, events, lifecycle: contextlib.Exit
             {name.rsplit(".lora_", 1)[0] for name, p in transformer.named_parameters() if p.requires_grad}
         )
         target_counts = {
-            target: sum(name.endswith(target) for name in lora_modules) for target in LORA_TARGETS[settings.lora_target]
+            target: sum(name.endswith(target) for name in lora_modules)
+                for target in adapters.LORA_TARGETS[settings.lora_target]
         }
         trainable_count = sum(p.numel() for p in trainable)
         optimizer = torch.optim.AdamW(trainable, lr=settings.lr, weight_decay=0.0, betas=(0.9, 0.999), eps=1e-8)

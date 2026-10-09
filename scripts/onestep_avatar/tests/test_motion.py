@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 import torch
 
-from scripts.onestep_avatar import motion
+from scripts.onestep_avatar.corpus import motion
 
 
 def _fake_pose3d(n_frames: int, valid: np.ndarray | None = None, raw_size_hw: tuple[float, float] = (4096.0, 3000.0)):

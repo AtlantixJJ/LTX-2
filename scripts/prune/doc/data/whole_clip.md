@@ -6,7 +6,7 @@ Reconstruct exactly the noised whole-video input used in a saved baseline D0 run
 
 ## Data flow
 
-Read capture tensors and frame rate through `onestep_avatar.dataset.load_training_master`.
+Read capture tensors and frame rate through `onestep_avatar.corpus.dataset.load_training_master`.
 The dataset reader checks the continuous-master schema, nonempty floating shape,
 and finite positive frame rate. It imports no training CLI. This replaces the
 private trainer reader without changing reconstructed input values.

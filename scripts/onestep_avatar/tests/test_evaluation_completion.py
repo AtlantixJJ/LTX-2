@@ -7,13 +7,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import dataset, evaluate
+from ltx_core.model.transformer.model import LTXModel, LTXModelType, X0Model
+from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import queue
-from scripts.onestep_avatar import subset
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- fixture dependency
 from scripts.onestep_avatar.tests.test_training_preflight import checked_settings  # noqa: F401
-from ltx_core.model.transformer.model import LTXModel, LTXModelType, X0Model
 
 
 @pytest.fixture
@@ -23,8 +23,8 @@ def completed(checked_settings, monkeypatch, tmp_path):
     Path(specification.paths.transformer()).write_bytes(b'controlled base weights')
     monkeypatch.setattr(evaluate.backbone, 'identity', lambda path, *_a, **_k: {
         'base_transformer_sha256': sha256(Path(path))})
-    import scripts.prune.core.session as sessions
     import scripts.prune.core.preflight as preflight
+    import scripts.prune.core.session as sessions
     import scripts.prune.data.prompt_cache as prompts
 
     calls = []
@@ -269,6 +269,7 @@ def test_guidance_saves_actual_negative_text_and_binds_prompt(completed):
 @pytest.mark.parametrize('defect', ['bytes', 'path', 'missing_variant'])
 def test_checked_adapter_bytes_path_and_complete_variant_inventory(completed, defect):
     from safetensors.torch import save_file
+
     from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
     from scripts.onestep_avatar.training import checkpoints
 
@@ -373,9 +374,10 @@ def test_d1_checks_paired_guide_provenance_and_capture_first_frame(completed, ch
                                              ('cache', 'denoise', 'kv_source')])
 def test_causal_diagnostic_adapter_preflight_before_sessions(checked_settings, monkeypatch, tmp_path, history, kv, field):
     from safetensors.torch import save_file
+
     from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
     from scripts.onestep_avatar.training.checkpoints import CONTRACT_KEY
-    from scripts.prune.core import session, preflight
+    from scripts.prune.core import preflight, session
     from scripts.prune.data import prompt_cache
 
     settings, membership = checked_settings
@@ -411,8 +413,8 @@ def test_causal_diagnostic_adapter_preflight_before_sessions(checked_settings, m
 
 
 def test_evaluation_releases_each_resident_model_before_the_next_case(completed, monkeypatch):
-    from contextlib import contextmanager
     import weakref
+    from contextlib import contextmanager
     execute, _, _, _, _ = completed
     references = []
 

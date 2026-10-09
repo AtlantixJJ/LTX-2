@@ -12,7 +12,8 @@ import torch
 from safetensors.torch import save_file
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import dataset, evaluate, media, precompute, prepare_inputs, subset
+from scripts.onestep_avatar import evaluate, media, prepare_inputs
+from scripts.onestep_avatar.corpus import dataset, precompute, subset
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B
 from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- full real saved master fixture

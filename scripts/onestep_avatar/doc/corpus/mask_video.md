@@ -1,4 +1,4 @@
-# `mask_video.py` — the mask storage format
+# `corpus/mask_video.py` — the mask storage format
 
 ## Objective
 

@@ -273,3 +273,5 @@ contracts, matrices, markers and snapshot bytes, including a foreign step-20 run
 and changed launch/runtime/config binding. Real small LTX/PEFT controls compare
 both trained steps independently through all three shared API paths. Applied original policy
 controls reject schema-one history, missing policies and rank disagreement.
+
+Every reference, evaluation and product adapter arm rechecks the exact pinned file, checked metadata and tensor slices before loading a backbone. Reference checks precede `load_transformer`. Pass the same bound identity to the shared inference loader.

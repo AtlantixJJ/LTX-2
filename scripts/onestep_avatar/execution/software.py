@@ -18,9 +18,10 @@ PROFILES = ('training', 'evaluation', 'inference', 'decoding', 'preparation')
 DISTRIBUTIONS = ('torch', 'peft', 'safetensors', 'accelerate', 'transformers',
                  'ltx-core', 'ltx-pipelines', 'ltx-trainer', 'triton', 'flash-attn', 'natten',
                  'numpy', 'Pillow', 'opencv-python', 'imageio', 'imageio-ffmpeg', 'lpips')
-COMMON = ('__init__.py', 'execution/__init__.py', 'execution/software.py', 'hashing.py', 'dataset.py', 'subset.py',
-          'precompute.py', 'geometry.py', 'mask_video.py', 'training/config.py', 'training/checkpoints.py',
-          'model/common.py', 'model/sampling.py', 'model/backbone.py', 'model/adapters.py')
+COMMON = ('corpus/__init__.py', '__init__.py', 'execution/__init__.py', 'execution/software.py', 'hashing.py',
+          'corpus/dataset.py', 'corpus/subset.py', 'corpus/precompute.py', 'corpus/geometry.py', 'corpus/mask_video.py',
+          'training/config.py', 'training/checkpoints.py', 'model/common.py', 'model/sampling.py',
+          'model/backbone.py', 'model/adapters.py')
 ENTRIES = {'training': ('train.py', 'training/engine.py', 'training/startup.py', 'training/update_state.py',
                         'training/resources.py', 'training/runtime.py', 'training/consumer_trace.py',
                         'training/numerics.py',

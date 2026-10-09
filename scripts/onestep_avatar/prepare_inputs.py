@@ -12,12 +12,13 @@ import numpy as np
 import torch
 from PIL import Image
 
-from scripts.onestep_avatar import dataset, evaluate, geometry, media, precompute
+from scripts.onestep_avatar import evaluate, media
+from scripts.onestep_avatar.corpus import dataset, geometry, precompute
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
+from scripts.onestep_avatar.model import common
 from scripts.prune.core import ltx_adapter, model_registry, preflight
 from scripts.prune.core.session import DTYPE
-from scripts.onestep_avatar.model import common
 
 
 def single_image(path: Path, *, matte: bool = False) -> np.ndarray:
@@ -185,10 +186,10 @@ def preview_arguments(arguments: list[str], args: argparse.Namespace, noise: Pat
 
 def prepare_preview(args: argparse.Namespace) -> dict:
     """Freeze selected native inputs and references; never execute a transformer."""
-    from scripts.prune.data import prompt_cache  # noqa: PLC0415 -- text preparation only
-    from scripts.prune.core.session import DEFAULT_PROMPT  # noqa: PLC0415
     from ltx_pipelines.utils.constants import DEFAULT_NEGATIVE_PROMPT  # noqa: PLC0415
     from scripts.onestep_avatar.training import config, engine  # noqa: PLC0415 -- actual consumer validation
+    from scripts.prune.core.session import DEFAULT_PROMPT  # noqa: PLC0415
+    from scripts.prune.data import prompt_cache  # noqa: PLC0415 -- text preparation only
 
     if args.output.exists() or args.output.is_symlink():
         raise ValueError('preview preparation requires a fresh output directory')

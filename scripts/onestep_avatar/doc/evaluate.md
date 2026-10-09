@@ -821,3 +821,5 @@ The saved-only stage-2 report reader exposes a full and a compact video entry fo
 schema-three results. Require compact media, hashes, equal panel identities and
 frame mappings, and recorded readable geometry before any report write. Legacy
 results stay attributed as legacy; an absent compact asset never starts a decoder.
+
+After ordinary data preflight and before native handles, text encoding or output writes, recheck every requested adapter. Repeat immediately before each adapter model context: call public `checkpoints.recheck_adapter` with its preflight contract and file SHA-256. Pass the bound digest to the model loader; changed bytes fail before weight loading.

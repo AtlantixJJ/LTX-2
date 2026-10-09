@@ -20,7 +20,8 @@ def test_full_rgb_score_averages_error_before_logarithm():
 
 def test_subject_mask_preserves_dilation_and_checks_coverage(tmp_path, monkeypatch):
     import numpy as np
-    from scripts.onestep_avatar import mask_video
+
+    from scripts.onestep_avatar.corpus import mask_video
     path = tmp_path / 'mask.mp4'
     assert evaluate.subject_mask(path, 1, 12, 16) is None
     path.write_bytes(b'controlled reader fixture')

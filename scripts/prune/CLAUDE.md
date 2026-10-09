@@ -32,3 +32,8 @@ require fresh saved-baseline forward checks. Export changes require functional-m
 versus export parity on a held-out capture, using the documented tolerance.
 Inspect synchronized VAE comparisons and measure benchmark drift before claiming
 quality or speed. Fresh experiment results belong under ignored `expr/` paths.
+
+The CPU gate runs the exact suite with `CUDA_VISIBLE_DEVICES=`. Collection
+marks only tests already labeled `gpu` skipped when CUDA is unavailable or
+hidden. With real CUDA those tests still run. Metadata and tiny-model CPU
+fixtures retain their own checks; a marker does not disable their imports.

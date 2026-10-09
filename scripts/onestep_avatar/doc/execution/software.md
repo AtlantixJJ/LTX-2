@@ -120,3 +120,7 @@ The deterministic numerical repair adds `training/numerics.py` to the
 training source inventory. Historical producer profiles keep their original
 bytes and remain integrity-readable; current typed training and replay capture
 the new owner with the current queue, engine and runtime sources.
+
+The empty `corpus/__init__.py` marker is part of `COMMON`, so every ordinary
+profile binds the package that its corpus imports actually load. Historical
+manifest validation retains the original source paths and digests unchanged.

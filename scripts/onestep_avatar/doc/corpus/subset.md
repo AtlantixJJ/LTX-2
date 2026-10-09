@@ -1,4 +1,4 @@
-# `subset.py` — write a fixed video list
+# `corpus/subset.py` — write a fixed video list
 
 Status: **Version-two conversion, saved-probe membership and typed runtime integration implemented.**
 `convert_legacy` creates membership and reproduction records from an old subset.
@@ -113,7 +113,7 @@ It must not skip videos during training.
 Convert old subsets to new files:
 copy exact videos, groups, and hashes; keep the original hash;
 write the old block indices into a reproduction frame plan.
-[V8](verification.md) checks this conversion.
+[V8](../verification.md) checks this conversion.
 A new selection rule is a new plan, not an undocumented reproduction of old samples.
 
 `convert_legacy` returns two records without writing. It reads each capture
@@ -145,7 +145,7 @@ The same video list does not prove the same selected frames.
 
 ## Tests
 
-[V8](verification.md) defines unchanged people, videos, and encoded data.
+[V8](../verification.md) defines unchanged people, videos, and encoded data.
 `tests/test_subset.py` checks exact old people, pins and frame ranges, changed
 producer bytes or coverage, duplicate groups, D0 without guides, and CLI
 preservation/refusal behavior. Preserve those controls through source migration.
@@ -156,3 +156,13 @@ Worked check: one person has views in two corpus parts.
 All those views receive the same group. Relocating an unchanged corpus preserves the list identity.
 Changing one capture-master byte fails verification for that video.
 Changing mode leaves this list unchanged and creates a different frame-plan record.
+
+### Lazy legacy frame-range recovery
+
+Only `convert_legacy` imports public `model.causal.CausalGeometry`, lazily. Old
+subsets record block indices; the conversion uses the canonical planner to
+recover exact half-open ranges, preserving original indices and master limits.
+This explicitly recorded architecture exception avoids duplicating block math.
+Ordinary membership validation and module import load no model code. Boundary
+tests permit precisely this function-scoped edge and reject any other corpus
+model/training/support import, including lazy imports.

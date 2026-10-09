@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from scripts.onestep_avatar import mask_video
+from scripts.onestep_avatar.corpus import mask_video
 
 
 def _soft_mask(frames: int = 7, size: int = 64) -> np.ndarray:

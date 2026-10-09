@@ -33,3 +33,13 @@ def block():
             self.transformer_blocks = torch.nn.ModuleList([transformer_block])
 
     return Model()
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Only declared native tests require visible CUDA; CPU gates load no weights."""
+    if torch.cuda.is_available():
+        return
+    skip = pytest.mark.skip(reason="native GPU test requires visible CUDA; CPU gate hides CUDA")
+    for item in items:
+        if item.get_closest_marker("gpu") is not None:
+            item.add_marker(skip)

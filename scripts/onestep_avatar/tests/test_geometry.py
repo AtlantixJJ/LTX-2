@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 import pytest
 
-from scripts.onestep_avatar import geometry
+from scripts.onestep_avatar.corpus import geometry
 
 
 class TestUnionBbox(unittest.TestCase):

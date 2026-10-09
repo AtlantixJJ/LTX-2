@@ -8,12 +8,13 @@ import pytest
 import torch
 from safetensors.torch import load_file, save_file
 
-from scripts.onestep_avatar import dataset, subset, windows
+from scripts.onestep_avatar import windows
+from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import backbone
-from scripts.onestep_avatar.training import checkpoints
 from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
 from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- pytest fixture
+from scripts.onestep_avatar.training import checkpoints
 
 
 def payload(path):

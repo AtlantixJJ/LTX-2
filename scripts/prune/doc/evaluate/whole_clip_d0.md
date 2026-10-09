@@ -8,7 +8,7 @@ Paired manifest validation, saved-noise equality and D0 latent path resolution a
 
 ## Data flow
 
-Read capture masters through `onestep_avatar.dataset.load_training_master`.
+Read capture masters through `onestep_avatar.corpus.dataset.load_training_master`.
 Use the same schema, shape and frame-rate checks as native input reconstruction.
 Do not import the training CLI to read capture data.
 

@@ -1,4 +1,4 @@
-# `dataset.py` — find and load encoded video data
+# `corpus/dataset.py` — find and load encoded video data
 
 Status: path, filename, and crop-record functions are **Current**.
 `load_training_master` is the shared checked reader extracted from `train.py`.
@@ -110,7 +110,7 @@ Current tests include `tests/test_dataset.py`, `test_geometry.py`, `test_mask_vi
 and master/pair checks in `tests/test_train.py`.
 After extraction, keep useful array/frame-rate and atomic-write tests here.
 Check that this file imports no training code.
-[V8](verification.md) checks that conversion preserves videos and master hashes.
+[V8](../verification.md) checks that conversion preserves videos and master hashes.
 Worked check: capture is `[128,17,8,8]` at 30 fps and guide is `[128,16,8,8]` at 30 fps.
 D1 fails on frame coverage; D0 can load capture without opening guide.
 Returning the 17-frame master does not itself select a causal block or a random-start segment.

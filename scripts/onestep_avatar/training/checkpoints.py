@@ -18,9 +18,11 @@ from peft import get_peft_model_state_dict
 from safetensors.torch import save_file
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP  # noqa: N817 -- conventional native name
 
-from scripts.onestep_avatar.dataset import atomic_write
+from scripts.onestep_avatar.corpus.dataset import atomic_write
+from scripts.onestep_avatar.hashing import sha256
+from scripts.onestep_avatar.model.adapters import LORA_TARGETS
 from scripts.onestep_avatar.model.common import SIGMA_PRECISION
-from scripts.onestep_avatar.training.config import LORA_TARGETS, RunSettings
+from scripts.onestep_avatar.training.config import RunSettings
 
 LOGGER = logging.getLogger("onestep_avatar.checkpoints")
 
@@ -552,6 +554,19 @@ def read_contract(path: Path) -> dict:
     return record
 
 
+def recheck_adapter(path: Path, contract: dict, expected_sha256: str | None) -> None:
+    """Repeat the one metadata/tensor validator against unchanged preflight bytes."""
+    _require_digest(expected_sha256, "adapter")
+    if sha256(path) != expected_sha256:
+        raise ValueError("adapter content changed since preflight")
+    current = read_contract(path)
+    if current != contract:
+        raise ValueError("adapter contract changed since preflight")
+    validate_adapter_tensors(path, current)
+    if sha256(path) != expected_sha256:
+        raise ValueError("adapter content changed during revalidation")
+
+
 def contract_condition_problems(record: dict, requested: dict) -> list[str]:  # noqa: PLR0912, PLR0915 -- report each condition
     """Compare complete execution conditions, excluding evaluation people and data hashes."""
     from scripts.onestep_avatar.model.sampling import validate_schedule  # noqa: PLC0415
@@ -676,7 +691,8 @@ def convert_legacy_adapter(  # noqa: PLR0912, PLR0915 -- explicit original evide
     import tempfile  # noqa: PLC0415
 
     from ltx_core.types import SpatioTemporalScaleFactors  # noqa: PLC0415
-    from scripts.onestep_avatar import dataset, subset, windows  # noqa: PLC0415
+    from scripts.onestep_avatar import windows  # noqa: PLC0415
+    from scripts.onestep_avatar.corpus import dataset, subset  # noqa: PLC0415 -- same lazy caller scope
     from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415
     from scripts.onestep_avatar.model import backbone  # noqa: PLC0415
     from scripts.onestep_avatar.model.causal import CausalGeometry  # noqa: PLC0415

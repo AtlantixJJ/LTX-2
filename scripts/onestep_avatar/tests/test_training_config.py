@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import subset
+from scripts.onestep_avatar.corpus import subset
 from scripts.onestep_avatar.training import config
 
 SCALE = SpatioTemporalScaleFactors(8, 32, 32)

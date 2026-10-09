@@ -156,7 +156,7 @@ def read_records(output: Path, world: int, *, step: int | None = None) -> tuple[
 
 def save_snapshot(output: Path, rank: int, step: int) -> None:
     """Keep checkpoint resource evidence immutable as later phases append to the journal."""
-    from scripts.onestep_avatar.dataset import atomic_write  # noqa: PLC0415 -- existing artifact publisher
+    from scripts.onestep_avatar.corpus.dataset import atomic_write  # noqa: PLC0415 -- existing artifact publisher
     source = output / f"resources_rank{rank}.jsonl"
     target = output / "resource_snapshots" / f"step_{step:05d}" / source.name
     if target.exists():

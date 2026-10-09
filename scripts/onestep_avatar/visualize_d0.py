@@ -82,7 +82,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
 from ltx_trainer.video_utils import save_video
-from scripts.onestep_avatar import dataset
+from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.media import decode as _decode
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.model import common

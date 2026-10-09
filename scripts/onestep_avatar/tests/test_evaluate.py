@@ -22,14 +22,19 @@ def test_saved_comparison_renderer_rejects_missing_latent_before_model_session(t
     spec.write_text('{"comparisons": [{"name": "case", "panels": [{"title": "x", "latent": "missing.pt"}]}]}')
     with pytest.raises(ValueError, match='latent is missing'):
         evaluate.render_saved_comparisons(spec, tmp_path / 'out', gpu_id=0)
+from ltx_core.components.guiders import MultiModalGuider, MultiModalGuiderParams
+from ltx_core.guidance.perturbations import (
+    BatchedPerturbationConfig,
+    Perturbation,
+    PerturbationConfig,
+    PerturbationType,
+)
+from ltx_core.model.transformer.model import X0Model
 from scripts.onestep_avatar.model import common
 from scripts.onestep_avatar.tests.test_causal_core import _geometry, _grid, _model
 from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- shared pytest fixture
 from scripts.onestep_avatar.tests.test_training_preflight import checked_settings  # noqa: F401 -- shared pytest fixture
 from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
-from ltx_core.components.guiders import MultiModalGuider, MultiModalGuiderParams
-from ltx_core.model.transformer.model import X0Model
-from ltx_core.guidance.perturbations import BatchedPerturbationConfig, Perturbation, PerturbationConfig, PerturbationType
 
 
 @pytest.mark.parametrize("mode", ["bidirectional", "causal"])
@@ -258,7 +263,7 @@ def test_output_file_refused_without_changes(checked_settings, monkeypatch):
 
 
 def test_wrong_encoding_vae_rejected_before_weights(checked_settings, monkeypatch):
-    from scripts.onestep_avatar import precompute
+    from scripts.onestep_avatar.corpus import precompute
 
     settings, _ = checked_settings
     monkeypatch.setattr(precompute, "file_fingerprint", lambda path: "different VAE identity")
@@ -429,7 +434,7 @@ def test_future_noise_cli_requires_complete_saved_inputs(options):
 def test_future_noise_preflight_checks_saved_pair(checked_settings, tmp_path, bad_prefix):
     settings, membership = checked_settings
     source = membership['sources'][0]['relative_dir']
-    from scripts.onestep_avatar import dataset
+    from scripts.onestep_avatar.corpus import dataset
     video = dataset.ClipStore(membership).load(source, require_guide=False)
     original = torch.zeros(1, 7 * video.z_y.shape[2] * video.z_y.shape[3], video.z_y.shape[0], dtype=torch.bfloat16)
     changed = original.clone()

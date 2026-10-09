@@ -8,7 +8,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from scripts.onestep_avatar import dataset, evaluate, media, sigma_sweep_results
+from scripts.onestep_avatar import evaluate, media, sigma_sweep_results
+from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 

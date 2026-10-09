@@ -9,10 +9,12 @@ from pathlib import Path
 
 import torch
 
-from scripts.onestep_avatar import dataset, evaluate, media
+from scripts.onestep_avatar import evaluate, media
+from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import backbone, bidirectional, causal, common
 from scripts.onestep_avatar.model.sampling import validate_schedule
+from scripts.onestep_avatar.training import checkpoints
 from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
 
 
@@ -216,7 +218,9 @@ def prepare_product(args: argparse.Namespace) -> tuple:  # noqa: PLR0912 -- orde
         raise ValueError("product guide exceeds the model position limit")
     if args.variant == "distilled" and any(level not in specification.sigmas for level in args.schedule[:-1]):
         raise ValueError("product schedule is outside the distilled base grid")
-    from scripts.onestep_avatar.precompute import file_fingerprint  # noqa: PLC0415 -- reuse producer VAE identity
+    from scripts.onestep_avatar.corpus.precompute import (  # noqa: PLC0415 -- reuse producer VAE identity
+        file_fingerprint,
+    )
 
     if guide_record["vae_fingerprint"] != file_fingerprint(Path(specification.paths.video_vae())):
         raise ValueError("product VAE differs from the recorded encoding VAE")
@@ -310,6 +314,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(json.dumps({"conditions": requested, "adapter": checked}, indent=2))  # noqa: T201 -- requested dry run
         return 0
+    if args.checkpoint is not None:
+        checkpoints.recheck_adapter(args.checkpoint, checked["contract"], checked["adapter_sha256"])
     from scripts.prune.core import preflight  # noqa: PLC0415
     from scripts.prune.core.session import DEFAULT_PROMPT, DTYPE, Session  # noqa: PLC0415
     from scripts.prune.data import prompt_cache  # noqa: PLC0415
@@ -336,7 +342,10 @@ def main(argv: list[str] | None = None) -> int:
     from scripts.onestep_avatar.model.adapters import inference_transformer  # noqa: PLC0415
 
     software.check_current(producer_software)
-    with inference_transformer(session, args.checkpoint, checked.get("contract")) as transformer:
+    if args.checkpoint is not None:
+        checkpoints.recheck_adapter(args.checkpoint, checked["contract"], checked["adapter_sha256"])
+    with inference_transformer(session, args.checkpoint, checked.get("contract"),
+                               adapter_sha256=checked.get("adapter_sha256")) as transformer:
         output, record = generate(
             transformer,
             context,

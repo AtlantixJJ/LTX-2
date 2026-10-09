@@ -104,7 +104,7 @@ two separate driving-view values, and save an unbuffered combined log under
 ```bash
 mkdir -p ../expr/onestep_avatar/logs
 CUDA_VISIBLE_DEVICES=<GPU_ID> conda run --no-capture-output -n argavatar \
-  python -u -m scripts.onestep_avatar.build_guidance \
+  python -u -m scripts.onestep_avatar.corpus.build_guidance \
   --driving-views 1 5 --limit 8 --visualize --device cuda:0 \
   2>&1 | tee ../expr/onestep_avatar/logs/guide_review.log
 ```
@@ -267,7 +267,7 @@ native generation or parity with historical raw results.
 subset. Convert an old list without changing the original or its masters:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.subset \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.corpus.subset \
   --convert <OLD_SUBSET> --output <NEW_V2_SUBSET> \
   --frame-plan-output <REPRODUCTION_PLAN> --require-guide
 ```

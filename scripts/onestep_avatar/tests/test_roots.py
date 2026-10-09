@@ -162,7 +162,7 @@ def test_b4_package_uses_only_canonical_repository_roots() -> None:
 
 
 def test_canonical_roots_keep_existing_workspace_and_software_paths() -> None:
-    from scripts.onestep_avatar import dataset  # noqa: PLC0415 -- inspect current public consumers
+    from scripts.onestep_avatar.corpus import dataset  # noqa: PLC0415 -- inspect current public consumers
     from scripts.onestep_avatar.execution import software  # noqa: PLC0415 -- inspect current public consumers
 
     assert PACKAGE_ROOT == LTX_ROOT / "scripts/onestep_avatar"

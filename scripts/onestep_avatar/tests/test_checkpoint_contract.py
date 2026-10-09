@@ -13,7 +13,7 @@ from accelerate.utils import DistributedType
 from safetensors.torch import save_file
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import subset
+from scripts.onestep_avatar.corpus import subset
 from scripts.onestep_avatar.training import checkpoints, config
 
 A = "diffusion_model.block.to_q.lora_A.weight"

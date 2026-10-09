@@ -27,7 +27,8 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedType
 from safetensors.torch import load_file
 
-from scripts.onestep_avatar import LTX_ROOT, dataset
+from scripts.onestep_avatar import LTX_ROOT
+from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import queue, software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, bidirectional, causal, common

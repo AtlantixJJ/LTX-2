@@ -15,8 +15,9 @@ import torch
 from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
 from ltx_core.model.transformer.attention import attention_label
 from ltx_core.model.transformer.transformer import DEFAULT_TRANSFORMER_OPS
-from scripts.onestep_avatar import dataset, visualize_d0
-from scripts.onestep_avatar.dataset import load_training_master
+from scripts.onestep_avatar import visualize_d0
+from scripts.onestep_avatar.corpus import dataset
+from scripts.onestep_avatar.corpus.dataset import load_training_master
 from scripts.onestep_avatar.model import backbone, common
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.model import sampling as model_sampling

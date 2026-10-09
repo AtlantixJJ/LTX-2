@@ -9,7 +9,8 @@ import torch
 from PIL import Image
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import infer, prepare_inputs, precompute
+from scripts.onestep_avatar import infer, prepare_inputs
+from scripts.onestep_avatar.corpus import precompute
 from scripts.onestep_avatar.execution import software
 
 

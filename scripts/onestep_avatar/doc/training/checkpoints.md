@@ -345,3 +345,19 @@ Changing only the held-out person does not add a compatibility difference.
 An interrupted temporary checkpoint save creates no ready checkpoint or preview job.
 Check that rejected requests perform no model load.
 Run real-weight LoRA application checks separately.
+
+### Recheck a checked adapter before loading weights
+
+Public `recheck_adapter(path, contract, expected_sha256)` owns repeat validation
+after an ordinary caller's preflight. Require the complete expected file digest,
+compare current bytes, use the existing `read_contract` and
+`validate_adapter_tensors` functions, compare the checked metadata record, then
+compare file bytes again. Fail before model opening on missing/changed identity,
+changed metadata, incomplete keys or wrong matrix shapes/rank. This calls the
+one current validator; it creates no second schema implementation.
+
+Ordinary evaluation, product and acceptance comparisons call it immediately
+before their model context. `model.adapters` receives the checked contract and
+bound digest as data and verifies byte identity independently without a reverse
+import. A metadata-only or tensor-only change after preflight fails; unchanged
+adapters preserve their tensor payload and function.

@@ -1,6 +1,6 @@
 """Fixed video membership and explicit conversion of original block-chain subsets.
 
-See doc/subset.md. Conversion reads and pins existing producer artifacts and saves
+See doc/corpus/subset.md. Conversion reads and pins existing producer artifacts and saves
 new records. It never re-encodes masters or overwrites original scientific inputs.
 """
 
@@ -14,10 +14,8 @@ from pathlib import Path
 
 import torch
 
-from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import dataset
+from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.model.causal import CausalGeometry
 
 SCHEMA_VERSION = 2
 KIND = "onestep_avatar_membership"
@@ -189,6 +187,11 @@ def from_saved_probe(path: Path) -> dict:
 
 def convert_legacy(old: dict, *, original_file_sha256: str, require_guide: bool = False) -> tuple[dict, dict]:
     """Preserve exact old video groups, content pins, block indices, and selected ranges."""
+    # The old record has indices rather than ranges. Use the one canonical planner
+    # only during explicit conversion; ordinary membership imports remain model-free.
+    from ltx_core.types import SpatioTemporalScaleFactors  # noqa: PLC0415
+    from scripts.onestep_avatar.model.causal import CausalGeometry  # noqa: PLC0415
+
     if old.get("kind") != "one_step_argavatar_block_chains":
         raise ValueError("conversion requires an original block-chain subset")
     root = Path(old["corpus_root"])

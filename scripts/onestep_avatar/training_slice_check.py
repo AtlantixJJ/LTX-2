@@ -14,7 +14,8 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedType
 from safetensors.torch import load_file
 
-from scripts.onestep_avatar import dataset, evaluate, training_update_check
+from scripts.onestep_avatar import evaluate, training_update_check
+from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import queue, software
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
 from scripts.onestep_avatar.hashing import sha256

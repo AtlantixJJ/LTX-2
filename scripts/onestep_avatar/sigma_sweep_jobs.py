@@ -7,7 +7,8 @@ from pathlib import Path
 
 import torch
 
-from scripts.onestep_avatar import dataset, evaluate, precompute, sigma_sweep, subset
+from scripts.onestep_avatar import evaluate, sigma_sweep
+from scripts.onestep_avatar.corpus import dataset, precompute, subset
 from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import backbone

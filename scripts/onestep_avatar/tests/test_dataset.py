@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.onestep_avatar import dataset
+from scripts.onestep_avatar.corpus import dataset
 
 
 def test_atomic_write_replaces_the_destination_and_returns_write_tos_result(tmp_path) -> None:  # noqa: ANN001

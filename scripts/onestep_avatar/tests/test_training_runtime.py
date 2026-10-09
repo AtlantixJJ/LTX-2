@@ -13,9 +13,9 @@ from peft import LoraConfig, get_peft_model
 from safetensors.torch import load_file
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import dataset, subset
+from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.model import causal
+from scripts.onestep_avatar.model import adapters, causal
 from scripts.onestep_avatar.tests.test_causal_core import _model
 from scripts.onestep_avatar.training import checkpoints, config, engine
 
@@ -218,7 +218,7 @@ def test_one_bounded_update_saves_real_zero_and_updated_lora(
     )
     specification.paths.transformer().write_bytes(b"controlled native-base identity")
     monkeypatch.setattr(engine.backbone, "resolve", lambda *args: specification)
-    from scripts.onestep_avatar import precompute
+    from scripts.onestep_avatar.corpus import precompute
     monkeypatch.setattr(precompute, "file_fingerprint", lambda path: "runtime VAE identity")
     monkeypatch.setattr(
         engine.backbone,
@@ -241,7 +241,8 @@ def test_one_bounded_update_saves_real_zero_and_updated_lora(
         wrapped = get_peft_model(
             model,
             LoraConfig(
-                r=2, lora_alpha=2, target_modules=config.LORA_TARGETS["attn"], lora_dropout=0.0, init_lora_weights=True
+                r=2, lora_alpha=2, target_modules=adapters.LORA_TARGETS["attn"],
+                lora_dropout=0.0, init_lora_weights=True
             ),
         )
         wrapped.get_base_model().set_gradient_checkpointing(True)

@@ -6,8 +6,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from scripts.onestep_avatar import dataset, mask_video
-from scripts.onestep_avatar.build_guidance import (
+from scripts.onestep_avatar.corpus import dataset, mask_video
+from scripts.onestep_avatar.corpus.build_guidance import (
     ALPHA_GRID,
     ALPHA_NAME,
     _render_is_complete,

@@ -7,14 +7,15 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import dataset, evaluate
+from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar.corpus import dataset
 
 
 def test_package_block_matches_original_grid_and_noise_on_real_transformer():
-    from scripts.prune.core.session import DTYPE
     from scripts.onestep_avatar.model import causal, common
-    from scripts.onestep_avatar.training import engine
     from scripts.onestep_avatar.tests.test_causal_core import CHANNELS, SCALE, _context, _model
+    from scripts.onestep_avatar.training import engine
+    from scripts.prune.core.session import DTYPE
 
     model = _model().to(dtype=DTYPE)
     capture = torch.randn(CHANNELS, 7, 2, 2, generator=torch.Generator().manual_seed(9))
@@ -40,8 +41,9 @@ def test_package_block_matches_original_grid_and_noise_on_real_transformer():
 
 
 def test_fusion_orchestration_preserves_paths_and_result_values(tmp_path, monkeypatch):
-    import ltx_trainer.model_loader as loaders
     import peft
+
+    import ltx_trainer.model_loader as loaders
     import scripts.prune.core.session as sessions
 
     run, view = tmp_path / 'run', tmp_path / 'view'

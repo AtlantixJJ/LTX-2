@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import dataset, evaluate, visualize_d0, visualize_d1
+from scripts.onestep_avatar import evaluate, visualize_d0, visualize_d1
+from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.model import causal
 from scripts.onestep_avatar.training import engine
 
@@ -15,8 +16,8 @@ from scripts.onestep_avatar.training import engine
 @pytest.mark.parametrize('frames', [17, 21])
 def test_matches_original_two_rollouts_and_actual_call_counts(frames, monkeypatch):
     from ltx_core.model.transformer.model import X0Model
-    from scripts.prune.core.session import DTYPE
     from scripts.onestep_avatar.tests.test_causal_core import CHANNELS, SCALE, _context, _model
+    from scripts.prune.core.session import DTYPE
 
     model = X0Model(_model().to(dtype=DTYPE))
     capture = torch.randn(CHANNELS, frames, 2, 2, generator=torch.Generator().manual_seed(8))

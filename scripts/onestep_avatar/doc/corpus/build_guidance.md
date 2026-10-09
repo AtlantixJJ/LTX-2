@@ -1,4 +1,4 @@
-# `build_guidance.py` — render the guide (stage B2b)
+# `corpus/build_guidance.py` — render the guide (stage B2b)
 
 ## Objective
 

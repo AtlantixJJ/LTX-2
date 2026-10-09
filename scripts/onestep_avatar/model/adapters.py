@@ -12,7 +12,12 @@ import torch
 from peft import LoraConfig, get_peft_model, get_peft_model_state_dict, set_peft_model_state_dict
 from safetensors.torch import load_file
 
-from scripts.onestep_avatar.training.config import LORA_TARGETS
+from scripts.onestep_avatar.hashing import sha256
+
+LORA_TARGETS = {
+    "attn": ["to_k", "to_q", "to_v", "to_out.0"],
+    "attn_ffn": ["to_k", "to_q", "to_v", "to_out.0", "ff.net.0.proj", "ff.net.2"],
+}
 
 UNMERGED = 'peft_unmerged_fp32'
 FUSED = 'fused_bf16'
@@ -48,9 +53,15 @@ def attach(base: torch.nn.Module, *, rank: int, alpha: int, target: str,
     return model
 
 
-def load_weights(model: torch.nn.Module, path: Path) -> None:
+def load_weights(
+    model: torch.nn.Module, path: Path, *, expected_sha256: str | None = None
+) -> None:
     """Reject incomplete adapters and load saved matrices into the shared function."""
+    if expected_sha256 is not None and sha256(path) != expected_sha256:
+        raise ValueError("adapter content changed before matrix loading")
     exported = load_file(str(path))
+    if expected_sha256 is not None and sha256(path) != expected_sha256:
+        raise ValueError("adapter content changed while reading matrices")
     if any(not name.startswith('diffusion_model.') for name in exported):
         raise ValueError('adapter tensors require the exported ComfyUI prefix')
     state = {name.replace('diffusion_model.', 'base_model.model.', 1): value
@@ -68,33 +79,39 @@ def load_weights(model: torch.nn.Module, path: Path) -> None:
 
 @contextmanager
 def inference_transformer(session, checkpoint: Path | None, contract: dict | None,
-                          *, method: str = UNMERGED):
+                          *, method: str = UNMERGED, adapter_sha256: str | None = None):
     """Yield native x0 output without changing the selected adapter function."""
     if method not in METHODS:
         raise ValueError('unsupported adapter application method')
     if checkpoint is not None:
-        from scripts.onestep_avatar.training.checkpoints import read_contract, validate_adapter_tensors
-        if contract is None or read_contract(checkpoint) != contract:
-            raise ValueError('adapter contract changed since preflight')
-        validate_adapter_tensors(checkpoint, contract)
+        if contract is None or adapter_sha256 is None:
+            raise ValueError('adapter loading requires its checked contract and content SHA-256')
+        if sha256(checkpoint) != adapter_sha256:
+            raise ValueError('adapter content changed since preflight')
     if checkpoint is None or method == FUSED:
         from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
         loras = () if checkpoint is None else (
             LoraPathStrengthAndSDOps(str(checkpoint), 1.0, LTXV_LORA_COMFY_RENAMING_MAP),)
         with session.transformer(loras=loras) as model:
+            if checkpoint is not None and sha256(checkpoint) != adapter_sha256:
+                raise ValueError('adapter content changed while loading')
             yield model
         return
     if contract is None:
         raise ValueError('unmerged inference requires a checked adapter contract')
-    from ltx_trainer.model_loader import load_transformer
     from ltx_core.model.transformer.model import X0Model
+    from ltx_trainer.model_loader import load_transformer
     base = load_transformer(checkpoint_path=session.model.paths.transformer(),
                             device=str(session.device), dtype=torch.bfloat16, video_only=True)
     model = None
     try:
         settings = contract['adapter']
         model = attach(base, rank=settings['rank'], alpha=settings['alpha'], target=settings['target'])
-        load_weights(model, checkpoint)
+        if sha256(checkpoint) != adapter_sha256:
+            raise ValueError('adapter content changed before matrix loading')
+        load_weights(model, checkpoint, expected_sha256=adapter_sha256)
+        if sha256(checkpoint) != adapter_sha256:
+            raise ValueError('adapter content changed while loading matrices')
         model.get_base_model().set_gradient_checkpointing(False)
         model.requires_grad_(False).eval()
         with torch.no_grad():

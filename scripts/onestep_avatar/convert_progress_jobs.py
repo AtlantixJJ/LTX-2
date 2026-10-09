@@ -13,7 +13,7 @@ import json
 import shlex
 from pathlib import Path
 
-from scripts.onestep_avatar import subset
+from scripts.onestep_avatar.corpus import subset
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model.sampling import thinned_truncated_schedule
 

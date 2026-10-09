@@ -19,7 +19,8 @@ from safetensors.torch import save_file
 from ltx_core.model.transformer.model import X0Model
 from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar import adapter_effect_check as effect
-from scripts.onestep_avatar import dataset, evaluate, precompute, subset
+from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar.corpus import dataset, precompute, subset
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters
@@ -61,7 +62,7 @@ def test_repeated_arms_release_cyclic_model_before_the_next_load(tmp_path, monke
     models = []
 
     @contextmanager
-    def open_model(*_args):
+    def open_model(*_args, **_kwargs):
         assert all(reference() is None for reference in models)
         model = torch.nn.Linear(2, 2)
         model.__dict__["_cycle"] = model
@@ -155,8 +156,10 @@ def test_actual_loaded_velocity_evaluation_and_product_preserve_saved_correction
                 if mode == "causal":
                     requested.update(history_mode="cache", kv_source="refresh")
                 evaluate.check_adapter(checkpoint, requested, product=True)
-            opener = (effect.reference_transformer(session, checkpoint, contract) if path == "reference" else
-                      adapters.inference_transformer(session, checkpoint, contract))
+            opener = (effect.reference_transformer(session, checkpoint, contract,
+                adapter_sha256=None if checkpoint is None else sha256(checkpoint)) if path == "reference" else
+                      adapters.inference_transformer(session, checkpoint, contract,
+                adapter_sha256=None if checkpoint is None else sha256(checkpoint)))
             with opener as model:
                 generated, record = effect.run_sample(
                     model, context, grid, capture, guide, image, noise, path=path, settings=settings,

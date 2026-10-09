@@ -1,4 +1,4 @@
-# `precompute.py` — one continuous VAE encode per view
+# `corpus/precompute.py` — one continuous VAE encode per view
 
 ## Objective
 
@@ -6,7 +6,7 @@ Turn corpus pixels into the master latents the trainer reads, for **one or both*
 resumably. Every product lives **beside its source video**, one per view; there is no
 experiment-side latent tree.
 
-Product still preparation is owned by [prepare_inputs.py](prepare_inputs.md).
+Product still preparation is owned by [prepare_inputs.py](../prepare_inputs.md).
 It reuses this module's bundle contract and native encoder helper for one actual
 RGB image, with its own fresh output directory and input-role provenance.
 It neither slices nor rewrites continuous corpus video masters.
@@ -149,7 +149,7 @@ take it down):
 
 ```bash
 for rank in 0 1 2 3; do
-  setsid -f conda run -n ltx python -m scripts.onestep_avatar.precompute \
+  setsid -f conda run -n ltx python -m scripts.onestep_avatar.corpus.precompute \
     --process_gt_latent --objective bg white --gpu-id "$rank" --rank "$rank" --n_rank 4 \
     </dev/null >/dev/null 2>&1 &
 done

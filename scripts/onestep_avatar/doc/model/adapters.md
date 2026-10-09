@@ -82,3 +82,24 @@ zero-adapter equality, and loaded nonzero-adapter equality against the training
 reference. Check loader device selection, explicit fused routing, failure without
 fallback and caller x0 semantics. Full native E2 effect and memory checks remain
 separate acceptance requirements.
+
+### Checked contract and current file identity
+
+`LORA_TARGETS` lives here and every parser/checkpoint consumer imports this
+owner. A caller validates conditions, metadata and actual tensor slices through
+`training.checkpoints`, then calls its public `recheck_adapter` immediately
+before opening model weights. Pass the checked contract and `adapter_sha256`
+to `inference_transformer`; a checkpoint without both fails before either
+loader. Compare the whole file hash before loading and before yielding, including
+the explicit fused path. A changed metadata record or tensor payload therefore
+cannot use a stale preflight record. `load_weights` separately checks the actual
+constructed PEFT inventory, matrix shapes, finite values and complete loading.
+The model owner imports no training module and carries no contract checker.
+`load_weights` can bind the caller's expected digest before and after reading
+matrices; E2 reference uses this guard after backbone loading too.
+
+Worked check: pin a valid adapter, then change only one B matrix while retaining
+metadata. Caller revalidation and the model's identity guard both refuse the
+changed file before a transformer opens. An unchanged zero adapter still equals
+its own base. Tests cover metadata/tensor mutation, missing identity, both
+application methods and exact two-mode loaded-function parity.

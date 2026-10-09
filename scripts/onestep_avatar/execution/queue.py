@@ -845,7 +845,7 @@ def read_queue_state(path: Path, jobs: list[dict]) -> dict:  # noqa: PLR0912 -- 
 @contextmanager
 def queue_state(path: Path, jobs: list[dict], *, recover: bool = False):  # noqa: ANN201, PLR0912 -- locked recovery gates
     """Write state atomically only after a successful, exclusively owned transaction."""
-    from scripts.onestep_avatar.dataset import atomic_write  # noqa: PLC0415 -- shared publication primitive
+    from scripts.onestep_avatar.corpus.dataset import atomic_write  # noqa: PLC0415 -- shared publication primitive
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.with_suffix(path.suffix + ".lock").open("a") as handle:

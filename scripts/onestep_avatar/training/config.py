@@ -14,8 +14,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import dataset
-from scripts.onestep_avatar.model import backbone
+from scripts.onestep_avatar.corpus import dataset
+from scripts.onestep_avatar.model import adapters, backbone
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.prune.core import model_registry
 
@@ -24,10 +24,6 @@ SIGMA_SAMPLING = "iid_uniform_v1"
 DEFAULT_SIGMA0 = 0.725
 
 
-LORA_TARGETS = {
-    "attn": ["to_k", "to_q", "to_v", "to_out.0"],
-    "attn_ffn": ["to_k", "to_q", "to_v", "to_out.0", "ff.net.0.proj", "ff.net.2"],
-}
 
 
 def training_sigmas(args: argparse.Namespace) -> tuple[float, ...]:
@@ -153,7 +149,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--split", choices=("train", "held_out", "validation", "test"), default="train")
     p.add_argument("--lora-rank", type=int, default=8, help="2-3 GPU preliminary runs drop this, never K")
     p.add_argument("--lora-alpha", type=int, default=None, help="default: equal to --lora-rank")
-    p.add_argument("--lora-target", choices=sorted(LORA_TARGETS), default="attn")
+    p.add_argument("--lora-target", choices=sorted(adapters.LORA_TARGETS), default="attn")
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--warmup-steps", type=int, default=20)
     p.add_argument("--steps", type=int, default=200)
@@ -422,7 +418,7 @@ def parse_settings(argv: list[str] | None = None) -> RunSettings:
     ):
         parser.add_argument("--" + option, type=int, default=default)
     parser.add_argument("--lora-alpha", type=int)
-    parser.add_argument("--lora-target", choices=sorted(LORA_TARGETS), default="attn")
+    parser.add_argument("--lora-target", choices=sorted(adapters.LORA_TARGETS), default="attn")
     for option, default in (("lr", 1e-4), ("max-grad-norm", 1.0), ("reserve-gpu-gib", 0.0)):
         parser.add_argument("--" + option, type=float, default=default)
     for option in (
@@ -474,7 +470,7 @@ def build_frame_plan(  # noqa: PLR0912 -- keep each mode's frame-selection check
     scale_factors: SpatioTemporalScaleFactors,
 ) -> dict:
     """Select deterministic mode samples over a checked fixed video list."""
-    from scripts.onestep_avatar import subset  # noqa: PLC0415 -- the converter also uses mode geometry
+    from scripts.onestep_avatar.corpus import subset  # noqa: PLC0415 -- the converter also uses mode geometry
     from scripts.onestep_avatar.model import bidirectional  # noqa: PLC0415
 
     subset.validate_membership(membership)
@@ -541,7 +537,7 @@ def select_frame_plan(  # noqa: PLR0912 -- check every provenance field before r
     scale_factors: SpatioTemporalScaleFactors,
 ) -> dict:
     """Check an explicit reproduction plan, or build a new declared selection rule."""
-    from scripts.onestep_avatar import subset  # noqa: PLC0415
+    from scripts.onestep_avatar.corpus import subset  # noqa: PLC0415
 
     if settings.frame_plan is None:
         return build_frame_plan(settings, membership, scale_factors)

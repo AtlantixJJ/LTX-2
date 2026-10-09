@@ -137,3 +137,5 @@ review options fail during argument parsing before any file/model access.
 
 Generated-only rendering writes its decoder content/VAE/shape/method/seed/settings
 key and video/poster hashes to `rendering.json`. Raw generation is saved first.
+
+After product data preflight and before native handles, text encoding or output writes, recheck the pinned adapter. Repeat immediately before opening the product transformer: recheck the adapter contract, actual tensor slices and preflight file identity through public `checkpoints.recheck_adapter`. Pass the checked identity to `model.adapters`; product does not select a second contract checker.

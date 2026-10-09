@@ -15,8 +15,9 @@ from accelerate.utils import DistributedType
 from safetensors.torch import save_file
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import dataset, evaluate, subset
+from scripts.onestep_avatar import evaluate
 from scripts.onestep_avatar import training_slice_check as slice_check
+from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, common

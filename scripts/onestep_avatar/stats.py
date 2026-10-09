@@ -42,13 +42,13 @@ from pathlib import Path
 import torch
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import dataset, mask_video
-from scripts.onestep_avatar.model import causal as causal_core
-from scripts.onestep_avatar.model import common
-from scripts.onestep_avatar.precompute import (
+from scripts.onestep_avatar.corpus import dataset, mask_video
+from scripts.onestep_avatar.corpus.precompute import (
     VideoReader,
     atomic_json_save,
 )
+from scripts.onestep_avatar.model import causal as causal_core
+from scripts.onestep_avatar.model import common
 from scripts.prune.core import ltx_adapter, model_registry
 from scripts.prune.core.session import DEFAULT_PROMPT, DTYPE
 from scripts.prune.data import prompt_cache

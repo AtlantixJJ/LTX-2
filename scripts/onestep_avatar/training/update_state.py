@@ -20,7 +20,7 @@ from accelerate.utils import DistributedType
 from torch.distributed.fsdp import FullOptimStateDictConfig, FullStateDictConfig, StateDictType
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP  # noqa: N817 -- native conventional name
 
-from scripts.onestep_avatar.dataset import atomic_write
+from scripts.onestep_avatar.corpus.dataset import atomic_write
 
 
 def export_name(name: str) -> str:

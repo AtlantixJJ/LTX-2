@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import subset, precompute
+from scripts.onestep_avatar.corpus import precompute, subset
 from scripts.onestep_avatar.tests.test_subset import old_subset
 from scripts.onestep_avatar.training import config, engine
 

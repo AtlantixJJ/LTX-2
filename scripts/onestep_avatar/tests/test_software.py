@@ -12,9 +12,10 @@ def test_declared_real_owner_inventory_and_runtime(profile):
     record = software.capture(profile, mode)
     software.check_current(record)
     assert 'scripts/onestep_avatar/execution/__init__.py' in record['sources']
+    assert 'scripts/onestep_avatar/corpus/__init__.py' in record['sources']
     assert 'scripts/onestep_avatar/model/common.py' in record['sources']
     assert 'scripts/onestep_avatar/model/adapters.py' in record['sources']
-    assert 'scripts/onestep_avatar/precompute.py' in record['sources']
+    assert 'scripts/onestep_avatar/corpus/precompute.py' in record['sources']
     assert 'packages/ltx-core/src/ltx_core/model/transformer/model.py' in record['sources']
     if profile == 'decoding':
         assert 'scripts/prune/evaluate/decode.py' in record['sources']
@@ -26,8 +27,8 @@ def test_declared_real_owner_inventory_and_runtime(profile):
 
 
 @pytest.mark.parametrize('owner', [
-    '__init__.py', 'execution/__init__.py',
-    'model/common.py', 'model/causal.py', 'model/sampling.py', 'model/adapters.py', 'precompute.py',
+    '__init__.py', 'execution/__init__.py', 'corpus/__init__.py',
+    'model/common.py', 'model/causal.py', 'model/sampling.py', 'model/adapters.py', 'corpus/precompute.py',
 ])
 def test_changed_owner_fails_current_check_and_history_stays_readable(monkeypatch, owner):
     record = software.capture('evaluation', 'causal')
@@ -45,8 +46,9 @@ def test_changed_owner_fails_current_check_and_history_stays_readable(monkeypatc
 @pytest.mark.parametrize('phase', ['before_write', 'during_write'])
 def test_decoder_owner_change_prevents_render_publication(tmp_path, monkeypatch, phase):
     import torch
-    from scripts.onestep_avatar import media
+
     from ltx_trainer import video_utils
+    from scripts.onestep_avatar import media
 
     pixels, record = media.render_panels(
         [media.Panel('p0', 'Output', torch.zeros(1, 3, 16, 16), (0,))],

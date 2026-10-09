@@ -38,7 +38,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.ticker import MaxNLocator
 
-from scripts.onestep_avatar.dataset import atomic_write
+from scripts.onestep_avatar.corpus.dataset import atomic_write
 
 COLORS = ("#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#17becf")
 

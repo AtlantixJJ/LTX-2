@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from scripts.onestep_avatar import LTX_ROOT, WORKSPACE_ROOT, dataset, evaluate, sigma_sweep_jobs, subset
+from scripts.onestep_avatar import LTX_ROOT, WORKSPACE_ROOT, evaluate, sigma_sweep_jobs
+from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.hashing import sha256
 

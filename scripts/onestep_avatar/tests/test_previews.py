@@ -11,8 +11,8 @@ from scripts.onestep_avatar import evaluate, media
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
-from scripts.onestep_avatar.training.checkpoints import CONTRACT_KEY
 from scripts.onestep_avatar.training import config, engine
+from scripts.onestep_avatar.training.checkpoints import CONTRACT_KEY
 
 
 def _fixed_inputs(tmp_path):
@@ -353,8 +353,9 @@ def test_d1_preview_refuses_absent_guide_even_with_missing_fingerprint(tmp_path)
 def test_generation_with_reference_bundle_renders_and_completes(tmp_path, monkeypatch, changed_runtime, reference_case):
     from contextlib import nullcontext
     from types import SimpleNamespace
+
+    from scripts.onestep_avatar.corpus import dataset, precompute
     from scripts.prune.core import session as native_session
-    from scripts.onestep_avatar import dataset, precompute
 
     path, settings = _fixed_inputs(tmp_path)
     fixed = json.loads(path.read_text())

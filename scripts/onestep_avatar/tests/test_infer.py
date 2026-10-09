@@ -1,20 +1,21 @@
 """Product generation uses real small-model paths and has no capture target."""
 
-import pytest
-import torch
 import json
 from types import SimpleNamespace
+
+import pytest
+import torch
 from safetensors.torch import save_file
 
 from ltx_core.model.transformer.model import X0Model
+from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar import WORKSPACE_ROOT, infer
+from scripts.onestep_avatar.corpus.precompute import file_fingerprint
 from scripts.onestep_avatar.model import causal
 from scripts.onestep_avatar.tests.test_causal_core import _geometry, _grid, _model
-from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
 from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
 from scripts.onestep_avatar.training.checkpoints import CONTRACT_KEY
-from scripts.onestep_avatar.precompute import file_fingerprint
-from ltx_core.types import SpatioTemporalScaleFactors
+from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
 
 
 @pytest.mark.parametrize("mode", ["bidirectional", "causal"])
@@ -168,7 +169,7 @@ def test_review_requires_decoding_before_file_access(product_files):
 
 
 def test_product_review_records_decoded_inputs_without_capture(tmp_path, monkeypatch):
-    from scripts.onestep_avatar import media, evaluate
+    from scripts.onestep_avatar import evaluate, media
     from scripts.onestep_avatar.hashing import sha256
 
     guide = torch.ones(1, 128, 2, 1, 1)

@@ -6,11 +6,12 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import dataset, evaluate, media, prepare_inputs, subset
+from scripts.onestep_avatar import evaluate, media, prepare_inputs
+from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.training import engine
 from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- fixture dependency
 from scripts.onestep_avatar.tests.test_training_preflight import checked_settings  # noqa: F401
+from scripts.onestep_avatar.training import engine
 
 
 @pytest.fixture
@@ -131,8 +132,8 @@ def test_guided_execution_loads_fixed_contexts_before_transformer(preview_case,m
     setup,_,calls=preview_case
     args=setup(extra=['--cfg','2','--negative-prompt','negative'])
     fixed=prepare_inputs.prepare_preview(args)
-    import scripts.prune.data.prompt_cache as prompts
     import scripts.prune.core.session as sessions
+    import scripts.prune.data.prompt_cache as prompts
     monkeypatch.setattr(prompts,'get_or_build',lambda *_a,**_k:pytest.fail('fixed text rebuilt'))
     monkeypatch.setattr(evaluate,'torch',SimpleNamespace(**{**vars(torch),'device':lambda *_a:torch.device('cpu')}))
     monkeypatch.setattr(sessions,'Session',lambda spec,device,*_a:SimpleNamespace(device=device))

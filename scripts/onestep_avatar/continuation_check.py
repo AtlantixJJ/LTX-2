@@ -21,7 +21,8 @@ from pathlib import Path
 import torch
 
 from ltx_core.model.transformer.modality import Modality
-from scripts.onestep_avatar import LTX_ROOT, dataset, evaluate
+from scripts.onestep_avatar import LTX_ROOT, evaluate
+from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import causal, common

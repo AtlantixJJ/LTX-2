@@ -18,8 +18,8 @@ from pathlib import Path
 import torch
 
 from ltx_core.components.patchifiers import VideoLatentPatchifier
-from scripts.onestep_avatar import dataset, subset
-from scripts.onestep_avatar.dataset import atomic_write
+from scripts.onestep_avatar.corpus import dataset, subset
+from scripts.onestep_avatar.corpus.dataset import atomic_write
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters as adapter_loader
@@ -284,7 +284,7 @@ def sigma_sweep_boundary_metrics(video, capture, guide, mask) -> dict:  # noqa: 
 
 def subject_mask(path: Path, frames: int, height: int, width: int) -> torch.Tensor | None:
     """Replay the study's optional two-cell mask dilation for RGB QA only."""
-    from scripts.onestep_avatar import mask_video  # noqa: PLC0415 -- CPU lossless mask reader
+    from scripts.onestep_avatar.corpus import mask_video  # noqa: PLC0415 -- CPU lossless mask reader
 
     if any(type(value) is not int or value < 1 for value in (frames, height, width)):
         raise ValueError("subject mask requires positive frame count and dimensions")
@@ -887,7 +887,7 @@ def prepare_evaluation(args: argparse.Namespace, *, require_fresh_output: bool =
         raise ValueError("STG block index exceeds the selected base layer count")
     if args.variant == "distilled" and any(level not in specification.sigmas for level in args.schedule[:-1]):
         raise ValueError("evaluation schedule is outside the distilled base grid")
-    from scripts.onestep_avatar.precompute import file_fingerprint  # noqa: PLC0415 -- producer identity
+    from scripts.onestep_avatar.corpus.precompute import file_fingerprint  # noqa: PLC0415 -- producer identity
 
     vae_fingerprint = file_fingerprint(Path(specification.paths.video_vae()))
     for source in ids:
@@ -1748,6 +1748,13 @@ def execute_evaluation(args: argparse.Namespace, sample_runner=None) -> int:  # 
             )
         )
         return 0
+    # Repeat pinned adapter checks before text or native weights can open.
+    for _, _, _, case_adapters in cases:
+        for index, checkpoint in enumerate(variants):
+            if checkpoint is not None:
+                checkpoints.recheck_adapter(
+                    checkpoint, case_adapters[index]["contract"], case_adapters[index]["adapter_sha256"]
+                )
     # Heavy native handles are imported only after every cheap condition has passed.
     software.check_current(producer_software)
     from scripts.prune.core import preflight  # noqa: PLC0415
@@ -1843,8 +1850,12 @@ def execute_evaluation(args: argparse.Namespace, sample_runner=None) -> int:  # 
             atomic_write(destination / "changed_noise.pt", lambda temporary: torch.save(args.changed_noise, temporary))
         for index, checkpoint in enumerate(variants):
             software.check_current(producer_software)
+            if checkpoint is not None:
+                checkpoints.recheck_adapter(checkpoint, adapters[index]["contract"],
+                                            adapters[index]["adapter_sha256"])
             with adapter_loader.inference_transformer(
-                session, checkpoint, adapters[index].get("contract"), method=args.adapter_application
+                session, checkpoint, adapters[index].get("contract"), method=args.adapter_application,
+                adapter_sha256=adapters[index].get("adapter_sha256")
             ) as transformer:
                 sampler = (
                     (sample_case if sample_runner is None else sample_runner)
@@ -1977,7 +1988,7 @@ def evaluate_fusion_parity(run: Path, view: Path, output: Path, *, gpu_id: int, 
 
     from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps  # noqa: PLC0415
     from ltx_trainer.model_loader import load_transformer  # noqa: PLC0415
-    from scripts.onestep_avatar.training.config import LORA_TARGETS  # noqa: PLC0415
+    from scripts.onestep_avatar.model.adapters import LORA_TARGETS  # noqa: PLC0415
     from scripts.prune.core.session import DTYPE, open_session  # noqa: PLC0415
 
     if type(step) is not int or step < 1 or output.exists():

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from scripts.onestep_avatar import dataset, subset
+from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.hashing import sha256
 
 

@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from scripts.onestep_avatar import qa
+from scripts.onestep_avatar.corpus import qa
 
 
 class TestMaskIoU(unittest.TestCase):

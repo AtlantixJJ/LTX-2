@@ -16,7 +16,8 @@ import torch
 from PIL import Image
 from safetensors.torch import load_file
 
-from scripts.onestep_avatar import dataset, evaluate, infer, media
+from scripts.onestep_avatar import evaluate, infer, media
+from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import queue, software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, common
@@ -433,20 +434,21 @@ def _phase(prepared: dict, output: Path, device: torch.device, name: str, record
 
 @contextlib.contextmanager
 def reference_transformer(
-    session: Session, checkpoint: Path | None, contract: dict | None
+    session: Session, checkpoint: Path | None, contract: dict | None,
+    *, adapter_sha256: str | None = None
 ) -> Iterator[torch.nn.Module]:
     from ltx_trainer.model_loader import load_transformer  # noqa: PLC0415 -- trainer's real velocity loader
 
+    if checkpoint is not None:
+        checkpoints.recheck_adapter(checkpoint, contract, adapter_sha256)
     base = load_transformer(checkpoint_path=session.model.paths.transformer(), device=str(session.device),
                             dtype=torch.bfloat16, video_only=True)
     model = base
     try:
         if checkpoint is not None:
-            if checkpoints.read_contract(checkpoint) != contract:
-                raise ValueError("reference adapter contract changed since preflight")
             settings = contract["adapter"]
             model = adapters.attach(base, rank=settings["rank"], alpha=settings["alpha"], target=settings["target"])
-            adapters.load_weights(model, checkpoint)
+            adapters.load_weights(model, checkpoint, expected_sha256=adapter_sha256)
         common.base_model(model).set_gradient_checkpointing(False)
         model.requires_grad_(False).eval()
         yield model
@@ -481,8 +483,12 @@ def _arm(prepared: dict, case: dict, session: Session, grid: common.ClipGrid, pa
     contract = None if checkpoint is None else prepared["contracts"][state]
     if checkpoint is not None and sha256(checkpoint) != prepared["pins"][str(checkpoint.resolve())]:
         raise ValueError("adapter-effect checkpoint changed before model loading")
-    opener = (reference_transformer(session, checkpoint, contract) if path == "reference" else
-              adapters.inference_transformer(session, checkpoint, contract,
+    identity = None if checkpoint is None else prepared["pins"][str(checkpoint.resolve())]
+    if checkpoint is not None:
+        checkpoints.recheck_adapter(checkpoint, contract, identity)
+    opener = (reference_transformer(session, checkpoint, contract, adapter_sha256=identity)
+              if path == "reference" else
+              adapters.inference_transformer(session, checkpoint, contract, adapter_sha256=identity,
                   method=adapters.FUSED if path == "fused" else adapters.UNMERGED))
     with contextlib.ExitStack() as lifecycle:
         with _phase(prepared, output, session.device, f"load:{case['source']}:{path}:{state}", records):

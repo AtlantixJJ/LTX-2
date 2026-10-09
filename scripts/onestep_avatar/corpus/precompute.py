@@ -27,7 +27,7 @@ or copy it: the trainer reads that bundle directly.
 
 Run from ``LTX-2`` using the ``ltx`` conda environment, for example::
 
-    conda run -n ltx python -m scripts.onestep_avatar.precompute \
+    conda run -n ltx python -m scripts.onestep_avatar.corpus.precompute \
         --process_gt_latent --objective bg white --model 2.5 --gpu-id 0
 """
 
@@ -52,8 +52,8 @@ from ltx_core.types import SpatioTemporalScaleFactors
 # Aliased: `geometry` is already the parameter name this module uses throughout for a
 # CaptureGeometry instance -- a different thing entirely (whole-clip VAE coverage, not the crop
 # box). Importing it bare would shadow that on every function that takes one.
-from scripts.onestep_avatar import dataset, mask_video
-from scripts.onestep_avatar import geometry as crop_geometry
+from scripts.onestep_avatar.corpus import dataset, mask_video
+from scripts.onestep_avatar.corpus import geometry as crop_geometry
 from scripts.onestep_avatar.hashing import sha256
 from scripts.prune.core import ltx_adapter, model_registry
 from scripts.prune.core.session import DTYPE

@@ -297,7 +297,7 @@ This section keeps only the removals that are already complete.
 | `report_d0.py`, `doc/report_d0.md` | current evaluation/media outputs; useful historical evidence keeps its original records |
 | large-trainer `doc/train.md` | `doc/training/` and model docs; `train.py` stays a small CLI with a header |
 | root `backbone.py` | `model/backbone.py`, with its logic in the header |
-| `doc/backbone.md`, `doc/hashing.md`, `doc/qa.md` | headers of the matching source files (each at most 100 lines) |
+| `doc/backbone.md`, `doc/hashing.md`, `doc/corpus/qa.md` | headers of the matching source files (each at most 100 lines) |
 
 The active training anchor path and its CLI flag, data fields, loading,
 metadata, loss placeholders and logs are removed. Historical saved records keep

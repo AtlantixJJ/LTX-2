@@ -37,7 +37,7 @@ Per (clip, driving view ``D``):
    alpha only exists transiently in this loop.
 7. The composited result is encoded and persisted, atomically, as
    ``clip.view_dir(D)/`` + ``dataset.render_name(objective)`` -- the exact path/name
-   ``LTX-2/scripts/onestep_avatar/precompute.py``'s ``discover_pairs()`` expects as the
+   ``LTX-2/scripts/onestep_avatar/corpus/precompute.py``'s ``discover_pairs()`` expects as the
    sibling of that view's capture bundle. **This file is the guide, not the raw render** --
    the render on its own background is persisted only when that IS the objective.
 
@@ -50,7 +50,7 @@ which import cleanly only when the process's cwd is ARGAvatar's repo root -- thi
 resolves every workspace-side path to an absolute ``Path`` *before* chdir-ing there).
 
     conda activate argavatar
-    python -m scripts.onestep_avatar.build_guidance --limit 8 --visualize   # review batch first
+    python -m scripts.onestep_avatar.corpus.build_guidance --limit 8 --visualize   # review batch first
 """
 
 from __future__ import annotations
@@ -70,8 +70,9 @@ import numpy as np
 import torch
 from PIL import Image
 
-from scripts.onestep_avatar import dataset, geometry, hashing, mask_video, motion, qa
-from scripts.onestep_avatar.dataset import ClipRef
+from scripts.onestep_avatar import hashing
+from scripts.onestep_avatar.corpus import dataset, geometry, mask_video, motion, qa
+from scripts.onestep_avatar.corpus.dataset import ClipRef
 
 DEFAULT_ARGAVATAR_ROOT = Path("/home/jianjinx/data2/ARG-Avatar")
 # Not the config's own default (`checkpoints/ARGAvatar-Final.pth`) -- that file's content has

@@ -203,7 +203,7 @@ Put exact noise levels, positions, and cache contents in adjacent tables.
 Capture precompute writes the crop record and capture master.
 ARGAvatar writes guide RGB and alpha.
 Guide precompute writes the guide master and cropped mask.
-The implemented [subset](subset.md) writes a fixed video list.
+The implemented [subset](corpus/subset.md) writes a fixed video list.
 Each mode selects frames. Checkpoint code records training settings.
 [Evaluation](evaluate.md) records the actual inputs and model calls.
 [Media](media.md) decodes saved outputs with existing VAE code.

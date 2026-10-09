@@ -76,13 +76,13 @@ copies of shared knowledge plus the tests to pin them. It is one package now.
 
 | Env | Runs |
 |---|---|
-| `argavatar` | **`build_guidance.py` only** — the one module that imports `scripts.inference.pipeline` |
+| `argavatar` | **`corpus/build_guidance.py` only** — the one module that imports `scripts.inference.pipeline` |
 | `ltx` | everything else, including the tests |
 
 ```bash
 cd LTX-2                                       # the repo root, not scripts/onestep_avatar
 conda run -n ltx       python -m scripts.onestep_avatar.<module> ...
-conda run -n argavatar python -m scripts.onestep_avatar.build_guidance ...
+conda run -n argavatar python -m scripts.onestep_avatar.corpus.build_guidance ...
 conda run -n ltx       python -m pytest scripts/onestep_avatar/tests -q
 ```
 
@@ -100,7 +100,7 @@ turn the namespace into a regular package and break that merge.
 
 This package sits inside the **LTX-2 submodule**, but most of it is workspace-specific:
 corpus plumbing for DNARendering and ARGAvatar, not anything upstream would want. It lives
-here because the model half genuinely cannot leave — `train.py`, `precompute.py` and
+here because the model half genuinely cannot leave — `train.py`, `corpus/precompute.py` and
 the `model/` owners import `scripts.prune.core` and `ltx_core`/`ltx_trainer`, all LTX-2-resident.
 
 **Repository boundary:** training, training/evaluation launchers and queues, generation,
@@ -255,20 +255,20 @@ at them.
    Training and generation remain different operations; extraction alone does
    not prove parity. No CLI may create a second block-state or input path.
 2. **One producer per artifact.** The crop box comes from `precompute.py --process_gt_latent`'s
-   manifest; `z_y` from the capture pass; the guide and its alpha from `build_guidance.py`;
-   current membership from `subset.py` and frame selection from the selected mode.
+   manifest; `z_y` from the capture pass; the guide and its alpha from `corpus/build_guidance.py`;
+   current membership from `corpus/subset.py` and frame selection from the selected mode.
    `windows.py` is a remaining historical caller. Readers never recompute and
    never "reconstruct if missing" —
    they raise with a pointed error.
-3. **Shared knowledge has exactly one spelling.** Artifact names live in `dataset.py`, the
-   crop box in `geometry.py`, the block plan in `model/causal.py`, the mask codec in
-   `mask_video.py`. These were four transcribed pairs before the merge; do not reintroduce a
+3. **Shared knowledge has exactly one spelling.** Artifact names live in `corpus/dataset.py`, the
+   crop box in `corpus/geometry.py`, the block plan in `model/causal.py`, the mask codec in
+   `corpus/mask_video.py`. These were four transcribed pairs before the merge; do not reintroduce a
    copy "to avoid an import".
 4. **Both objectives (`bg`, `white`) share every code path**, differing only in which pixels
    were encoded and which filename holds them. An objective is never a second pipeline.
 5. **No synthetic pixels ever enter a loss target** — shift-and-cap, never white-pad, and
    exclude a subject that does not fit the canvas.
-6. **Masks are stored losslessly** (`mask_video.py`). These mattes are already one generation
+6. **Masks are stored losslessly** (`corpus/mask_video.py`). These mattes are already one generation
    of lossy video from the truth; the pipeline does not add a second.
 
 ## Before calling a change done

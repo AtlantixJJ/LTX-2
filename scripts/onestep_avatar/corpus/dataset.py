@@ -26,7 +26,7 @@ T = TypeVar("T")
 
 DEFAULT_CORPUS_ROOT = WORKSPACE_ROOT / "data" / "AnimatableHuman" / "DNARenderingVideo"
 
-# Written by ``LTX-2/scripts/onestep_avatar/precompute.py --process_gt_latent`` at the corpus
+# Written by ``LTX-2/scripts/onestep_avatar/corpus/precompute.py --process_gt_latent`` at the corpus
 # root. It is the **single producer** of the crop box (SS4.5): the box it records is the one
 # the capture target latents were actually encoded with, so every other stage reads it rather
 # than recomputing a box of its own.
@@ -369,7 +369,9 @@ class ClipStore:
     """Read fixed-video membership without block chains, cache settings, or frame selection."""
 
     def __init__(self, membership: dict, corpus_root: Path | None = None) -> None:
-        from scripts.onestep_avatar.subset import validate_membership  # noqa: PLC0415 -- filenames stay import-light
+        from scripts.onestep_avatar.corpus.subset import (  # noqa: PLC0415 -- filenames stay import-light
+            validate_membership,
+        )
 
         validate_membership(membership)
         self.membership = membership

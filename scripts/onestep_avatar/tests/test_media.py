@@ -108,6 +108,7 @@ def test_record_rebuild_uses_same_titles_pixels_and_poster():
 def test_native_decode_activates_session_device_and_restores_it(monkeypatch, decoder_fails):
     from contextlib import contextmanager
     from types import SimpleNamespace
+
     from scripts.onestep_avatar import media
     from scripts.prune.evaluate import decode as native_decode
 
@@ -159,7 +160,9 @@ def test_native_decode_activates_session_device_and_restores_it(monkeypatch, dec
 
 def test_recorded_capture_rgb_reuses_producer_crop_and_rejects_changed_source(tmp_path, monkeypatch):
     import numpy as np
-    from scripts.onestep_avatar import media, precompute
+
+    from scripts.onestep_avatar import media
+    from scripts.onestep_avatar.corpus import precompute  # noqa: PLC0415 -- same lazy caller scope
     from scripts.onestep_avatar.hashing import sha256
 
     view = tmp_path / 'actor/view'
@@ -207,9 +210,12 @@ def test_recorded_capture_rgb_reuses_producer_crop_and_rejects_changed_source(tm
 
 def test_recorded_guide_rgb_checks_content_and_preserves_shape(tmp_path, monkeypatch):
     import json
+
     import cv2
     import numpy as np
-    from scripts.onestep_avatar import dataset, media
+
+    from scripts.onestep_avatar import media
+    from scripts.onestep_avatar.corpus import dataset  # noqa: PLC0415 -- same lazy caller scope
     from scripts.onestep_avatar.hashing import sha256
 
     view = tmp_path / 'actor/view'
@@ -247,7 +253,9 @@ def test_recorded_guide_rgb_checks_content_and_preserves_shape(tmp_path, monkeyp
 
 def test_training_reference_roles_and_decoder_identity(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from scripts.onestep_avatar import dataset, media, precompute
+
+    from scripts.onestep_avatar import media
+    from scripts.onestep_avatar.corpus import dataset, precompute  # noqa: PLC0415 -- same lazy caller scope
     from scripts.onestep_avatar.hashing import sha256
 
     view = tmp_path / 'actor/view'
@@ -291,6 +299,7 @@ def test_training_reference_roles_and_decoder_identity(tmp_path, monkeypatch):
 
 def test_saved_decoder_session_has_no_prompt_or_transformer_work(monkeypatch):
     from types import SimpleNamespace
+
     from scripts.onestep_avatar import media
     from scripts.prune.core import preflight, session
     from scripts.prune.data import prompt_cache
@@ -334,9 +343,11 @@ def reference_cli_inputs(tmp_path, monkeypatch):
     import json
     from contextlib import nullcontext
     from types import SimpleNamespace
-    from scripts.onestep_avatar import dataset, media, precompute, subset
-    from scripts.onestep_avatar.model import backbone
+
+    from scripts.onestep_avatar import media
+    from scripts.onestep_avatar.corpus import dataset, precompute, subset  # noqa: PLC0415 -- same lazy caller scope
     from scripts.onestep_avatar.hashing import sha256
+    from scripts.onestep_avatar.model import backbone
 
     view = tmp_path / 'actor/view'
     view.mkdir(parents=True)
@@ -381,6 +392,7 @@ def reference_cli_inputs(tmp_path, monkeypatch):
 
 def test_reference_cli_capture_only_roundtrip(reference_cli_inputs, monkeypatch):
     import json
+
     from scripts.onestep_avatar import media
     arguments, source, session, view, path, output = reference_cli_inputs
     assert media.main(arguments) == 0
@@ -401,7 +413,9 @@ def test_reference_cli_capture_only_roundtrip(reference_cli_inputs, monkeypatch)
 @pytest.mark.parametrize('change', ['d1', 'range', 'unknown', 'changed_capture', 'broken_optional_guide', 'vae'])
 def test_reference_cli_refusals_before_decoder(reference_cli_inputs, monkeypatch, change):
     import json
-    from scripts.onestep_avatar import dataset, media, subset
+
+    from scripts.onestep_avatar import media
+    from scripts.onestep_avatar.corpus import dataset, subset  # noqa: PLC0415 -- same lazy caller scope
     arguments, source, session, view, path, output = reference_cli_inputs
     if change in ('d1', 'range', 'unknown'):
         flag, value = {'d1': ('--guide-mode', 'd1'), 'range': ('--encoded-frames', '3'),
@@ -424,7 +438,8 @@ def test_reference_cli_refusals_before_decoder(reference_cli_inputs, monkeypatch
 
 @pytest.mark.parametrize('changed_input', ['membership', 'matte'])
 def test_reference_cli_refuses_changed_inputs_before_publication(reference_cli_inputs, monkeypatch, changed_input):
-    from scripts.onestep_avatar import dataset, media
+    from scripts.onestep_avatar import media
+    from scripts.onestep_avatar.corpus import dataset  # noqa: PLC0415 -- same lazy caller scope
     arguments, source, session, view, path, output = reference_cli_inputs
 
     def decode(*_args):

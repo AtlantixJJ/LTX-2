@@ -17,13 +17,12 @@ from ltx_core.conditioning.types.latent_cond import VideoConditionByLatentIndex
 from ltx_pipelines.utils.denoisers import FactoryGuidedDenoiser
 from ltx_pipelines.utils.helpers import create_noised_state
 from ltx_pipelines.utils.samplers import euler_denoising_loop
-from scripts.onestep_avatar import dataset, evaluate, media, precompute
+from scripts.onestep_avatar import evaluate, media
+from scripts.onestep_avatar.corpus import dataset, precompute, subset
 from scripts.onestep_avatar.execution import software
-from scripts.onestep_avatar import subset
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import backbone, bidirectional, common
 from scripts.prune.core.session import DEFAULT_PROMPT, DTYPE, Session
-
 
 PROTOCOL = {
     'scope': 'stock public video sampling path, audio absent; no outer RGB/text or joint audio-video parity',

@@ -1,4 +1,4 @@
-# `geometry.py` — the square crop rule
+# `corpus/geometry.py` — the square crop rule
 
 ## Objective
 

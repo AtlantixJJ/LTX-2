@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar.precompute import (
+from scripts.onestep_avatar.corpus.precompute import (
     BUNDLE_SCHEMA_VERSION,
     CAPTURE_MANIFEST_NAME,
     DEFAULT_CORPUS_ROOT,

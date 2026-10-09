@@ -8,7 +8,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import dataset, evaluate, sigma_sweep, subset
+from scripts.onestep_avatar import evaluate, sigma_sweep
+from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_evaluation_completion import completed  # noqa: F401 -- shared CPU model fixture

@@ -171,7 +171,7 @@ The table lists package-internal imports. Lazy imports inside functions count.
 | Importing package | May import | Must not import |
 |---|---|---|
 | Root leaf utilities (`__init__.py`, `hashing.py`) | The standard library only at module import | Every package module |
-| `corpus/` | `corpus/`, root leaf utilities | Everything else in the package |
+| `corpus/` | `corpus/`, root leaf utilities; lazily `model.causal` only in `subset.convert_legacy` as documented below | Everything else in the package |
 | `model/` | `model/`, `corpus/`, root leaf utilities | `training/`, root run support, `execution/`, `experiments/` |
 | `training/` | `training/`, `model/`, `corpus/`, `execution/`, root leaf utilities; lazily `previews.py` and `evaluate.parse_args` for preview jobs | Other root run support, `experiments/` |
 | Root run support | Any package code outside `experiments/` | `experiments/`, `train.py` |
@@ -202,12 +202,21 @@ Rules that the table does not show:
    none of these. A command that loads no model and uses no GPU (job builders,
    converters, saved-result metrics) may run directly.
 
-**Current exceptions to remove during the refactor:**
-`model/adapters.py` imports `training.config.LORA_TARGETS` (move the constant
-to `model/adapters.py`) and lazily imports `training.checkpoints` (pass the
-checked contract in from the caller, or record why the edge must stay);
-`subset.py` imports `model.causal.CausalGeometry` (keep it only if a
-general conversion needs it, and record the reason here).
+**Documented corpus conversion exception.**
+`corpus.subset.convert_legacy` lazily imports the public
+`model.causal.CausalGeometry` only when reproducing an original block-chain
+subset. The old record contains block indices, not encoded frame ranges;
+recover those ranges through the one canonical block planner. Retaining this
+specific general conversion edge avoids a second spelling of block arithmetic.
+Ordinary `corpus.dataset` and `corpus.subset` imports load no model owner.
+The dependency test names this exact source, destination and function; every
+other corpus-to-model import, including lazy imports, fails the boundary check.
+
+`model.adapters` owns `LORA_TARGETS`. Its loader receives a validated contract
+and its bound adapter SHA-256 as data. Callers use the public
+`training.checkpoints.recheck_adapter` immediately before opening weights;
+the model owner checks the file identity again, without importing training.
+No contract validation is duplicated in the model owner.
 
 The first diagram shows imports that run when a module loads. They form one
 direction, from run support down to corpus code. Two kinds of edge are not

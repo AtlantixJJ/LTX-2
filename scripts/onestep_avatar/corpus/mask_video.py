@@ -43,7 +43,7 @@ import cv2
 import numpy as np
 import torch
 
-from scripts.onestep_avatar import dataset
+from scripts.onestep_avatar.corpus import dataset
 
 # Lossless, grayscale, in MP4. `-crf 0` is x264's lossless mode; `-pix_fmt gray` keeps one
 # plane rather than padding to 4:2:0 (which would also be lossless for gray input, but three

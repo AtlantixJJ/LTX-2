@@ -43,8 +43,8 @@ from pathlib import Path
 import numpy as np
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import dataset, geometry
-from scripts.onestep_avatar.dataset import ClipRef
+from scripts.onestep_avatar.corpus import dataset, geometry
+from scripts.onestep_avatar.corpus.dataset import ClipRef
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import causal as causal_core
 

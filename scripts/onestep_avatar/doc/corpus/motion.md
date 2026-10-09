@@ -1,4 +1,4 @@
-# `motion.py` — `pose3d.npy` → ARGAvatar `sam3db`
+# `corpus/motion.py` — `pose3d.npy` → ARGAvatar `sam3db`
 
 ## Objective
 

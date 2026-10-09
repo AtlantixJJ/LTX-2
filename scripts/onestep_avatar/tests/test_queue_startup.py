@@ -105,7 +105,7 @@ def test_ambiguous_or_nonstartup_failure_never_mutates_state_or_output(tmp_path,
 
 
 def test_archive_publication_failure_restores_output_and_preserves_journal(tmp_path, monkeypatch):
-    from scripts.onestep_avatar import dataset
+    from scripts.onestep_avatar.corpus import dataset
     job, state_path, output, log = failed_attempt(tmp_path)
     original = state_path.read_bytes(); hashes = {p.name: sha256(p) for p in output.iterdir()}
     def unavailable(*_args, **_kwargs): raise OSError('state disk failed')

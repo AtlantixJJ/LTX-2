@@ -30,7 +30,7 @@ and [causal](../README.md#causal-workflow) workflows and [mode selection](../REA
 4. [Causal model](model/causal.md): process blocks in order; keep past-frame data.
 5. [Common inputs](model/common.md) and [denoising steps](model/sampling.md).
 6. [Engine](training/engine.md), [settings](training/config.md), and [adapter records](training/checkpoints.md).
-7. [Video list](subset.md), [evaluation](evaluate.md), [visualization](media.md), and [timing](bench.md).
+7. [Video list](corpus/subset.md), [evaluation](evaluate.md), [visualization](media.md), and [timing](bench.md).
 8. [Worked checks](verification.md) and [known gaps](known_gaps.md).
 
 Training visualization is in [engine](training/engine.md#visualization-during-training)
@@ -100,18 +100,18 @@ Review these decisions and expected results, rather than only the file-flow diag
 | [Settings](training/config.md#core-resolution-logic) | omitted versus explicit mode options, checked records, seed formulas, side-effect order |
 | [Checkpoints](training/checkpoints.md#read-and-decide-before-model-loading) | field comparisons, override decision, atomic save readiness |
 | [Engine](training/engine.md#update-results-and-save-order) | sample/block averaging, one optimizer update, checkpoint step, preview job states |
-| [Dataset](dataset.md#checked-reader-procedure) | unsliced master loading, D0/D1 checks, no producer repair or sample selection |
-| [Video list](subset.md#select-and-group-videos) | deterministic person groups, exclusions, stable content identity, conversion |
+| [Dataset](corpus/dataset.md#checked-reader-procedure) | unsliced master loading, D0/D1 checks, no producer repair or sample selection |
+| [Video list](corpus/subset.md#select-and-group-videos) | deterministic person groups, exclusions, stable content identity, conversion |
 | [Evaluation](evaluate.md#define-the-comparison-before-execution) | one-factor matching, saved noise reuse, reference/metric definitions |
 | [Media](media.md#visualization-layout) | exact panel positions, important video text, synchronized frames, readable compact layout |
 | [Training plots](plot_training.md#read-and-aggregate-logs) | process aggregation, incomplete updates, axes, smoothing, raw summary values |
 | [Benchmark](bench.md#measurement-boundaries) | timer boundaries, cache reset, repetition/call counts, actual frame-rate arithmetic |
-| [Crop](geometry.md#core-crop-calculation) | union, padded square, rounded shift/cap, subject-fit exclusion |
-| [Motion](motion.md#convert-one-frame) | all three format conversions, body/camera ownership, exact gap holding and timing |
-| [Masks](mask_video.md#derive-encoded-frame-coverage) | lossless bytes, spatial pooling, first-frame/eight-frame temporal groups |
+| [Crop](corpus/geometry.md#core-crop-calculation) | union, padded square, rounded shift/cap, subject-fit exclusion |
+| [Motion](corpus/motion.md#convert-one-frame) | all three format conversions, body/camera ownership, exact gap holding and timing |
+| [Masks](corpus/mask_video.md#derive-encoded-frame-coverage) | lossless bytes, spatial pooling, first-frame/eight-frame temporal groups |
 | [Statistics](stats.md#core-measurement-calculations) | RMS/weighted gaps, moment scope, pairwise noise spread, declared diagnostic inputs |
-| [Capture/guide encoding](precompute.md#core-pixel-and-encoding-transformations) | full-resolution target preparation, fixed crop, VAE-aligned prefix and stored shapes |
-| [Guide rendering](build_guidance.md#organization-logic) | refined body plus view camera, one-pass RGBA work, exact background replacement |
+| [Capture/guide encoding](corpus/precompute.md#core-pixel-and-encoding-transformations) | full-resolution target preparation, fixed crop, VAE-aligned prefix and stored shapes |
+| [Guide rendering](corpus/build_guidance.md#organization-logic) | refined body plus view camera, one-pass RGBA work, exact background replacement |
 
 Each doc contains a worked check or links to the numeric algorithm checks.
 Proposed behavior remains distinct from the current implementation.
@@ -159,11 +159,11 @@ Complete input production and native model acceptance remain pending.
 | `training/runtime.py` | [training/runtime.md](training/runtime.md) | >100; actual Accelerator/FSDP policy capture, rank agreement and replay validation |
 | `training/resources.py` | [training/resources.md](training/resources.md) | >100; exact budget identity, synchronized local CUDA phase peaks/time and complete rank/phase validation |
 | `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | >100; save/read/check settings and derive checked legacy metadata |
-| `subset.py` | [subset.md](subset.md) | >100; fixed videos, person groups, hashes |
+| `corpus/subset.py` | [subset.md](corpus/subset.md) | >100; fixed videos, person groups, hashes |
 | `evaluate.py` | [evaluate.md](evaluate.md) | >100; same-input comparisons, training previews, fusion and eight-block causality diagnostics |
 | `media.py` | [media.md](media.md) | >100; training/inference visualization |
 | `bench.py` | [bench.md](bench.md) | >100; actual mode cost |
-| `dataset.py` | [dataset.md](dataset.md) | >100; checked unsliced master reader and corpus names |
+| `corpus/dataset.py` | [dataset.md](corpus/dataset.md) | >100; checked unsliced master reader and corpus names |
 | `train.py` | header design below | ≤100 target; thin CLI |
 | `infer.py` | [infer.md](infer.md) | >100; product CLI/API, strict preflight and generated-only rendering |
 | `model/backbone.py` | header design below | ≤100 expected; resolve base weights |
@@ -316,11 +316,11 @@ and [migration map](architecture.md#migration-map); that map wins over the
 
 | Current source | Current doc | Planned change |
 |---|---|---|
-| `precompute.py` | [precompute.md](precompute.md) | move to `corpus/`; keep capture/guide VAE producers |
-| `build_guidance.py` | [build_guidance.md](build_guidance.md) | move to `corpus/`; keep the only ARGAvatar process; check old branches |
-| `geometry.py` | [geometry.md](geometry.md) | move to `corpus/`; keep the shared crop rule |
-| `motion.py` | [motion.md](motion.md) | move to `corpus/`; keep pose conversion |
-| `mask_video.py` | [mask_video.md](mask_video.md) | move to `corpus/`; keep lossless masks; check old data use |
+| `corpus/precompute.py` | [precompute.md](corpus/precompute.md) | move to `corpus/`; keep capture/guide VAE producers |
+| `corpus/build_guidance.py` | [build_guidance.md](corpus/build_guidance.md) | move to `corpus/`; keep the only ARGAvatar process; check old branches |
+| `corpus/geometry.py` | [geometry.md](corpus/geometry.md) | move to `corpus/`; keep the shared crop rule |
+| `corpus/motion.py` | [motion.md](corpus/motion.md) | move to `corpus/`; keep pose conversion |
+| `corpus/mask_video.py` | [mask_video.md](corpus/mask_video.md) | move to `corpus/`; keep lossless masks; check old data use |
 | `stats.py` | [stats.md](stats.md) | move whole to `experiments/stats.py` (A1/B1c study code; no other consumer) |
 | `plot_training.py` | [plot_training.md](plot_training.md) | keep training plots; remove old readers after log conversion |
 | `decode_saved.py` | [decode_saved.md](decode_saved.md) | use media; apply final size rule |
@@ -334,7 +334,7 @@ and [migration map](architecture.md#migration-map); that map wins over the
 | `bench.py` | [bench.md](bench.md) | causal-operation diagnostic and explicit-mode whole-generation CLI implemented; native measurement pending |
 | `model/backbone.py` | [source docstrings](../model/backbone.py) | moved; keep the weight-identity description |
 | `hashing.py` | [source docstrings](../hashing.py) | stays at the root as a leaf utility; gains `tensor_sha256` |
-| `qa.py` | [source docstrings](../qa.py) | move to `corpus/`; keep mask comparison; caller rules above |
+| `corpus/qa.py` | [source docstrings](../corpus/qa.py) | move to `corpus/`; keep mask comparison; caller rules above |
 
 The architecture contract also requires study/diagnostic orchestration to leave
 ordinary `evaluate.py`, A1/B1c orchestration to leave the shared root, and historical
@@ -409,3 +409,13 @@ Final migration must audit `expr/` imports and subprocess calls for model
 execution, remove obsolete runnable paths, and prevent import/rebuild from
 restoring them. Rebuild reports from saved results with training, generation and
 decoder loaders disabled. Missing results must fail without starting a job.
+
+### G3 corpus and adapter layering
+
+The eight corpus owners and their larger-file docs now live in `corpus/` and
+`doc/corpus/`. Small `qa.py` uses its header. Corpus commands use the new module
+paths; guide production remains in `argavatar`. Model adapters own the LoRA
+target list; checked contracts and file identity reach the model as data.
+Only explicit legacy subset conversion lazily calls the canonical causal
+planner, under the documented dependency exception. CPU boundary tests enforce
+that exception and model-free ordinary corpus imports.

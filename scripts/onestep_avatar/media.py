@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import argparse
+import hashlib
 import json
 import math
 from contextlib import nullcontext
@@ -16,8 +16,8 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.execution import software
+from scripts.onestep_avatar.hashing import sha256
 
 if TYPE_CHECKING:
     from scripts.prune.core.session import Session
@@ -124,7 +124,7 @@ def decode(session: Any, latent: torch.Tensor, decoder: Any, seed: int) -> torch
 
 def recorded_capture_rgb(source: dict, corpus_root: Path, objective: str, encoded_frames: int) -> torch.Tensor:
     """Replay checked capture pixels using the original producer's recorded crop."""
-    from scripts.onestep_avatar import precompute  # noqa: PLC0415 -- CPU producer replay
+    from scripts.onestep_avatar.corpus import precompute  # noqa: PLC0415 -- CPU producer replay
 
     if not 1 <= encoded_frames <= source["n_latent_frames"]:
         raise ValueError("recorded RGB range must fit the saved continuous encoding")
@@ -163,7 +163,7 @@ def recorded_guide_rgb(source: dict, corpus_root: Path, objective: str, encoded_
     """Read the exact guide video encoded by its checked producer record."""
     import cv2  # noqa: PLC0415 -- video preparation only
 
-    from scripts.onestep_avatar import dataset  # noqa: PLC0415 -- shared artifact names
+    from scripts.onestep_avatar.corpus import dataset  # noqa: PLC0415 -- shared artifact names
 
     record = source["guide_encode_record"]
     if record.get("source") != source["relative_dir"] or record.get("fps") != source["fps"]:
@@ -271,7 +271,7 @@ def prepare_training_references(
     require_guide: bool = True,
 ) -> tuple[list[Panel], dict]:
     """Prepare the fixed RGB reference roles without transformer inference."""
-    from scripts.onestep_avatar import dataset, precompute  # noqa: PLC0415 -- checked producers
+    from scripts.onestep_avatar.corpus import dataset, precompute  # noqa: PLC0415 -- checked producers
 
     path = corpus_root / source["relative_dir"] / dataset.capture_bundle_name(objective)
     digest = sha256(path)
@@ -315,7 +315,7 @@ def prepare_training_references(
 
 def save_training_references(panels: list[Panel], record: dict, destination: Path) -> dict:
     """Publish prepared pixels and their provenance; never overwrite a bundle."""
-    from scripts.onestep_avatar.dataset import atomic_write  # noqa: PLC0415 -- common atomic publication
+    from scripts.onestep_avatar.corpus.dataset import atomic_write  # noqa: PLC0415 -- common atomic publication
 
     if "software" in record:
         software.check_current(record["software"])
@@ -397,7 +397,7 @@ def load_training_references(path: Path) -> tuple[list[Panel], dict]:
 
 def main(argv: list[str] | None = None) -> int:
     """Prepare checked fixed preview references with a decoder-only session."""
-    from scripts.onestep_avatar import dataset, precompute  # noqa: PLC0415 -- checked input owners
+    from scripts.onestep_avatar.corpus import dataset, precompute  # noqa: PLC0415 -- checked input owners
     from scripts.onestep_avatar.model import backbone  # noqa: PLC0415 -- model registry only
 
     parser = argparse.ArgumentParser(description="Prepare fixed training reference pixels without generation")

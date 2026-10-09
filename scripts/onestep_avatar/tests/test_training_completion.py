@@ -9,6 +9,7 @@ from safetensors.torch import save_file
 
 from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.hashing import sha256
+from scripts.onestep_avatar.model import adapters
 from scripts.onestep_avatar.tests.test_applied_runtime import inventory
 from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B
 from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- fixture dependency
@@ -60,7 +61,7 @@ def completed(checked_settings, monkeypatch):
                     'sample_tiling': max(1, math.ceil(4*settings.chains_per_rank/samples)),
                     'optimizer': {'name': 'AdamW', 'betas': [0.9, 0.999], 'eps': 1e-8, 'weight_decay': 0.0},
                     'trainable_params': 16, 'lora_modules': 1,
-                    'lora_target_counts': {target: int(target == 'to_q') for target in config.LORA_TARGETS['attn']}}
+                    'lora_target_counts': {target: int(target == 'to_q') for target in adapters.LORA_TARGETS['attn']}}
         (settings.output/'config.json').write_text(json.dumps(resolved, default=str))
         (settings.output/'frame_plan.json').write_text(json.dumps(plan))
         resource_evidence = {}

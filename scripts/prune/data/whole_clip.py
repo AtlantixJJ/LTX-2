@@ -12,7 +12,7 @@ import torch
 from safetensors import safe_open
 
 from ltx_core.model.transformer.modality import Modality
-from scripts.onestep_avatar.dataset import load_training_master
+from scripts.onestep_avatar.corpus.dataset import load_training_master
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.model import common
 from scripts.prune.core import provenance, session
