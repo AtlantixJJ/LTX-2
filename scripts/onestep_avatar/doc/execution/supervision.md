@@ -69,6 +69,13 @@ explicit notification-gap bound. Every active rank has its own phase deadline.
 An optional overall deadline is separate; no command deadline is inferred by
 multiplying the phase count. Contract mutation, unknown/duplicate events,
 rank/phase/order mismatch or a changed rank producer handle fails supervision.
+The queue supplies the remaining time from its persisted first-attempt deadline,
+not a fresh per-retry duration. Check overall expiry before inspecting successful
+terminal completion and again after final owned-worker inventory. Time consumed
+by notification reads, terminal reaping and worker observations counts too.
+Equality with the absolute elapsed bound is expired; a zero exit cannot turn an
+expired attempt into success. This module retains its relative-duration API and
+does not own persistence, retry bookkeeping or a second launcher.
 
 If an explicitly named `sampled_total_device_limit_bytes` is supplied, run
 `nvidia-smi` with a finite timeout and record its per-device occupancy in bytes.
@@ -153,6 +160,8 @@ finite inventory timeouts, denied/missing/reused process handles, unavailable
 pidfds, a real child that ignores SIGTERM, and a surviving new-session worker.
 These checks establish bounded supervision and own-record retention. They establish
 neither CUDA resource bounds nor native model/update agreement.
+Fake-clock terminal controls verify that expiry before a zero exit or during
+final worker inventory remains failure with retained shutdown/ownership evidence.
 Saved notification controls cover complete and missing rank inventories, wrong
 bindings, changed producer or event bytes, duplicate/extra files, bounded regular
 reads and explicit absence of timing/supervision acceptance claims.

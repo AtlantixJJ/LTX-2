@@ -19,6 +19,7 @@ from safetensors.torch import load_file
 from scripts.onestep_avatar import evaluate, hashing, infer, media
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import queue, software
+from scripts.onestep_avatar.experiments import spec_protocol
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, common
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 
 ENTRY = "scripts/onestep_avatar/experiments/adapter_effect_check.py"
 EXTRA_SOURCES = (ENTRY, 'scripts/onestep_avatar/experiments/__init__.py',
+                 spec_protocol.ENTRY,
                  'scripts/onestep_avatar/infer.py',
                  'scripts/onestep_avatar/training/engine.py',
                  'scripts/onestep_avatar/training/resources.py',
@@ -290,8 +292,8 @@ def check_calibration_contract(selected: dict, original: dict) -> dict:
             "selected": {field: selected[field] for field in ("shape", "mode_settings", "data")}}
 
 
-def prepare(args: argparse.Namespace) -> dict:  # noqa: PLR0912, PLR0915 -- complete pre-weight evidence gates
-    if args.output.exists() or args.output.is_symlink():
+def prepare(args: argparse.Namespace, *, require_fresh_output: bool = True) -> dict:  # noqa: PLR0912, PLR0915 -- complete pre-weight evidence gates
+    if require_fresh_output and (args.output.exists() or args.output.is_symlink()):
         raise ValueError("adapter-effect comparison requires a fresh output directory")
     job = queue.prepare_job(json.loads(args.job.read_text()), args.job.resolve().parent)
     if job["kind"] != "train":
@@ -758,7 +760,7 @@ def verify_saved(directory: Path) -> dict:  # noqa: PLR0912, PLR0915 -- ordered 
     checkpoints.assert_exported_lora_is_noop(load_file(selected["zero"]["path"]))
     inventory = result.get("output_files")
     actual = {str(path.relative_to(directory)) for path in directory.rglob("*")
-              if path.is_file() and path != directory / "result.json"}
+              if path.is_file() and path not in (directory / "result.json", directory / "manifest.json")}
     if not isinstance(inventory, dict) or set(inventory) != actual:
         raise ValueError("adapter-effect saved artifact inventory is incomplete")
     for name, digest in inventory.items():
@@ -841,41 +843,114 @@ def verify_saved(directory: Path) -> dict:  # noqa: PLR0912, PLR0915 -- ordered 
     return result
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def scientific_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     for name in ("job", "inputs", "update-check", "output"):
         parser.add_argument("--" + name, type=Path)
     parser.add_argument("--checkpoints", type=Path, nargs="+")
-    parser.add_argument("--update-job", type=Path,
-                        help="original one-update E4 job when --job selects the 60-step pilot")
+    parser.add_argument(
+        "--update-job", type=Path, help="original one-update E4 job when --job selects the 60-step pilot"
+    )
     parser.add_argument("--subset", type=Path, help="separate checked evaluation membership; original E4 stays fixed")
-    parser.add_argument("--verify", type=Path, help="verify saved evidence without model or decoder work")
     parser.add_argument("--gpu-id", type=int, default=0)
     parser.add_argument("--decode", action="store_true")
     parser.add_argument("--fused-diagnostic", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    if args.verify is not None:
-        if any(getattr(args, name) is not None for name in (
-            "job", "inputs", "update_check", "output", "checkpoints", "subset", "update_job"
-        )):
-            parser.error("--verify cannot be combined with execution input/output arguments")
-        if args.decode or args.fused_diagnostic or args.dry_run:
-            parser.error("--verify cannot be combined with execution mode flags")
-        record = verify_saved(args.verify)
-        preview = {"state": record["state"], "coverage": record["coverage"], "e2_complete": False}
-        print(json.dumps(preview, indent=2))  # noqa: T201 -- requested saved-evidence review
-        return 0 if record["state"] == "passed" else 2
     if any(getattr(args, name) is None for name in ("job", "inputs", "update_check", "output", "checkpoints")):
         parser.error("execution requires --job, --inputs, --update-check, --output and --checkpoints")
+    return args
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return spec_protocol.outer_args(argv, __doc__)
+
+
+def read_spec(spec: Path, root: Path) -> argparse.Namespace:
+    return spec_protocol.read_spec(
+        parse_args(["--spec", str(spec), "--output", str(root)]), "adapter_effect_check", scientific_args
+    )
+
+
+def resource_phases(spec: Path) -> list[str]:
+    args = read_spec(spec, spec.parent / "unused_output")
+    cases = json.loads(args.inputs.read_text())["cases"]
+    states = PILOT_STATES if args.update_job is not None else STATES
+    paths = (*PATHS, *(("fused",) if args.fused_diagnostic else ()))
+    phases = []
+    for case in cases:
+        phases.extend(
+            f"{operation}:{case['source']}:{path}:{state}"
+            for path in paths
+            for state in states
+            for operation in ("load", "sample")
+        )
+        if args.decode:
+            phases.append(f"decode:{case['source']}")
+    return phases
+
+
+def runtime_profile(spec: Path) -> dict:
+    args = read_spec(spec, spec.parent / "unused_output")
+    job = queue.prepare_job(json.loads(args.job.read_text()), args.job.parent)
+    budget = resources.read_budget(config.parse_settings(job["arguments"]).resource_budget)
+    return {"generic_phase": False, "phases": resource_phases(spec), "processes": 1, "resource_budget": budget}
+
+
+def dependency_outputs(spec: Path) -> list[Path]:
+    args = read_spec(spec, spec.parent / "unused_output")
+    return [args.update_check.parent.resolve()]
+
+
+def verify_completion(spec: Path, root: Path) -> dict:
+    args = read_spec(spec, root)
+    spec_protocol.inspect(args, "adapter_effect_check")
+    prepared = prepare(args, require_fresh_output=False)
+    result = verify_saved(root)
+    protocol = result["protocol"]
+    selected = {name: str(path.resolve()) for name, path in prepared["checkpoints"].items()}
+    if (
+        result["state"] != "passed"
+        or protocol["job"] != prepared["job"]
+        or protocol["input_files"] != prepared["pins"]
+        or protocol["resource_budget"] != prepared["budget"]
+        or protocol["schedule"] != prepared["schedule"]
+        or protocol["seed"] != prepared["seed"]
+        or {name: row["path"] for name, row in protocol["checkpoints"].items()} != selected
+        or result["coverage"]["decoded"] != args.decode
+        or [case["source"] for case in result["cases"]] != [case["source"] for case in prepared["cases"]]
+        or any(("fused" in case["raw_records"]) != args.fused_diagnostic for case in result["cases"])
+    ):
+        raise ValueError("adapter-effect completion differs from the pinned scientific specification")
+    return result
+
+
+def evidence_paths(spec: Path, root: Path) -> list[Path]:
+    verify_completion(spec, root)
+    return spec_protocol.evidence(spec_protocol.inspect(read_spec(spec, root), "adapter_effect_check"), root)
+
+
+def main(argv: list[str] | None = None) -> int:
+    outer = parse_args(argv)
+    args = spec_protocol.read_spec(outer, "adapter_effect_check", scientific_args)
     if args.dry_run:
         prepared = prepare(args)
-        preview = {"job": prepared["job"], "sources": [case["source"] for case in prepared["cases"]],
-                   "input_files": prepared["pins"], "tolerance": TOLERANCE}
+        preview = {
+            "job": prepared["job"],
+            "sources": [case["source"] for case in prepared["cases"]],
+            "input_files": prepared["pins"],
+            "tolerance": TOLERANCE,
+        }
         print(json.dumps(preview, indent=2))  # noqa: T201 -- requested dry-run evidence
         return 0
-    return 0 if execute(args)["state"] == "passed" else 2
+    result = execute(args)
+    if result["state"] != "passed":
+        return 2
+    spec_protocol.publish(args, "adapter_effect_check")
+    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from scripts.onestep_avatar.execution.runtime import run
+
+    raise SystemExit(run(main))

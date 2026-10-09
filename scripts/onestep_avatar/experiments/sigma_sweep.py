@@ -327,4 +327,5 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    from scripts.onestep_avatar.execution.runtime import run
+    raise SystemExit(run(main))

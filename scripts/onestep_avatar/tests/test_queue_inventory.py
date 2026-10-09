@@ -45,7 +45,7 @@ def assert_no_launch_artifacts(tmp_path, state_path, original, claims):
 def test_contended_claim_set_is_released_before_any_attempt(tmp_path, monkeypatch, kind, memory):
     job, state_path, claims = setup_dispatch(tmp_path, kind)
     original = state_path.read_bytes()
-    expected = {0, 1, 2, 3} if kind == 'train' else {5}
+    expected = {0, 1, 2, 3} if kind == 'train' else {0}
     calls = []
 
     def query(*args, **kwargs):
@@ -108,7 +108,7 @@ def test_subsequent_selection_uses_changed_inventory_and_rechecks_it(tmp_path, m
         observations.append({gpu for row in records if row['state'] == 'active' for gpu in row['gpus']})
         if len(observations) <= 2:
             return inventory()
-        return inventory(**{'5': 1024})
+        return inventory(**{'0': 1024})
 
     def launch(job, owned, _log, **_kwargs):
         launches.append((job['id'], set(owned.owned)))
@@ -117,7 +117,7 @@ def test_subsequent_selection_uses_changed_inventory_and_rechecks_it(tmp_path, m
     monkeypatch.setattr(subprocess, 'run', query)
     monkeypatch.setattr(queue, 'run_child', launch)
     assert queue.dispatch_ready(jobs, state, state_path, claims / 'processes.json')
-    assert launches == [('second', {4})]
-    assert observations == [set(), set(), {5}, set(), {4}]
+    assert launches == [('second', {1})]
+    assert observations == [set(), set(), {0}, set(), {1}]
     assert state['jobs']['case']['state'] == 'pending'
     assert sorted(p.name for p in claims.iterdir() if p.name.isdigit()) == ['5']

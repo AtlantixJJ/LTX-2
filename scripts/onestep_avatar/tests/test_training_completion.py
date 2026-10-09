@@ -12,6 +12,7 @@ from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters
 from scripts.onestep_avatar.tests.test_applied_runtime import inventory
 from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B
+from scripts.onestep_avatar.tests.test_evaluation_completion import controlled_scientific_receipt
 from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- fixture dependency
 from scripts.onestep_avatar.tests.test_training_preflight import checked_settings  # noqa: F401
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources
@@ -45,7 +46,7 @@ def completed(checked_settings, monkeypatch):
         launch = queue.training_launch_record(job)
         applied_runtime = inventory(numerical=True)
         settings.world_size = 4
-        budget = resources.read_budget(settings.resource_budget)
+        budget = job['effective_budget']
         contract = checkpoints.make_contract(settings, store.membership, plan, settings.steps)
         contract['adapter']['tensor_shapes'] = {A: [2, 4], B: [4, 2]}
         checkpoint.parent.mkdir(parents=True)
@@ -98,23 +99,29 @@ def completed(checked_settings, monkeypatch):
 
 
 @pytest.mark.parametrize('mode', ['bidirectional', 'causal'])
-def test_both_training_modes_verify_without_models_and_keep_fresh_output_gate(completed, mode):
+def test_both_training_modes_verify_without_models_and_keep_fresh_output_gate(
+    completed, mode, monkeypatch: pytest.MonkeyPatch
+):
     produce, _, _ = completed
     job, settings, _ = produce(mode=mode)
     with pytest.raises(ValueError, match='output already has a run'):
         engine.prepare_run(settings)
     assert queue.verify_completion(job)
     resolved = json.loads((settings.output/'config.json').read_text())
-    assert resolved['resource_budget'] is None
+    assert resolved['resource_budget'] == resources.default_budget()
     assert 'resource_budget_sha256' not in job
-    assert not list(settings.output.glob('resources_rank*.jsonl'))
-    receipt = queue.completion_receipt(job)
+    records, _ = resources.read_records(settings.output, 4, step=2)
+    assert len(records) == 16
+    resources.validate_records(records, 4, resources.training_phases(settings), job['effective_budget'])
+    receipt = controlled_scientific_receipt(job, monkeypatch)
     assert len(receipt['evidence']) == 4
     assert queue.verify_receipt(job, receipt)
 
 
 @pytest.mark.parametrize('mode', ['bidirectional', 'causal'])
-def test_budget_backed_completion_binds_record_and_complete_rank_phase_evidence(completed, mode):
+def test_budget_backed_completion_binds_record_and_complete_rank_phase_evidence(
+    completed, mode, monkeypatch: pytest.MonkeyPatch
+):
     produce, initial, _ = completed
     budget_path = initial.output.parent/'resource_budget.json'
     budget_path.write_text(json.dumps({'wall_seconds_per_phase': 1800, 'memory_limit_allocated_bytes': 48000000000}))
@@ -128,7 +135,7 @@ def test_budget_backed_completion_binds_record_and_complete_rank_phase_evidence(
     assert len(records) == 16
     assert {record['phase'] for record in records} == {'load', 'update:1', 'update:2', 'export:2'}
     assert marker['resource_evidence'] == evidence
-    assert queue.verify_receipt(job, queue.completion_receipt(job))
+    assert queue.verify_receipt(job, controlled_scientific_receipt(job, monkeypatch))
 
 
 @pytest.mark.parametrize('option,value', [
@@ -208,10 +215,12 @@ def test_changed_or_relocated_training_evidence_is_refused(completed, asset):
 
 
 @pytest.mark.parametrize('asset', ['config', 'plan'])
-def test_receipt_preserves_initial_config_and_plan_bytes_even_after_valid_marker_update(completed, asset):
+def test_receipt_preserves_initial_config_and_plan_bytes_even_after_valid_marker_update(
+    completed, asset, monkeypatch: pytest.MonkeyPatch
+):
     produce, _, _ = completed
     job, settings, checkpoint = produce()
-    receipt = queue.completion_receipt(job)
+    receipt = controlled_scientific_receipt(job, monkeypatch)
     path = settings.output/('config.json' if asset == 'config' else 'frame_plan.json')
     path.write_text(path.read_text()+'\n')
     marker_path = checkpoint.with_suffix('.complete.json')

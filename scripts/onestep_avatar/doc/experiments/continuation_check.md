@@ -47,53 +47,46 @@ before weights. Use the existing checked `execute_evaluation` input path and
 `sample_case` runner. Capture a current software profile with this diagnostic
 and resource owner included. Never restamp the historical producer manifest.
 
-Two native commands use fresh output directories:
+Capture and reference use separate queue experiment jobs. Their strict pinned
+specifications keep the original scientific arguments. Scientific paths must be
+absolute. The output and local GPU options come from the queue:
 
-```text
-python -m scripts.onestep_avatar.experiments.continuation_check --phase capture \
-  --protocol <original-E3-protocol.json> --sigma 1.0 --history generated \
-  --output <fresh-capture> --gpu-id 0
-python -m scripts.onestep_avatar.experiments.continuation_check --phase reference \
-  --snapshot <fresh-capture>/continuation.json --output <fresh-reference> --gpu-id 0
+```json
+{"schema_version":1,"protocol":"continuation_check","arguments":["--phase","capture","--protocol","/absolute/original_e3_protocol.json","--sigma","1.0","--history","generated"]}
 ```
 
-The caller uses `ltx`, direct `nvidia-smi`, the shared own-process ledger and the
-package supervisor. Native commands do not choose devices or recover old claims.
-Run CPU `--dry-run` with `CUDA_VISIBLE_DEVICES=''`; it performs preparation only.
-No native run is authorized by a dry run.
+```json
+{"schema_version":1,"protocol":"continuation_check","arguments":["--phase","reference","--snapshot","/absolute/fresh_capture/continuation.json"]}
+```
+
+The reference job depends on the capture receipt. CPU `--dry-run` uses
+`--spec /absolute/spec.json --output /absolute/fresh_output` with
+`CUDA_VISIBLE_DEVICES=''`. It performs preparation only.
 
 The `control` phase consumes one ID from the existing data-only 12-control plan:
 
-```text
-python -m scripts.onestep_avatar.experiments.continuation_check --phase control \
-  --protocol <original-E3-protocol.json> --control-plan <12-control-plan.json> \
-  --control-id sigma_1.0_cached_future_before_eviction \
-  --output <fresh-control> --gpu-id 0
+```json
+{"schema_version":1,"protocol":"continuation_check","arguments":["--phase","control","--protocol","/absolute/original_e3_protocol.json","--control-plan","/absolute/12_control_plan.json","--control-id","sigma_1.0_cached_future_before_eviction"]}
 ```
 
-It wraps `execute_evaluation` directly in resource measurement, without a custom
-runner. The public owner supplies both future-noise trajectories. Bind the exact
-control plan, changed-noise bytes and tensor values, original saved text, current
-inputs and software. Validate saved public results and require true earlier-output
-invariance. Keep ordinary calls separate from the zero diagnostic extra calls.
-No 12-control job has been run by this implementation.
+It wraps `execute_evaluation` in the original resource measurement, without a
+custom runner. The public owner supplies both future-noise trajectories. Bind
+the exact control plan, changed-noise bytes and tensor values, original saved
+text, current inputs and software. Validate saved public results and require
+true earlier-output invariance. Keep ordinary calls separate from zero
+diagnostic extra calls. No 12-control job has been run by this implementation.
 
-Append `--supervise --process-ledger <workspace>/expr/onestep_avatar/processes.json`
-to any native command. The shared registry queries `nvidia-smi` and accepts only
-an idle allowed device, then queries again during registration. This uses the
-existing own-process ledger and shared bounded supervisor, without another device
-reservation file. A frozen launch record binds source/runtime and input hashes
-between the parent and child. The child measures its allocator; the supervisor
-independently enforces the original 1800-second overall deadline and samples the
-48800-MiB device limit. It does not claim per-phase notification supervision.
-Only a passed supervisor and a complete scientific result accept the attempt.
-Failed supervision records and own handles stay saved. Native execution is not
-started when all allowed devices are occupied.
+Native execution uses a queue experiment job with a pinned specification.
+The queue owns the process ledger, launch binding, selected device, deadline and
+supervisor. The checker has no self-launch path or launch-only flags.
+It emits the unchanged `continuation-case` phase. The phase adopts the effective
+queue budget when present. The original 1800-second case limit and sampled
+48800-MiB device limit also remain scientific checks.
 
 ## Organization logic
 
-Use the package marker's `LTX_ROOT` for a supervised child's working directory.
-A source move must not change the interpreter's package search root.
+The queue uses the package root as the child's working directory. It launches
+capture and reference as separate dependency-bound jobs.
 
 Capture delegates the entire cached rollout to `sample_case`. Its denoiser
 wrapper passes each modality unchanged to the original denoiser once. It records
@@ -119,6 +112,12 @@ Process bounded CPU chunks; record full-value hashes, exact-equality flags, RMS,
 maximum absolute difference and relative L2. A zero reference norm yields null
 relative L2. Require exactly one observation per layer per target. Restore both
 callables on success and failure.
+
+Save each observed reference K/V prefix beside its metric record. Completion
+loads one saved layer at a time and recomputes each comparison against the
+capture's original K/V bytes. It requires both targets and all native layers,
+the ordinary output, c0 and call controls, and the original resource checks.
+A metric summary without its actual reference arrays cannot complete a job.
 
 Worked case: before eviction, the retained frames are `[0,1,2]`. After eviction,
 they are `[0,3,4,5,6,7,8,9,10]`. Use `retained_prefix_spans` to derive this order.
@@ -148,8 +147,9 @@ Incomplete observations cannot publish a complete diagnostic manifest.
 Keep the original E3 budget meanings: 1800 seconds per case and 48800 MiB sampled
 total-device occupancy. The original protocol has no allocated-byte threshold.
 Measure synchronized local Torch allocated/reserved peaks with the shared Phase
-owner; do not substitute E4's allocation limit. The external supervisor enforces
-the original deadline and sampled device guard. Save failed resource/evidence
+owner. The effective queue phase budget is recorded separately from these
+original E3 scientific meanings. The external supervisor enforces the original
+deadline and sampled device guard. Save failed resource/evidence
 records before returning an error. Child exit zero alone does not accept a run.
 
 ## Gotchas
@@ -201,3 +201,40 @@ source attribution, and affected native checks run again after the code gate.
 ### Shared intervention owner
 
 E3 reads ordinary settings and future-noise choices through the public `experiments.causality.parse_future_args`, `prepare_evaluation`, `execute_evaluation` and `verify_evaluation_conditions` entrypoints. Those methods complete the unchanged pair preflight and full saved scientific checks, then use ordinary evaluation once for loading and shared sampling. The checker adds causality to its explicit software source owners. Observed-prefix callbacks still use ordinary evaluation directly. Historical original records keep their attribution.
+
+## G8 queue interface and completion
+
+```mermaid
+flowchart TB
+  S[("Pinned scientific spec")] --> P["read_spec"]
+  P --> V["verify_completion"]
+  M[("manifest.json and raw files")] --> V
+  V --> R(["Checked scientific result for queue"])
+  classDef code fill:#dbeafe,stroke:#2563eb;
+  classDef saved fill:#e5e7eb,stroke:#6b7280;
+  classDef result fill:#f3e8ff,stroke:#9333ea;
+  class P,V code;
+  class S,M saved;
+  class R result;
+```
+
+
+The queue owns launch, device selection, process records and bounded supervision.
+The checker accepts a pinned schema-one specification with its literal protocol
+and original scientific `arguments`, plus queue-owned `--output` and local
+`--gpu-id`. Execution flags in the scientific arguments fail before writes.
+Public `parse_args`, `read_spec`, `runtime_profile`, `verify_completion` and
+`evidence_paths` provide normalization, phase/topology data and saved-only
+completion. The manifest binds exact spec bytes, normalized scientific settings
+and the complete local artifact inventory. Original producer hashes stay intact;
+new runs bind the spec helper as an explicit experiment extra.
+
+`dependency_outputs(spec)` identifies the saved result directories that need
+earlier queue receipts. An optional stock reference, the E2 update comparison,
+or an E3 capture snapshot must be an explicit dependency. A missing dependency
+fails CPU queue preparation, before claims or launch.
+
+Completion verifies the original scientific controls from actual saved artifacts.
+It loads no model or decoder, starts no child, and never repairs missing output.
+A missing, changed or escaped artifact prevents completion. CPU fixtures prove
+these refusals; final-source native acceptance still requires fresh queue jobs.

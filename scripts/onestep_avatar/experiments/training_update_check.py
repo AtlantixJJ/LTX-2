@@ -10,8 +10,6 @@ import hashlib
 import json
 import math
 import os
-import subprocess
-import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -27,16 +25,16 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedType
 from safetensors.torch import load_file
 
-from scripts.onestep_avatar import LTX_ROOT
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import queue, software
+from scripts.onestep_avatar.experiments import spec_protocol
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, bidirectional, causal, common
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources, runtime, update_state
 
 TOLERANCE = {"relative_l2": 0.02, "near_zero_rms": 1e-8, "absolute_rms": 1e-8}
 ENTRY = "scripts/onestep_avatar/experiments/training_update_check.py"
-EXTRA_SOURCES = (ENTRY, 'scripts/onestep_avatar/experiments/__init__.py')
+EXTRA_SOURCES = (ENTRY, 'scripts/onestep_avatar/experiments/__init__.py', spec_protocol.ENTRY)
 
 
 def check_launch(job_path: Path, world: int) -> tuple[dict, dict, str]:
@@ -524,81 +522,183 @@ def _execute(  # noqa: PLR0915 -- bounded replay
     return record
 
 
-def supervised_reference(job_path: Path, output: Path, world: int, ledger: Path, *, trace: bool = False) -> dict:
-    """Launch this exact diagnostic with direct GPU inventory and own-process tracking."""
-    from scripts.onestep_avatar.execution import supervision  # noqa: PLC0415 -- shared bounded observer
-    from scripts.onestep_avatar.execution.process_registry import ProcessRegistry, gpu_memory  # noqa: PLC0415
-    from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV  # noqa: PLC0415
 
-    if output.exists():
-        raise ValueError("serial reference requires a fresh output directory")
-    job, saved, _precision = check_launch(job_path, world)
-    registry = ProcessRegistry(ledger)
-    gpus = registry.choose(gpu_memory(), training=False)
-    if gpus is None or not registry.acquire(gpus, job=f"serial:{job['id']}"):
-        raise ValueError("no idle GPU is available for the serial reference")
-    evidence = output.parent / f"{output.name}.supervision"
-    child = None
-    try:
-        evidence.mkdir(parents=True, exist_ok=False)
-        notifications = evidence / "phases.json"
-        changes = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpus)), TOKEN_ENV: registry.token,
-                   JOB_ENV: job["sha256"], "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
-        changes.update(saved["queue_launch"]["numerical_environment"])
-        changes.update(supervision.prepare_notifications(
-            notifications, token=registry.token, job_sha256=job["sha256"], world=1,
-            phases=["load", "update", "export"], budget_sha256=saved["resource_budget"]["sha256"],
-        ))
-        command = [sys.executable, "-m", "scripts.onestep_avatar.experiments.training_update_check", "--job",
-                   str(job_path.resolve()), "--output", str(output.resolve()), "--world-size", str(world)]
-        if trace:
-            command.append("--consumer-trace")
-        with (evidence / "child.log").open("x") as log:
-            child = subprocess.Popen(command, cwd=LTX_ROOT,
-                                     env={**os.environ, **changes}, stdout=log, stderr=subprocess.STDOUT,
-                                     start_new_session=True)
-            registry.refresh(child_pid=child.pid)
-            identity = queue.process_identity(child.pid)
-            row = {"child_pid": child.pid, "child_identity": identity, "child_session": child.pid,
-                   "environment_changes": changes, "attempt_started_ticks": registry.started_ticks,
-                   "process_ledger": str(registry.path)}
-            result = supervision.supervise(
-                child, identity=identity, command=command, worker_record=row, claims=registry, gpus=gpus,
-                evidence_path=evidence / "result.json", notifications_path=notifications,
-                startup_seconds=saved["resource_budget"]["wall_seconds_per_phase"],
-                phase_seconds=saved["resource_budget"]["wall_seconds_per_phase"], shutdown_seconds=30,
-            )
-        if result["state"] != "passed":
-            raise ValueError(f"serial reference supervision failed: {result['error']}")
-        return json.loads((output / "result.json").read_text())
-    finally:
-        if child is None or child.poll() is not None:
-            observed = registry.observe_workers()
-            if observed["complete"] and not observed["workers_live"]:
-                registry.release()
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def scientific_args(argv: list[str]) -> argparse.Namespace:
+    """Keep the original scientific replay choices; the queue owns execution."""
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--job", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--world-size", type=int, default=4)
-    parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--consumer-trace", action="store_true")
-    parser.add_argument("--supervise", action="store_true")
-    parser.add_argument("--process-ledger", type=Path)
+    parser.add_argument("--reference", type=Path)
+    parser.add_argument("--gpu-id", type=int, default=0)
     args = parser.parse_args(argv)
-    if args.supervise and (args.dry_run or args.process_ledger is None):
-        parser.error("--supervise requires --process-ledger and execution")
-    if args.process_ledger is not None and not args.supervise:
-        parser.error("--process-ledger requires --supervise")
-    result = (supervised_reference(args.job, args.output, args.world_size, args.process_ledger,
-                                  trace=args.consumer_trace) if args.supervise else
-              execute(args.job, args.output, args.world_size, dry_run=args.dry_run,
-                      consumer_trace=args.consumer_trace))
+    if args.world_size != 4:
+        parser.error("E4 requires the original four-rank update")
+    return args
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return spec_protocol.outer_args(argv, __doc__)
+
+
+def read_spec(spec: Path, root: Path) -> argparse.Namespace:
+    args = spec_protocol.read_spec(parse_args(["--spec", str(spec), "--output", str(root)]),
+                                   "training_update_check", scientific_args,
+                                   operations=("reference", "compare"))
+    if (args.operation == "compare") != (args.reference is not None):
+        raise ValueError("compare requires a separate reference; reference cannot select another reference")
+    return args
+
+
+def resource_phases(spec: Path) -> list[str]:
+    args = read_spec(spec, spec.parent / "unused-output")
+    return ["runtime"] if args.operation == "compare" else ["load", "update", "export"]
+
+
+def resource_budget(spec: Path) -> Path | None:
+    args = read_spec(spec, spec.parent / "unused-output")
+    if args.operation == "compare":
+        return None
+    path = config.parse_settings(json.loads(args.job.read_text())["arguments"]).resource_budget
+    if path is None or not path.is_absolute():
+        raise ValueError("native replay requires its original absolute resource budget")
+    return path
+
+
+def dependency_outputs(spec: Path) -> list[Path]:
+    args = read_spec(spec, spec.parent / "unused-output")
+    return [args.reference] if args.operation == "compare" else []
+
+
+def launch_requirements(spec: Path) -> dict:
+    read_spec(spec, spec.parent / "unused-output")
+    return {"processes": 1, "launcher": "python"}
+
+
+def _saved_reference(root: Path, job: Path, world: int) -> tuple[dict, dict]:
+    """Recompute E4 from bound CPU artifacts, using no native model or decoder."""
+    record = json.loads((root / "result.json").read_text())
+    protocol = json.loads((root / "protocol.json").read_text())
+    actual = {path.relative_to(root).as_posix(): sha256(path) for path in root.rglob("*")
+              if path.is_file() and path not in {root / "result.json", root / "manifest.json"}}
+    required = {"protocol.json", "adam.pt", "resources_rank0.jsonl",
+                "checkpoints/lora_weights_step_00000.safetensors",
+                "checkpoints/lora_weights_step_00001.safetensors",
+                "reload/lora_weights_step_00001.safetensors"}
+    if (record.get("state") != "passed" or record.get("protocol") != protocol
+            or record.get("output_files") != actual or not required.issubset(actual)
+            or protocol.get("tolerance") != TOLERANCE or protocol.get("world_size") != world):
+        raise ValueError("saved E4 reference inventory, state or protocol differs")
+    settings, _store, _plan, _spec, visits, logs, states, initial, identities, _text = prepare(job, world)
+    launch, saved, precision = check_launch(job, world)
+    if (protocol["input_files"] != identities or protocol["visits"] != visits
+            or protocol["serial_accumulation"] != len(visits) or protocol["mode"] != settings.mode
+            or protocol["queue_job_sha256"] != launch["sha256"] or protocol["queue_launch"] != saved["queue_launch"]
+            or protocol["distributed_runtime"] != saved["runtime"] or protocol["mixed_precision"] != precision
+            or protocol["resource_budget"] != saved["resource_budget"]):
+        raise ValueError("saved E4 reference differs from original scientific inputs")
+    check_current(identities, protocol["software"], job_path=job, world=world)
+    serial_runtime = record["serial_runtime"]
+    if protocol.get("serial_runtime") != serial_runtime:
+        raise ValueError("saved E4 serial runtime differs")
+    runtime.validate(serial_runtime, 1, precision, numerical_policy=runtime.numerical_policy(saved["runtime"]))
+    measurements, _ = resources.read_records(root, 1)
+    if record["resource_measurements"] != measurements:
+        raise ValueError("saved E4 resource records differ")
+    resources.validate_records(measurements, 1, ["load", "update", "export"], saved["resource_budget"])
+    trace_evidence = record.get("consumer_trace_evidence")
+    if settings.consumer_trace and not trace_evidence:
+        raise ValueError("original E4 job requires saved consumer trace evidence")
+    if trace_evidence:
+        trace_path = root / "consumer_trace.json"
+        trace = json.loads(trace_path.read_text())
+        if (Path(trace_evidence.get("path", "")).resolve() != trace_path.resolve()
+                or trace_evidence.get("sha256") != sha256(trace_path)
+                or trace_evidence.get("events") != len(trace.get("events", []))
+                or trace_evidence.get("complete") is not True or trace.get("complete") is not True
+                or trace.get("binding", {}).get("queue_job_sha256") != launch["sha256"]
+                or trace.get("binding", {}).get("world_size") != 1):
+            raise ValueError("saved E4 consumer trace differs from actual original-bound evidence")
+    zero = load_file(root / "checkpoints/lora_weights_step_00000.safetensors")
+    if set(zero) != set(initial) or any(not torch.equal(zero[name], initial[name]) for name in initial):
+        raise ValueError("saved E4 initial export differs")
+    serial = torch.load(root / "adam.pt", map_location="cpu", weights_only=True)
+    if set(serial) != set(states):
+        raise ValueError("saved E4 Adam inventory differs")
+    for name, state in serial.items():
+        if (set(state) != {"step", "exp_avg", "exp_avg_sq"} or state["step"] != 1
+                or any(value.dtype != torch.float32 or value.shape != states[name][key].shape
+                       or not torch.isfinite(value).all() for key, value in state.items() if key != "step")
+                or torch.any(state["exp_avg_sq"] < 0)):
+            raise ValueError("saved E4 Adam moments are invalid")
+    final = load_file(root / "checkpoints/lora_weights_step_00001.safetensors")
+    distributed = load_file(settings.output / "checkpoints/lora_weights_step_00001.safetensors")
+    measured = compare_update(states, serial, distributed, final, beta1=0.9,
+                             norms=(logs[0]["grad_norm"], record["serial_grad_norm"]),
+                             losses=(sum(log["loss"] for log in logs) / world, record["serial_loss"]))
+    reloaded = load_file(root / "reload/lora_weights_step_00001.safetensors")
+    measured["actual_step_one_reload_exact"] = (set(reloaded) == set(distributed)
+        and all(torch.equal(distributed[name], reloaded[name]) for name in distributed))
+    measured["passed"] &= measured["actual_step_one_reload_exact"]
+    if record["comparison"] != measured or not measured["passed"]:
+        raise ValueError("saved E4 numerical comparison fails or differs")
+    return record, measured
+
+
+def _reference_comparison(args: argparse.Namespace) -> dict:
+    manifest = json.loads((args.reference / "manifest.json").read_text())
+    reference_spec = Path(manifest["spec"]["path"])
+    reference_args = read_spec(reference_spec, args.reference)
+    if (reference_args.operation != "reference" or reference_args.job != args.job
+            or reference_args.world_size != args.world_size):
+        raise ValueError("E4 comparison requires a matching separate reference job")
+    verify_completion(reference_spec, args.reference)
+    _record, measured = _saved_reference(args.reference, args.job, args.world_size)
+    return {"scope": "one native update; saved comparison only", "comparison": measured,
+            "reference": {"path": str(args.reference.resolve()),
+                          "manifest_sha256": sha256(args.reference / "manifest.json")}}
+
+
+def verify_completion(spec: Path, root: Path) -> None:
+    args = read_spec(spec, root)
+    spec_protocol.inspect(args, "training_update_check")
+    if args.operation == "reference":
+        record, _ = _saved_reference(root, args.job, args.world_size)
+        if args.consumer_trace and not record.get("consumer_trace_evidence"):
+            raise ValueError("requested E4 consumer trace is missing")
+    elif json.loads((root / "comparison.json").read_text()) != _reference_comparison(args):
+        raise ValueError("saved E4 comparison differs from actual reference")
+
+
+def evidence_paths(spec: Path, root: Path) -> list[Path]:
+    verify_completion(spec, root)
+    return spec_protocol.evidence(spec_protocol.inspect(read_spec(spec, root), "training_update_check"), root)
+
+
+def main(argv: list[str] | None = None) -> int:
+    outer = parse_args(argv)
+    args = read_spec(outer.spec, outer.output)
+    args.gpu_id, args.dry_run = outer.gpu_id, outer.dry_run
+    if args.operation == "reference":
+        result = execute(args.job, args.output, args.world_size, dry_run=args.dry_run,
+                         consumer_trace=args.consumer_trace)
+        if args.dry_run:
+            return 0
+        if not result["comparison"]["passed"]:
+            return 2
+    else:
+        result = _reference_comparison(args)
+        if args.dry_run:
+            return 0
+        args.output.mkdir(parents=True, exist_ok=False)
+        (args.output / "comparison.json").write_text(json.dumps(result, indent=2) + "\n")
+    spec_protocol.publish(args, "training_update_check")
+    verify_completion(args.spec, args.output)
     print(json.dumps(result, indent=2))  # noqa: T201 -- diagnostic CLI
-    return 0 if args.dry_run or result["comparison"]["passed"] else 2
+    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from scripts.onestep_avatar.execution.runtime import run
+    raise SystemExit(run(main))

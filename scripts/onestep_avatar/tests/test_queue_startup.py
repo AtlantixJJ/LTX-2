@@ -1,6 +1,7 @@
 """Startup retries require terminal workers, exact events and preserved attempts."""
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -10,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution import process_registry, queue, supervision
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.training import startup
 
@@ -176,7 +177,7 @@ def test_loop_retries_at_most_three_times_with_new_claims_and_preserved_attempts
     monkeypatch.setattr(process_registry, '_identity', lambda pid: (
         {'pid': pid, 'start_ticks': 1, 'command': ['controlled child'], 'terminal': True}
         if pid == 99999999 else original_identity(pid)))
-    monkeypatch.setattr(queue, 'completion_receipt', lambda *_: {'job_sha256': job['sha256'], 'evidence': []})
+    monkeypatch.setattr(queue, 'completion_receipt', lambda *_, **__: {'job_sha256': job['sha256'], 'evidence': []})
     monkeypatch.setattr(queue, 'verify_receipt', lambda *_: True)
     if success_after is None:
         with pytest.raises(queue.QueueChildError, match='failed with exit 1'):
@@ -200,8 +201,9 @@ def test_loop_retries_at_most_three_times_with_new_claims_and_preserved_attempts
 
 
 @pytest.mark.parametrize('new_session', [False, True])
-def test_surviving_own_worker_keeps_ledger_and_refuses_adoption_after_leader_exit(tmp_path, monkeypatch, new_session):
-    from scripts.onestep_avatar.execution import process_registry, supervision
+def test_surviving_own_worker_is_bounded_stopped_after_leader_exit(  # noqa: PLR0915 -- one owned-worker lifecycle and cleanup
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, new_session: bool
+) -> None:
     pid_file = tmp_path / 'worker.pid'
     code = (
         'import subprocess,sys; from pathlib import Path; '
@@ -216,52 +218,59 @@ def test_surviving_own_worker_keeps_ledger_and_refuses_adoption_after_leader_exi
     assert claims.acquire((4,), job='owned')
     monkeypatch.setattr(queue, 'job_command', lambda *_: ([sys.executable, '-c', code], {}))
     monkeypatch.setattr(queue, 'live_session_processes', lambda *_a, **_k: pytest.fail('broad session scan used'))
-    monkeypatch.setattr(queue, 'live_attempt_processes', lambda *_a, **_k: pytest.fail('unrelated environment scan used'))
+    monkeypatch.setattr(
+        queue, 'live_attempt_processes', lambda *_a, **_k: pytest.fail('unrelated environment scan used')
+    )
     state_path = tmp_path / 'state.json'
     worker = None
     try:
-        with pytest.raises(ValueError, match='still has live workers'):
+        with pytest.raises(ValueError, match='bounded package child failed'):
             queue.run_child(job, claims, tmp_path / 'child.log', state_path=state_path, jobs=[job], poll_seconds=0.01)
         worker = int(pid_file.read_text())
         row = json.loads(state_path.read_text())['jobs']['owned']
-        assert row['returncode'] == 0 and row['state'] == 'running'
-        assert queue.inspect_child(row) == 'live'
+        assert row['returncode'] == 0
+        assert row['state'] == 'failed'
         assert row['process_ledger'] == str(ledger.resolve())
         observed = claims.observe_workers(timeout=1)
-        assert observed['complete'] is True and observed['workers_live'] is True
-        assert worker in [identity['pid'] for identity in observed['identities']]
+        assert observed['complete'] is True
+        assert observed['workers_live'] is False
         saved = json.loads(ledger.read_text())['attempts'][claims.token]
-        assert saved['state'] == 'active' and saved['processes'][str(worker)]['identity']['pid'] == worker
-        assert claims.owned == {4} and not (tmp_path / 'claims').exists()
-        original = state_path.read_bytes()
-        with pytest.raises(ValueError, match='surviving child'):
-            with queue.queue_state(state_path, [job], recover=True):
-                pytest.fail('adopted surviving worker')
-        assert state_path.read_bytes() == original
-        with pytest.raises(ValueError, match='remain live'):
-            claims.release()
-        # Idle device memory cannot supersede our exact live worker record.
-        memory = dict.fromkeys(range(8), 2048); memory[4] = 0
-        assert process_registry.ProcessRegistry(ledger, inventory=lambda: memory).choose(memory, training=False) is None
+        assert saved['state'] == 'closed'
+        assert saved['processes'][str(worker)]['identity']['pid'] == worker
+        assert not claims.owned
+        assert not (tmp_path / 'claims').exists()
+        stopped=json.loads(Path(row['supervision_result']).read_text())
+        assert stopped['state']=='failed'
+        assert stopped['workers_absent'] is True
+        # Devices become available only after the bounded owned-worker proof.
+        memory = dict.fromkeys(range(8), 2048)
+        memory[4] = 0
+        assert process_registry.ProcessRegistry(ledger, inventory=lambda: memory).choose(memory, training=False) == (4,)
     finally:
-        if worker is None and pid_file.exists(): worker = int(pid_file.read_text())
+        if worker is None and pid_file.exists():
+            worker = int(pid_file.read_text())
         if worker is not None:
-            import signal
             identity = queue.process_identity(worker)
             if identity is not None and not identity['terminal']:
                 descriptor = supervision._pidfd_open(worker)
                 try:
                     current = queue.process_identity(worker)
-                    assert current['pid'] == identity['pid'] and current['start_ticks'] == identity['start_ticks']
+                    assert current['pid'] == identity['pid']
+                    assert current['start_ticks'] == identity['start_ticks']
                     supervision._pidfd_signal(descriptor, signal.SIGTERM)
                 finally:
                     os.close(descriptor)
             deadline = time.monotonic() + 2
             while time.monotonic() < deadline:
-                if os.waitpid(worker, os.WNOHANG)[0] == worker:
+                try:
+                    waited=os.waitpid(worker, os.WNOHANG)[0]
+                except ChildProcessError:
+                    break
+                if waited == worker:
                     break
                 time.sleep(0.01)
-        if claims.owned: claims.release()
+        if claims.owned:
+            claims.release()
         assert json.loads(ledger.read_text())['attempts'][claims.token]['state'] == 'closed'
 
 

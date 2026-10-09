@@ -18,7 +18,7 @@ collector; it owns no second model algorithm.
 ## Data flow
 
 ```mermaid
-flowchart LR
+flowchart TB
   J[("original four-rank job and saved inputs")] --> V["select original rank and slots"]
   V --> T["shared tokens and noise"]
   T --> F["one-rank FSDP or serial update"]
@@ -119,3 +119,38 @@ binds the empty `experiments/__init__.py` marker along with the checker.
 These files are explicit experiment extras; ordinary profiles do not
 include the experiment marker. Existing results retain their original
 source attribution, and affected native checks run again after the code gate.
+
+## G8 queue interface and completion
+
+The queue owns launch, device selection, process records and bounded supervision.
+The checker accepts a pinned schema-one specification with its literal protocol
+and original scientific `arguments`, plus queue-owned `--output` and local
+`--gpu-id`. Execution flags in the scientific arguments fail before writes.
+Public `parse_args`, `read_spec`, `resource_phases`, `resource_budget`, `launch_requirements`, `verify_completion` and
+`evidence_paths` provide normalization, phase/topology data and saved-only
+completion. The manifest binds exact spec bytes, normalized scientific settings
+and the complete local artifact inventory. Original producer hashes stay intact;
+new runs bind the spec helper as an explicit experiment extra.
+
+Completion verifies the original scientific controls from actual saved artifacts.
+It loads no model or decoder, starts no child, and never repairs missing output.
+A missing, changed or escaped artifact prevents completion. CPU fixtures prove
+these refusals; final-source native acceptance still requires fresh queue jobs.
+
+The `run` operation retains serial and one-rank FSDP arms. FSDP launch data
+requires the fixed hash-pinned `packages/ltx-trainer/configs/accelerate/fsdp.yaml`,
+explicit bf16 and one process;
+the queue performs that launch. `compare` is a separate saved-only job.
+`resource_phases`, `resource_budget`, `launch_requirements` must expose this topology before launch. Plain `python -m`
+cannot substitute for the FSDP arm.
+
+The run spec retains `--job`, `--execution`, original `--rank-key`, `--slots`
+and the declared deterministic control. `launch_requirements` selects one-rank
+Accelerate FSDP for the FSDP arm and Python for serial. `resource_budget` exposes
+the original absolute budget path. Both arms retain `load`, `update`, `export`.
+A compare spec supplies exactly two saved arms. `dependency_outputs` exposes
+both directories and the queue requires their receipts. The saved comparator
+uses the existing calculation; queued comparisons additionally require one
+FSDP arm and one serial arm. Their first moments and all adapter matrices must
+pass unchanged E4 tolerances. A missing or rehashed nonfinite/mismatched artifact
+prevents completion. The compare job records the generic `runtime` phase.

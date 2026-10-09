@@ -13,7 +13,10 @@ from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.experiments import sigma_sweep
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.tests.test_evaluation_completion import completed  # noqa: F401 -- shared CPU model fixture
+from scripts.onestep_avatar.tests.test_evaluation_completion import (
+    completed,  # noqa: F401 -- shared CPU model fixture
+    controlled_scientific_receipt,
+)
 from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- transitive fixture
 from scripts.onestep_avatar.tests.test_training_preflight import checked_settings  # noqa: F401 -- transitive fixture
 from scripts.prune.core import model_registry
@@ -139,7 +142,7 @@ def test_result_bound_decode_and_receipt_reverify_all_generation_evidence(
     jobs.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
     prepared = queue.prepare_jobs(jobs)[0]
     before = len(calls)
-    receipt = queue.completion_receipt(prepared)
+    receipt = controlled_scientific_receipt(prepared, monkeypatch)
     assert queue.verify_receipt(prepared, receipt)
     assert len(calls) == before
     spec = json.loads(path.read_text())
@@ -160,7 +163,9 @@ def test_missing_result_refuses_before_decoder(completed_sweep: tuple) -> None:
     assert not output.exists()
 
 
-def test_decoder_readiness_requires_all_eight_unchanged_receipts(completed_sweep: tuple) -> None:
+def test_decoder_readiness_requires_all_eight_unchanged_receipts(
+    completed_sweep: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
     spec, path, output, calls = completed_sweep
     generation = [cell["evaluation_job"] for cell in spec["cells"]]
     decode = {"id": "decode", "kind": "experiment", "experiment": "sigma_sweep",
@@ -173,10 +178,10 @@ def test_decoder_readiness_requires_all_eight_unchanged_receipts(completed_sweep
     state = {"jobs": {job["id"]: {"sha256": job["sha256"], "state": "pending"} for job in jobs}}
     before = len(calls)
     for job in jobs[:-2]:
-        state["jobs"][job["id"]].update(state="complete", receipt=queue.completion_receipt(job))
+        state["jobs"][job["id"]].update(state="complete", receipt=controlled_scientific_receipt(job, monkeypatch))
     assert [job["id"] for job in queue.ready_jobs(jobs, state)] == [generation[-1]["id"]]
     last = jobs[-2]
-    state["jobs"][last["id"]].update(state="complete", receipt=queue.completion_receipt(last))
+    state["jobs"][last["id"]].update(state="complete", receipt=controlled_scientific_receipt(last, monkeypatch))
     assert [job["id"] for job in queue.ready_jobs(jobs, state)] == ["decode"]
     text = Path(generation[0]["output"]) / "text.pt"
     torch.save(torch.load(text, weights_only=True) + 1, text)

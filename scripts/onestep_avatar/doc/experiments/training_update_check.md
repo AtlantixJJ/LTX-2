@@ -21,20 +21,15 @@ rank/slot/index in its sample context even though the serial process is rank zer
 Bind the published trace file in the result and refuse incomplete requested
 evidence. No trace flag changes the fixed scientific inputs or tolerance.
 
-`--supervise --process-ledger PATH` launches this exact public serial command through
-the shared package observer on one GPU selected by direct `nvidia-smi` queries.
-One shared ledger records only our own PID/start-time identities and descendants.
-The supervisor freezes
-`load`, `update`, `export` notifications using the original checked budget. It
-declares startup and transition guards separately, signals only the exact owned
-workers with finite waits and retains records on ambiguous worker absence. The
-inner replay continues to own all scientific preflight/comparison and actual
-allocator measurements. No runnable `expr/` supervisor is supported.
+The queue owns device selection, launch, bounded supervision and process records.
+The retired `--supervise` and `--process-ledger` flags are refused. A serial
+reference is one queue job; its saved comparison is another dependent job.
+The replay retains original `load`, `update`, `export` measurements and budgets.
 
 ## Data flow
 
 ```mermaid
-flowchart LR
+flowchart TB
   I[("training arguments and checked inputs")] --> P["prepare_run and first_update_visits"]
   P --> V["tokens_for_sample and mode.train_sample"]
   V --> G("averaged serial gradient")
@@ -51,9 +46,6 @@ flowchart LR
 ```
 
 ## Organization logic
-
-Use the package marker's `LTX_ROOT` for the supervised child's working
-directory. A later source move cannot change the package search root.
 
 Before scientific input preparation, reconstruct the original job through
 `queue.prepare_job`. Require its canonical digest to equal both the saved config
@@ -196,7 +188,7 @@ before scientific inputs, models or serial output creation.
 
 Current native replay requires explicit version-two original launch/runtime
 evidence. Read its actual numerical policy; missing historical settings cannot
-default to current flags. Supervised children inherit the exact original cuBLAS
+default to current flags. Queued children must inherit the exact original cuBLAS
 workspace. Configure direct CLI environment before native imports and apply the
 shared policy before Accelerator/CUDA. Capture actual serial runtime after
 preparation and require its complete numerical observation to match every
@@ -214,3 +206,40 @@ binds the empty `experiments/__init__.py` marker along with the checker.
 These files are explicit experiment extras; ordinary profiles do not
 include the experiment marker. Existing results retain their original
 source attribution, and affected native checks run again after the code gate.
+
+## G8 queue interface and completion
+
+The queue owns launch, device selection, process records and bounded supervision.
+The checker accepts a pinned schema-one specification with its literal protocol
+and original scientific `arguments`, plus queue-owned `--output` and local
+`--gpu-id`. Execution flags in the scientific arguments fail before writes.
+Public `parse_args`, `read_spec`, `resource_phases`, `resource_budget`, `launch_requirements`, `verify_completion` and
+`evidence_paths` provide normalization, phase/topology data and saved-only
+completion. The manifest binds exact spec bytes, normalized scientific settings
+and the complete local artifact inventory. Original producer hashes stay intact;
+new runs bind the spec helper as an explicit experiment extra.
+
+Completion verifies the original scientific controls from actual saved artifacts.
+It loads no model or decoder, starts no child, and never repairs missing output.
+A missing, changed or escaped artifact prevents completion. CPU fixtures prove
+these refusals; final-source native acceptance still requires fresh queue jobs.
+
+The `reference` operation runs the original one-device serial calculation.
+The `compare` operation is a separate saved-only job with a dependency on that
+reference. It replays the same fixed Adam comparator over checked saved tensors.
+No self-supervised reference command remains. Both phases use the original
+four-rank job and accumulation evidence; serial process world stays one.
+
+`resource_budget(spec)` returns the original job's absolute budget path for a
+reference. Queue normalization requires that exact declared path. The compare
+operation uses the queue's generic `runtime` phase. `dependency_outputs(spec)`
+returns its separate reference directory; the queue checks a dependency receipt
+for that output before launch. The reference parser fixes original world four.
+The scientific serial process remains world one.
+
+Saved completion checks the complete original inventory, visits, launch,
+resource and runtime evidence through the original preparation gates. It binds
+local initial/final/reload exports, actual fp32 Adam moments and phase records.
+It recomputes every comparison at the unchanged tolerance. Doubling a saved
+first moment and rehashing that tensor still fails completion. No native model
+or decoder opens during these checks. Historical evidence stays unchanged.

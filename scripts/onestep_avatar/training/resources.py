@@ -5,13 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import time
 from pathlib import Path
 
 import torch
 
+from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
 from scripts.onestep_avatar.hashing import sha256
+
+BUDGET_ENV = "ONESTEP_AVATAR_EFFECTIVE_BUDGET"
+BUDGET_SHA_ENV = "ONESTEP_AVATAR_EFFECTIVE_BUDGET_SHA256"
 
 
 def read_budget(path: Path | None) -> dict | None:
@@ -27,14 +32,73 @@ def read_budget(path: Path | None) -> dict | None:
     if (type(wall) not in (int, float) or not math.isfinite(wall) or wall <= 0
             or type(memory) is not int or memory <= 0):
         raise ValueError("resource budget requires positive wall and allocated-byte limits")
+    overall = record.get("overall_seconds")
+    if "overall_seconds" in record and (
+        type(overall) not in (int, float) or not math.isfinite(overall) or overall <= 0
+    ):
+        raise ValueError("resource budget overall_seconds must be finite and positive")
     return {"path": str(path), "sha256": hashlib.sha256(data).hexdigest(),
             "wall_seconds_per_phase": wall, "memory_limit_allocated_bytes": memory,
-            "tolerance": record.get("tolerance")}
+            "tolerance": record.get("tolerance"), **({"overall_seconds": overall}
+            if "overall_seconds" in record else {})}
+
+
+def default_budget() -> dict:
+    """Bind the declared queue defaults without creating a budget file or overall deadline."""
+    limits = {"wall_seconds_per_phase": 1800, "memory_limit_allocated_bytes": 48_000_000_000, "tolerance": None}
+    data = json.dumps(limits, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    return {"path": None, "sha256": hashlib.sha256(data).hexdigest(), **limits}
+
+
+def effective_budget(path: Path | None = None) -> dict:
+    """Use exact explicit scientific bytes or the canonical queue default."""
+    return default_budget() if path is None else read_budget(path)
+
+
+def _check_budget_identity(budget: dict) -> None:
+    if not isinstance(budget, dict) or (budget.get("path") is not None and not isinstance(budget["path"], str)):
+        raise ValueError("effective resource budget must be a checked record")
+    expected = default_budget() if budget.get("path") is None else read_budget(Path(budget["path"]))
+    if expected != budget:
+        raise ValueError("resource budget bytes changed since preflight")
+
+
+def budget_environment(budget: dict) -> dict[str, str]:
+    """Carry one checked effective budget to the child; no file is invented for defaults."""
+    _check_budget_identity(budget)
+    return {
+        BUDGET_ENV: json.dumps(budget, sort_keys=True, separators=(",", ":"), allow_nan=False),
+        BUDGET_SHA_ENV: budget["sha256"],
+    }
+
+
+def budget_from_environment(environment: dict[str, str] | None = None) -> dict | None:
+    """Require complete queue-bound effective limits; absent binding preserves ordinary behavior."""
+    environment = os.environ if environment is None else environment
+    data, digest = environment.get(BUDGET_ENV), environment.get(BUDGET_SHA_ENV)
+    if data is None and digest is None:
+        return None
+    if (
+        not isinstance(data, str)
+        or not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        or re.fullmatch(r"[0-9a-f]{32}", environment.get(TOKEN_ENV, "")) is None
+        or re.fullmatch(r"[0-9a-f]{64}", environment.get(JOB_ENV, "")) is None
+    ):
+        raise ValueError("effective resource budget requires paired queue-bound JSON and hash")
+    budget = json.loads(data)
+    if not isinstance(budget, dict) or budget.get("sha256") != digest:
+        raise ValueError("effective resource budget hash differs from its record")
+    _check_budget_identity(budget)
+    return budget
 
 
 def check_budget(budget: dict | None) -> None:
-    if budget is not None and read_budget(Path(budget["path"])) != budget:
-        raise ValueError("resource budget bytes changed since preflight")
+    if budget is not None:
+        _check_budget_identity(budget)
+        inherited = budget_from_environment()
+        if inherited is not None and inherited != budget:
+            raise ValueError("phase resource budget differs from its bound queue budget")
 
 
 def training_phases(settings, *, step: int | None = None) -> list[str]:  # noqa: ANN001 -- typed settings duck interface
@@ -57,7 +121,11 @@ class Phase:
     """Reset/measure one local phase; callers preserve the record before raising."""
 
     def __init__(self, device: torch.device, phase: str, rank: int, budget: dict | None):
-        self.device, self.phase, self.rank, self.budget = torch.device(device), phase, rank, budget
+        inherited = budget_from_environment()
+        if inherited is not None and budget is not None and budget != inherited:
+            raise ValueError("phase resource budget differs from its bound queue budget")
+        self.device, self.phase, self.rank = torch.device(device), phase, rank
+        self.budget = inherited if budget is None else budget
         self.started: float | None = None
 
     def start(self) -> Phase:

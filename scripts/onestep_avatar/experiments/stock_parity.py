@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from pathlib import Path
 
@@ -20,12 +21,13 @@ from ltx_pipelines.utils.samplers import euler_denoising_loop
 from scripts.onestep_avatar import evaluate, hashing, media
 from scripts.onestep_avatar.corpus import dataset, precompute, subset
 from scripts.onestep_avatar.execution import software
+from scripts.onestep_avatar.experiments import spec_protocol
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import backbone, bidirectional, common
 from scripts.prune.core.session import DEFAULT_PROMPT, DTYPE, Session
 
 ENTRY = "scripts/onestep_avatar/experiments/stock_parity.py"
-EXTRA_SOURCES = (ENTRY, 'scripts/onestep_avatar/experiments/__init__.py')
+EXTRA_SOURCES = (ENTRY, 'scripts/onestep_avatar/experiments/__init__.py', spec_protocol.ENTRY)
 
 PROTOCOL = {
     'scope': 'stock public video sampling path, audio absent; no outer RGB/text or joint audio-video parity',
@@ -188,8 +190,8 @@ def load_reference(path, protocol, image, context, grid):
                                               'controls': 'reused historical raw/RGB controls; no fresh stock calls'}
 
 
-def prepare(args):
-    if args.output.exists():
+def prepare(args, *, require_fresh_output: bool = True):
+    if require_fresh_output and args.output.exists():
         raise ValueError('stock check requires a fresh output directory')
     if args.steps < 2 or args.frames < 2:
         raise ValueError('stock check requires at least two steps and encoded frames')
@@ -331,22 +333,174 @@ def execute(args):
     return record
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    for flag in ('first-image', 'text-record', 'output'):
-        parser.add_argument('--'+flag, type=Path, required=True)
-    parser.add_argument('--model', default='2.5')
-    parser.add_argument('--frames', type=int, default=17)
-    parser.add_argument('--steps', type=int, default=4)
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--gpu-id', type=int, default=0)
-    parser.add_argument('--dry-run', action='store_true')
-    parser.add_argument('--reference-run', type=Path,
-                        help='reuse a checked stock comparison and generate only the ordinary-sigma arm')
-    record = execute(parser.parse_args(argv))
-    print(json.dumps(record if record.get('scope') else record['raw'], indent=2))
+def scientific_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    for flag in ("first-image", "text-record", "output"):
+        parser.add_argument("--" + flag, type=Path, required=True)
+    parser.add_argument("--model", default="2.5")
+    parser.add_argument("--frames", type=int, default=17)
+    parser.add_argument("--steps", type=int, default=4)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--gpu-id", type=int, default=0)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--reference-run", type=Path, help="reuse a checked stock comparison and generate only the ordinary-sigma arm"
+    )
+    args = parser.parse_args(argv)
+    if args.steps < 2 or args.frames < 2:
+        parser.error("stock check requires at least two steps and encoded frames")
+    return args
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return spec_protocol.outer_args(argv, __doc__)
+
+
+def read_spec(spec: Path, root: Path) -> argparse.Namespace:
+    return spec_protocol.read_spec(
+        parse_args(["--spec", str(spec), "--output", str(root)]), "stock_parity", scientific_args
+    )
+
+
+def resource_phases(spec: Path) -> list[str]:
+    read_spec(spec, spec.parent / "unused_output")
+    return ["runtime"]
+
+
+def runtime_profile(spec: Path) -> dict:
+    return {"generic_phase": True, "phases": resource_phases(spec), "processes": 1}
+
+
+def dependency_outputs(spec: Path) -> list[Path]:
+    args = read_spec(spec, spec.parent / "unused_output")
+    return [] if args.reference_run is None else [args.reference_run.resolve()]
+
+
+def verify_completion(spec: Path, root: Path) -> dict:  # noqa: PLR0912 -- ordered saved raw/input/render controls
+    """Recompute raw stock controls with CPU inputs; no model or decoder session."""
+    args = read_spec(spec, root)
+    manifest = spec_protocol.inspect(args, "stock_parity")
+    model, image, context, fps, levels, prompt, identities, producer = prepare(args, require_fresh_output=False)
+    grid = common.ClipGrid.build(
+        args.frames,
+        image.shape[3] * model.scale_factors.height,
+        image.shape[4] * model.scale_factors.width,
+        fps,
+        model,
+        device=torch.device("cpu"),
+        dtype=DTYPE,
+    )
+    expected_protocol = dict(
+        PROTOCOL,
+        schedule=levels.tolist(),
+        seed=args.seed,
+        frames=args.frames,
+        fps=fps,
+        prompt=prompt,
+        input_files=identities,
+        software=producer,
+    )
+    if args.reference_run is not None:
+        _, _, _, reference_files, reference = load_reference(
+            args.reference_run, expected_protocol, image, context, grid
+        )
+        identities.update(reference_files)
+        expected_protocol.update(
+            reference=reference,
+            changed_global_sigma_dtype=common.SIGMA_PRECISION,
+            generated_paths=["bidirectional_default"],
+        )
+    record = json.loads((root / "result.json").read_text())
+    if (
+        record.get("protocol") != expected_protocol
+        or json.loads((root / "protocol.json").read_text()) != expected_protocol
+    ):
+        raise ValueError("stock completion protocol differs from the scientific specification")
+    names = ("stock", "stock_repeat", "bidirectional", "bidirectional_default")
+    raw_files = {name + ".pt" for name in names} | {"noise.pt", "traces.pt"}
+    if set(record.get("output_files", {})) != raw_files:
+        raise ValueError("stock completion raw artifact inventory differs")
+    for name, digest in record["output_files"].items():
+        if manifest["artifacts"].get(name) != digest:
+            raise ValueError("stock completion raw bytes differ from the producer")
+    outputs = {}
+    expected_shape = (1, model.caps.latent_channels, args.frames, image.shape[3], image.shape[4])
+    for name in names:
+        value = torch.load(root / (name + ".pt"), map_location="cpu", weights_only=True)
+        if (
+            not isinstance(value, torch.Tensor)
+            or tuple(value.shape) != expected_shape
+            or value.dtype != DTYPE
+            or not torch.isfinite(value).all()
+            or not torch.equal(value[:, :, :1], image)
+        ):
+            raise ValueError("stock completion native latent shape, dtype, finiteness or c0 differs")
+        outputs[name] = grid.patchify(value)
+    traces = torch.load(root / "traces.pt", map_location="cpu", weights_only=True)
+    noise = torch.load(root / "noise.pt", map_location="cpu", weights_only=True)
+    if (
+        not isinstance(noise, torch.Tensor)
+        or noise.shape != outputs["stock"].shape
+        or noise.dtype != DTYPE
+        or not torch.isfinite(noise).all()
+        or set(traces) != set(names)
+        or any(len(rows) != args.steps for rows in traces.values())
+    ):
+        raise ValueError("stock completion native noise or trace inventory differs")
+    raw = compare_paths(outputs, traces)
+    if raw != record.get("raw") or not raw["terminal_difference_only"]:
+        raise ValueError("stock completion actual raw scientific controls failed")
+    for name, value in (("noise", noise), ("image", image), ("text", context)):
+        if hashing.tensor_sha256(value) != record.get(name + "_tensor_sha256"):
+            raise ValueError("stock completion consumed input tensor differs")
+    timing_names = {"bidirectional_default"} if args.reference_run is not None else set(names)
+    timings = record.get("execution", {}).get("paths", {})
+    if set(timings) != timing_names or any(
+        row.get("forward_calls") != args.steps
+        or type(row.get("seconds_including_traces")) not in (int, float)
+        or not math.isfinite(row["seconds_including_traces"])
+        or row["seconds_including_traces"] <= 0
+        for row in timings.values()
+    ):
+        raise ValueError("stock completion timing or actual call inventory differs")
+    rendering = json.loads((root / "comparison/rendering.json").read_text())
+    expected_roles = ["bidirectional", "bidirectional_default"] if args.reference_run is not None else list(names)
+    if (
+        rendering.get("software") != producer
+        or rendering.get("fps") != fps
+        or set(rendering.get("outputs", {})) != {"video", "poster"}
+    ):
+        raise ValueError("stock completion RGB render provenance differs")
+    for name, output in rendering["outputs"].items():
+        path = root / "comparison" / ("comparison.mp4" if name == "video" else "poster.png")
+        if (
+            Path(output["path"]).resolve() != path.resolve()
+            or manifest["artifacts"].get(str(path.relative_to(root))) != output["sha256"]
+        ):
+            raise ValueError("stock completion RGB output binding differs")
+    panel_roles = [row.get("role") for row in rendering.get("panels", []) if row.get("missing_reason") != "Unused"]
+    if panel_roles != expected_roles:
+        raise ValueError("stock completion RGB panel inventory differs")
+    if args.reference_run is None and record.get("decoded", {}).get("stock_repeat", {}).get("unequal_elements") != 0:
+        raise ValueError("stock completion repeated RGB control failed")
+    return record
+
+
+def evidence_paths(spec: Path, root: Path) -> list[Path]:
+    verify_completion(spec, root)
+    return spec_protocol.evidence(spec_protocol.inspect(read_spec(spec, root), "stock_parity"), root)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = spec_protocol.read_spec(parse_args(argv), "stock_parity", scientific_args)
+    record = execute(args)
+    if not args.dry_run:
+        spec_protocol.publish(args, "stock_parity")
+    print(json.dumps(record if record.get("scope") else record["raw"], indent=2))  # noqa: T201 -- CLI results
     return 0
 
 
-if __name__ == '__main__':
-    raise SystemExit(main())
+if __name__ == "__main__":
+    from scripts.onestep_avatar.execution.runtime import run
+
+    raise SystemExit(run(main))

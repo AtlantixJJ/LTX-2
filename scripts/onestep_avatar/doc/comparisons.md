@@ -1,5 +1,11 @@
 # `comparisons.py` — saved comparison rendering
 
+The module entry calls the shared queue runtime helper. Outside a queue binding,
+it calls the public operation unchanged. In a queued child, the helper measures
+one actual local resource phase and records any declared numerical policy. The
+queue owns launch, supervision and worker-absence evidence; this module starts
+no child through that helper. See [runtime](execution/runtime.md).
+
 ## Objective
 
 Validate saved encodings and prepared RGB references, decode through the shared

@@ -38,6 +38,35 @@ def test_production_imports_keep_experiments_out_of_ordinary_owners() -> None:
     assert not violations, violations
 
 
+def test_only_execution_owns_claims_children_and_supervision() -> None:
+    """B9: imported aliases cannot conceal a second launch or claim owner."""
+    protected = {"ProcessRegistry", "GPUClaims", "supervise", "prepare_request",
+                 "guard_command", "publish_grant", "wait_registration", "recover_registered_attempt"}
+    violations = []
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+        relative = path.relative_to(PACKAGE_ROOT)
+        if relative.parts[0] in ("tests", "execution"):
+            continue
+        tree = ast.parse(path.read_text())
+        aliases = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name in protected:
+                        aliases[alias.asname or alias.name] = alias.name
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = node.func.id if isinstance(node.func, ast.Name) else (
+                node.func.attr if isinstance(node.func, ast.Attribute) else None)
+            # Model-free ffmpeg encoding in corpus/mask_video is not a model launcher.
+            if name in protected or aliases.get(name) in protected or (
+                relative.parts[0] == "experiments" and name == "Popen"
+            ):
+                violations.append((str(relative), node.lineno, name))
+    assert not violations, violations
+
+
 def test_experiments_call_public_package_owners() -> None:
     violations = []
     for path in sorted((PACKAGE_ROOT / "experiments").rglob("*.py")):

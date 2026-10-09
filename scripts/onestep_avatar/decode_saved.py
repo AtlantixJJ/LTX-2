@@ -179,4 +179,5 @@ def main() -> None:  # noqa: PLR0915 -- sequential saved-job decoding and compar
 
 
 if __name__ == "__main__":
-    main()
+    from scripts.onestep_avatar.execution.runtime import run
+    raise SystemExit(run(main))

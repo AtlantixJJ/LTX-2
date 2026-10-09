@@ -8,14 +8,12 @@ Use the `ltx` environment from the LTX-2 root. Only guide rendering uses
 `argavatar`. Query `nvidia-smi` directly and register starts in the single
 shared own-process ledger. The user amendment on 2026-10-09 authorizes one
 shared pool of GPUs 0–7; four-rank training selects four free devices.
-The current pre-G8 queue still fixes training to 0–3 and selects single-device
-jobs in preference order 5 through 0; it does not dispatch 6 or 7 yet. This is
-a transitional implementation restriction, not a user prohibition. These recipes describe
-commands; this refactor does not start campaigns or bulk preprocessing.
-The current task only prepares the next agent's handoff. Its work order is
-code refactor first, CPU/import/boundary validation next, then fresh affected
-native checks and GPU experiments on the final source. Current module commands
-remain unchanged until that agent moves their owners. The
+The queue uses that shared pool for every kind, including noncontiguous
+four-device training selections and one-device ordinary/checker jobs. These
+recipes describe commands; this refactor does not start campaigns or bulk
+preprocessing. The work order is code refactor first, CPU/import/boundary
+validation next, then fresh affected native checks and GPU experiments on the
+final source. The
 [active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#next-actions)
 owns the exact sequence; no GPU run is launched by this documentation update.
 
@@ -56,7 +54,7 @@ After a valid one-update run, check its original job before serial replay:
 
 ```bash
 conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.training_update_check \
-  --job <CHECKED_ORIGINAL_JOB_JSON> --output <FRESH_SERIAL_OUT> --world-size 4 --dry-run
+  --spec <PINNED_REFERENCE_SPEC_JSON> --output <FRESH_SERIAL_OUT> --dry-run
 ```
 
 This checks completed scientific evidence and current launch/runtime/resource
@@ -64,18 +62,21 @@ identities; it does not start a model. Historical runs missing those facts fail
 current acceptance and retain their original scope. Reprepare source-bound jobs
 after repairs rather than restamping historical records.
 
-For example, from `LTX-2`, after checking free devices:
+Put the explicit training arguments in a `train` job: `--mode bidirectional`,
+`--subset <V2_SUBSET>`, `--output <FRESH_OUT>`, `--variant dev`,
+`--guide-mode d1`, `--objective white` and `--span-latent-frames 17`.
+The job declares the checked Accelerate file, `processes: 4` and a unique port.
+Review the list from `LTX-2`:
 
 ```bash
-CUDA_VISIBLE_DEVICES=<GPUS> conda run --no-capture-output -n ltx accelerate launch \
-  --config_file scripts/onestep_avatar/configs/fsdp.yaml \
-  --num_processes <COUNT> --main_process_port <PORT> \
-  -m scripts.onestep_avatar.train --mode bidirectional \
-  --subset <V2_SUBSET> --output <FRESH_OUT> --variant dev \
-  --guide-mode d1 --objective white --span-latent-frames 17
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
+  --jobs <TRAINING_QUEUE_JSON> --state <STATE_JSON> --dry-run
 ```
 
-The three old GPU-count copies are removed after the training caller migration.
+After the final code gate, execute the reviewed list with `--execute --loop
+--process-ledger ../expr/onestep_avatar/processes.json`. The queue chooses free
+devices, applies the exact budget and owns bounded supervision. The three old
+GPU-count copies are removed after the training caller migration.
 The running study uses the separate recorded forward-prefetch setting; preserve
 that setting when reproducing its jobs. Do not modify the trainer package's YAML.
 
@@ -86,18 +87,21 @@ launchers had no active callers in the package or current study execution
 inventory. They selected environments, checked free GPU memory, and set logging
 paths; they did not implement measurement or guide rendering.
 
-Before measurements, check `nvidia-smi` for an available device with at least
-34,000 MiB free. Use the `ltx` environment and the corpus path for both inputs:
+Queue the literal `stats` experiment selector with a schema-one `protocol:
+"stats"` spec. Its scientific `arguments` keep `--model 2.5`, absolute `--renders`
+and/or `--pairs`, `--render-glob argavatar_render.mp4`, `--max-videos 4` and
+`--eps-samples 8`. The queue owns GPU selection and the output directory; the
+scientific spec cannot supply `--gpu-id` or `--out`. New results save the original
+JSON summary as `analysis_summary.json` plus bound raw map evidence when used.
 
 ```bash
-conda run --no-capture-output -n ltx python -u -m scripts.onestep_avatar.experiments.stats \
-  --model 2.5 --gpu-id <GPU_ID> \
-  --renders ../data/AnimatableHuman/DNARenderingVideo \
-  --render-glob argavatar_render.mp4 \
-  --pairs ../data/AnimatableHuman/DNARenderingVideo \
-  --max-videos 4 --eps-samples 8 \
-  --out ../expr/onestep_avatar/analysis_summary.json
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
+  --jobs <STATS_QUEUE_JSON> --state <STATE_JSON> --dry-run
 ```
+
+After the final code gate, use the same reviewed list with `--execute --loop`.
+The queue queries free devices, records owned workers and bounds the actual
+child. Pair-only `--no-gpu` retains its original CPU calculation.
 
 Before guide rendering, check for at least 20,000 MiB free. `CUDA_VISIBLE_DEVICES`
 maps the selected physical device to local device zero. Use `argavatar`, keep
@@ -341,19 +345,22 @@ sampler. It does not run joint audio-video generation or D1 guide mixing:
 
 ```bash
 conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.stock_parity \
-  --first-image <PREPARED_IMAGE>/image.pt --text-record <FIXED_PREVIEW>/preview.json \
-  --output <FRESH_STOCK_CHECK> --frames 17 --steps 4 --seed 42 --gpu-id <FREE_GPU>
+  --spec <PINNED_STOCK_SPEC_JSON> --output <FRESH_STOCK_CHECK> --dry-run
 ```
 
-Add `--dry-run` to validate inputs and print the predeclared protocol without
-model/GPU work or output writes. The schedule uses the native scheduler without
+The schema-one `stock_parity` spec keeps scientific `--first-image`,
+`--text-record`, `--frames 17`, `--steps 4` and `--seed 42` arguments. GPU and
+output belong to the queue job. Use the saved G8 `stock_parity.json` template
+for the `experiment` selector and queue CPU dry run. Execution follows the
+final code gate. The schedule uses the native scheduler without
 a latent argument. The current matching path explicitly uses float32 global
 sigma. Inspect repeated-control, intermediate-call, raw and decoded evidence
 before accepting it. Ordinary product precision, adapters and the seven-frame
 pilot remain separate checks. See [the module design](../doc/experiments/stock_parity.md).
 
-To check ordinary global-sigma precision, add `--reference-run
-<CHECKED_STOCK_CHECK>` and choose a fresh output. This reuses verified stock
+To check ordinary global-sigma precision, put `--reference-run
+<CHECKED_STOCK_CHECK>` in the pinned scientific spec and choose a fresh queue
+output. This reuses verified stock
 controls and fixed noise and generates only the ordinary arm. The corrected
 shared default is float32 global sigma and token timesteps. Full fresh checks
 run stock, stock repeat, explicit float32 and ordinary default together. Changed
@@ -371,12 +378,16 @@ The preview-job route generates and renders using those pinned records;
 ordinary raw evaluation does not invent missing references:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.evaluate \
-  --mode bidirectional --subset <V2_SUBSET> --source <SOURCE_ID> \
-  --model 2.5 --variant dev --guide-mode d1 --span-latent-frames 17 \
-  --schedule 0.725 0 --checkpoint <V2_ADAPTER> --include-base \
-  --noise-file <SAVED_BF16_TOKEN_NOISE> --output <FRESH_OUT> --gpu-id <GPU_ID>
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
+  --jobs <EVALUATION_QUEUE_JSON> --state <STATE_JSON> --dry-run
 ```
+
+The `evaluate` job's arguments include `--mode bidirectional`, `--subset
+<V2_SUBSET>`, `--source <SOURCE_ID>`, `--model 2.5`, `--variant dev`,
+`--guide-mode d1`, `--span-latent-frames 17`, `--schedule 0.725 0`,
+`--checkpoint <V2_ADAPTER>`, `--include-base`, `--noise-file
+<SAVED_BF16_TOKEN_NOISE>` and the explicit fresh `--output`. The queue supplies
+local GPU zero. Execute only after the final code gate.
 
 Use the causal mode and its explicit block/cache settings for a causal adapter.
 The `--output-latent-frames` option separates a causal output prefix
@@ -429,9 +440,13 @@ Training can pin `--preview-inputs <FIXED_PREVIEW_RECORD>`. A completed adapter
 save may enqueue a preview job. Its raw generation stage runs outside training:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.previews \
-  --preview-job <JOB_JSON> --gpu-id <GPU_ID>
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
+  --jobs <PREVIEW_QUEUE_JSON> --state <STATE_JSON> --dry-run
 ```
+
+The `preview` job supplies `--preview-job <JOB_JSON>` and the explicit matching
+`--output`. Use the G8 preview template. After the final code gate the queue
+starts the public preview owner with bounded supervision.
 
 With a pinned reference bundle, this command decodes the saved outputs, renders
 the training panels, and completes the job after checking the media evidence.
@@ -461,11 +476,14 @@ Use ordinary evaluation arguments with `bench`, plus measured repetitions and
 discarded warmup. For example, benchmark a checked bidirectional segment:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.bench \
-  --mode bidirectional --subset <VIDEO_LIST> --source <SOURCE_ID> \
-  --variant dev --guide-mode d1 --schedule 0.725 0 --span-latent-frames 17 \
-  --noise-file <FIXED_NOISE> --output <NEW_OUTPUT> --repetitions 3 --warmup 1
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
+  --jobs <BENCH_QUEUE_JSON> --state <STATE_JSON> --dry-run
 ```
+
+The `bench` job keeps the ordinary mode/subset/source/variant/guide/schedule/span
+and fixed noise arguments, with explicit `--output`, `--repetitions 3` and
+`--warmup 1`. G8 templates cover generation and operation timing separately;
+execution follows the final code gate.
 
 Each ordinary result includes `benchmark` measurements and output identities.
 The measured boundary includes sampling and complete CPU encoding, excludes
@@ -480,13 +498,15 @@ Use saved native-bf16 token tensors for exactly one selected video. The second
 tensor keeps all tokens before the boundary unchanged and changes later tokens:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.causality \
-  --mode causal --subset <VIDEO_LIST> --source <SOURCE_ID> \
-  --variant dev --guide-mode d1 --schedule 0.421875 0 \
-  --block-latent-frames 2 --context-latent-frames 8 --span-latent-frames 17 \
-  --noise-file <ORIGINAL_NOISE> --changed-noise-file <CHANGED_NOISE> \
-  --future-noise-start 9 --checkpoint <V2_ADAPTER> --output <NEW_OUTPUT>
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
+  --jobs <FUTURE_NOISE_QUEUE_JSON> --state <STATE_JSON> --dry-run
 ```
+
+The `causality` experiment spec keeps `--mode causal`, the checked subset/source,
+dev D1, direct `--schedule 0.421875 0`, two-frame blocks, eight-frame context,
+17-frame span, `--noise-file <ORIGINAL_NOISE>`, `--changed-noise-file
+<CHANGED_NOISE>`, `--future-noise-start 9` and `--checkpoint <V2_ADAPTER>`.
+Its output and GPU belong to the queue. Execute after the final code gate.
 
 This compares earlier encoded frames zero through eight against later frames
 nine through sixteen. Results include both encodings, their provenance and
@@ -501,10 +521,13 @@ opening weights. Masters need at least 17 encoded frames; global noise draws
 retain the entire recorded master. Use a new output path:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.causality \
-  --causality --checkpoint <ADAPTER> --view <VIEW> --sigma 0.421875 \
-  --gpu-id <FREE_GPU> --output <FRESH_JSON>
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
+  --jobs <EIGHT_BLOCK_QUEUE_JSON> --state <STATE_JSON> --dry-run
 ```
+
+The `causality` spec selects `--causality`, the exact `--checkpoint`, `--view`
+and `--sigma 0.421875`. The queue output is a fresh directory; model execution
+follows the final code gate.
 
 This preserves the earlier diagnostic's sigma, seed pair 42/99, B2/D8/sink1,
 first eight blocks, and changed noise after frame eight. It reports earlier
@@ -516,11 +539,14 @@ Prepared guide and supplied-image encodings must have matching crop, background,
 frame rate and VAE provenance. Generate and save raw output before decoding:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.infer \
-  --mode bidirectional --guide <GUIDE_PT> --first-image <IMAGE_PT> \
-  --variant dev --schedule 0.725 0 --output <NEW_OUTPUT> \
-  --decode --review --poster-frame 0
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
+  --jobs <PRODUCT_QUEUE_JSON> --state <STATE_JSON> --dry-run
 ```
+
+The `product` job supplies `--mode bidirectional`, `--guide <GUIDE_PT>`,
+`--first-image <IMAGE_PT>`, `--variant dev`, `--schedule 0.725 0`, the explicit
+fresh `--output`, `--decode`, `--review` and `--poster-frame 0`. The G8 template
+pins completion artifacts. Execute through the queue after the final code gate.
 
 The generated-only video stays separate from the review under `review/`.
 The review shows the decoded supplied-image still, decoded guide and generated
@@ -534,24 +560,28 @@ research override. Real-weight product/review acceptance remains pending.
 
 For the native E4 check, use the ordinary explicit-mode four-process training
 recipe with `--steps 1 --save-initial --save-update-state --chains-per-rank 2`
-and no preview input. Keep gradient checkpointing enabled. The existing queue
-currently uses the fixed training set 0–3. G8 must implement the authorized
-0–7 shared pool while preserving the four-rank topology; idle GPUs outside the
-current set do not yet change dispatch.
+and no preview input. Keep gradient checkpointing enabled. The queue selects
+four free GPUs from the shared 0–7 pool and retains exactly four ranks.
+Independent training queues use the same process ledger and distinct
+rendezvous ports.
 `--save-update-state` writes the actual training text and named fp32 Adam moments.
 It changes evidence only and is not a resume option.
 
-After the distributed job completes, save its exact `arguments` in a JSON job.
-Run the bounded serial reference in the `ltx` environment on one independently
-registered free device, with `CUDA_VISIBLE_DEVICES` set to that physical device:
+After the distributed job completes, retain its exact original JSON job. Queue
+one `training_update_check` reference operation with scientific `--job`,
+`--world-size 4` and optional `--consumer-trace` in the pinned spec. Declare the
+same original resource budget in the queue job. Queue a separate compare
+operation with `--reference <REFERENCE_DIRECTORY>` and a dependency on that
+reference job. No checker selects devices or launches children.
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.training_update_check \
-  --job <ORIGINAL_TRAIN_JOB_JSON> --world-size 4 --output <FRESH_SERIAL_DIRECTORY>
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
+  --jobs <REFERENCE_AND_COMPARE_QUEUE_JSON> --state <STATE_JSON> --dry-run
 ```
 
-`--dry-run` verifies the completed distributed inputs/logs/exports/moments and
-prints fixed visits and tolerances without opening a model or writing output.
+The reference checker's direct `--spec ... --output ... --dry-run` verifies
+completed distributed inputs/logs/exports/moments without a model or writes.
+Queue dry-run validates only launch planning, including future dependency paths.
 Actual replay compares gradients, norms, loss, export and distributed step-one
 reload. A failed comparison exits 2 and retains measured failed evidence.
 Native previews/product and perceptual quality are separate acceptance gates.

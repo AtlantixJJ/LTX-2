@@ -9,19 +9,54 @@ its one canonical tensor validator. It owns no trainer or sampler.
 ## Data flow
 
 ```mermaid
-flowchart LR
+flowchart TB
   J[("pinned preview job")] --> P["generate_preview"]
   P --> E["evaluate.execute_evaluation"] --> O[("raw result records")]
+  O --> R["render saved outputs"] --> M[("media and queue completion")]
+  M --> V["saved completion verifier"]
   classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
   classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
-  class P,E proc;
-  class J,O disk;
+  class P,E,R,V proc;
+  class J,O,M disk;
 ```
 
 Rendering reads the fixed reference bundle and raw records. It opens the shared
 VAE session, decodes only requested outputs, then calls the shared media owner.
 
 ## Organization logic
+
+The queue-facing parser accepts `--preview-job`, `--output` and an optional
+local `--gpu-id` (zero by default). Parsing reads no scientific files. The
+explicit output must equal the pinned job's output after path normalization.
+`queue_identity(arguments)` exposes the immutable job ID, checkpoint record,
+fixed-input hash and output. It does not bind the whole mutable job-file hash:
+the preview owner updates that file's state and result inventory during work.
+
+After a queued preview reaches complete state, publish `preview_completion.json`
+under its output. Bind the immutable identity and exact raw/render record lists.
+`verify_completion(arguments, root)` rechecks that marker, the current complete
+job, every fixed input and checkpoint, and the public raw/render verification.
+Require each generated artifact to remain within the pinned output. Validate
+the raw encoding's shape, finite native precision and clean first-image bytes.
+`evidence_paths` returns the marker, every raw/render record, encoding, video
+and poster after verification. It opens no model or decoder and repairs nothing.
+The direct historical interface can still omit output and retain its raw-only
+behavior; queued completion always requires rendered evidence.
+
+If rendering completed before the process stopped but no queue marker exists,
+the explicit queue CLI verifies the saved complete job and publishes that marker
+without generation. If the marker already exists, verify it and return without
+changing any bytes. Saved verification itself never writes or repairs records.
+
+Raw completion uses the shared ordinary evaluation verifier with the fixed
+arguments, pinned adapter and exact numbered attempt. Require one adapter and
+at most one base result. Rendering must identify that same raw attempt, decoder
+keys, native VAE bytes and pinned references. Check the reference pixel hashes,
+panel roles/titles/positions, source-frame mapping and fixed media paths.
+
+Worked queue control: publishing state and media changes the job-file SHA, but
+not `queue_identity`. Changing its checkpoint or fixed-input hash changes that
+identity or fails preflight. Deleting a rendered poster fails saved completion.
 
 Recalculate the fixed-record hash, concatenated checkpoint/fixed identity,
 every input-file hash and the checkpoint completion marker before execution.
@@ -72,6 +107,10 @@ cannot certify complete preview media. Retain original retries and receipts.
 Preserve all state, mutation, retry, rendering and pin controls in test_previews.py.
 Add missing-validator refusal before native handles or writes, and assert the
 canonical validator reaches ordinary evaluation. New CLI help uses --preview-job.
+`test_ordinary_queue_completion.py` adds a mutable-state identity control,
+complete queued raw/render execution on a controlled CPU model, marker-only
+recovery, and missing-media/rehashed shape/precision/c0/time-map/decoder failures.
+Native model and decoder boundaries remain blocked during saved completion.
 
 
 ### Preview verification and state changes

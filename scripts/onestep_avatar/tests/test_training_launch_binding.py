@@ -141,15 +141,15 @@ def test_changed_budget_refuses_prepared_command_and_dispatch_launch_before_chil
     # Preserve valid values while changing the exact predeclared bytes.
     budget_path.write_text(budget_path.read_text() + "\n")
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("started a child"))
-    with pytest.raises(ValueError, match="resource budget changed"):
+    with pytest.raises(ValueError, match=r"resource budget.*changed"):
         queue.prepare_job(prepared, tmp_path)
-    with pytest.raises(ValueError, match="resource budget changed"):
-        queue.job_command(prepared, queue.TRAIN_GPUS)
-    with pytest.raises(ValueError, match="resource budget changed"):
+    with pytest.raises(ValueError, match=r"resource budget.*changed"):
+        queue.job_command(prepared, queue.GPU_POOL[:queue.TRAIN_PROCESSES])
+    with pytest.raises(ValueError, match=r"resource budget.*changed"):
         queue.training_launch_record(prepared)
     released = []
-    claims = SimpleNamespace(owned=set(queue.TRAIN_GPUS), release=lambda: released.append(True))
-    with pytest.raises(ValueError, match="resource budget changed"):
+    claims = SimpleNamespace(owned=set(queue.GPU_POOL[:queue.TRAIN_PROCESSES]), release=lambda: released.append(True))
+    with pytest.raises(ValueError, match=r"resource budget.*changed"):
         queue.run_child(prepared, claims, tmp_path / "logs/child.log")
     assert released == [True]
     assert not output.exists()

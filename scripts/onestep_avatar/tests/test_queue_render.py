@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.tests.test_saved_comparisons import (
     test_saved_study_spec_renders_master_and_output_with_report_metrics as render_fixture,
 )
+from scripts.onestep_avatar.training import resources
 
 
 @pytest.fixture
@@ -25,12 +27,16 @@ def rendered(tmp_path, monkeypatch):
     return queue.prepare_jobs(path)[0]
 
 
+@pytest.mark.usefixtures('controlled_queue_observation')
 def test_render_command_and_receipt_use_package_and_verified_manifest(rendered, tmp_path):
+    """Check saved-render science; controlled envelopes do not prove native supervision."""
     command, environment=queue.job_command(rendered,(4,))
     assert command[1:3]==['-m','scripts.onestep_avatar.comparisons']
-    assert command[-2:]==['--gpu-id','0'] and environment=={'CUDA_VISIBLE_DEVICES':'4'}
+    assert command[-2:]==['--gpu-id','0']
+    assert environment=={'CUDA_VISIBLE_DEVICES':'4', **resources.budget_environment(rendered['effective_budget'])}
     assert queue.verify_completion(rendered)
-    receipt=queue.completion_receipt(rendered)
+    receipt=queue.completion_receipt(rendered, attempt={})
+    receipt['execution']['binding']['completed_at'] = time.time()
     assert receipt['evidence'][0]['path']==str(tmp_path/'rendered/render_manifest.json')
     assert queue.verify_receipt(rendered,receipt)
 
@@ -150,9 +156,15 @@ def test_render_dispatch_claims_one_device_and_publishes_verified_receipt(render
 
     def launch(command,**kwargs):
         assert command[1:3]==['-m','scripts.onestep_avatar.comparisons']
-        assert command[-2:]==['--gpu-id','0'] and kwargs['env']['CUDA_VISIBLE_DEVICES']=='5'
+        assert command[-2:]==['--gpu-id','0']
+        assert kwargs['env']['CUDA_VISIBLE_DEVICES']=='0'
+        assert all(
+            kwargs['env'][key] == value
+            for key, value in resources.budget_environment(rendered['effective_budget']).items()
+        )
         own=json.loads(ledger.read_text())['attempts'][kwargs['env']['ONESTEP_AVATAR_QUEUE_TOKEN']]
-        assert own['job']=='saved_render' and own['gpus']==[5]
+        assert own['job']=='saved_render'
+        assert own['gpus']==[0]
         assert (claims/'5').read_text()=='legacy reservation'
         prepared.rename(output)
         return SimpleNamespace(pid=99999999,poll=lambda:0,wait=lambda:0)

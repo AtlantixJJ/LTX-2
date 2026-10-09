@@ -19,7 +19,12 @@ command=[sys.executable,'-c',"from pathlib import Path; Path("+repr(str(root/'mo
 job={'id':'case','sha256':'a'*64,'kind':'evaluate','dependencies':[],
      'arguments':['--mode','causal'],'output':str(root/'output')}
 queue.job_command=lambda *_: (command,{})
-claims=queue.GPUClaims(root/'claims'); assert claims.acquire((4,),job='case')
+if phase=='interrupted_registration':
+    from scripts.onestep_avatar.execution.process_registry import ProcessRegistry
+    claims=ProcessRegistry(root/'ledger.json',inventory=lambda:dict.fromkeys(range(8),0))
+else:
+    claims=queue.GPUClaims(root/'claims')
+assert claims.acquire((4,),job='case')
 original_popen=subprocess.Popen
 original_wait=queue_launch.wait_registration
 def start(*args,**kwargs):
@@ -69,6 +74,18 @@ def wait_guard_exit(row: dict) -> None:
 def test_explicit_recovery_of_actual_unapproved_launch_preserves_outputs_and_attempts(tmp_path, monkeypatch, phase):
     job,state=interrupted_owner(tmp_path,phase)
     row=state['jobs']['case']
+    if phase=='interrupted_registration':
+        assert row['state']=='failed'
+        assert row['child_pid'] is not None
+        assert row['child_identity'] is None
+        assert not (Path(row['launch_request']).parent/'grant.json').exists()
+        stopped=json.loads(Path(row['supervision_result']).read_text())
+        assert stopped['workers_absent'] is True
+        assert all(
+            item['state']=='closed' for item in json.loads((tmp_path/'ledger.json').read_text())['attempts'].values()
+        )
+        assert not (tmp_path/'model_executed').exists()
+        return  # G8 catches the interruption and stops its exact owned guard.
     assert (row['child_pid'] is None)==(phase!='interrupted_registration')
     assert row['child_identity'] is None and row['state']=='running'
     assert not (Path(row['launch_request']).parent/'grant.json').exists()

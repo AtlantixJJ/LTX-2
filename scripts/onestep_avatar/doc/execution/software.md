@@ -150,3 +150,8 @@ modes; preparation checks both preview modes plus independent RGB input.
 Each child inventories real loaded module paths and requires every path in
 the selected profile. Fixed-preview evaluation includes `previews.py`, the
 explicit validator owner, in its source receipt. No profile includes studies.
+
+Current common profiles bind queue runtime, device pool, phase notifications,
+resource measurements and numerical policy owners. An unchanged scientific
+module does not make results current when those executed shared owners change.
+Original saved software manifests retain their original attribution.

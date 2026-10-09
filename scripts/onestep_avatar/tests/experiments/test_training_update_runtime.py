@@ -64,6 +64,18 @@ def test_serial_replay_uses_shared_completed_update(
         assert result["comparison"]["passed"]
         assert result["comparison"]["actual_step_one_reload_exact"]
         assert [record["phase"] for record in resources.read_records(output, 1)[0]] == ["load", "update", "export"]
+        monkeypatch.setattr(engine, "build_transformer", lambda *_args: pytest.fail("completion loaded native model"))
+        saved_reference, measured_reference = training_update_check._saved_reference(output, job_path, 1)
+        assert measured_reference == result["comparison"]
+        assert saved_reference == result
+        serial_state = torch.load(output / "adam.pt", weights_only=True)
+        for value in serial_state.values():
+            value["exp_avg"] *= 2
+        torch.save(serial_state, output / "adam.pt")
+        result["output_files"]["adam.pt"] = sha256(output / "adam.pt")
+        (output / "result.json").write_text(json.dumps(result))
+        with pytest.raises(ValueError, match="numerical comparison"):
+            training_update_check._saved_reference(output, job_path, 1)
     doubled = {name: {**value, "exp_avg": value["exp_avg"] * 2} for name, value in states.items()}
     measured = training_update_check.compare_update(
         doubled, states, load_file(updated), load_file(updated), beta1=0.9, norms=(1.0, 1.0), losses=(1.0, 1.0))

@@ -13,7 +13,6 @@ import math
 import os
 import shutil
 import subprocess
-import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,12 +20,13 @@ from pathlib import Path
 import torch
 
 from ltx_core.model.transformer.modality import Modality
-from scripts.onestep_avatar import LTX_ROOT, evaluate, hashing
+from scripts.onestep_avatar import evaluate, hashing
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import software
-from scripts.onestep_avatar.experiments import causality
+from scripts.onestep_avatar.experiments import causality, spec_protocol
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import causal, common
+from scripts.onestep_avatar.training import resources
 from scripts.onestep_avatar.training.resources import Phase
 
 TARGETS = (("before", (3, 5)), ("after", (11, 13)))
@@ -35,6 +35,7 @@ EXTRA_SOURCES = ("scripts/onestep_avatar/experiments/continuation_check.py",
                  "scripts/onestep_avatar/training/resources.py",
                  "scripts/onestep_avatar/execution/supervision.py",
                  'scripts/onestep_avatar/experiments/__init__.py',
+                 spec_protocol.ENTRY,
                  'scripts/onestep_avatar/experiments/causality.py')
 IMPORTED_OWNER_SHA256 = sha256(Path(__file__))
 
@@ -282,11 +283,19 @@ class ReferenceObserver:
         if (set(values) != {"k", "v"} or k.shape[1] <= prefix or v.shape[1] != k.shape[1]
                 or any(tensor_record(value) != saved["tensors"][name] for name, value in values.items())):
             raise ValueError("saved cached K/V values or native reference range differ")
-        self.observations.append({"phase": row["phase"], "span": row["span"], "layer": layer,
+        observation = {"phase": row["phase"], "span": row["span"], "layer": layer,
                                   "heads": heads, "retained_frames": row["retained_frames"],
                                   "k": compare_chunks(values["k"], k[:, :prefix]),
                                   "v": compare_chunks(values["v"], v[:, :prefix]),
-                                  "scope": "actual kernel history K after normalization/RoPE and native V"})
+                                  "scope": "actual kernel history K after normalization/RoPE and native V"}
+        if self.progress_path is not None:
+            reference = {"k": k[:, :prefix].detach().cpu().clone(),
+                         "v": v[:, :prefix].detach().cpu().clone()}
+            path = self.progress_path.parent / 'reference_kv' / row['phase'] / f'layer_{layer:04d}.pt'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            dataset.atomic_write(path, lambda temporary: torch.save(reference, temporary))
+            observation['reference_file'] = file_record(self.progress_path.parent, path)
+        self.observations.append(observation)
         if self.progress_path is not None:
             write_json(self.progress_path, {"state": "observing", "layerwise": self.observations})
 
@@ -343,7 +352,7 @@ def _replace_argument(arguments: list[str], name: str, value: str) -> list[str]:
     return result
 
 
-def prepare(args: argparse.Namespace) -> dict:  # noqa: PLR0912, PLR0915 -- ordered pre-weight scientific identity checks
+def prepare(args: argparse.Namespace, *, completion: bool = False) -> dict:  # noqa: PLR0912, PLR0915 -- ordered pre-weight scientific identity checks
     """Check frozen protocol, current native inputs and original saved text on CPU."""
     snapshot = None
     control, control_identity = None, None
@@ -416,7 +425,8 @@ def prepare(args: argparse.Namespace) -> dict:  # noqa: PLR0912, PLR0915 -- orde
                 args.history == "capture") or (options.changed_noise_file is None) != (args.history == "capture")
             or (options.changed_noise_file is not None and options.future_noise_start not in (3, 11))):
         raise ValueError("data-only E3 control metadata differs from its actual parsed scientific comparison")
-    specification, variants, cases, membership = causality.prepare_evaluation(options)
+    specification, variants, cases, membership = causality.prepare_evaluation(
+        options, require_fresh_output=not completion)
     if len(cases) != 1 or variants != [None]:
         raise ValueError("continuation observations require one source and base-only weights")
     video, frames, requested, _adapters = cases[0]
@@ -467,7 +477,8 @@ def prepare(args: argparse.Namespace) -> dict:  # noqa: PLR0912, PLR0915 -- orde
                 "largest_cpu_cached_layer_bytes": 2 * 9 * tokens * inner * element,
                 "reference_dense_mask_bytes": (11 * tokens) ** 2 * 4,
                 "comparison_chunk_elements": CHUNK_ELEMENTS}
-    if args.phase == "capture" and shutil.disk_usage(args.output.parent).free < snapshot_bytes + (256 << 20):
+    if (not completion and args.phase == "capture"
+            and shutil.disk_usage(args.output.parent).free < snapshot_bytes + (256 << 20)):
         raise ValueError("insufficient disk space for the exact full-layer E3 snapshots")
     return {"options": options, "software": profile, "fixed_inputs": fixed, "snapshot": snapshot,
             "control": control_identity, "changed_noise": changed_noise, "arguments": arguments,
@@ -499,8 +510,6 @@ def _check_prepared(prepared: dict) -> None:
     if prepared["source_snapshot"] is not None:
         identities.append(prepared["source_snapshot"])
     identities.extend(prepared[name] for name in ("control", "changed_noise") if prepared[name] is not None)
-    if prepared.get("launch_record") is not None:
-        identities.append(prepared["launch_record"])
     if any(sha256(Path(identity["path"])) != identity["sha256"] for identity in identities):
         raise ValueError("fixed E3 input, source evidence or snapshot changed after preflight")
     if prepared["source_snapshot"] is not None:
@@ -594,6 +603,7 @@ def run(args: argparse.Namespace, prepared: dict) -> dict:  # noqa: PLR0915 -- b
               "control": prepared["control"], "changed_noise": prepared["changed_noise"],
               "budget": prepared["budget"], "allocation_estimate": prepared["estimate"],
               "resources": resource, "sampled_total_device_memory": samples,
+              "effective_resource_budget": phase.budget,
               "snapshots": snapshots, "layerwise": observations, "reference_blocks": block_records,
               "control_results": controls,
               "call_counts": model_calls,
@@ -632,91 +642,8 @@ def control_results(prepared: dict) -> list[dict]:
     return rows
 
 
-def scientific_binding(prepared: dict) -> dict:
-    return {name: prepared[name] for name in ("software", "fixed_inputs", "protocol", "original_result",
-                                            "source_snapshot", "budget", "estimate", "control", "changed_noise")}
-
-
-def check_launch_record(path: Path, prepared: dict, args: argparse.Namespace) -> None:
-    record = json.loads(path.read_text())
-    from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV  # noqa: PLC0415 -- shared names
-
-    if (sha256(path) != os.environ.get(JOB_ENV) or not os.environ.get(TOKEN_ENV)
-            or record.get("binding") != scientific_binding(prepared)
-            or record.get("phase") != args.phase or record.get("sigma") != args.sigma
-            or record.get("history") != args.history or record.get("output") != str(args.output)):
-        raise ValueError("supervised child differs from its exact frozen E3 launch")
-    prepared["launch_record"] = {"path": str(path.resolve()), "sha256": sha256(path)}
-
-
-def supervised_run(args: argparse.Namespace, prepared: dict) -> dict:
-    """Use the existing own registry and supervisor, with the exact original bounds."""
-    from scripts.onestep_avatar.execution import (  # noqa: PLC0415 -- existing model-free process owners
-        queue,
-        supervision,
-    )
-    from scripts.onestep_avatar.execution.process_registry import ProcessRegistry, gpu_memory  # noqa: PLC0415
-    from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV  # noqa: PLC0415
-
-    registry = ProcessRegistry(args.process_ledger)
-    gpus = registry.choose(gpu_memory(), training=False)
-    _check_prepared(prepared)
-    if gpus is None or not registry.acquire(gpus, job=f"E3:{args.phase}:{args.control_id or args.sigma}"):
-        raise ValueError("no idle allowed GPU is available for the E3 diagnostic")
-    evidence = args.output.parent / f"{args.output.name}.supervision"
-    child = None
-    try:
-        evidence.mkdir(exist_ok=False)
-        launch = evidence / "launch.json"
-        write_json(launch, {"schema_version": 1, "binding": scientific_binding(prepared), "phase": args.phase,
-                            "sigma": args.sigma, "history": args.history, "output": str(args.output)})
-        command = [sys.executable, "-m", "scripts.onestep_avatar.experiments.continuation_check", "--phase", args.phase,
-                   "--output", str(args.output), "--gpu-id", "0", "--launch-record", str(launch)]
-        if args.phase == "reference":
-            command.extend(["--snapshot", str(args.snapshot.resolve())])
-        else:
-            command.extend(["--protocol", str(args.protocol.resolve())])
-            if args.phase == "control":
-                command.extend(["--control-plan", str(args.control_plan.resolve()), "--control-id", args.control_id])
-            else:
-                command.extend(["--sigma", str(args.sigma), "--history", args.history])
-        changes = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpus)), TOKEN_ENV: registry.token,
-                   JOB_ENV: sha256(launch), "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
-        environment = dict(os.environ)
-        for name in (supervision.SUPERVISION_ENV, supervision.SUPERVISION_SHA_ENV, "RANK", "LOCAL_RANK", "WORLD_SIZE"):
-            environment.pop(name, None)
-        _check_prepared(prepared)
-        with (evidence / "child.log").open("x") as log:
-            child = subprocess.Popen(command, cwd=LTX_ROOT,
-                                     env={**environment, **changes}, stdout=log, stderr=subprocess.STDOUT,
-                                     start_new_session=True)
-            registry.refresh(child_pid=child.pid)
-            identity = queue.process_identity(child.pid)
-            row = {"child_pid": child.pid, "child_identity": identity, "child_session": child.pid,
-                   "environment_changes": changes, "attempt_started_ticks": registry.started_ticks,
-                   "process_ledger": str(registry.path)}
-            result = supervision.supervise(
-                child, identity=identity, command=command, worker_record=row, claims=registry, gpus=gpus,
-                evidence_path=evidence / "result.json", notifications_path=None, startup_seconds=1800,
-                phase_seconds=1800, shutdown_seconds=30, overall_seconds=1800,
-                sampled_total_device_limit_bytes=48800 * (1 << 20))
-        if result["state"] != "passed":
-            raise ValueError(f"E3 supervision failed: {result['error']}")
-        record = json.loads((args.output / "continuation.json").read_text())
-        if (record["state"] != "complete" or record["software"] != prepared["software"]
-                or record["fixed_inputs"] != prepared["fixed_inputs"]
-                or record["launch_binding"] != {"attempt_token": registry.token, "job_sha256": sha256(launch)}):
-            raise ValueError("E3 scientific diagnostic is incomplete")
-        return record
-    finally:
-        if child is None or child.poll() is not None:
-            observed = registry.observe_workers()
-            if observed["complete"] and not observed["workers_live"]:
-                registry.release()
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def scientific_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--phase", choices=("capture", "reference", "control"), required=True)
     parser.add_argument("--protocol", type=Path)
     parser.add_argument("--snapshot", type=Path)
@@ -727,37 +654,232 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--gpu-id", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--supervise", action="store_true")
-    parser.add_argument("--process-ledger", type=Path)
-    parser.add_argument("--launch-record", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     args.output = args.output.resolve()
-    if ((args.phase == "capture" and (args.protocol is None or args.sigma is None or args.snapshot is not None))
-            or (args.phase == "reference" and
-                (args.snapshot is None or args.protocol is not None or args.sigma is not None))):
+    if (args.phase == "capture" and (args.protocol is None or args.sigma is None or args.snapshot is not None)) or (
+        args.phase == "reference" and (args.snapshot is None or args.protocol is not None or args.sigma is not None)
+    ):
         parser.error("capture requires protocol/sigma; reference requires only its capture snapshot")
-    if ((args.phase == "control" and (args.control_plan is None or args.control_id is None
-                                     or args.protocol is None or args.snapshot is not None or args.sigma is not None))
-            or (args.phase != "control" and (args.control_plan is not None or args.control_id is not None))):
+    if (
+        args.phase == "control"
+        and (
+            args.control_plan is None
+            or args.control_id is None
+            or args.protocol is None
+            or args.snapshot is not None
+            or args.sigma is not None
+        )
+    ) or (args.phase != "control" and (args.control_plan is not None or args.control_id is not None)):
         parser.error("control requires protocol/control-plan/control-id and no snapshot/sigma")
-    if args.gpu_id < 0 or args.output.exists() or not args.output.parent.is_dir():
-        parser.error("use a fresh output under an existing parent and a nonnegative local GPU")
-    if ((args.supervise and (args.process_ledger is None or args.dry_run or args.launch_record is not None))
-            or (args.process_ledger is not None and not args.supervise)):
-        parser.error("supervision requires process-ledger and execution, without an inherited launch record")
+    if args.gpu_id < 0:
+        parser.error("local GPU must be nonnegative")
+    return args
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return spec_protocol.outer_args(argv, __doc__)
+
+
+def read_spec(spec: Path, root: Path) -> argparse.Namespace:
+    return spec_protocol.read_spec(
+        parse_args(["--spec", str(spec), "--output", str(root)]), "continuation_check", scientific_args
+    )
+
+
+def resource_phases(spec: Path) -> list[str]:
+    read_spec(spec, spec.parent / "unused_output")
+    return ["continuation-case"]
+
+
+def runtime_profile(spec: Path) -> dict:
+    return {
+        "generic_phase": False,
+        "phases": resource_phases(spec),
+        "processes": 1,
+        "sampled_total_device_limit_bytes": 48800 * (1 << 20),
+    }
+
+
+def dependency_outputs(spec: Path) -> list[Path]:
+    args = read_spec(spec, spec.parent / "unused_output")
+    return [] if args.snapshot is None else [args.snapshot.parent.resolve()]
+
+
+def verify_completion(spec: Path, root: Path) -> dict:  # noqa: PLR0912, PLR0915 -- complete saved observation controls
+    """Check complete actual observations without native model/decoder calls."""
+    args = read_spec(spec, root)
+    manifest = spec_protocol.inspect(args, "continuation_check")
+    prepared = prepare(args, completion=True)
+    _check_prepared(prepared)
+    result = json.loads((root / "continuation.json").read_text())
+    bindings = {
+        "software": prepared["software"],
+        "fixed_inputs": prepared["fixed_inputs"],
+        "protocol": prepared["protocol"],
+        "original_result": prepared["original_result"],
+        "source_snapshot": prepared["source_snapshot"],
+        "control": prepared["control"],
+        "changed_noise": prepared["changed_noise"],
+        "budget": prepared["budget"],
+        "allocation_estimate": prepared["estimate"],
+    }
+    if (
+        result.get("kind") != "onestep_avatar.continuation_check"
+        or result.get("schema_version") != 1
+        or result.get("state") != "complete"
+        or result.get("error") is not None
+        or result.get("phase") != args.phase
+        or result.get("sigma") != args.sigma
+        or result.get("history") != args.history
+        or any(result.get(name) != value for name, value in bindings.items())
+    ):
+        raise ValueError("continuation completion differs from its exact scientific protocol")
+    expected_inventory = {name: digest for name, digest in manifest["artifacts"].items() if name != "continuation.json"}
+    if result.get("output_files") != expected_inventory:
+        raise ValueError("continuation completion producer artifact inventory differs")
+    budget = result.get("effective_resource_budget")
+    resources.validate_records([result["resources"]], 1, ["continuation-case"], budget)
+    samples = result.get("sampled_total_device_memory")
+    if (
+        result["resources"]["elapsed_s"] > prepared["budget"]["wall_seconds_per_case"]
+        or not isinstance(samples, list)
+        or not samples
+        or any(
+            type(row.get("memory_used_mib")) is not int or not 0 <= row["memory_used_mib"] <= 48800 for row in samples
+        )
+    ):
+        raise ValueError("continuation completion original resource checks failed")
+    destination = root / "results/case_0000/variant_000"
+    if args.phase == "control":
+        controls = control_results(prepared)
+        ordinary = sum(row["call_counts"]["model_calls"] for row in controls)
+        if (
+            result["control_results"] != controls
+            or result["snapshots"]
+            or result["layerwise"]
+            or result["reference_blocks"]
+        ):
+            raise ValueError("continuation control inventory differs")
+        diagnostic = 0
+    else:
+        evaluate.verify_evaluation_conditions(prepared["arguments"], [destination / "result.json"])
+        from scripts.onestep_avatar.model import backbone  # noqa: PLC0415 -- model metadata only for native inventory
+
+        caps = backbone.resolve("2.5", "dev").caps
+        layers = caps.num_layers
+        ordinary, diagnostic = (16, 0) if args.phase == "capture" else (8, 2)
+        snapshots = result["snapshots"] if args.phase == "capture" else prepared["snapshot"]["snapshots"]
+        snapshot_root = root if args.phase == "capture" else args.snapshot.parent
+        check_snapshot_files(snapshot_root, snapshots)
+        for row, (name, _span) in zip(snapshots, TARGETS, strict=True):
+            expected_frames = [0, 1, 2] if name == "before" else [0, *range(3, 11)]
+            if row["retained_frames"] != expected_frames or [entry["layer"] for entry in row["layers"]] != list(
+                range(layers)
+            ):
+                raise ValueError("continuation native layer or retained frame inventory differs")
+            values = load_inputs(snapshot_root, row)
+            tokens = values["c0"].shape[1]
+            if row["prefix_tokens"] != len(expected_frames) * tokens:
+                raise ValueError("continuation native retained token count differs")
+            for field, role in (
+                ("capture", "capture"),
+                ("guide", "guide"),
+                ("noise", "noise"),
+                ("c0", "first_image"),
+                ("text", "text"),
+            ):
+                if (
+                    hashing.tensor_sha256(values[field])
+                    != prepared["fixed_inputs"]["input_files"][role]["tensor_sha256"]
+                ):
+                    raise ValueError("continuation snapshot fixed inputs differ")
+            prediction = torch.load(
+                checked_path(snapshot_root, row["cached_prediction"]), map_location="cpu", weights_only=True
+            )
+            if tensor_record(prediction) != row["cached_prediction_tensor"] or not torch.isfinite(prediction).all():
+                raise ValueError("continuation cached prediction differs")
+            for layer in row["layers"]:
+                values = torch.load(checked_path(snapshot_root, layer["file"]), map_location="cpu", weights_only=True)
+                expected_shape = (1, row["prefix_tokens"], caps.num_heads * caps.head_dim)
+                if set(values) != {"k", "v"} or any(
+                    tensor_record(value) != layer["tensors"][field]
+                    or not torch.isfinite(value).all()
+                    or tuple(value.shape) != expected_shape
+                    or value.dtype != torch.bfloat16
+                    for field, value in values.items()
+                ):
+                    raise ValueError("continuation saved native K/V differs")
+        if args.phase == "capture":
+            if result["layerwise"] or result["reference_blocks"] or result["control_results"]:
+                raise ValueError("continuation capture includes reference-only observations")
+        else:
+            if result["snapshots"] or result["control_results"]:
+                raise ValueError("continuation reference includes capture-only observations")
+            observations = result["layerwise"]
+            if [(row["phase"], row["layer"]) for row in observations] != [
+                (name, layer) for name, _ in TARGETS for layer in range(layers)
+            ]:
+                raise ValueError("continuation reference observation inventory differs")
+            for observation in observations:
+                snapshot = next(row for row in snapshots if row["phase"] == observation["phase"])
+                layer = snapshot["layers"][observation["layer"]]
+                cached = torch.load(checked_path(snapshot_root, layer["file"]), map_location="cpu", weights_only=True)
+                reference = torch.load(
+                    checked_path(root, observation["reference_file"]), map_location="cpu", weights_only=True
+                )
+                if set(reference) != {"k", "v"} or any(
+                    observation[field] != compare_chunks(cached[field], reference[field]) for field in ("k", "v")
+                ):
+                    raise ValueError("continuation actual reference K/V comparison differs")
+            blocks = result["reference_blocks"]
+            if [(row["phase"], row["span"]) for row in blocks] != [(name, list(span)) for name, span in TARGETS]:
+                raise ValueError("continuation reference block inventory differs")
+            for block, snapshot in zip(blocks, snapshots, strict=True):
+                cached = torch.load(
+                    checked_path(snapshot_root, snapshot["cached_prediction"]), map_location="cpu", weights_only=True
+                )
+                reference = torch.load(
+                    checked_path(root, block["reference_prediction"]), map_location="cpu", weights_only=True
+                )
+                if (
+                    block["input_tensors"] != snapshot["tensors"]
+                    or tensor_record(reference) != block["reference_prediction_tensor"]
+                    or block["prediction"] != compare_chunks(cached, reference)
+                ):
+                    raise ValueError("continuation actual reference block comparison differs")
+    expected_calls = {
+        "actual_model_calls": ordinary + diagnostic,
+        "ordinary_model_calls": ordinary,
+        "diagnostic_model_calls": diagnostic,
+    }
+    if result.get("call_counts") != expected_calls:
+        raise ValueError("continuation actual ordinary/diagnostic call inventory differs")
+    return result
+
+
+def evidence_paths(spec: Path, root: Path) -> list[Path]:
+    verify_completion(spec, root)
+    return spec_protocol.evidence(spec_protocol.inspect(read_spec(spec, root), "continuation_check"), root)
+
+
+def main(argv: list[str] | None = None) -> int:
+    outer = parse_args(argv)
+    args = spec_protocol.read_spec(outer, "continuation_check", scientific_args)
+    if args.output.exists() or args.output.is_symlink() or not args.output.parent.is_dir():
+        raise ValueError("use a fresh output under an existing parent")
     prepared = prepare(args)
-    if args.launch_record is not None:
-        check_launch_record(args.launch_record, prepared, args)
     _check_prepared(prepared)
     if args.dry_run:
-        print(json.dumps({key: prepared[key] for key in ("protocol", "budget", "estimate")}, indent=2))  # noqa: T201
+        print(json.dumps({key: prepared[key] for key in ("protocol", "budget", "estimate")}, indent=2))  # noqa: T201 -- CLI preflight
         return 0
-    if args.supervise:
-        supervised_run(args, prepared)
-    else:
-        run(args, prepared)
+    run(args, prepared)
+    # Capture/reference preparation resolves scientific choices from the original
+    # protocol. Publish the immutable requested settings, never these mutations.
+    spec_protocol.publish(read_spec(args.spec, args.output), "continuation_check")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from scripts.onestep_avatar.execution.runtime import run as run_runtime
+
+    raise SystemExit(run_runtime(main))

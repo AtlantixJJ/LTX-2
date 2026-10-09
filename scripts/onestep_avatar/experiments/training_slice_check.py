@@ -14,11 +14,11 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedType
 from safetensors.torch import load_file
 
-from scripts.onestep_avatar import hashing
+from scripts.onestep_avatar import LTX_ROOT, hashing
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import queue, software
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
-from scripts.onestep_avatar.experiments import training_update_check
+from scripts.onestep_avatar.experiments import spec_protocol, training_update_check
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import bidirectional, causal, common
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources, runtime, update_state
@@ -26,7 +26,7 @@ from scripts.onestep_avatar.training import checkpoints, config, engine, resourc
 ENTRY = "scripts/onestep_avatar/experiments/training_slice_check.py"
 EXTRA_SOURCES = (ENTRY, 'scripts/onestep_avatar/experiments/__init__.py',
                  "scripts/onestep_avatar/experiments/training_update_check.py",
-                 "scripts/onestep_avatar/evaluate.py")
+                 "scripts/onestep_avatar/evaluate.py", spec_protocol.ENTRY)
 SUPPORT_CHANGES = {
     "scripts/onestep_avatar/execution/supervision.py", "scripts/onestep_avatar/training/consumer_trace.py",
     "scripts/onestep_avatar/training/checkpoints.py",
@@ -267,7 +267,7 @@ def _saved_record(directory: Path) -> tuple[dict, Path]:
     required = {"protocol.json", "initial_fp32.json", "resources_rank0.jsonl", "adam.pt", "consumer_trace.json",
                 "checkpoints/lora_weights_step_00000.safetensors", "checkpoints/lora_weights_step_00001.safetensors"}
     actual = {str(path.relative_to(directory)) for path in directory.rglob("*")
-              if path.is_file() and path != directory / "result.json"}
+              if path.is_file() and path not in {directory / "result.json", directory / "manifest.json"}}
     if (record.get("state") != "complete" or not isinstance(inventory, dict)
             or not required.issubset(inventory) or set(inventory) != actual):
         raise ValueError("saved slice output inventory is incomplete or changed")
@@ -309,10 +309,8 @@ def _saved_record(directory: Path) -> tuple[dict, Path]:
     return record, checkpoint
 
 
-def compare(left: Path, right: Path, output: Path) -> dict:
+def saved_comparison(left: Path, right: Path) -> dict:
     """Compare saved diagnostic arms without loading models or changing tolerances."""
-    if output.exists():
-        raise ValueError("slice comparison requires a fresh output file")
     (a, left_checkpoint), (b, right_checkpoint) = [_saved_record(path) for path in (left, right)]
     for key in ("original_job", "original_rank_key", "selected_slots", "visits", "budget", "tolerance", "input_sha256",
                 "kernel_control", "software"):
@@ -324,29 +322,140 @@ def compare(left: Path, right: Path, output: Path) -> dict:
         torch.load(left / "adam.pt", weights_only=True), torch.load(right / "adam.pt", weights_only=True),
         load_file(left_checkpoint), load_file(right_checkpoint), beta1=0.9,
         norms=(a["grad_norm"], b["grad_norm"]), losses=(a["loss"], b["loss"]))
-    output.write_text(json.dumps({"scope": "saved native slice only", "comparison": result,
-        "inputs": {str(path.resolve()): sha256(path / "result.json") for path in (left, right)}}, indent=2) + "\n")
-    return result
+    return {"scope": "saved native slice only", "comparison": result,
+            "inputs": {str(path.resolve()): sha256(path / "result.json") for path in (left, right)}}
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def compare(left: Path, right: Path, output: Path) -> dict:
+    """Preserve the historical saved-file interface and its numerical calculation."""
+    if output.exists():
+        raise ValueError("slice comparison requires a fresh output file")
+    result = saved_comparison(left, right)
+    output.write_text(json.dumps(result, indent=2) + "\n")
+    return result["comparison"]
+
+
+def scientific_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--job", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--execution", choices=("fsdp", "serial"))
     parser.add_argument("--rank-key", type=int, default=0, choices=range(4))
     parser.add_argument("--slots", type=int, default=1, choices=(1, 2))
     parser.add_argument("--compare", nargs=2, type=Path)
-    parser.add_argument("--deterministic", action='store_true')
-    args = parser.parse_args(argv)
-    if args.compare:
-        result = compare(*args.compare, args.output)
-        return 0 if result["passed"] else 2
-    if args.job is None or args.execution is None:
-        parser.error("execution requires --job and --execution")
-    execute(args)
+    parser.add_argument("--deterministic", action="store_true")
+    parser.add_argument("--gpu-id", type=int, default=0)
+    return parser.parse_args(argv)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return spec_protocol.outer_args(argv, __doc__)
+
+
+def read_spec(spec: Path, root: Path) -> argparse.Namespace:
+    args = spec_protocol.read_spec(parse_args(["--spec", str(spec), "--output", str(root)]),
+                                   "training_slice_check", scientific_args, operations=("run", "compare"))
+    if args.operation == "compare":
+        if not args.compare or args.job is not None or args.execution is not None:
+            raise ValueError("slice compare requires two saved arms and no execution settings")
+    elif args.job is None or args.execution is None or args.compare is not None:
+        raise ValueError("slice run requires original job and execution, without saved comparison")
+    return args
+
+
+def launch_requirements(spec: Path) -> dict:
+    args = read_spec(spec, spec.parent / "unused-output")
+    if args.operation == "run" and args.execution == "fsdp":
+        return {"processes": 1, "launcher": "accelerate", "mixed_precision": "bf16",
+                "accelerate_config": str(LTX_ROOT / "packages/ltx-trainer/configs/accelerate/fsdp.yaml")}
+    return {"processes": 1, "launcher": "python"}
+
+
+def resource_phases(spec: Path) -> list[str]:
+    args = read_spec(spec, spec.parent / "unused-output")
+    return ["runtime"] if args.operation == "compare" else ["load", "update", "export"]
+
+
+def resource_budget(spec: Path) -> Path | None:
+    args = read_spec(spec, spec.parent / "unused-output")
+    if args.operation == "compare":
+        return None
+    path = config.parse_settings(json.loads(args.job.read_text())["arguments"]).resource_budget
+    if path is None or not path.is_absolute():
+        raise ValueError("native replay requires its original absolute resource budget")
+    return path
+
+
+def dependency_outputs(spec: Path) -> list[Path]:
+    args = read_spec(spec, spec.parent / "unused-output")
+    return list(args.compare) if args.operation == "compare" else []
+
+
+def saved_record(root: Path) -> tuple[dict, Path]:
+    """Public saved-only artifact gate, also used by queued dependencies."""
+    return _saved_record(root)
+
+
+def _comparison_record(args: argparse.Namespace) -> dict:
+    left, right = args.compare
+    a, b = [saved_record(path)[0] for path in (left, right)]
+    if {a["execution"], b["execution"]} != {"fsdp", "serial"}:
+        raise ValueError("queued slice comparison requires FSDP and serial arms")
+    measured = saved_comparison(left, right)
+    if not measured["comparison"]["passed"]:
+        raise ValueError("saved slice comparison fails unchanged numerical limits")
+    return measured
+
+
+def verify_completion(spec: Path, root: Path) -> None:
+    args = read_spec(spec, root)
+    spec_protocol.inspect(args, "training_slice_check")
+    if args.operation == "compare":
+        if json.loads((root / "comparison.json").read_text()) != _comparison_record(args):
+            raise ValueError("saved slice comparison differs from actual arms")
+    else:
+        record, _ = saved_record(root)
+        protocol = record["protocol"]
+        if (protocol["execution"] != args.execution or protocol["original_rank_key"] != args.rank_key
+                or protocol["selected_slots"] != args.slots):
+            raise ValueError("saved slice settings differ from the pinned specification")
+        original, _settings, _store, _plan, _model, visits, _text, budget, pinned, _changed = prepare(
+            args.job, args.rank_key, args.slots)
+        if (protocol["original_job"] != original or protocol["visits"] != visits
+                or protocol["budget"] != budget or protocol["input_sha256"] != pinned):
+            raise ValueError("saved slice original inputs differ")
+        software.check_current(protocol["software"])
+        if args.deterministic and protocol["kernel_control"]["deterministic_algorithms"] is not True:
+            raise ValueError("saved slice lacks requested deterministic control")
+
+
+def evidence_paths(spec: Path, root: Path) -> list[Path]:
+    verify_completion(spec, root)
+    return spec_protocol.evidence(spec_protocol.inspect(read_spec(spec, root), "training_slice_check"), root)
+
+
+def main(argv: list[str] | None = None) -> int:
+    outer = parse_args(argv)
+    args = read_spec(outer.spec, outer.output)
+    args.gpu_id, args.dry_run = outer.gpu_id, outer.dry_run
+    if args.dry_run:
+        if args.operation == "run":
+            prepare(args.job, args.rank_key, args.slots)
+        else:
+            _comparison_record(args)
+        return 0
+    if args.operation == "compare":
+        result = _comparison_record(args)
+        args.output.mkdir(parents=True, exist_ok=False)
+        (args.output / "comparison.json").write_text(json.dumps(result, indent=2) + "\n")
+    else:
+        result = execute(args)
+    spec_protocol.publish(args, "training_slice_check")
+    verify_completion(args.spec, args.output)
+    print(json.dumps(result, indent=2))  # noqa: T201 -- diagnostic CLI
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from scripts.onestep_avatar.execution.runtime import run
+    raise SystemExit(run(main))

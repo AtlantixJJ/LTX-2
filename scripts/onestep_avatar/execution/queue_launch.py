@@ -24,6 +24,9 @@ if TYPE_CHECKING:
 REGISTERED_RECOVERY_MODULES = frozenset({
     'experiments.adapter_effect_check', 'bench', 'experiments.continuation_check', 'decode_saved', 'evaluate',
     'infer', 'media', 'prepare_inputs', 'experiments.stock_parity',
+    'previews', 'comparisons', 'experiments.causality', 'experiments.fusion_parity',
+    'experiments.sigma_sweep', 'experiments.training_update_check', 'experiments.training_slice_check',
+    'experiments.stats',
 })
 
 
@@ -419,7 +422,7 @@ def recover_registered_attempt(  # noqa: PLR0912, PLR0913, PLR0915 -- explicit b
 ) -> dict:
     """Close ended registered non-training handles; certify no unknown workers or result."""
     from scripts.onestep_avatar.execution import process_registry  # noqa: PLC0415 -- one existing ledger transaction
-    from scripts.onestep_avatar.execution.queue import ALLOWED_GPUS  # noqa: PLC0415 -- existing dispatch device scope
+    from scripts.onestep_avatar.execution.devices import GPU_POOL  # noqa: PLC0415 -- canonical dispatch device scope
 
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError('registered bookkeeping recovery timeout must be finite and positive')
@@ -472,7 +475,7 @@ def recover_registered_attempt(  # noqa: PLR0912, PLR0913, PLR0915 -- explicit b
             raise ValueError('registered bookkeeping recovery requires an allowed direct non-training command')
         gpus = row.get('gpus')
         if (not isinstance(gpus, list) or len(gpus) != 1 or type(gpus[0]) is not int
-                or not set(gpus).issubset(ALLOWED_GPUS)):
+                or not set(gpus).issubset(GPU_POOL)):
             raise ValueError('registered bookkeeping recovery requires one allowed physical GPU')
         environment = launch.get('environment_changes') if isinstance(launch, dict) else None
         if (not isinstance(launch, dict) or launch.get('command') != command

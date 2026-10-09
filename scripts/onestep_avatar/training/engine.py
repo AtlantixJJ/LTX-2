@@ -1335,7 +1335,8 @@ def verify_training_conditions(job: dict, checkpoint: Path, contract: dict) -> N
     queue.verify_training_launch(launch, job)
     runtime.validate(resolved.get("runtime"), settings.world_size, _launch_precision(launch), native=True,
                      numerical_policy=True)
-    budget = resources.read_budget(settings.resource_budget)
+    budget = job.get("effective_budget", resources.read_budget(settings.resource_budget))
+    resources.check_budget(budget)
     if resolved.get("resource_budget") != budget:
         raise ValueError("training resource budget differs from original run")
     resource_evidence = {}
@@ -1486,7 +1487,7 @@ def _run_settings(settings: RunSettings, events) -> int:  # noqa: ANN001 -- star
 def _run_settings_body(settings: RunSettings, events, lifecycle: contextlib.ExitStack) -> int:  # noqa: ANN001, PLR0912, PLR0915 -- linear runtime and startup boundary
     """Run the typed two-mode engine; previews execute in their own model sessions."""
     launch, launch_path = _launch_evidence(settings, events.job)
-    budget = resources.read_budget(settings.resource_budget)
+    budget = resources.budget_from_environment() or resources.read_budget(settings.resource_budget)
     store, plan, specification, needs_archive = prepare_run(settings)
     producer_software = software.capture("training", settings.mode)
     samples = [sample for sample in plan["samples"] if sample["split"] == settings.split]

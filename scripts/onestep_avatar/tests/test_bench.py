@@ -51,7 +51,8 @@ def test_explicit_mode_cli_measures_and_saves_ordinary_result(mode, tmp_path, mo
     capture = torch.zeros(1, 28, 8)
     context = torch.zeros(1, 3, 16)
 
-    def execute(args, sample_runner):
+    def execute(args, sample_runner, *, extra_sources: tuple[str, ...]):
+        assert extra_sources == ("scripts/onestep_avatar/bench.py",)
         output, record = sample_runner(
             model, context, grid, capture, None, torch.ones_like(capture),
             mode=args.mode, mode_settings=args.mode_settings, guide_mode=args.guide_mode,

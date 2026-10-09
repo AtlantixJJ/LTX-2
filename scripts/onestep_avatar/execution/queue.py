@@ -13,17 +13,34 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from scripts.onestep_avatar import LTX_ROOT
+from scripts.onestep_avatar.execution.devices import (
+    GPU_POOL,
+    TRAIN_PROCESSES,
+    select_devices,
+    validate_selection,
+)
 from scripts.onestep_avatar.execution.queue_protocol import LAUNCH_PROTOCOL
-
-ALLOWED_GPUS = frozenset(range(6))
-TRAIN_GPUS = (0, 1, 2, 3)
-EVALUATION_PREFERENCE = (5, 4, 3, 2, 1, 0)
 
 # Fixed reviewed selectors; ordinary kinds never consult this table.
 EXPERIMENTS = {
     "sigma_sweep": "scripts.onestep_avatar.experiments.sigma_sweep",
     "causality": "scripts.onestep_avatar.experiments.causality",
     "fusion_parity": "scripts.onestep_avatar.experiments.fusion_parity",
+    "stock_parity": "scripts.onestep_avatar.experiments.stock_parity",
+    "adapter_effect_check": "scripts.onestep_avatar.experiments.adapter_effect_check",
+    "continuation_check": "scripts.onestep_avatar.experiments.continuation_check",
+    "training_update_check": "scripts.onestep_avatar.experiments.training_update_check",
+    "training_slice_check": "scripts.onestep_avatar.experiments.training_slice_check",
+    "stats": "scripts.onestep_avatar.experiments.stats",
+}
+
+ORDINARY = {
+    "evaluate": "scripts.onestep_avatar.evaluate",
+    "decode": "scripts.onestep_avatar.decode_saved",
+    "render": "scripts.onestep_avatar.comparisons",
+    "preview": "scripts.onestep_avatar.previews",
+    "product": "scripts.onestep_avatar.infer",
+    "bench": "scripts.onestep_avatar.bench",
 }
 
 
@@ -279,7 +296,7 @@ def parse_gpu_memory(output: str) -> dict[int, int]:
         if gpu < 0 or memory < 0 or gpu in result:
             raise ValueError("invalid or duplicate GPU memory inventory")
         result[gpu] = memory
-    if not ALLOWED_GPUS.issubset(result):
+    if not set(GPU_POOL).issubset(result):
         raise ValueError("GPU inventory omits an allowed device")
     return result
 
@@ -337,23 +354,21 @@ class GPUClaims:
 
     def choose(self, memory: dict[int, int], *, training: bool) -> tuple[int, ...] | None:
         """Choose only eligible unclaimed cards; acquisition still rechecks claims."""
-        if not ALLOWED_GPUS.issubset(memory) or any(value < 0 for value in memory.values()):
+        if not set(GPU_POOL).issubset(memory) or any(value < 0 for value in memory.values()):
             raise ValueError("incomplete or invalid GPU memory inventory")
         free = set()
         with self._lock():
-            for gpu in ALLOWED_GPUS:
+            for gpu in GPU_POOL:
                 claim = self._read(gpu)
                 if memory[gpu] < 1024 and (claim is None or not self._active(claim)):
                     free.add(gpu)
-        if training:
-            return TRAIN_GPUS if set(TRAIN_GPUS).issubset(free) else None
-        return next(((gpu,) for gpu in EVALUATION_PREFERENCE if gpu in free), None)
+        return select_devices(memory, training=training, busy=set(GPU_POOL) - free)
 
     def acquire(self, gpus: tuple[int, ...], *, job: str) -> bool:
         """Reserve every requested GPU exclusively, or roll back this attempt."""
         import tempfile  # noqa: PLC0415 -- complete exclusive claim publication
 
-        if not gpus or len(set(gpus)) != len(gpus) or not set(gpus).issubset(ALLOWED_GPUS) or self.owned:
+        if not gpus or len(set(gpus)) != len(gpus) or not set(gpus).issubset(GPU_POOL) or self.owned:
             raise ValueError("claim request must name unique allowed GPUs on a fresh attempt")
         record = {"token": self.token, "owner_pid": os.getpid(), "child_pid": None, "job": job,
                   "attempt_started_ticks": self.started_ticks}
@@ -440,7 +455,7 @@ def validate_job_list(record: dict) -> list[dict]:  # noqa: PLR0912 -- ordered s
         identifier = job.get("id")
         if not isinstance(identifier, str) or not identifier or identifier in identifiers:
             raise ValueError("queue job IDs must be unique nonempty strings")
-        if job.get("kind") not in ("train", "evaluate", "decode", "render", "experiment"):
+        if job.get("kind") not in ("train", "experiment", *ORDINARY):
             raise ValueError("queue job must select a supported package owner")
         arguments = job.get("arguments")
         if not isinstance(arguments, list) or any(not isinstance(value, str) for value in arguments):
@@ -473,7 +488,8 @@ def validate_job_list(record: dict) -> list[dict]:  # noqa: PLR0912 -- ordered s
         if not isinstance(job.get("completion"), dict) or not job["completion"]:
             raise ValueError("queue completion evidence is required")
         if job["kind"] == "train":
-            if job.get("processes") != 4 or not isinstance(job.get("accelerate_config"), str):
+            if (type(job.get("processes")) is not int or job["processes"] != TRAIN_PROCESSES
+                    or not isinstance(job.get("accelerate_config"), str)):
                 raise ValueError("queued training requires four processes and a recorded Accelerate config")
             port = job.get("port")
             if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
@@ -511,7 +527,9 @@ def prepare_job(raw: dict, root: Path) -> dict:  # noqa: PLR0912, PLR0915 -- sha
     claimed_hash = job.pop("sha256", None)
     root = root.resolve()
     arguments = list(job["arguments"])
-    forbidden = {"--gpu-id", "--dry-run", "--help", "--overwrite", "--preview-job", "--saved-metrics", "--verify"}
+    forbidden = {"--gpu-id", "--dry-run", "--help", "--overwrite", "--saved-metrics", "--verify"}
+    if job["kind"] != "preview":
+        forbidden.add("--preview-job")
     if any(value.split("=", 1)[0] in forbidden for value in arguments):
         raise ValueError("queue command contains a forbidden execution override")
     if job["kind"] == "train":
@@ -521,6 +539,8 @@ def prepare_job(raw: dict, root: Path) -> dict:  # noqa: PLR0912, PLR0915 -- sha
     elif job["kind"] == "experiment":
         selected = importlib.import_module(experiment_entry(job["experiment"]))
         parser = selected.parse_args
+    elif job["kind"] in ("preview", "product", "bench"):
+        parser = importlib.import_module(ORDINARY[job["kind"]]).parse_args
     else:
         from scripts.onestep_avatar import (  # noqa: PLC0415 -- select ordinary owners lazily
             comparisons,
@@ -563,15 +583,6 @@ def prepare_job(raw: dict, root: Path) -> dict:  # noqa: PLR0912, PLR0915 -- sha
         if job.get("accelerate_config_sha256", digest) != digest:
             raise ValueError("queue Accelerate configuration changed from its claimed hash")
         job["accelerate_config_sha256"] = digest
-        if parsed.resource_budget is not None:
-            if not parsed.resource_budget.is_file():
-                raise ValueError("queue resource budget is missing")
-            digest = sha256(parsed.resource_budget)
-            if job.get("resource_budget_sha256", digest) != digest:
-                raise ValueError("queue resource budget changed from its claimed hash")
-            job["resource_budget_sha256"] = digest
-        elif "resource_budget_sha256" in job:
-            raise ValueError("queue resource budget hash requires an explicit budget")
         if type(completion.get("step")) is not int or completion["step"] != parsed.steps:
             raise ValueError("queue final checkpoint step differs from training settings")
     if job["kind"] == "decode":
@@ -602,6 +613,69 @@ def prepare_job(raw: dict, root: Path) -> dict:  # noqa: PLR0912, PLR0915 -- sha
         evidence = ([descriptor["manifest"]] if "manifest" in descriptor else []) + descriptor.get("records", [])
         if any(not Path(p).resolve().is_relative_to(Path(output)) for p in evidence):
             raise ValueError("queue experiment completion descriptor escapes its output directory")
+    if job["kind"] in ("preview", "product", "bench"):
+        selected = importlib.import_module(ORDINARY[job["kind"]])
+        descriptor = getattr(parsed, "completion", None)
+        if job["kind"] == "bench" and descriptor is None:
+            descriptor = completion  # The benchmark verifier derives its exact case inventory.
+        validate_completion_descriptor(descriptor)
+        if completion != descriptor:
+            raise ValueError("queue ordinary completion differs from parsed output")
+        if job["kind"] == "preview":
+            identity = selected.queue_identity(arguments)
+            if job.get("preview_identity", identity) != identity:
+                raise ValueError("queue immutable preview identity changed")
+            job["preview_identity"] = identity
+        paths = ([descriptor["manifest"]] if "manifest" in descriptor else []) + descriptor.get("records", [])
+        if any(not Path(path).is_relative_to(Path(output)) for path in paths):
+            raise ValueError("queue ordinary completion escapes its output directory")
+    from scripts.onestep_avatar.training import (  # noqa: PLC0415 -- selected owner at use; avoids import cycles
+        resources,
+    )
+
+    budget_path = parsed.resource_budget if job["kind"] == "train" else (
+        None if job.get("resource_budget") is None else (root / job["resource_budget"]).resolve())
+    if job["kind"] == "train" and "resource_budget" in job:
+        raise ValueError("training resource budget belongs in its typed arguments")
+    if budget_path is not None:
+        if not budget_path.is_file():
+            raise ValueError("queue resource budget is missing")
+        digest = sha256(budget_path)
+        if job.get("resource_budget_sha256", digest) != digest:
+            raise ValueError("queue resource budget changed from its claimed hash")
+        job["resource_budget_sha256"] = digest
+        if job["kind"] != "train":
+            job["resource_budget"] = str(budget_path)
+    elif "resource_budget_sha256" in job:
+        raise ValueError("queue resource budget hash requires an explicit budget")
+    budget = resources.effective_budget(budget_path)
+    if job.get("effective_budget", budget) != budget:
+        raise ValueError("queue effective resource budget differs from checked limits")
+    job["effective_budget"] = budget
+    if job["kind"] == "experiment":
+        selected = importlib.import_module(experiment_entry(job["experiment"]))
+        if hasattr(selected, "resource_budget"):
+            required = selected.resource_budget(Path(job["spec"]))
+            if required is not None and (budget_path is None or required.resolve() != budget_path.resolve()):
+                raise ValueError("queue budget differs from the experiment's scientific budget")
+        if hasattr(selected, "runtime_profile"):
+            profile = selected.runtime_profile(Path(job["spec"]))
+            if profile.get("resource_budget") is not None and profile["resource_budget"] != budget:
+                raise ValueError("queue budget differs from the experiment's scientific budget")
+        if hasattr(selected, "launch_requirements"):
+            requirements = selected.launch_requirements(Path(job["spec"]))
+            if requirements.get("launcher") == "accelerate":
+                requirements = dict(requirements)
+                config_path = Path(requirements["accelerate_config"]).resolve()
+                requirements.update(accelerate_config=str(config_path), accelerate_config_sha256=sha256(config_path))
+                port = job.get("port")
+                if type(port) is not int or not 1 <= port <= 65535:
+                    raise ValueError("FSDP experiment requires a recorded rendezvous port")
+                if job.get("experiment_launch", requirements) != requirements:
+                    raise ValueError("queue experiment launch requirements changed")
+                job["experiment_launch"] = requirements
+    if job.get("numerical_policy") not in (None, "deterministic"):
+        raise ValueError("queue numerical policy is unknown")
     defaults = asdict(parsed) if is_dataclass(parsed) else vars(parsed)
 
     def encode(value):  # noqa: ANN001, ANN202 -- canonical JSON path/dataclass conversion
@@ -631,10 +705,20 @@ def prepare_jobs(path: Path) -> list[dict]:
     outputs = [job["output"] for job in jobs]
     if len(set(outputs)) != len(outputs):
         raise ValueError("queue output paths alias another job")
+    by_id = {job["id"]: job for job in jobs}
+    for job in jobs:
+        if job["kind"] == "experiment":
+            selected = importlib.import_module(experiment_entry(job["experiment"]))
+            if hasattr(selected, "dependency_outputs"):
+                declared = {Path(by_id[name]["output"]).resolve() for name in job.get("dependencies", [])}
+                if not set(selected.dependency_outputs(Path(job["spec"]))).issubset(declared):
+                    raise ValueError("queue checker reference must be an explicit dependency output")
     return jobs
 
 
-def training_launch_record(job: dict, gpus: tuple[int, ...] = TRAIN_GPUS, *, schema_version: int = 2) -> dict:
+def training_launch_record(
+    job: dict, gpus: tuple[int, ...] = GPU_POOL[:TRAIN_PROCESSES], *, schema_version: int = 2
+) -> dict:
     """Capture original requested launch facts before dispatch, with exact YAML bytes."""
     import base64  # noqa: PLC0415 -- lossless original configuration snapshot
     import hashlib  # noqa: PLC0415 -- validate snapshot against canonical pinned hash
@@ -668,7 +752,11 @@ def verify_training_launch(record: dict, job: dict) -> dict:
             or record.get("schema_version") not in (1, 2)):
         raise ValueError("original training launch evidence is missing or malformed")
     prepared = prepare_job(job, Path.cwd())
-    expected = training_launch_record(prepared, TRAIN_GPUS, schema_version=record["schema_version"])
+    gpus = record.get("gpus")
+    if not isinstance(gpus, list):
+        raise ValueError("original training launch GPU inventory is missing")
+    validate_selection(tuple(gpus), training=True)
+    expected = training_launch_record(prepared, tuple(gpus), schema_version=record["schema_version"])
     try:
         original = base64.b64decode(record["accelerate_config_bytes_base64"], validate=True)
     except (KeyError, TypeError, ValueError, binascii.Error) as error:
@@ -685,19 +773,28 @@ def read_training_launch(path: Path) -> dict:
     verify_training_launch(record, record.get("job", {}))
     return record
 
-def job_command(job: dict, gpus: tuple[int, ...]) -> tuple[list[str], dict[str, str]]:  # noqa: PLR0912 -- explicit owner and byte gates
+def job_command(job: dict, gpus: tuple[int, ...]) -> tuple[list[str], dict[str, str]]:  # noqa: PLR0912, PLR0915 -- explicit owner and byte gates
     """Construct package-only child commands and physical-device environment changes."""
     import sys  # noqa: PLC0415 -- current conda Python owns all execution
 
-    if not gpus or len(set(gpus)) != len(gpus) or not set(gpus).issubset(ALLOWED_GPUS):
-        raise ValueError("job requires unique allowed physical GPUs")
     kind = job["kind"]
+    validate_selection(gpus, training=kind == "train")
     environment = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, gpus))}
+    if "effective_budget" in job:
+        from scripts.onestep_avatar.training import (  # noqa: PLC0415 -- selected owner at use; avoids import cycles
+            resources,
+        )
+        environment.update(resources.budget_environment(job["effective_budget"]))
+    if job.get("numerical_policy") == "deterministic":
+        from scripts.onestep_avatar.training import (  # noqa: PLC0415 -- selected owner at use; avoids import cycles
+            numerics,
+        )
+        environment.update(numerics.ENVIRONMENT)
     if kind == "train":
         from scripts.onestep_avatar.training import numerics  # noqa: PLC0415 -- import-light launch policy
         environment.update(numerics.ENVIRONMENT)
-        if gpus != TRAIN_GPUS or job["processes"] != 4:
-            raise ValueError("queued training requires GPUs 0-3 and four processes")
+        if job["processes"] != TRAIN_PROCESSES:
+            raise ValueError("queued training requires four free GPUs and four processes")
         from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- pinned launch bytes
 
         config_path = Path(job["accelerate_config"])
@@ -727,11 +824,9 @@ def job_command(job: dict, gpus: tuple[int, ...]) -> tuple[list[str], dict[str, 
             *job["arguments"],
         ]
     else:
-        if kind not in ("evaluate", "decode", "render", "experiment") or len(gpus) != 1:
+        if kind not in (*ORDINARY, "experiment") or len(gpus) != 1:
             raise ValueError("queued evaluation/decoding requires one GPU and a package owner")
-        module = "scripts.onestep_avatar.decode_saved" if kind == "decode" else "scripts.onestep_avatar.evaluate"
-        if kind == "render":
-            module = "scripts.onestep_avatar.comparisons"
+        module = ORDINARY.get(kind)
         if kind == "experiment":
             module = experiment_entry(job["experiment"])
             from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- pinned experiment specification
@@ -752,7 +847,148 @@ def job_command(job: dict, gpus: tuple[int, ...]) -> tuple[list[str], dict[str, 
             if not spec_path.is_file() or sha256(spec_path) != job["render_spec_sha256"]:
                 raise ValueError("queue saved-comparison specification changed after preparation")
         command = [sys.executable, "-m", module, *job["arguments"], "--gpu-id", "0"]
+        if kind == "experiment" and "experiment_launch" in job:
+            from scripts.onestep_avatar.hashing import (  # noqa: PLC0415 -- selected owner at use; avoids import cycles
+                sha256,
+            )
+            launch = job["experiment_launch"]
+            if (launch["processes"] != 1 or launch["mixed_precision"] != "bf16"
+                    or sha256(Path(launch["accelerate_config"])) != launch["accelerate_config_sha256"]):
+                raise ValueError("one-rank FSDP experiment launch facts changed")
+            command = [sys.executable, "-m", "accelerate.commands.launch", "--config_file", launch["accelerate_config"],
+                       "--num_processes", "1", "--mixed_precision", "bf16", "--main_process_port", str(job["port"]),
+                       "-m", module, *job["arguments"], "--gpu-id", "0"]
     return command, environment
+
+
+def execution_profile(job: dict) -> dict:
+    """Keep phase inventories with the scientific owners; no model sessions."""
+    if job["kind"] == "train":
+        from scripts.onestep_avatar.training import (  # noqa: PLC0415 -- selected owner at use; avoids import cycles
+            config,
+            resources,
+        )
+        return {"world": TRAIN_PROCESSES, "phases": resources.training_phases(config.parse_settings(job["arguments"])),
+                "generic_phase": False}
+    if job["kind"] == "experiment":
+        selected = importlib.import_module(experiment_entry(job["experiment"]))
+        if hasattr(selected, "runtime_profile"):
+            profile = dict(selected.runtime_profile(Path(job["spec"])))
+            profile["world"] = profile.pop("processes", 1)
+            return profile
+        if hasattr(selected, "resource_phases"):
+            phases = selected.resource_phases(Path(job["spec"]))
+            return {"world": 1, "phases": phases, "generic_phase": phases == ["runtime"]}
+    return {"world": 1, "phases": ["runtime"], "generic_phase": True}
+
+
+class OverallDeadlineError(QueueChildError):
+    """The original job clock expired; retries cannot replace its deadline."""
+
+
+def validate_execution_clock(job: dict, row: dict) -> None:
+    """Require one original clock across every attempt, including restart reads."""
+    overall = job.get("effective_budget", {}).get("overall_seconds")
+    start, deadline = row.get("first_attempt_started_at"), row.get("overall_deadline_at")
+    if overall is None:
+        if start is not None or deadline is not None:
+            raise ValueError("queue overall clock requires an explicit overall budget")
+        return
+    if start is None and deadline is None and not row.get("attempts"):
+        return  # A job waiting for devices has not begun an attempt.
+    if (type(start) not in (int, float) or not math.isfinite(start)
+            or type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or deadline != start + overall):
+        raise ValueError("queue original overall deadline is missing or changed")
+    attempts = row.get("attempts", [])
+    if attempts and attempts[0].get("started_at") != start:
+        raise ValueError("queue overall clock differs from its first attempt")
+    for attempt in attempts:
+        if (attempt.get("first_attempt_started_at") != start
+                or attempt.get("overall_deadline_at") != deadline):
+            raise ValueError("queue attempt reset its original overall deadline")
+
+
+def remaining_deadline(row: dict, *, now: float | None = None) -> float | None:
+    """Bound registration, grants and supervision by the same saved clock."""
+    deadline = row.get("overall_deadline_at")
+    if deadline is None:
+        return None
+    remaining = deadline - (time.time() if now is None else now)
+    if remaining <= 0:
+        raise OverallDeadlineError("overall_deadline: original job deadline expired")
+    return remaining
+
+
+def begin_execution_clock(job: dict, row: dict, *, now: float) -> dict:
+    """Set the clock once, in the first-attempt journal transaction."""
+    validate_execution_clock(job, row)
+    overall = job.get("effective_budget", {}).get("overall_seconds")
+    if overall is None:
+        return {}
+    if row.get("first_attempt_started_at") is None:
+        row.update(first_attempt_started_at=now, overall_deadline_at=now + overall)
+    remaining_deadline(row, now=now)
+    return {name: row[name] for name in ("first_attempt_started_at", "overall_deadline_at")}
+
+
+def verify_attempt_evidence(job: dict, row: dict) -> list[Path]:
+    """Require saved successful supervision and actual child evidence before receipt."""
+    from scripts.onestep_avatar.execution import (  # noqa: PLC0415 -- selected owner at use; avoids import cycles
+        queue_launch,
+        runtime,
+    )
+    from scripts.onestep_avatar.execution.queue_protocol import (  # noqa: PLC0415 -- selected owner at use; avoids import cycles
+        TOKEN_ENV,
+    )
+    from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- selected owner at use; avoids import cycles
+
+    validate_execution_clock(job, row)
+    if not {"supervision_result", "supervision_result_sha256", "supervision_contract",
+            "command", "child_identity", "environment_changes", "gpus"}.issubset(row):
+        raise ValueError("queue success lacks its original supervision evidence")
+    command, environment = job_command(job, tuple(row["gpus"]))
+    if row["command"] != command:
+        raise ValueError("queue supervision command differs from requested owner")
+    if any(row["environment_changes"].get(key) != value for key, value in environment.items()):
+        raise ValueError("queue supervision environment differs from requested devices, budget or policy")
+    path = Path(row["supervision_result"])
+    if sha256(path) != row["supervision_result_sha256"]:
+        raise ValueError("queue supervision evidence changed")
+    result = json.loads(path.read_text())
+    if (result.get("state") != "passed" or result.get("returncode") != 0
+            or result.get("workers_absent") is not True
+            or result.get("worker_inventory", {}).get("complete") is not True
+            or result.get("worker_inventory", {}).get("workers_live") is not False
+            or result.get("command") != row["command"]
+            or result.get("identity") != row["child_identity"]):
+        raise ValueError("queue success lacks complete owned-worker absence evidence")
+    contract = Path(row["supervision_contract"])
+    if sha256(contract) != result.get("notification_contract_sha256"):
+        raise ValueError("queue supervision contract changed")
+    paths = [path, contract]
+    profile = execution_profile(job)
+    notification = json.loads(contract.read_text())
+    if notification.get("budget_sha256") != job["effective_budget"]["sha256"]:
+        raise ValueError("queue supervision budget differs from requested limits")
+    observed = queue_launch.read_completed_notifications(
+        contract, contract_sha256=sha256(contract), token=row["environment_changes"][TOKEN_ENV],
+        job_sha256=job["sha256"], world=profile["world"],
+    )
+    if observed["phases"] != profile["phases"]:
+        raise ValueError("queue supervision phase inventory differs from its owner")
+    paths.extend(contract.with_name(contract.name + ".events") / name for name in observed["event_sha256"])
+    if job["kind"] != "train":
+        runtime_path = Path(row["runtime_contract"])
+        binding = runtime.read_contract(runtime_path, row["runtime_contract_sha256"])
+        expected = {"token": row["environment_changes"][TOKEN_ENV], "job_sha256": job["sha256"],
+                    "budget": job["effective_budget"], "generic_phase": profile["generic_phase"],
+                    "numerical_policy": job.get("numerical_policy")}
+        if any(binding[key] != value for key, value in expected.items()):
+            raise ValueError("queue runtime proof differs from requested attempt, policy or budget")
+        runtime.verify_result(runtime_path, row["runtime_contract_sha256"])
+        paths.extend((runtime_path, runtime.result_path(runtime_path)))
+    return paths
 
 
 def read_training_marker(checkpoint: Path, step: int) -> dict:
@@ -785,6 +1021,12 @@ def verify_completion(job: dict) -> bool:  # noqa: PLR0911, PLR0912, PLR0915 -- 
     from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- artifact identities
     from scripts.onestep_avatar.training import checkpoints  # noqa: PLC0415 -- shared adapter checks
 
+    if "effective_budget" in job:
+        from scripts.onestep_avatar.training import (  # noqa: PLC0415 -- selected owner at use; avoids import cycles
+            resources,
+        )
+        resources.check_budget(job["effective_budget"])
+
     root = Path(job["output"]).resolve()
 
     def evidence_path(value: str) -> Path:
@@ -794,6 +1036,20 @@ def verify_completion(job: dict) -> bool:  # noqa: PLR0911, PLR0912, PLR0915 -- 
         return path
 
     completion = job["completion"]
+    if job["kind"] in ("preview", "product", "bench"):
+        selected = importlib.import_module(ORDINARY[job["kind"]])
+        if job["kind"] == "preview" and selected.queue_identity(job["arguments"]) != job["preview_identity"]:
+            raise ValueError("queue immutable preview identity changed")
+        evidence = ([completion["manifest"]] if "manifest" in completion else []) + completion.get("records", [])
+        if any(not evidence_path(value).is_file() for value in evidence):
+            return False
+        verified = selected.verify_completion(job["arguments"], root)
+        if (
+            job["kind"] == "bench" and isinstance(verified, dict) and "records" in verified
+            and verified["records"] != completion.get("records")
+        ):
+            raise ValueError("queue benchmark inventory differs from its scientific owner")
+        return True
     if job["kind"] == "train":
         checkpoint = evidence_path(completion["checkpoint"])
         marker_path = checkpoint.with_suffix(".complete.json")
@@ -901,12 +1157,14 @@ def read_queue_state(path: Path, jobs: list[dict]) -> dict:  # noqa: PLR0912 -- 
             state["jobs"][job["id"]] = {"sha256": job["sha256"], "state": "pending", "attempts": []}
         elif prior.get("state") not in ("pending", "running", "complete", "failed"):
             raise ValueError("invalid saved queue job state")
+        if prior is not None:
+            validate_execution_clock(job, prior)
     state["job_order"] = identifiers
     return state
 
 
 @contextmanager
-def queue_state(path: Path, jobs: list[dict], *, recover: bool = False):  # noqa: ANN201, PLR0912 -- locked recovery gates
+def queue_state(path: Path, jobs: list[dict], *, recover: bool = False):  # noqa: ANN201, PLR0912, PLR0915 -- locked recovery gates
     """Write state atomically only after a successful, exclusively owned transaction."""
     from scripts.onestep_avatar.corpus.dataset import atomic_write  # noqa: PLC0415 -- shared publication primitive
 
@@ -944,8 +1202,26 @@ def queue_state(path: Path, jobs: list[dict], *, recover: bool = False):  # noqa
                                   "recovered_at": time.time(), "launch_recovery": unapproved[job["id"]]}
                         row.update(result)
                         row["attempts"][-1].update(result)
+                    elif row.get("overall_deadline_at") is not None and time.time() >= row["overall_deadline_at"]:
+                        row.update(state="failed", error="overall_deadline: interrupted job deadline expired",
+                                   failure_reason="overall_deadline", recovered_at=time.time())
+                        if row["attempts"]:
+                            row["attempts"][-1].update(state="failed", error=row["error"],
+                                                       failure_reason="overall_deadline")
                     elif verify_completion(job):
-                        row.update(state="complete", receipt=completion_receipt(job), recovered_at=time.time())
+                        if "effective_budget" in job:
+                            verify_attempt_evidence(job, row)
+                        receipt = completion_receipt(job, attempt=row if "effective_budget" in job else None)
+                        observed_at = time.time()
+                        try:
+                            remaining_deadline(row, now=observed_at)
+                        except OverallDeadlineError:
+                            row.update(state="failed", error="overall_deadline: expired during recovery verification",
+                                       failure_reason="overall_deadline", recovered_at=observed_at)
+                        else:
+                            if "execution" in receipt:
+                                receipt["execution"]["binding"]["completed_at"] = observed_at
+                            row.update(state="complete", receipt=receipt, recovered_at=observed_at)
                     else:
                         row.update(
                             state="failed",
@@ -1094,7 +1370,7 @@ def verify_decoder_completion(job: dict) -> bool:  # noqa: PLR0912, PLR0915 -- e
     return True
 
 
-def completion_receipt(job: dict) -> dict:
+def completion_receipt(job: dict, *, attempt: dict | None = None) -> dict:
     """Capture verified evidence identities; child lifecycle enforcement is caller-owned."""
     from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- immutable receipt identities
 
@@ -1125,15 +1401,30 @@ def completion_receipt(job: dict) -> dict:
                 raise ValueError("experiment receipt evidence escapes its output directory")
     elif job["kind"] in ("decode", "render"):
         paths = [Path(completion["manifest"])]
+    elif job["kind"] in ("preview", "product", "bench"):
+        paths = importlib.import_module(ORDINARY[job["kind"]]).evidence_paths(job["arguments"], Path(job["output"]))
+        if any(not path.resolve().is_relative_to(Path(job["output"]).resolve()) for path in paths):
+            raise ValueError("ordinary receipt evidence escapes its output directory")
     else:
         paths = [Path(value) for value in completion["records"]]
         from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- verified evaluation artifact inventory
 
         paths = evaluate.evaluation_evidence_paths(job["arguments"], paths)
-    return {
+    receipt = {
         "job_sha256": job["sha256"],
         "evidence": [{"path": str(path.resolve()), "sha256": sha256(path)} for path in paths],
     }
+    if attempt is not None:
+        execution_paths = verify_attempt_evidence(job, attempt)
+        keys = {"command", "gpus", "child_identity", "environment_changes", "supervision_result",
+                "supervision_result_sha256", "supervision_contract", "runtime_contract",
+                "runtime_contract_sha256", "first_attempt_started_at", "overall_deadline_at"}
+        binding = {key: value for key, value in attempt.items() if key in keys}
+        binding["attempts"] = [{key: value for key, value in row.items() if key in {
+            "started_at", "first_attempt_started_at", "overall_deadline_at"}} for row in attempt.get("attempts", [])]
+        receipt["execution"] = {"binding": binding, "evidence": [
+            {"path": str(path.resolve()), "sha256": sha256(path)} for path in execution_paths]}
+    return receipt
 
 
 def verify_receipt(job: dict, receipt: dict) -> bool:
@@ -1142,6 +1433,8 @@ def verify_receipt(job: dict, receipt: dict) -> bool:
 
     if receipt.get("job_sha256") != job["sha256"]:
         raise ValueError("completion receipt belongs to another job")
+    if "effective_budget" in job and "execution" not in receipt:
+        raise ValueError("current queue receipt lacks its supervised execution proof")
     for record in receipt.get("evidence", []):
         path = Path(record["path"])
         if not path.is_file():
@@ -1151,8 +1444,19 @@ def verify_receipt(job: dict, receipt: dict) -> bool:
     if not verify_completion(job):
         return False
     current = completion_receipt(job)
-    if current != receipt:
+    if current != {key: value for key, value in receipt.items() if key != "execution"}:
         raise ValueError("completion receipt evidence inventory differs")
+    if "execution" in receipt:
+        execution = receipt["execution"]
+        completed_at = execution["binding"].get("completed_at")
+        deadline = execution["binding"].get("overall_deadline_at")
+        if (type(completed_at) not in (int, float) or not math.isfinite(completed_at)
+                or (deadline is not None and (completed_at >= deadline
+                    or completed_at < execution["binding"]["first_attempt_started_at"]))):
+            raise ValueError("queue completion was not observed before its original deadline")
+        paths = verify_attempt_evidence(job, execution["binding"])
+        if execution["evidence"] != [{"path": str(path.resolve()), "sha256": sha256(path)} for path in paths]:
+            raise ValueError("queue completion execution evidence changed")
     return True
 
 
@@ -1194,7 +1498,14 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
     """Run one claimed package child with optional persistent attempt records."""
     import subprocess  # noqa: PLC0415 -- package-only subprocess execution
 
-    from scripts.onestep_avatar.execution import queue_launch  # noqa: PLC0415 -- model-free registered launch
+    from scripts.onestep_avatar.execution import (  # noqa: PLC0415 -- selected owner at use; avoids import cycles
+        queue_launch,
+        runtime,
+        supervision,
+    )
+    from scripts.onestep_avatar.training import (  # noqa: PLC0415 -- selected owner at use; avoids import cycles
+        resources,
+    )
 
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("child polling interval must be finite and positive")
@@ -1204,6 +1515,11 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
     returncode = None
     journal_started = False
     request_path = None
+    changes = {}
+    registry_path = getattr(claims, "path", None)
+    clock = {}
+    supervision_path = None
+    result = None
     try:
         output = Path(job["output"])
         if log_path.resolve().is_relative_to(output.resolve()):
@@ -1229,21 +1545,22 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
             launch_binding = log_path.with_name(f"{log_path.stem}.{claims.token}.launch.json").resolve()
             queue_launch.publish_exclusive(launch_binding, launch_record)
             changes[LAUNCH_ENV] = str(launch_binding)
-        notifications = None
-        budget = None
-        if job["kind"] == "train":
-            from scripts.onestep_avatar.training import config, resources  # noqa: PLC0415 -- shared phase authority
-            settings = config.parse_settings(job["arguments"])
-            budget = resources.read_budget(settings.resource_budget)
-            if budget is not None:
-                from scripts.onestep_avatar.execution import supervision  # noqa: PLC0415 -- optional bounded observer
-                notifications = log_path.with_name(f"{log_path.stem}.{claims.token}.phases.json").resolve()
-                changes.update(supervision.prepare_notifications(
-                    notifications, token=claims.token, job_sha256=job["sha256"],
-                    world=job["processes"], phases=resources.training_phases(settings),
-                    budget_sha256=budget["sha256"],
-                ))
-        registry_path = getattr(claims, "path", None)
+        budget = job.get("effective_budget", resources.default_budget())
+        changes.update(resources.budget_environment(budget))
+        profile = execution_profile(job)
+        notifications = log_path.with_name(f"{log_path.stem}.{claims.token}.phases.json").resolve()
+        changes.update(supervision.prepare_notifications(
+            notifications, token=claims.token, job_sha256=job["sha256"],
+            world=profile["world"], phases=profile["phases"], budget_sha256=budget["sha256"],
+        ))
+        runtime_contract = None
+        if job["kind"] != "train":
+            runtime_contract = log_path.with_name(f"{log_path.stem}.{claims.token}.runtime.json").resolve()
+            changes.update(runtime.prepare_contract(
+                runtime_contract, token=claims.token, job_sha256=job["sha256"], budget=budget,
+                generic_phase=profile["generic_phase"], numerical_policy=job.get("numerical_policy"),
+            ))
+        supervision_path = log_path.with_name(f"{log_path.stem}.{claims.token}.supervision.json").resolve()
         if state_path is not None:
             if jobs is None:
                 raise ValueError("persistent child execution requires the full prepared job list")
@@ -1260,10 +1577,12 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
                     token=claims.token, job_sha256=job["sha256"], owner_identity=process_identity(os.getpid()),
                     job_id=job["id"], journal=state_path, command=command,
                 )
+                started_at = time.time()
+                clock = begin_execution_clock(job, row, now=started_at)
                 attempt = {
                     "command": command,
                     "log": str(log_path.resolve()),
-                    "started_at": time.time(),
+                    "started_at": started_at,
                     "gpus": sorted(claims.owned),
                     "owner_pid": os.getpid(),
                     "child_pid": None,
@@ -1272,11 +1591,14 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
                     "launch_protocol": LAUNCH_PROTOCOL,
                     "launch_request": str(request_path.resolve()),
                     "launch_request_sha256": queue_launch.digest(request_path),
+                    **clock,
                 }
                 if registry_path is not None:
                     attempt["process_ledger"] = str(registry_path.resolve())
-                if notifications is not None:
-                    attempt["supervision_contract"] = str(notifications)
+                attempt["supervision_contract"] = str(notifications)
+                if runtime_contract is not None:
+                    attempt.update(runtime_contract=str(runtime_contract),
+                                   runtime_contract_sha256=queue_launch.digest(runtime_contract))
                 if launch_binding is not None:
                     attempt.update(training_launch=str(launch_binding),
                                    training_launch_sha256=queue_launch.digest(launch_binding))
@@ -1285,6 +1607,8 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
                 )
                 row["attempts"].append(dict(attempt))
             journal_started = True
+        else:
+            clock = begin_execution_clock(job, {"attempts": []}, now=time.time())
         with log_path.open("x") as log:
             launch_command = command if request_path is None else queue_launch.guard_command(request_path)
             child = subprocess.Popen(
@@ -1297,8 +1621,10 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
             )
             claims.refresh(child_pid=child.pid)
             if state_path is not None:
+                remaining = remaining_deadline(clock)
                 bootstrap = queue_launch.wait_registration(
-                    request_path, child, launch_command, lambda: claims.refresh(child_pid=child.pid)
+                    request_path, child, launch_command, lambda: claims.refresh(child_pid=child.pid),
+                    timeout=45 if remaining is None else min(45, remaining),
                 )
                 identity = bootstrap["identity"]
                 with queue_state(state_path, jobs) as state:
@@ -1308,37 +1634,49 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
                     state["jobs"][job["id"]]["attempts"][-1]["child_pid"] = child.pid
                     state["jobs"][job["id"]]["attempts"][-1]["child_identity"] = identity
                     state["jobs"][job["id"]]["attempts"][-1]["child_session"] = child.pid
+                remaining_deadline(clock)
                 queue_launch.publish_grant(request_path)
             worker_record = {"child_session": child.pid, "environment_changes": changes,
                              "attempt_started_ticks": claims.started_ticks}
             if registry_path is not None:
                 worker_record["process_ledger"] = str(registry_path.resolve())
-            if notifications is not None:
-                if state_path is not None:
-                    worker_record = read_queue_state(state_path, jobs)["jobs"][job["id"]]
-                else:
-                    identity = process_identity(child.pid)
-                result = supervision.supervise(
-                    child, identity=identity, command=command, worker_record=worker_record,
-                    claims=claims, gpus=tuple(sorted(claims.owned)),
-                    evidence_path=log_path.with_name(f"{log_path.stem}.{claims.token}.supervision.json"),
-                    notifications_path=notifications, startup_seconds=budget["wall_seconds_per_phase"],
-                    phase_seconds=budget["wall_seconds_per_phase"], shutdown_seconds=30,
-                    poll_seconds=min(poll_seconds, 1),
-                )
-                returncode = result["returncode"]
-                if result["state"] != "passed":
-                    raise QueueChildError(f"bounded package child failed: {result['error']}; log: {log_path}")
+            if state_path is not None:
+                worker_record = read_queue_state(state_path, jobs)["jobs"][job["id"]]
             else:
-                while child.poll() is None:
-                    time.sleep(poll_seconds)
-                    claims.refresh(child_pid=child.pid)
-                returncode = child.poll()
+                identity = process_identity(child.pid)
+            result = supervision.supervise(
+                child, identity=identity, command=command, worker_record=worker_record,
+                claims=claims, gpus=tuple(sorted(claims.owned)), evidence_path=supervision_path,
+                notifications_path=notifications, startup_seconds=budget["wall_seconds_per_phase"],
+                phase_seconds=budget["wall_seconds_per_phase"], shutdown_seconds=30,
+                overall_seconds=remaining_deadline(clock), poll_seconds=min(poll_seconds, 1),
+                sampled_total_device_limit_bytes=profile.get("sampled_total_device_limit_bytes"),
+            )
+            returncode = result["returncode"]
+            if state_path is not None:
+                with queue_state(state_path, jobs) as state:
+                    row = state["jobs"][job["id"]]
+                    binding = {"supervision_result": str(supervision_path),
+                               "supervision_result_sha256": queue_launch.digest(supervision_path)}
+                    row.update(binding)
+                    row["attempts"][-1].update(binding)
+            if result["state"] != "passed":
+                if clock.get("overall_deadline_at") is not None and time.time() >= clock["overall_deadline_at"]:
+                    raise OverallDeadlineError(f"overall_deadline: {result['error']}; log: {log_path}")
+                raise QueueChildError(f"bounded package child failed: {result['error']}; log: {log_path}")
             if returncode != 0:
                 raise QueueChildError(f"queue child failed with exit {returncode}; log: {log_path}")
             if owned_workers_live(worker_record):
                 raise ValueError("queue child still has live workers after leader exit")
-            receipt = completion_receipt(job)
+            remaining_deadline(clock)
+            if runtime_contract is not None:
+                runtime.verify_result(runtime_contract, queue_launch.digest(runtime_contract))
+            if result["workers_absent"] is not True:
+                raise ValueError("queue success requires complete owned-worker absence")
+            receipt = completion_receipt(
+                job, attempt=None if state_path is None else read_queue_state(state_path, jobs)["jobs"][job["id"]]
+            )
+            remaining_deadline(clock)
             result = {
                 "child_pid": child.pid,
                 "returncode": returncode,
@@ -1349,10 +1687,34 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
             }
             if state_path is not None:
                 with queue_state(state_path, jobs) as state:
-                    state["jobs"][job["id"]].update(state="complete", finished_at=time.time(), **result)
+                    finished_at = time.time()
+                    remaining_deadline(clock, now=finished_at)
+                    if "execution" in receipt:
+                        receipt["execution"]["binding"]["completed_at"] = finished_at
+                    state["jobs"][job["id"]].update(state="complete", finished_at=finished_at, **result)
                     state["jobs"][job["id"]]["attempts"][-1].update(state="complete", **result)
             return result
     except BaseException as error:
+        # Registration and grant failure must stop the same owned guard/ranks too.
+        # The existing supervisor remains the sole bounded stop owner.
+        if child is not None and result is None:
+            identity = process_identity(child.pid)
+            if identity is not None:
+                worker_record = {
+                    "child_session": child.pid,
+                    "environment_changes": changes,
+                    "attempt_started_ticks": claims.started_ticks,
+                    **({"process_ledger": str(registry_path.resolve())} if registry_path is not None else {}),
+                }
+                if journal_started:
+                    worker_record = read_queue_state(state_path, jobs)["jobs"][job["id"]]
+                result = supervision.supervise(
+                    child, identity=identity, command=command, worker_record=worker_record,
+                    claims=claims, gpus=tuple(sorted(claims.owned)), evidence_path=supervision_path,
+                    notifications_path=None, startup_seconds=30, phase_seconds=30,
+                    shutdown_seconds=30, overall_seconds=1e-12, poll_seconds=min(poll_seconds, 1),
+                )
+                returncode = result["returncode"]
         if journal_started:
             with queue_state(state_path, jobs) as state:
                 row = state["jobs"][job["id"]]
@@ -1370,12 +1732,25 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
                         child_pid=None if child is None else child.pid,
                         returncode=returncode,
                         finished_at=time.time(),
+                        failure_reason=(
+                            "overall_deadline" if isinstance(error, OverallDeadlineError)
+                            or (
+                                clock.get("overall_deadline_at") is not None
+                                and time.time() >= clock["overall_deadline_at"]
+                            ) else "child_failure"
+                        ),
                     )
+                    if supervision_path is not None and supervision_path.is_file():
+                        row.update(supervision_result=str(supervision_path),
+                                   supervision_result_sha256=queue_launch.digest(supervision_path))
                     from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- terminal log evidence
 
                     row["attempts"][-1].update(
                         state=row["state"], error=row["error"], returncode=returncode,
                         finished_at=row["finished_at"], log_sha256=sha256(log_path) if log_path.is_file() else None,
+                        failure_reason=row["failure_reason"],
+                        **({key: row[key] for key in ("supervision_result", "supervision_result_sha256")}
+                           if "supervision_result" in row else {}),
                     )
         raise
     finally:
@@ -1387,12 +1762,18 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
             claims.release()
 
 
-def startup_retry_evidence(job: dict, row: dict) -> dict | None:  # noqa: PLR0911 -- conservative ordered retry gates
+def startup_retry_evidence(job: dict, row: dict) -> dict | None:  # noqa: PLR0911, PLR0912 -- conservative ordered retry gates
     """Authorize proven startup contention with no surviving workers or update evidence."""
     from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, PREFIX, TOKEN_ENV  # noqa: PLC0415
     from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415
 
     attempts = row.get("attempts", [])
+    if row.get("failure_reason") == "overall_deadline":
+        return None
+    try:
+        remaining_deadline(row)
+    except OverallDeadlineError:
+        return None
     if job["kind"] != "train" or row.get("state") != "failed" or not attempts or len(attempts) >= 4:
         return None
     attempt = attempts[-1]
@@ -1508,10 +1889,19 @@ def dispatch_ready(jobs: list[dict], state: dict, state_path: Path, claims_dir: 
 
     memory = inventory()
     for job in ready:
+        row = state["jobs"][job["id"]]
+        try:
+            remaining_deadline(row)
+        except OverallDeadlineError:
+            with queue_state(state_path, jobs) as journal:
+                journal["jobs"][job["id"]].update(
+                    state="failed", error="overall_deadline: original job deadline expired before retry",
+                    failure_reason="overall_deadline", finished_at=time.time())
+            return True
         from scripts.onestep_avatar.execution.process_registry import ProcessRegistry  # noqa: PLC0415 -- current policy
         claims = ProcessRegistry(claims_dir)
         gpus = claims.choose(memory, training=job["kind"] == "train")
-        if gpus is None or not claims.acquire(gpus, job=job["id"]):
+        if gpus is None or not claims.acquire(gpus, job=job["id"], training=job["kind"] == "train"):
             continue
         # Claims cannot prevent an external process from starting between
         # the first observation and our reservation.
@@ -1534,7 +1924,7 @@ def dispatch_ready(jobs: list[dict], state: dict, state_path: Path, claims_dir: 
     return False
 
 
-def execute_jobs(jobs_path: Path, state_path: Path, claims_dir: Path, *, once: bool, poll_seconds: float = 30) -> int:
+def execute_jobs(jobs_path: Path, state_path: Path, claims_dir: Path, *, once: bool, poll_seconds: float = 30) -> int:  # noqa: PLR0912 -- append-only dispatch and failure gates
     """Reread append-only work, verify dependencies, and wait without reserving devices."""
     if not math.isfinite(poll_seconds) or not 0 < poll_seconds <= 60:
         raise ValueError("queue polling interval must be finite, positive and at most 60 seconds")
@@ -1561,6 +1951,8 @@ def execute_jobs(jobs_path: Path, state_path: Path, claims_dir: Path, *, once: b
         if dispatch_ready(jobs, state, state_path, claims_dir):
             if once:
                 updated = read_queue_state(state_path, jobs)
+                if any(row["state"] == "failed" for row in updated["jobs"].values()):
+                    return 1
                 return 2 if any(
                     row["state"] == "pending" and row["attempts"] and row["attempts"][-1].get("retry_evidence")
                     for row in updated["jobs"].values()
@@ -1596,7 +1988,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--execute", action="store_true", help="claim available GPUs and run ready jobs")
     parser.add_argument("--recover", action="store_true", help="inspect terminated children and verify saved outputs")
     parser.add_argument("--process-ledger", type=Path, help="one shared JSON record of package-owned processes")
-    parser.add_argument("--claims-dir", type=Path, help=argparse.SUPPRESS)
     execution = parser.add_mutually_exclusive_group()
     execution.add_argument("--once", action="store_true")
     execution.add_argument("--loop", action="store_true")
@@ -1604,10 +1995,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if sum((args.dry_run, args.execute, args.recover)) != 1:
         parser.error("choose exactly one of --dry-run, --execute or --recover")
-    if args.process_ledger is not None and args.claims_dir is not None:
-        parser.error("choose --process-ledger or the deprecated --claims-dir path alias")
-    ledger = args.process_ledger if args.process_ledger is not None else (
-        None if args.claims_dir is None else args.claims_dir / "processes.json")
+    ledger = args.process_ledger
     if args.execute and (not (args.once or args.loop) or ledger is None):
         parser.error("--execute requires --once or --loop and --process-ledger")
     if (args.loop or args.once) and not args.execute:
@@ -1623,7 +2011,7 @@ def main(argv: list[str] | None = None) -> int:
     state = read_queue_state(args.state, jobs)
     planned = []
     for job in jobs:
-        gpus = TRAIN_GPUS if job["kind"] == "train" else (EVALUATION_PREFERENCE[0],)
+        gpus = GPU_POOL[:TRAIN_PROCESSES] if job["kind"] == "train" else GPU_POOL[:1]
         command, changes = job_command(job, gpus)
         planned.append(
             {

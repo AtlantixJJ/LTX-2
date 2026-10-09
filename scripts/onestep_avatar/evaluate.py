@@ -455,6 +455,8 @@ def verify_evaluation_conditions(  # noqa: PLR0912, PLR0915 -- all scientific ev
 
     context = tensor(args.output / "text.pt")
     negative = tensor(args.output / "negative_text.pt") if args.cfg != 1.0 else None
+    if context.ndim != 3 or context.shape[0] != 1 or (negative is not None and negative.shape != context.shape):
+        raise ValueError("queue evaluation saved text requires batch-one context and matching negative shape")
     guidance = {
         "cfg": args.cfg, "stg": args.stg, "stg_blocks": args.stg_blocks, "rescale": args.rescale,
         "negative_text_sha256": None if negative is None else hashing.tensor_sha256(negative),
@@ -512,7 +514,9 @@ def verify_evaluation_conditions(  # noqa: PLR0912, PLR0915 -- all scientific ev
                     raise ValueError("evaluation encoding shape differs from the published record")
                 if list(prediction.shape) != [1, *video.z_y[:, :frames].shape]:
                     raise ValueError("queue evaluation encoding shape differs from requested video")
-                if not torch.equal(prediction[:, :, :1], video.z_y[:, :1].unsqueeze(0).to(dtype=DTYPE)):
+                if hashing.tensor_sha256(prediction[:, :, :1]) != hashing.tensor_sha256(
+                    video.z_y[:, :1].unsqueeze(0).to(dtype=DTYPE)
+                ):
                     raise ValueError("queue evaluation changed clean first-image input")
                 branch_records.append(record)
                 predictions.append(prediction)
@@ -732,4 +736,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from scripts.onestep_avatar.execution.runtime import run
+    raise SystemExit(run(main))

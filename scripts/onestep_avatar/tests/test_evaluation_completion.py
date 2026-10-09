@@ -16,6 +16,20 @@ from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 --
 from scripts.onestep_avatar.tests.test_training_preflight import checked_settings  # noqa: F401
 
 
+def controlled_scientific_receipt(job: dict, monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Isolate saved science from the separately tested native supervision proof.
+
+    These CPU producers do not launch a queue child. Supply an explicit fake
+    execution observation without removing the prepared job's effective budget.
+    Queue lifecycle tests retain the real ownership and proof-negative checks.
+    """
+    attempt = {"command": ["controlled CPU scientific fixture"], "gpus": [0], "attempts": []}
+    monkeypatch.setattr(queue, "verify_attempt_evidence", lambda _job, _attempt: [])
+    receipt = queue.completion_receipt(job, attempt=attempt)
+    receipt["execution"]["binding"]["completed_at"] = 1.0
+    return receipt
+
+
 @pytest.fixture
 def completed(checked_settings, monkeypatch, tmp_path):
     settings, membership = checked_settings
@@ -96,16 +110,26 @@ def completed(checked_settings, monkeypatch, tmp_path):
     return execute, arguments, settings, membership, calls
 
 
-def test_completed_science_and_normal_fresh_output_gate(completed):
+def test_completed_science_and_normal_fresh_output_gate(completed, monkeypatch: pytest.MonkeyPatch):
     execute, arguments, _, _, _ = completed
     job, paths = execute()
     assert len(paths) == 2
     with pytest.raises(ValueError, match='already used'):
         evaluate.prepare_evaluation(evaluate.parse_args(arguments))
     assert queue.verify_completion(job)
-    receipt = queue.completion_receipt(job)
+    receipt = controlled_scientific_receipt(job, monkeypatch)
     assert len(receipt['evidence']) == 7
     assert queue.verify_receipt(job, receipt)
+
+
+def test_saved_scalar_text_refuses_before_native_session(completed: tuple) -> None:
+    execute, _, settings, _, calls = completed
+    job, _ = execute()
+    torch.save(torch.tensor(1.0, dtype=torch.bfloat16), settings.output / "text.pt")
+    before = list(calls)
+    with pytest.raises(ValueError, match="batch-one context"):
+        queue.verify_completion(job)
+    assert calls == before
 
 
 @pytest.mark.parametrize("extra,message", [
@@ -293,10 +317,12 @@ def test_checked_adapter_bytes_path_and_complete_variant_inventory(completed, de
 
 
 @pytest.mark.parametrize('asset', ['text', 'noise'])
-def test_receipts_pin_input_file_bytes_even_when_tensor_content_is_identical(completed, asset):
+def test_receipts_pin_input_file_bytes_even_when_tensor_content_is_identical(
+    completed, asset, monkeypatch: pytest.MonkeyPatch
+):
     execute, _, settings, _, _ = completed
     job, _ = execute()
-    receipt = queue.completion_receipt(job)
+    receipt = controlled_scientific_receipt(job, monkeypatch)
     path = settings.output/'text.pt' if asset == 'text' else settings.output/'case_0000/noise.pt'
     before = sha256(path)
     value = torch.load(path, weights_only=True)

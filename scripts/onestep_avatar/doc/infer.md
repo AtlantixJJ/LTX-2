@@ -31,10 +31,49 @@ research override. Save encoding and actual run records before rendering.
 
 ## Data flow
 
+```mermaid
+flowchart TB
+  I[("checked guide and supplied image")] --> G["ordinary mode generation"]
+  G --> O[("raw output and consumed text/noise")]
+  O --> D["optional native decoding"] --> M[("video and review")]
+  O --> V["saved completion verifier"]
+  M --> V
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  class G,D,V proc;
+  class I,O,M disk;
+```
+
 Checked guide master and supplied-image encoding → shared grid → mode sampler
 → saved encoding and record → optional shared decoder and media.
 
 ## Organization logic
+
+The ordinary parser exposes `completion_descriptor(args)`. Raw completion is
+`result.json`; decoding additionally requires `rendering.json`, and review
+requires `review/rendering.json`. New CLI runs preserve the actually consumed
+native text and noise in `generation_inputs.pt`, with a file identity in the
+raw result. An optional input observer records these tensors before sampling;
+the default public generation API makes the same draws and calls as before.
+
+`verify_completion(arguments, root)` runs the existing input/adapter preflight
+with its fresh-output gate disabled. It compares every requested setting,
+prompt, source-file hash, canonical guide/c0 tensor hash, text/noise hash,
+output path/hash/shape and clean c0. Raw and saved inputs must be finite native
+bf16 tensors. Check the expected unguided denoise/refresh call inventory through
+the shared geometry. Never regenerate seeded noise on CPU: CUDA uses a different
+random stream. Software and producer identities must still match current bytes.
+
+When decoding was requested, require the generated-only video/poster record,
+exact frames/fps/poster and native decode key, current VAE hash/decoder settings,
+and every media byte hash. Review additionally checks the fixed image/guide/
+generated roles, moving frame mapping and both decoded-input keys against the
+checked source encodings. `evidence_paths` lists these verified files. Neither
+helper opens weights, text or decoder sessions, starts a process, or repairs output.
+
+Worked completion control: replacing `generation_inputs.pt` and refreshing its
+file claim still fails if its native tensor hashes differ from the result.
+Deleting requested review media fails even when raw generation remains complete.
 
 Read guide and supplied-image bundles with the public master reader. Require
 matching channels, encoded height/width, fps, background, crop, VAE identity and
@@ -88,6 +127,11 @@ white. Its `image.pt` records one native encode call and actual pixel/input/VAE
 provenance. A sliced video master cannot replace this producer.
 
 ## Tests
+
+`test_ordinary_queue_completion.py` executes both product modes on a controlled
+CPU model and then blocks native loaders/decoders during verification. Tampered
+saved text/noise, wrong precision, nonfinite tensors, changed clean c0, altered
+call counts and missing saved inputs fail without creating output.
 
 Use small real models to verify both modes, exact c0 preservation and actual
 call counts. Prove bidirectional sampling calls no cache allocator. Reject

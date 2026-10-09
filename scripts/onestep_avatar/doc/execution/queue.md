@@ -1,11 +1,50 @@
 # `execution/queue.py` — run saved package jobs
 
+## G8 launch design
+
+The queue is the only launch owner. Its ordinary kinds include preview, product
+and benchmark work. Public selected-owner parsers normalize their arguments;
+model-free owner completion checks bind every required saved artifact. Preview
+identity uses immutable job facts, because rendering updates the job's state.
+All kinds use the existing supervisor and the single import-light
+`execution/devices.py` policy: physical GPUs 0–7, with four-rank training.
+The queue imports and exports that policy; it does not define a second pool.
+Training selects four free devices and retains four ranks. Independent queue
+owners use separate journals and the same own-process ledger. Concurrent
+training jobs declare distinct rendezvous ports.
+
+Every prepared job binds an effective budget: its exact explicit file, or the
+canonical scientific default of 1,800 seconds per phase and 48,000,000,000
+allocated bytes. The launch environment passes that same budget to the actual
+child. Ordinary owners call `execution.runtime.run` at their module entry;
+this measures a single runtime phase in that child. Existing checker phase
+inventories remain unchanged. No runtime helper creates another child.
+
+An explicit `overall_seconds` budget starts at the first launch attempt. Store
+the first start and absolute deadline in the journal before child registration.
+Retries and restarts retain both values. Waiting for free GPUs before the first
+attempt does not start a clock. Once started, expired pending retries fail
+before claiming or launching. Registration and supervision use the remaining
+time. Expiry also prevents recovery or a zero-exit observation from publishing
+success. A failed deadline has the machine reason `overall_deadline`.
+
+Each attempt retains its supervision result and hash, immutable runtime
+contract/result and worker-absence proof. The queue releases an active ledger
+row only after complete owned-worker absence. Resource and numerical evidence
+do not replace the selected scientific owner checks.
+
+Worked deadline check: a first attempt starts at wall time 100 with an explicit
+ten-second overall limit. Its retry at 106 retains deadline 110. A restarted
+queue at 111 fails that pending retry without a claim or child. It cannot create
+a new deadline of 121. Jobs with no explicit overall bound still have bounded
+startup, gap and phase supervision; no total limit is inferred from phase count.
+
 Current saved-decoder completion requires each decoded row and comparison to
 pass the shared software manifest checker. Missing or stale software cannot
 produce a current receipt. The checker preserves historical artifacts and does
 not restamp them; a decoder rerun uses a fresh destination.
 
-Status: **Partially implemented.** GPU inventory parsing, selection and shared
+Status: **Implemented; final G8 CPU verification pending.** GPU inventory parsing, selection and shared
 own-process tracking, initial job-list schema checks, package argument parsing, canonical job
 identities, command construction, initial checkpoint/raw-result/decoder checks and
 state identity/transaction primitives and decoder reuse-identity checks exist.
@@ -15,7 +54,7 @@ all published artifact bytes. Real small-transformer CPU checks cover both modes
 and D0/D1 inputs. Training now binds the full typed settings, checked frame plan,
 data/base/parent identities, queue/source digests and config/plan bytes. Controlled
 checks exercise both modes, parent lineage and actual small-model update markers.
-Native integration and live handoff remain incomplete. Guarded unapproved-launch recovery exists;
+Fresh final-source native integration remains incomplete. Guarded unapproved-launch recovery exists;
 old unguarded launch windows still refuse takeover. Execution
 supports one dispatch (`--execute --once`) or continuous dispatch
 (`--execute --loop`). Both require the explicit shared own-process ledger.
@@ -37,21 +76,22 @@ directly and record only package-owned PID/start/command/GPU identities in one
 shared JSON ledger. New jobs do not read per-GPU reservation files or unrelated
 process environments. The original reservation implementation and saved records
 remain historical until the gated cleanup. `--process-ledger PATH` selects this
-single shared record; the old `--claims-dir` spelling is a deprecated path alias
-whose directory now contains `processes.json`, not new GPU reservation files.
+single shared record; the retired `--claims-dir` spelling fails before reading jobs or writing state.
 The launch owner enables child-subreaper tracking before dispatch. Exact targeted
 descendant observations include orphan ranks in new sessions without SSH scans.
 
-Budgeted training dispatch uses the shared `execution/supervision.py` observer. Before
-launch it freezes the per-rank load/update/export notification contract beside
-the launch records. The existing budget's per-phase wall limit also supplies
+Every kind uses the shared `execution/supervision.py` observer. Before launch,
+the queue freezes the selected owner's phase inventory beside the launch
+records. Training binds its per-rank load/update/export phases; ordinary owners
+bind their single runtime phase. The existing budget's per-phase wall limit also supplies
 explicitly named startup and between-phase guards; these are distinct observed
 intervals. The observer retains finite wait/signal/inventory evidence and never
 closes process records itself. Only complete own-worker absence permits closing
 the active ledger record; preserve its history.
 A failed or ambiguous stop stays failed/running as applicable, preserves evidence
-and cannot publish a receipt. Ordinary jobs without a budget retain their current
-dispatch scope with the new shared ledger. Sampled total-device occupancy is named separately; no allocated
+and cannot publish a receipt. Every current kind uses its explicit effective
+budget or the bound scientific defaults. Sampled total-device occupancy is
+named separately; no allocated
 limit is silently reused as a device-memory stop threshold.
 
 When typed training requests `--save-update-state`, normal completion also binds
@@ -164,7 +204,8 @@ bytes and optional resource-budget bytes, and calculate the same canonical job
 SHA-256. Store the budget digest as `resource_budget_sha256`; reject a supplied
 digest that differs from the actual file. An absent budget cannot carry a budget
 digest. Command construction rechecks the budget before creating child logs or
-launch records. Ordinary training may omit a budget. A supplied prepared digest
+launch records. Training may omit an explicit budget file; the prepared job then binds the
+canonical scientific defaults and the child records those effective limits. A supplied prepared digest
 must match the reconstructed digest. Do not accept a digest copied from a result.
 List-level duplicate output and dependency-order checks remain in `prepare_jobs`.
 
@@ -209,7 +250,7 @@ complete a different schedule, seed, source or adapter job. Saved historical
 records without the required provenance remain evidence for their original run,
 not a completion receipt for new work. These checks load no model sessions.
 
-### Launch registration work in progress
+### Launch registration
 
 The [launch gate](queue_launch.md) is integrated with persistent dispatch.
 It registers a waiting child and requires a durable matching journal and grant
@@ -255,7 +296,7 @@ Logs use unique attempt names outside the output directory. Execution does not
 adopt unknown running children. Typed training can use only the startup retry
 protocol below; other failures stop.
 The list has `schema_version: 1` and ordered `jobs`. Each job has a unique `id`,
-`kind` (`train`, `evaluate`, `decode`, `render`, or `experiment`), an `arguments` array of strings,
+`kind` (`train`, `evaluate`, `preview`, `product`, `bench`, `decode`, `render`, or `experiment`), an `arguments` array of strings,
 `output`, `dependencies` (earlier job IDs), and `completion` evidence.
 Train jobs also specify `accelerate_config`, `processes` and `port`.
 The `render` kind owns saved-comparison VAE work through the package comparisons
@@ -293,7 +334,8 @@ not. Distinct textual output paths that resolve to the same directory fail.
 Train/evaluate arguments require explicit mode. Reject duplicate output paths,
 unknown dependencies, dependency cycles, forbidden executor options, a mismatch
 between recorded and parsed output, or arbitrary executable/module names.
-Ordinary commands select `train`, `evaluate`, `decode_saved` or `comparisons`;
+Ordinary commands select `train`, `evaluate`, `previews`, `infer`, `bench`,
+`decode_saved` or `comparisons`;
 experiment commands use the explicit checked experiment owner.
 A list revision may append jobs; changing an existing job's canonical hash fails.
 
@@ -301,9 +343,8 @@ The train command uses the current environment's Accelerate executable with
 one recorded configuration, process count, port and the package module.
 Required by the 2026-10-09 user amendment: every kind draws from one shared
 pool of GPUs 0–7; training selects four free devices and keeps four processes.
-Current pre-G8 source instead fixes training to 0–3 and single-GPU preference
-to 5,4,3,2,1,0. It does not dispatch 6 or 7 yet. This is an implementation
-restriction pending G8, not a prohibition on those devices.
+The implemented `execution/devices.py` owner selects the first four free members in pool order,
+or the first one for ordinary single-GPU work. It accepts noncontiguous sets.
 `job_command` constructs only argument arrays for the fixed owners. Use the
 current Python with `-m accelerate.commands.launch` for training. Set
 `CUDA_VISIBLE_DEVICES` to claimed physical IDs. Single-GPU children receive
@@ -317,8 +358,9 @@ longer a training/evaluation completion condition.
 
 ### State and completion
 
-`verify_completion` initially supports training checkpoints and raw evaluation
-records. Missing files return false; malformed or changed evidence raises an
+`verify_completion` checks each of the eight kinds through its saved-artifact
+owner. Execution receipts additionally bind the successful bounded attempt and
+worker absence. Missing files return false; malformed or changed evidence raises an
 error. Resolve evidence paths under the recorded output directory and reject
 escape paths. Training checks marker schema/state/path/hash/final step plus
 the version-two contract and actual adapter matrices.
@@ -477,8 +519,8 @@ Current `dispatch_ready` constructs `ProcessRegistry`, chooses devices from
 direct inventory and acquires one token-bound ledger row. It queries occupancy
 again before creating a child. A busy device leaves the job pending; an invalid
 query refuses without a launch. Only this attempt's record can be released.
-Independent checks may use the authorized GPUs 0–7 concurrently; the current
-dispatcher still has the transitional limits above. Training requires four
+Independent queue owners may use GPUs 0–7 concurrently with separate journals
+and one shared own-process ledger. Training requires four
 free devices with unchanged four-rank topology. External programs can still start after a
 query; the ledger coordinates only this pipeline's own starts.
 

@@ -282,3 +282,9 @@ Before marking the latest attempt failed, capture its complete prior JSON record
 in `launch_recovery.prior_attempt`. This preserves its original interruption
 error, state, PID fields, command, log and environment. Recovery's new error
 explains its own decision; it must not erase the original failure observation.
+
+G8 dispatch bounds registration by the remaining original job deadline. A
+registration or grant failure invokes the same owned-tree supervisor before
+ledger release. Current registered non-training recovery permits the literal
+ordinary and experiment module set; device validation uses the single shared
+`execution.devices.GPU_POOL`. It does not infer scientific completion.

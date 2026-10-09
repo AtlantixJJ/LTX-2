@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import sys
 import time
@@ -14,6 +15,7 @@ from pathlib import Path
 import torch
 
 from scripts.onestep_avatar import hashing
+from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.model import common
 from scripts.onestep_avatar.model.causal import BlockCache, CausalGeometry
@@ -115,7 +117,8 @@ def measure_generation(
     }
 
 
-def operation_main(argv: list[str]) -> int:  # noqa: PLR0915 -- retained instrumented operation diagnostic
+def _operation_args(argv: list[str]) -> argparse.Namespace:
+    """Parse preserved operation timing without reading inputs or opening weights."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--operation-timing", action="store_true", required=True)
     p.add_argument("--mode", choices=("causal",), required=True)
@@ -134,8 +137,79 @@ def operation_main(argv: list[str]) -> int:  # noqa: PLR0915 -- retained instrum
         "measure denoising and cache refresh separately at each depth.",
     )
     p.add_argument("--latent-frames", type=int, default=18, help="Clip length; the corpus's 150-frame tier.")
-    p.add_argument("--out", type=Path, default=None)
+    destination = p.add_mutually_exclusive_group()
+    destination.add_argument("--out", type=Path, default=None)
+    destination.add_argument("--output", type=Path, default=None)
     args = p.parse_args(argv)
+    if args.reps < 1 or args.warmup < 0:
+        p.error("benchmark needs positive repetitions and nonnegative warmup")
+    if not math.isfinite(args.sigma0) or not 0 < args.sigma0 <= 1:
+        p.error("operation sigma must be finite and in (0, 1]")
+    if len(set(args.context_latent_frames)) != len(args.context_latent_frames) or any(
+        not 0 <= depth <= causal_core.MAX_CONTEXT_LATENT_FRAMES for depth in args.context_latent_frames
+    ):
+        p.error("operation cache depths must be unique and supported")
+    if args.latent_frames < 1 + causal_core.BLOCK_LATENT_FRAMES:
+        p.error("operation timing needs at least one complete causal block")
+    args.queue_output = args.output is not None
+    if args.output is not None:
+        args.out = args.output / "operation_timing.json"
+    elif args.out is not None:
+        args.output = args.out.parent
+    args.completion = completion_descriptor(args)
+    return args
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Expose ordinary or preserved operation arguments to queue preflight."""
+    from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- ordinary parser owner
+
+    arguments = sys.argv[1:] if argv is None else argv
+    if "--operation-timing" in arguments:
+        return _operation_args(arguments)
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument("--warmup", type=int, default=1)
+    measured, remaining = parser.parse_known_args(arguments)
+    if measured.repetitions < 1 or measured.warmup < 0:
+        parser.error("benchmark needs positive repetitions and nonnegative warmup")
+    args = evaluate.parse_args(remaining)
+    args.operation_timing = False
+    args.repetitions, args.warmup = measured.repetitions, measured.warmup
+    args.evaluation_arguments = remaining
+    args.completion = completion_descriptor(args)
+    return args
+
+
+def completion_descriptor(args: argparse.Namespace) -> dict | None:
+    """Describe operation output; ordinary case inventory requires input preflight."""
+    if args.operation_timing:
+        return None if args.out is None else {"records": [str(args.out.resolve())]}
+    return None
+
+
+def _operation_settings(args: argparse.Namespace) -> dict:
+    return {
+        field: getattr(args, field)
+        for field in (
+            "mode",
+            "model",
+            "gpu_id",
+            "sigma0",
+            "reps",
+            "warmup",
+            "seed",
+            "context_latent_frames",
+            "latent_frames",
+        )
+    }
+
+
+def operation_main(argv: list[str]) -> int:
+    args = _operation_args(argv)
+    if args.queue_output and args.output.exists() and (not args.output.is_dir() or any(args.output.iterdir())):
+        raise ValueError("operation timing output is already used")
+    producer_software = software.capture("evaluation", "causal", extra_sources=("scripts/onestep_avatar/bench.py",))
 
     torch.manual_seed(args.seed)
     model = model_registry.resolve(args.model)
@@ -153,6 +227,7 @@ def operation_main(argv: list[str]) -> int:  # noqa: PLR0915 -- retained instrum
     )
 
     results: dict[str, dict[str, float]] = {}
+    measurements, cache_details = {}, {}
     with session.transformer() as transformer:
         base = common.base_model(transformer)
         denoise_fn = common.denoised_from_x0_model(transformer)
@@ -214,6 +289,13 @@ def operation_main(argv: list[str]) -> int:  # noqa: PLR0915 -- retained instrum
 
             denoise_times = _time(denoise, reps=args.reps, warmup=args.warmup, device=device)
             refresh_times = _time(refresh, reps=args.reps, warmup=args.warmup, device=device)
+            measurements[str(depth)] = {"denoise_s": denoise_times, "refresh_s": refresh_times}
+            cache_details[str(depth)] = {
+                "layers": len(base.transformer_blocks),
+                "inner_dim": base.inner_dim,
+                "capacity": cache.caches[0].capacity,
+                "element_bytes": 2,
+            }
             per_chunk = statistics.median(denoise_times) + statistics.median(refresh_times)
             results[f"causal_denoise_ctx{depth}"] = _stats(denoise_times, int(tokens.shape[1]))
             results[f"causal_refresh_ctx{depth}"] = _stats(refresh_times, int(tokens.shape[1]))
@@ -228,6 +310,18 @@ def operation_main(argv: list[str]) -> int:  # noqa: PLR0915 -- retained instrum
             )
 
     summary = {
+        "schema_version": 1,
+        "kind": "onestep_avatar.operation_timing",
+        "state": "complete",
+        "settings": _operation_settings(args),
+        "software": producer_software,
+        "producer_source_sha256": hashing.sha256(Path(__file__)),
+        "transformer": {
+            "path": str(Path(model.paths.transformer()).resolve()),
+            "sha256": hashing.sha256(Path(model.paths.transformer())),
+        },
+        "measurements": measurements,
+        "cache_details": cache_details,
         "geometry": {
             "edge": EDGE,
             "latent_frames": args.latent_frames,
@@ -238,8 +332,213 @@ def operation_main(argv: list[str]) -> int:  # noqa: PLR0915 -- retained instrum
     print(json.dumps(summary, indent=2))  # noqa: T201 -- CLI completion summary.
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
+        software.check_current(producer_software)
         args.out.write_text(json.dumps(summary, indent=2) + "\n")
     return 0
+
+
+def _positive_times(values: object, count: int) -> list[float]:
+    if (
+        not isinstance(values, list)
+        or len(values) != count
+        or any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0 for value in values)
+    ):
+        raise ValueError("benchmark requires the exact finite positive timing inventory")
+    return values
+
+
+def _verify_memory(row: dict, *, gpu: bool) -> None:
+    fields = ("memory_baseline_bytes", "memory_peak_bytes", "memory_extra_peak_bytes")
+    values = [row.get(field) for field in fields]
+    if not gpu:
+        if any(value is not None for value in values):
+            raise ValueError("CPU benchmark must keep memory measurements unavailable")
+        return
+    if any(
+        not isinstance(value, dict)
+        or set(value) != {"allocated", "reserved"}
+        or any(type(number) is not int or number < 0 for number in value.values())
+        for value in values
+    ):
+        raise ValueError("benchmark memory inventory is invalid")
+    baseline, peak, extra = values
+    if (
+        baseline["reserved"] < baseline["allocated"]
+        or peak["reserved"] < peak["allocated"]
+        or any(peak[key] < baseline[key] or extra[key] != peak[key] - baseline[key] for key in peak)
+    ):
+        raise ValueError("benchmark memory peaks differ from their baseline and extra values")
+
+
+def _verify_operation(args: argparse.Namespace) -> dict:
+    """Recompute retained operation summaries from saved times and cache geometry."""
+    record = json.loads(args.out.read_text())
+    model = model_registry.resolve(args.model)
+    expected = {
+        "schema_version": 1,
+        "kind": "onestep_avatar.operation_timing",
+        "state": "complete",
+        "settings": _operation_settings(args),
+        "software": software.capture("evaluation", "causal", extra_sources=("scripts/onestep_avatar/bench.py",)),
+        "producer_source_sha256": hashing.sha256(Path(__file__)),
+        "transformer": {
+            "path": str(Path(model.paths.transformer()).resolve()),
+            "sha256": hashing.sha256(Path(model.paths.transformer())),
+        },
+        "geometry": {
+            "edge": EDGE,
+            "latent_frames": args.latent_frames,
+            "block_latent_frames": causal_core.BLOCK_LATENT_FRAMES,
+        },
+    }
+    depths = {str(depth) for depth in args.context_latent_frames}
+    measurements, details = record.get("measurements", {}), record.get("cache_details", {})
+    if (
+        any(record.get(key) != value for key, value in expected.items())
+        or not isinstance(measurements, dict)
+        or set(measurements) != depths
+        or not isinstance(details, dict)
+        or set(details) != depths
+    ):
+        raise ValueError("operation timing settings or depth inventory differs")
+    software.check_current(record["software"])
+    tokens_per_frame = (EDGE // model.scale_factors.height) * (EDGE // model.scale_factors.width)
+    for depth in args.context_latent_frames:
+        geometry = CausalGeometry(model.scale_factors, causal_core.BLOCK_LATENT_FRAMES, depth)
+        span = geometry.plan(args.latent_frames)[-1]
+        tokens = (span[1] - span[0]) * tokens_per_frame
+        cached = min(span[0], geometry.sink_latent_frames + depth) * tokens_per_frame
+        measurements_row, cache = measurements[str(depth)], details[str(depth)]
+        if (
+            not isinstance(measurements_row, dict)
+            or set(measurements_row) != {"denoise_s", "refresh_s"}
+            or not isinstance(cache, dict)
+            or set(cache) != {"layers", "inner_dim", "capacity", "element_bytes"}
+            or any(type(number) is not int or number < 1 for number in cache.values())
+            or cache["element_bytes"] != 2
+            or cache["capacity"] != geometry.cache_latent_frames_for(args.latent_frames) * tokens_per_frame
+        ):
+            raise ValueError("operation timing cache geometry or measurement inventory differs")
+        denoise, refresh = (_positive_times(measurements_row[key], args.reps) for key in ("denoise_s", "refresh_s"))
+        expected[f"causal_denoise_ctx{depth}"] = _stats(denoise, tokens)
+        expected[f"causal_refresh_ctx{depth}"] = _stats(refresh, tokens)
+        expected[f"causal_total_ctx{depth}"] = {
+            "per_chunk_s": statistics.median(denoise) + statistics.median(refresh),
+            "cached_key_tokens": cached,
+            "cache_gib": 2 * cache["layers"] * cache["capacity"] * cache["inner_dim"] * 2 / 2**30,
+        }
+    expected.update(measurements=measurements, cache_details=details)
+    if record != expected:
+        raise ValueError("operation timing summary differs from its saved measurements")
+    return record
+
+
+def _ordinary_records(args: argparse.Namespace) -> list[Path]:
+    from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- canonical inventory
+
+    _, variants, cases, _ = evaluate.prepare_evaluation(args, require_fresh_output=False)
+    return [
+        args.output / f"case_{case:04d}" / f"variant_{variant:03d}" / "result.json"
+        for case in range(len(cases))
+        for variant in range(len(variants))
+    ]
+
+
+def _verify_generation_timing(args: argparse.Namespace, record: dict) -> None:
+    timing = record.get("benchmark", {})
+    if (
+        not isinstance(timing, dict)
+        or set(timing)
+        != {"mode", "device", "torch", "warmup", "repetitions", "elapsed_s", "boundary", "untimed_artifact_calls"}
+        or timing.get("mode") != args.mode
+        or timing.get("torch") != torch.__version__
+        or timing.get("warmup") != args.warmup
+        or type(timing.get("warmup")) is not int
+        or timing.get("untimed_artifact_calls") != 1
+        or type(timing.get("untimed_artifact_calls")) is not int
+        or timing.get("device") not in ("cpu", f"cuda:{args.gpu_id}")
+        or timing.get("boundary")
+        != "sample_case through complete CPU encoding; excludes model/text loading, decoding and writes"
+    ):
+        raise ValueError("benchmark warmup, device or measurement boundary differs")
+    rows = timing["repetitions"]
+    if not isinstance(rows, list) or len(rows) != args.repetitions or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("benchmark repetition inventory differs")
+    times = _positive_times([row.get("elapsed_s") for row in rows], args.repetitions)
+    frame_count = record["frames"]
+    specification = model_registry.resolve(args.model)
+    covered = common.pixel_frames_for(frame_count, specification.scale_factors.time)
+    blocks, refresh = 1, 0
+    if args.mode == "causal":
+        geometry = CausalGeometry(
+            specification.scale_factors,
+            args.mode_settings.block_latent_frames,
+            args.mode_settings.context_latent_frames,
+        )
+        blocks = len(geometry.plan(frame_count))
+        refresh = blocks if args.history_mode == "cache" and args.kv_source == "refresh" else 0
+    denoises = blocks * (len(args.schedule) - 1)
+    passes = 1 + int(not math.isclose(args.cfg, 1.0)) + int(not math.isclose(args.stg, 0.0))
+    counts = {
+        "model_calls": (denoises + refresh) * passes,
+        "denoise_calls": denoises,
+        "prime_calls": 0,
+        "refresh_calls": refresh,
+    }
+    if record.get("call_counts") != counts:
+        raise ValueError("benchmark artifact call inventory differs from requested sampling")
+    output = torch.load(Path(record["output"]["path"]), map_location="cpu", weights_only=True)
+    for row, elapsed in zip(rows, times, strict=True):
+        expected = {
+            "call_counts": counts,
+            "output_sha256": hashing.tensor_sha256(output),
+            "encoded_frames": frame_count,
+            "covered_rgb_frames": covered,
+            "generated_rgb_frames": covered - 1,
+            "covered_rgb_frames_per_s": covered / elapsed,
+            "generated_rgb_frames_per_s": (covered - 1) / elapsed,
+        }
+        if any(row.get(key) != value for key, value in expected.items()):
+            raise ValueError("benchmark repetition output, calls or coverage differs")
+        _verify_memory(row, gpu=timing["device"].startswith("cuda:"))
+    if timing["elapsed_s"] != {"minimum": min(times), "median": statistics.median(times), "maximum": max(times)}:
+        raise ValueError("benchmark elapsed summary differs from its repetitions")
+
+
+def verify_completion(arguments: list[str], root: Path) -> dict:
+    """Verify saved benchmark outputs and exact measurements without native sessions."""
+    from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- canonical scientific verifier
+
+    args = parse_args(arguments)
+    if args.output is None or args.output.resolve() != root.resolve():
+        raise ValueError("benchmark completion output differs from the requested execution")
+    if args.operation_timing:
+        if args.out is None or not args.out.resolve().is_relative_to(root.resolve()):
+            raise ValueError("operation timing evidence escapes its output")
+        return _verify_operation(args)
+    if args.dry_run:
+        raise ValueError("benchmark dry run has no complete measurements")
+    paths = _ordinary_records(args)
+    evaluate.verify_evaluation_conditions(
+        args.evaluation_arguments, paths, extra_sources=("scripts/onestep_avatar/bench.py",)
+    )
+    for path in paths:
+        _verify_generation_timing(args, json.loads(path.read_text()))
+    return {"records": [str(path.resolve()) for path in paths]}
+
+
+def evidence_paths(arguments: list[str], root: Path) -> list[Path]:
+    """Return every verified measured result and its ordinary saved input/output."""
+    record = verify_completion(arguments, root)
+    args = parse_args(arguments)
+    if args.operation_timing:
+        return [args.out]
+    from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- shared byte inventory
+
+    paths = evaluate.evaluation_evidence_paths(args.evaluation_arguments, [Path(path) for path in record["records"]])
+    if any(not path.resolve().is_relative_to(root.resolve()) for path in paths):
+        raise ValueError("benchmark evidence escapes its output")
+    return paths
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -247,23 +546,17 @@ def main(argv: list[str] | None = None) -> int:
     from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- reuse the evaluation CLI/session owner
 
     arguments = sys.argv[1:] if argv is None else argv
-    if "--operation-timing" in arguments:
+    args = parse_args(arguments)
+    if args.operation_timing:
         return operation_main(arguments)
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--repetitions", type=int, default=3)
-    parser.add_argument("--warmup", type=int, default=1)
-    measured, remaining = parser.parse_known_args(arguments)
-    if measured.repetitions < 1 or measured.warmup < 0:
-        parser.error("benchmark needs positive repetitions and nonnegative warmup")
-    args = evaluate.parse_args(remaining)
 
     def sample_runner(transformer, *inputs, **settings):  # noqa: ANN001, ANN202 -- ordinary sampler interface
         timings = measure_generation(
             transformer,
             *inputs,
             device=inputs[2].device,
-            repetitions=measured.repetitions,
-            warmup=measured.warmup,
+            repetitions=args.repetitions,
+            warmup=args.warmup,
             **settings,
         )
         output, record = evaluate.sample_case(transformer, *inputs, **settings)
@@ -274,8 +567,12 @@ def main(argv: list[str] | None = None) -> int:
         record["benchmark"] = timings
         return output, record
 
-    return evaluate.execute_evaluation(args, sample_runner=sample_runner)
+    return evaluate.execute_evaluation(
+        args, sample_runner=sample_runner, extra_sources=("scripts/onestep_avatar/bench.py",)
+    )
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from scripts.onestep_avatar.execution.runtime import run
+
+    raise SystemExit(run(main))

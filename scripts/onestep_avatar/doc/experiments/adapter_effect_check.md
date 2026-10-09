@@ -166,40 +166,37 @@ A first-view specification can look like this, with paths to actual producers:
 {"schema_version":1,"kind":"onestep_avatar.adapter_effect_inputs","schedule":[0.725,0],"seed":42,"cases":[{"source":"Part_2/0007_01/views/view01_cam57","guide":"guide.pt","first_image":"image/image.pt","image_preparation":"image/preparation.json","noise":"noise.pt","frames":7}]}
 ```
 
-Run only after the selected native update comparison passes, under the shared
-own-process ledger and bounded supervisor. Inherit the exact original numerical
-environment before module imports; the current supported workspace is shown
-explicitly below:
+Run only after the selected native update comparison passes. Use an
+`experiment` queue job with selector `adapter_effect_check`. Its pinned spec
+stores the scientific options. All scientific paths must be absolute:
 
-```bash
-CUBLAS_WORKSPACE_CONFIG=:4096:8 \
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.adapter_effect_check \
-  --job <ORIGINAL_JOB.json> --update-check <PASSED_E4_RESULT.json> \
-  --inputs <E2_INPUTS.json> --checkpoints <STEP_ZERO.safetensors> <STEP_ONE.safetensors> \
-  --output <FRESH_OUTPUT> --gpu-id <LOCAL_GPU> --decode --fused-diagnostic
+```json
+{"schema_version":1,"protocol":"adapter_effect_check","arguments":["--job","/absolute/original_job.json","--update-check","/absolute/passed_e4_result.json","--inputs","/absolute/e2_inputs.json","--checkpoints","/absolute/step_zero.safetensors","/absolute/step_one.safetensors","--decode","--fused-diagnostic"]}
 ```
 
-The trained-step extension uses the same command, with a separate actual pilot
-job and its three exports:
+For pilot checks, replace the job and checkpoint paths. Add `--update-job` with
+the original E4 job and `--subset` with the checked two-camera membership. Keep
+steps zero, 20 and 60 together. The queue owns `--output` and `--gpu-id`; neither
+option may occur in `arguments`. Bind the original resource-budget path on the
+queue job and request the original deterministic numerical policy.
+
+CPU preflight uses the same strict interface, without model sessions or output
+writes:
 
 ```bash
-CUBLAS_WORKSPACE_CONFIG=:4096:8 \
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.adapter_effect_check \
-  --job <PILOT_JOB.json> --update-job <ORIGINAL_E4_JOB.json> \
-  --update-check <PASSED_E4_RESULT.json> --inputs <TWO_CAMERA_E2_INPUTS.json> \
-  --subset <CHECKED_EVALUATION_MEMBERSHIP.json> \
-  --checkpoints <PILOT_STEP_ZERO.safetensors> <PILOT_STEP_20.safetensors> <PILOT_STEP_60.safetensors> \
-  --output <FRESH_OUTPUT> --gpu-id <LOCAL_GPU> --decode --fused-diagnostic
+CUDA_VISIBLE_DEVICES='' conda run --no-capture-output -n ltx \
+  python -m scripts.onestep_avatar.experiments.adapter_effect_check \
+  --spec /absolute/e2_spec.json --output /absolute/fresh_output --dry-run
 ```
 
-`--dry-run` performs preflight without creating output or model sessions. A
-failed numerical comparison exits 2 and preserves all completed evidence.
-`--verify <SAVED_OUTPUT>` checks current source/input identities, complete local
-artifact inventory, actual arm records, consumed-input/call/policy agreement,
-actual checkpoint contracts and native output shape/dtype, recomputed correction
-comparisons and resource journals. It starts no model or
-decoder, writes nothing and does not restamp acceptance. Changed/missing arrays,
-redirected paths, stale summaries and unsupported completeness claims fail.
+A failed numerical comparison exits 2 and preserves completed evidence.
+Public `verify_saved(SAVED_OUTPUT)` checks original saved evidence.
+Public `verify_completion(spec, root)` also binds the exact requested protocol.
+Both read actual arm records, consumed-input/call/policy agreement, checkpoint
+contracts, native output arrays, recomputed correction comparisons and resource
+journals. They start no model or decoder, write nothing and do not restamp
+acceptance. Changed or missing arrays, redirected paths, stale summaries and
+unsupported completeness claims fail.
 
 The result states its scope: shared API correction comparison. A first view is
 partial coverage; full E2 needs at least two views and pilot steps 20/60 after
@@ -281,3 +278,45 @@ binds the empty `experiments/__init__.py` marker along with the checker.
 These files are explicit experiment extras; ordinary profiles do not
 include the experiment marker. Existing results retain their original
 source attribution, and affected native checks run again after the code gate.
+
+## G8 queue interface and completion
+
+```mermaid
+flowchart TB
+  S[("Pinned scientific spec")] --> P["read_spec"]
+  P --> V["verify_completion"]
+  M[("manifest.json and raw files")] --> V
+  V --> R(["Checked scientific result for queue"])
+  classDef code fill:#dbeafe,stroke:#2563eb;
+  classDef saved fill:#e5e7eb,stroke:#6b7280;
+  classDef result fill:#f3e8ff,stroke:#9333ea;
+  class P,V code;
+  class S,M saved;
+  class R result;
+```
+
+
+The queue owns launch, device selection, process records and bounded supervision.
+The checker accepts a pinned schema-one specification with its literal protocol
+and original scientific `arguments`, plus queue-owned `--output` and local
+`--gpu-id`. Execution flags in the scientific arguments fail before writes.
+Public `parse_args`, `read_spec`, `runtime_profile`, `verify_completion` and
+`evidence_paths` provide normalization, phase/topology data and saved-only
+completion. The manifest binds exact spec bytes, normalized scientific settings
+and the complete local artifact inventory. Original producer hashes stay intact;
+new runs bind the spec helper as an explicit experiment extra.
+
+`dependency_outputs(spec)` identifies the saved result directories that need
+earlier queue receipts. An optional stock reference, the E2 update comparison,
+or an E3 capture snapshot must be an explicit dependency. A missing dependency
+fails CPU queue preparation, before claims or launch.
+
+Completion verifies the original scientific controls from actual saved artifacts.
+It reuses `verify_saved` after binding the requested job, selected checkpoints,
+case inputs, decode choice and fused-arm inventory to the pinned specification.
+The new queue manifest is excluded from the older producer's artifact inventory.
+Resource phase names stay in case, path and state order: load, sample, then
+optional decode. The queue does not replace those measurements with one timer.
+It loads no model or decoder, starts no child, and never repairs missing output.
+A missing, changed or escaped artifact prevents completion. CPU fixtures prove
+these refusals; final-source native acceptance still requires fresh queue jobs.

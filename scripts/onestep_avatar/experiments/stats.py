@@ -1,36 +1,4 @@
-"""A1 + B1c: characterise the distilled map, and measure the gap the LoRA has to close.
-
-Everything here is measurement, no training. Four numbers, each of which decides something the
-plan is currently guessing at:
-
-* **(a) eps-sensitivity.** SS2.1 argues the distilled checkpoint is a deterministic,
-  mode-seeking pushforward rather than a sampler, which leaves open whether eps is a sampling
-  variable here *at all*. Run one step at sigma_0 from the same ``z_g`` with N different eps and
-  measure the spread. Small spread => eps is a nuisance variable: fix the seed at inference and
-  drop every "sampling" framing. Large spread => eps is a free quality knob worth a line in
-  the eval.
-* **(b) the excursion** ``a = ||Phi(x_sigma0) - z_g|| / sqrt(d)`` -- how far the base model moves
-  its own input, in the units SS4.2's viability check uses.
-* **(c) latent moments** of ``z_g`` against ``z_y``. SS4.2's input-distribution check: the VAE's
-  normalisation is calibrated on real video, so a per-channel moment mismatch reaches the
-  transformer scaled by ``(1 - sigma_0) = 0.275``. Mind the reference -- under the linear
-  interpolant ``Var(x_sigma) = (1-sigma)^2 + sigma^2 = 0.60`` at sigma = 0.725 BY DESIGN, so
-  matching to unit variance would be the wrong correction.
-* **(r) the gap** ``r = ||z_y - z_g|| / sqrt(d)``, the number the whole D1-vs-D2 decision hangs
-  on (SS4.2, SS9 risk 3) and the one B1 never ran. ``r ~ 0.35`` is comfortable for D1;
-  ``r_p90 >~ 0.6`` means the adapter is being asked to overpower the prior and the answer is D2.
-  Reported next to ``a``, because ``a ~ r`` is what "the task is well matched to what the model
-  already does" means quantitatively.
-
-**Lives in the LTX-2 tree, not beside the other analysis modules** (plan SS7.2 lists it under
-``scripts/onestep_avatar/``): (a) and (b) need the VAE *and* the 42 GB transformer, which only
-exist in the ``ltx`` env. (r) and (c) are pure tensor arithmetic over the corpus master latents and
-need no GPU at all -- ``--no-gpu`` runs exactly those.
-
-    conda run -n ltx python -m scripts.onestep_avatar.experiments.stats \\
-      --renders ../../ARG-Avatar/expr --pairs ../data/AnimatableHuman/DNARenderingVideo \\
-      --out ../expr/onestep_avatar/analysis_summary.json --gpu-id 2
-"""
+"""Pinned A1/B1c measurements; see doc/experiments/stats.md."""
 
 from __future__ import annotations
 
@@ -47,11 +15,17 @@ from scripts.onestep_avatar.corpus.precompute import (
     VideoReader,
     atomic_json_save,
 )
+from scripts.onestep_avatar.execution import software
+from scripts.onestep_avatar.experiments import spec_protocol
+from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.model import common
 from scripts.prune.core import ltx_adapter, model_registry
 from scripts.prune.core.session import DEFAULT_PROMPT, DTYPE
 from scripts.prune.data import prompt_cache
+
+ENTRY = "scripts/onestep_avatar/experiments/stats.py"
+EXTRA_SOURCES = (ENTRY, "scripts/onestep_avatar/experiments/__init__.py", spec_protocol.ENTRY)
 
 DEFAULT_SIGMA0 = 0.725
 DEFAULT_EPS_SAMPLES = 8
@@ -215,6 +189,7 @@ def measure_map(
     sigma0: float,
     eps_samples: int,
     seed: int,
+    evidence_root: Path | None = None,
 ) -> dict:
     """(a) and (b): one step at sigma_0 from a guide, repeated over eps, on unpaired renders.
 
@@ -224,7 +199,7 @@ def measure_map(
     device = torch.device(f"cuda:{gpu_id}")
     context = prompt_cache.get_or_build(model, DEFAULT_PROMPT, DTYPE, device)
 
-    excursions, spreads, per_video = [], [], {}
+    excursions, spreads, per_video, raw = [], [], {}, {}
 
     with ltx_adapter.video_encoder(model.paths.video_vae(), DTYPE, device) as encoder:
         encoded: list[tuple[Path, torch.Tensor, float, int, int]] = []
@@ -283,7 +258,13 @@ def measure_map(
             except ValueError:
                 key = str(path)
             per_video[key] = {"excursion_a": excursion, "eps_spread": spread}
+            if evidence_root is not None:
+                raw[key] = {"guide": z_g.detach().cpu(),
+                            "outputs": [value.detach().cpu() for value in outputs],
+                            "source": str(path.resolve()), "source_sha256": sha256(path)}
 
+    if evidence_root is not None:
+        torch.save(raw, evidence_root / "map_raw.pt")
     return {
         "sigma0": sigma0,
         "eps_samples": eps_samples,
@@ -302,8 +283,8 @@ def measure_map(
     }
 
 
-def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def scientific_args(argv: list[str]) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     p.add_argument("--model", choices=model_registry.SUPPORTED_MODELS, default="2.5")
     p.add_argument("--gpu-id", type=int, default=0)
     p.add_argument("--renders", type=Path, default=None, help="directory of guide mp4s for A1 (a)+(b)")
@@ -330,7 +311,8 @@ def main() -> int:
     p.add_argument("--sigma0", type=float, default=DEFAULT_SIGMA0)
     p.add_argument("--eps-samples", type=int, default=DEFAULT_EPS_SAMPLES)
     p.add_argument("--max-videos", type=int, default=4, help="A1 needs a handful, not all 16")
-    p.add_argument("--max-sources", type=int, default=None, help="cap the pair scan (a source is a whole clip, since SS4.4 -- not a window)")
+    p.add_argument("--max-sources", type=int, default=None,
+                   help="cap the pair scan (a source is a whole clip, since SS4.4 -- not a window)")
     p.add_argument(
         "--subject-mask",
         choices=("render", "capture", "union", "intersection"),
@@ -339,33 +321,152 @@ def main() -> int:
     )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--no-gpu", action="store_true", help="run only the pair measurements (r, moments)")
-    args = p.parse_args()
+    args = p.parse_args(argv)
     if args.renders is None and args.pairs is None:
         p.error("give --renders, --pairs, or both")
 
+    if (not math.isfinite(args.sigma0) or not 0 < args.sigma0 <= 1 or args.eps_samples < 1
+            or args.max_videos < 1 or (args.max_sources is not None and args.max_sources < 1)):
+        p.error("measurement sigma/counts must be finite and positive")
+    return args
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return spec_protocol.outer_args(argv, __doc__)
+
+
+def read_spec(spec: Path, root: Path) -> argparse.Namespace:
+    args = spec_protocol.read_spec(parse_args(["--spec", str(spec), "--output", str(root)]),
+                                   "stats", scientific_args, output_flag="--out")
+    args.out = root / "analysis_summary.json"
+    return args
+
+
+def resource_phases(spec: Path) -> list[str]:
+    read_spec(spec, spec.parent / "unused-output")
+    return ["runtime"]
+
+
+def dependency_outputs(spec: Path) -> list[Path]:
+    read_spec(spec, spec.parent / "unused-output")
+    return []
+
+
+def _input_files(args: argparse.Namespace) -> dict[str, str]:
+    paths = []
+    if args.pairs is not None:
+        guides = sorted(args.pairs.rglob(dataset.guide_bundle_name(args.objective)))
+        if args.max_sources is not None:
+            guides = guides[:args.max_sources]
+        for guide in guides:
+            paths += [guide, guide.with_name(dataset.capture_bundle_name(args.objective))]
+            paths += [path for name in (dataset.ALPHA_NAME, dataset.CAPTURE_MASK_CROP_NAME)
+                      if (path := guide.with_name(name)).is_file()]
+    if args.renders is not None and not args.no_gpu:
+        paths += sorted(args.renders.rglob(args.render_glob))[:args.max_videos]
+    return {str(path.resolve()): sha256(path) for path in paths}
+
+
+def _saved_map(args: argparse.Namespace, raw: dict) -> dict:
+    excursions, spreads, per_video = [], [], {}
+    expected = sorted(args.renders.rglob(args.render_glob))[:args.max_videos]
+    keys = {str(path.relative_to(args.renders)): path for path in expected}
+    if not isinstance(raw, dict) or set(raw) != set(keys) or not raw:
+        raise ValueError("saved stats map video inventory differs")
+    for key, source in keys.items():
+        saved = raw[key]
+        guide, outputs = saved["guide"], saved["outputs"]
+        if (saved["source"] != str(source.resolve()) or saved["source_sha256"] != sha256(source)
+                or not isinstance(guide, torch.Tensor) or guide.ndim != 5 or guide.shape[0] != 1
+                or not guide.is_floating_point() or not torch.isfinite(guide).all()
+                or len(outputs) != args.eps_samples):
+            raise ValueError("saved stats guide or output count differs")
+        if any(not isinstance(value, torch.Tensor) or value.shape != guide.shape
+               or not value.is_floating_point() or not torch.isfinite(value).all()
+               or not torch.equal(value[:, :, :1], guide[:, :, :1]) for value in outputs):
+            raise ValueError("saved stats output shape, finiteness or clean first frame differs")
+        excursion = sum(rms_gap(value, guide) for value in outputs) / len(outputs)
+        pairwise = [rms_gap(outputs[i], outputs[j]) for i in range(len(outputs)) for j in range(i + 1, len(outputs))]
+        spread = sum(pairwise) / len(pairwise) if pairwise else 0.0
+        excursions.append(excursion)
+        spreads.append(spread)
+        per_video[key] = {"excursion_a": excursion, "eps_spread": spread}
+    ratios = _summary([s / e if e > 0 else 0.0 for s, e in zip(spreads, excursions, strict=True)])
+    return {"sigma0": args.sigma0, "eps_samples": args.eps_samples,
+            "excursion_a": _summary(excursions), "eps_spread": _summary(spreads),
+            "eps_spread_over_excursion": ratios, "eps_is_nuisance": ratios["p50"] < 0.1,
+            "by_video": per_video}
+
+
+def _same_metrics(actual: object, expected: object) -> bool:
+    """Allow only the fixed float32 GPU/CPU reduction roundoff when reading saved map metrics."""
+    if isinstance(expected, float):
+        return type(actual) in (int, float) and math.isclose(actual, expected, rel_tol=1e-5, abs_tol=1e-6)
+    if isinstance(expected, dict):
+        return (isinstance(actual, dict) and set(actual) == set(expected)
+                and all(_same_metrics(actual[key], value) for key, value in expected.items()))
+    if isinstance(expected, list):
+        return (isinstance(actual, list) and len(actual) == len(expected)
+                and all(_same_metrics(a, b) for a, b in zip(actual, expected, strict=True)))
+    return actual == expected
+
+
+def verify_completion(spec: Path, root: Path) -> None:
+    args = read_spec(spec, root)
+    spec_protocol.inspect(args, "stats")
+    binding = json.loads((root / "inputs.json").read_text())
+    if binding["input_files"] != _input_files(args):
+        raise ValueError("stats scientific input inventory differs")
+    software.check_current(binding["software"])
+    expected = {"model": model_registry.resolve(args.model).key, "sigma0": args.sigma0}
+    if args.pairs is not None:
+        expected["pairs"] = measure_pairs(args.pairs, args.max_sources, args.subject_mask, args.objective)
+    if args.renders is not None and not args.no_gpu:
+        expected["map"] = _saved_map(args, torch.load(root / "map_raw.pt", map_location="cpu", weights_only=True))
+    if not _same_metrics(json.loads(args.out.read_text()), expected):
+        raise ValueError("saved stats metrics differ from actual scientific measurements")
+    def finite(value: object) -> bool:
+        if isinstance(value, dict):
+            return all(finite(item) for item in value.values())
+        if isinstance(value, list):
+            return all(finite(item) for item in value)
+        return not isinstance(value, float) or math.isfinite(value)
+    if not finite(expected):
+        raise ValueError("stats has a nonfinite measurement")
+
+
+def evidence_paths(spec: Path, root: Path) -> list[Path]:
+    verify_completion(spec, root)
+    return spec_protocol.evidence(spec_protocol.inspect(read_spec(spec, root), "stats"), root)
+
+
+def main(argv: list[str] | None = None) -> int:
+    outer = parse_args(argv)
+    args = read_spec(outer.spec, outer.output)
+    args.gpu_id, args.dry_run = outer.gpu_id, outer.dry_run
+    if args.dry_run:
+        return 0
+    args.output.mkdir(parents=True, exist_ok=False)
+    binding = {"input_files": _input_files(args),
+               "software": software.capture("evaluation", "bidirectional", extra_sources=EXTRA_SOURCES)}
+    atomic_json_save(binding, args.output / "inputs.json")
     model = model_registry.resolve(args.model)
     report: dict[str, object] = {"model": model.key, "sigma0": args.sigma0}
     if args.pairs is not None:
-        report["pairs"] = measure_pairs(
-            args.pairs, args.max_sources, args.subject_mask, args.objective
-        )
+        report["pairs"] = measure_pairs(args.pairs, args.max_sources, args.subject_mask, args.objective)
     if args.renders is not None and not args.no_gpu:
-        videos = sorted(args.renders.rglob(args.render_glob))[: args.max_videos]
+        videos = sorted(args.renders.rglob(args.render_glob))[:args.max_videos]
         if not videos:
-            raise SystemExit(f"no mp4 under {args.renders}")
-        report["map"] = measure_map(
-            model,
-            videos,
-            renders_root=args.renders,
-            gpu_id=args.gpu_id,
-            sigma0=args.sigma0,
-            eps_samples=args.eps_samples,
-            seed=args.seed,
-        )
+            raise ValueError(f"no mp4 under {args.renders}")
+        report["map"] = measure_map(model, videos, renders_root=args.renders, gpu_id=args.gpu_id,
+            sigma0=args.sigma0, eps_samples=args.eps_samples, seed=args.seed, evidence_root=args.output)
     atomic_json_save(report, args.out)
-    print(json.dumps(report, indent=2)[:4000])  # noqa: T201 -- CLI's requested summary.
+    spec_protocol.publish(args, "stats")
+    verify_completion(args.spec, args.output)
+    print(json.dumps(report, indent=2)[:4000])  # noqa: T201 -- CLI summary
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from scripts.onestep_avatar.execution.runtime import run
+    raise SystemExit(run(main))

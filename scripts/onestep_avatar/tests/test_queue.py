@@ -3,8 +3,9 @@ import json
 import os
 import subprocess
 import time
+from types import SimpleNamespace
 import pytest
-from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution import queue, supervision
 
 
 def test_inventory_requires_all_allowed_devices():
@@ -189,7 +190,7 @@ def test_commands_mask_physical_devices_and_use_fixed_package_owners(tmp_path):
     assert command[:3] == [sys.executable, '-m', 'accelerate.commands.launch']
     assert 'scripts.onestep_avatar.train' in command
     assert environment['CUDA_VISIBLE_DEVICES'] == '0,1,2,3'
-    for gpus in ((6,), (4, 5), (5, 5)):
+    for gpus in ((8,), (4, 5), (5, 5)):
         with pytest.raises(ValueError):
             queue.job_command(job, gpus)
 
@@ -420,13 +421,13 @@ def test_refused_child_preserves_existing_running_journal(tmp_path):
 
 
 def test_interrupted_owner_preserves_claim_for_live_child(tmp_path, monkeypatch):
-    import subprocess
-    from types import SimpleNamespace
     claims = queue.GPUClaims(tmp_path / 'claims')
     assert claims.acquire((5,), job='case')
-    job = {'kind': 'evaluate', 'output': str(tmp_path / 'result'), 'arguments': ['--mode', 'causal']}
-    monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: SimpleNamespace(pid=99999, poll=lambda: None))
-    monkeypatch.setattr(queue.time, 'sleep', lambda seconds: (_ for _ in ()).throw(KeyboardInterrupt()))
+    job = {
+        'kind': 'evaluate', 'sha256': 'a' * 64, 'output': str(tmp_path / 'result'), 'arguments': ['--mode', 'causal']
+    }
+    monkeypatch.setattr(subprocess, 'Popen', lambda *_args, **_kwargs: SimpleNamespace(pid=99999, poll=lambda: None))
+    monkeypatch.setattr(supervision, 'supervise', lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()))
     with pytest.raises(KeyboardInterrupt):
         queue.run_child(job, claims, tmp_path / 'child.log')
     assert claims.owned == {5}
@@ -445,7 +446,7 @@ def test_queue_dry_run_is_read_only_and_reports_planned_commands(tmp_path, capsy
     result = json.loads(capsys.readouterr().out)
     assert result['validation'] == 'arguments_and_identity_only'
     assert not result['gpu_availability_checked']
-    assert result['jobs'][0]['planned_physical_gpus'] == [5]
+    assert result['jobs'][0]['planned_physical_gpus'] == [0]
     assert result['jobs'][0]['command'][-2:] == ['--gpu-id', '0']
     assert jobs_path.read_bytes() == original
     assert not state_path.parent.exists() and not (tmp_path / 'result').exists()
@@ -468,7 +469,7 @@ def test_queue_execute_once_uses_shared_own_ledger(monkeypatch, tmp_path):
         assert claims.path == ledger.resolve()
         row = json.loads(ledger.read_text())['attempts'][claims.token]
         assert row['job'] == job['id'] and row['state'] == 'active'
-        assert row['gpus'] == [5] and row['owner'] == queue.process_identity(os.getpid())
+        assert row['gpus'] == [0] and row['owner'] == queue.process_identity(os.getpid())
         claims.release()
     monkeypatch.setattr(queue, 'prepare_jobs', lambda _: [job])
     monkeypatch.setattr(queue, 'read_queue_state', lambda *_: state)
@@ -482,7 +483,7 @@ def test_queue_execute_once_uses_shared_own_ledger(monkeypatch, tmp_path):
 
     assert queue.main(['--jobs', 'jobs.json', '--state', str(tmp_path / 'state.json'), '--execute', '--once',
                        '--process-ledger', str(ledger)]) == 0
-    assert seen['owned'] == {5}
+    assert seen['owned'] == {0}
     assert seen['log'].parent == tmp_path / 'logs'
     assert seen['kwargs']['state_path'] == tmp_path / 'state.json'
     assert all(row['state'] == 'closed' for row in json.loads(ledger.read_text())['attempts'].values())

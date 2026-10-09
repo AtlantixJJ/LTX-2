@@ -12,6 +12,8 @@ from scripts.onestep_avatar import media
 from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.experiments import sigma_sweep
 from scripts.onestep_avatar.hashing import sha256
+from scripts.onestep_avatar.tests.test_evaluation_completion import controlled_scientific_receipt
+from scripts.onestep_avatar.training import resources
 from scripts.prune.core import model_registry as registry
 
 
@@ -72,18 +74,20 @@ def sweep_queue_job(path: Path, output: Path) -> dict:
     return queue.prepare_jobs(jobs)[0]
 
 
-def test_queue_sweep_command_and_complete_receipt_use_real_owner(saved_sweep: tuple) -> None:
+def test_queue_sweep_command_and_complete_receipt_use_real_owner(
+    saved_sweep: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _, path, output, calls = saved_sweep
     job = sweep_queue_job(path, output)
     command, environment = queue.job_command(job, (4,))
     assert command[2:4] == ["scripts.onestep_avatar.experiments.sigma_sweep", "--spec"]
     assert command[-2:] == ["--gpu-id", "0"]
-    assert environment == {"CUDA_VISIBLE_DEVICES": "4"}
+    assert environment == {"CUDA_VISIBLE_DEVICES": "4", **resources.budget_environment(job["effective_budget"])}
     assert not queue.verify_completion(job)
     assert not calls
     sigma_sweep.execute(path, output, gpu_id=4)
     before = len(calls)
-    receipt = queue.completion_receipt(job)
+    receipt = controlled_scientific_receipt(job, monkeypatch)
     assert queue.verify_receipt(job, receipt)
     assert len(receipt["evidence"]) == 1
     assert len(calls) == before

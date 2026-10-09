@@ -212,7 +212,7 @@ def test_phase_and_gap_deadlines_are_finite(tmp_path, code, error):
 
 def test_escaped_real_new_session_worker_receives_own_bounded_stop(tmp_path, monkeypatch):
     path, env = contract(tmp_path)
-    registry = process_registry.ProcessRegistry(tmp_path / "own.json", inventory=lambda: {gpu: 0 for gpu in range(6)})
+    registry = process_registry.ProcessRegistry(tmp_path / "own.json", inventory=lambda: {gpu: 0 for gpu in range(8)})
     registry.token = TOKEN
     assert registry.acquire((0,), job="escaped-worker-control")
     worker_file = tmp_path / "worker.json"
@@ -410,7 +410,7 @@ def test_explicit_overall_guard_is_independent(tmp_path):
     child, command, identity = spawn(tmp_path, "Path(READY).write_text('ready')\ntime.sleep(20)\n", env)
     try:
         result = run(tmp_path, child, command, identity, path, startup_seconds=1, overall_seconds=0.05)
-        assert "explicit overall command deadline" in result["error"]
+        assert "overall_deadline" in result["error"]
         assert result["limits"]["overall_seconds"] == 0.05
         assert result["limits"]["startup_seconds"] == 1
     finally:
@@ -451,7 +451,7 @@ def test_plain_command_requires_explicit_overall_guard(tmp_path):
         with pytest.raises(ValueError, match="explicit overall"):
             run(tmp_path, child, command, identity, None)
         result = run(tmp_path, child, command, identity, None, overall_seconds=.05)
-        assert result["state"] == "failed" and "overall command deadline" in result["error"]
+        assert result["state"] == "failed" and "overall_deadline" in result["error"]
         assert result["limits"]["phase_seconds"] is None
         assert result["limits"]["startup_seconds"] is None
         assert result["notification_contract_sha256"] is None

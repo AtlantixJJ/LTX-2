@@ -1,5 +1,11 @@
 # `training/engine.py` — run shared training
 
+Queued execution consumes the exact effective budget from the bound queue
+environment, including canonical defaults when no explicit budget file is
+given. Config and checkpoint evidence record that same budget. Model-free
+completion obtains it from the prepared job and checks every native rank/phase
+measurement. Direct unqueued execution retains its explicit-budget behavior.
+
 Preview preflight requires a pinned negative-text tensor when its evaluation
 arguments select CFG other than one. Shared reference checks also pin optional
 non-tensor preparation inputs. The producer is `prepare_inputs.py preview`;

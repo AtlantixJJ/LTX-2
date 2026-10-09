@@ -41,6 +41,18 @@ atomic updates. `choose` considers direct memory observations and active own
 records. `acquire` locks the ledger, re-queries direct device occupancy, and
 records a fresh owner before `Popen`. Concurrent package starts cannot both
 register the same requested devices. No historical claim file is consulted.
+The import-light `execution/devices.py` is the sole pool/topology owner:
+GPUs `(0,1,2,3,4,5,6,7)` and exactly four training processes. Require a complete
+strict-integer memory inventory for all eight devices. Pick the first four
+idle, unowned pool members for training, or the first idle unowned member for
+other work. Noncontiguous sets are valid; fewer than four cannot start training.
+Acquisition validates one-device or four-device topology, locks the ledger and
+requeries occupancy before publishing the complete device set atomically.
+A live active row from the same owner PID/start handle prevents selection and
+acquisition even for disjoint devices, because containment is owner-scoped.
+Independent queue processes can own disjoint four-device sets concurrently.
+Recorded rendezvous ports remain caller-owned scientific launch settings;
+concurrent training templates must declare distinct ports.
 Lock waits have a five-second deadline. The ledger must be a regular JSON file
 within eight MiB. Read it through one nonblocking descriptor. Atomic updates
 reject larger bytes before publication. An observation's explicit timeout covers
@@ -111,6 +123,13 @@ remains live in `observe_workers`; `release` refuses. After exact pidfd stop of
 that worker, a complete empty tree permits closing the attempt. No SSH process
 or other unrelated process environment is inspected.
 
+Worked pool check: memory above the idle threshold on devices 0,2,4,6 leaves
+`(1,3,5,7)` available for four-rank training. If one of those devices already
+belongs to an active ledger row, training waits. With all devices idle, two
+independent original owners can acquire `(0,1,2,3)` and `(4,5,6,7)`; closing
+one preserves the other's active row. A second registry in the same original
+owner cannot acquire either set while its first attempt is active.
+
 Worked dead-owner check: the frozen notification contract declares four ranks.
 All four producers match saved descendants, and every expected phase has begin
 and end events. Both exact-handle passes find the owner, launcher and ranks absent;
@@ -151,3 +170,6 @@ incomplete attempt. GPU inventory is mocked; no native model run is certified.
 Recovery tests also cover complete saved rank evidence, missing/mismatched ranks,
 live/reused/denied handles, uncontained producers, non-idle/incomplete inventory,
 deadline failure, original-row preservation and explicit closure scope.
+Pool controls additionally cover noncontiguous four-device choices, incomplete
+eight-device inventories, invalid indices/topologies, fewer than four available
+devices and two independent CPU owners preserving disjoint records.

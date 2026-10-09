@@ -118,7 +118,7 @@ Proposed behavior remains distinct from the current implementation.
 ## Target source and design ownership
 
 The user-directed [architecture contract](architecture.md) defines the target
-layout: proposed `corpus/`, `execution/` and `experiments/` subpackages beside
+layout: implemented `corpus/`, `execution/` and `experiments/` subpackages beside
 `model/` and `training/`, and a split of ordinary `evaluate.py` into
 `evaluate.py`, `metrics.py`, `previews.py` and `comparisons.py` (user decisions
 of 2026-10-08). It defines the ownership map, allowed dependencies and the
@@ -127,6 +127,9 @@ and duplicate-runtime removal first. Preserve required behavior and callers,
 validate the final source with CPU/import/boundary checks, then publish fresh
 affected native checks before GPU experiments. The tables
 below include current mixed owners; their presence is not final boundary compliance.
+Every queue kind now uses bounded supervision and the shared GPU pool. Final
+G8 CPU verification remains pending; remaining migration and native acceptance
+still follow the active handoff.
 The architecture migration map gives their required destinations. New larger
 experiment sources require designs under `doc/experiments/` before source changes.
 
@@ -148,8 +151,10 @@ Complete input production and native model acceptance remain pending.
 | `model/common.py` | [model/common.md](model/common.md) | >100; token layout, noise, first-image input, output conversion |
 | `model/adapters.py` | [model/adapters.md](model/adapters.md) | >100; shared unmerged fp32 PEFT configuration/loading, x0 inference wrapper and explicit fusion diagnostic |
 | `execution/software.py` | [software.md](execution/software.md) | >100; explicit worktree owner hashes/runtime versions, current verification and historical integrity reading |
+| `execution/runtime.py` | [execution/runtime.md](execution/runtime.md) | >100; immutable queue runtime binding, child-local resource observations and applied numerical policy |
 | `prepare_inputs.py` | [prepare_inputs.md](prepare_inputs.md) | >100; fixed preview assembly/pinned text-noise-image tensors and actual one-RGB supplied-image VAE preparation |
 | `experiments/stock_parity.py` | [stock_parity.md](experiments/stock_parity.md) | >100; actual stock video sampling components, repeated controls, checked-reference precision comparison and decoded traces; native acceptance open |
+| `experiments/spec_protocol.py` | [experiments/spec_protocol.md](experiments/spec_protocol.md) | >100; pinned data-only checker specifications, artifact manifests and saved completion inventory |
 | `model/bidirectional.py` | [model/bidirectional.md](model/bidirectional.md) | >100; segment training and generation |
 | `model/causal.py` | [model/causal.md](model/causal.md) | >100; block and cache operations |
 | `model/sampling.py` | [model/sampling.md](model/sampling.md) | >100; exact denoising levels and steps |
@@ -159,7 +164,7 @@ Complete input production and native model acceptance remain pending.
 | `training/resources.py` | [training/resources.md](training/resources.md) | >100; exact budget identity, synchronized local CUDA phase peaks/time and complete rank/phase validation |
 | `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | >100; save/read/check settings and derive checked legacy metadata |
 | `corpus/subset.py` | [subset.md](corpus/subset.md) | >100; fixed videos, person groups, hashes |
-| `evaluate.py` | [evaluate.md](evaluate.md) | >100; ordinary matched evaluation; historical study branches await their experiment owners |
+| `evaluate.py` | [evaluate.md](evaluate.md) | >100; ordinary matched evaluation; study branches moved to experiment owners in G7 |
 | `metrics.py` | [metrics.md](metrics.md) | >100; reusable encoded, RGB, subject and LPIPS measurements |
 | `previews.py` | [previews.md](previews.md) | >100; fixed-preview validation, state, generation and rendering |
 | `comparisons.py` | [comparisons.md](comparisons.md) | >100; checked saved comparison rendering and completion |
@@ -179,6 +184,13 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
   child launchers import these constants. The B4 AST checks filename aliases and
   helpers; root import needs no tensor/model dependency. Keep `scripts/` a
   namespace package.
+
+- **[`execution/devices.py`](../execution/devices.py):** one import-light GPU
+  policy for the queue and process ledger. Select from GPUs 0–7 in pool order;
+  require four unique free devices for training or one for another kind. Busy
+  owned devices and observations at or above 1,024 MiB are excluded. This
+  helper grants no ownership; the registry rechecks under its lock. Its
+  small-file header owns the design.
 
 - **[`training/numerics.py`](../training/numerics.py):** one import-light
   deterministic training policy and required cuBLAS child environment. Configure

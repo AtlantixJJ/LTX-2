@@ -45,7 +45,7 @@ def controlled_evaluation_conditions(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def controlled_queue_launch(monkeypatch: pytest.MonkeyPatch) -> None:
+def controlled_queue_launch(monkeypatch: pytest.MonkeyPatch, controlled_queue_observation: None) -> None:  # noqa: ARG001 -- fixture installs controlled observer
     """Keep old fake-Popen tests scoped to receipts/retries, not OS registration.
 
     Each caller already replaces Popen with an immediate synthetic completion.
@@ -54,10 +54,28 @@ def controlled_queue_launch(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setattr(queue_launch, 'guard_command', lambda path: queue_launch.load_request(path)['command'])
 
-    def registration(path: Path, child, _command, _refresh) -> dict:  # noqa: ANN001 -- controlled child interfaces
+    def registration(path: Path, child, _command, _refresh, **_limits) -> dict:  # noqa: ANN001 -- controlled child interfaces
         request = queue_launch.load_request(path)
         return {'identity': {'pid': child.pid, 'start_ticks': 1,
                              'command': request['command'], 'terminal': False}}
 
     monkeypatch.setattr(queue_launch, 'wait_registration', registration)
     monkeypatch.setattr(queue_launch, 'publish_grant', lambda _path: {})
+
+
+@pytest.fixture
+def controlled_queue_observation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Scope fake observations to receipt/guard fixtures, never native acceptance."""
+    from scripts.onestep_avatar.execution import queue, runtime, supervision  # noqa: PLC0415 -- fixture only
+
+    def observe(child: object, **arguments: object) -> dict:
+        code = child.poll()
+        if code is None:
+            code = child.wait(timeout=5)
+        result = {'state': 'passed', 'error': None, 'returncode': code, 'workers_absent': True}
+        queue_launch.publish_exclusive(arguments['evidence_path'], result)
+        return result
+
+    monkeypatch.setattr(supervision, 'supervise', observe)
+    monkeypatch.setattr(runtime, 'verify_result', lambda *_: {})
+    monkeypatch.setattr(queue, 'verify_attempt_evidence', lambda *_: [])

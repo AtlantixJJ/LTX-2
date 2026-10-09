@@ -13,12 +13,60 @@ Report denoise, cache setup/update, and complete-output cost separately.
 
 ## Data flow
 
+```mermaid
+flowchart TB
+  I[("checked ordinary inputs")] --> T["measure repetitions"]
+  T --> G["ordinary sampler"] --> O[("raw outputs and measurements")]
+  O --> V["saved completion verifier"]
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
+  class G,T,V proc;
+  class I,O disk;
+```
+
 Check fixed inputs, weights, and schedule.
 Warm up the selected path.
 Synchronize the GPU, time the calls, and record call counts, elapsed time, and peak memory.
 Report model loading and decoding separately from generation.
 
 ## Organization logic
+
+The public `parse_args(argv)` selects ordinary generation or the preserved
+`--operation-timing` protocol. It exposes a normalized output and local GPU
+zero by default. Ordinary generation retains the evaluator's complete input
+preflight, exact calls and one untimed artifact call. Saved completion derives
+the exact case/variant inventory through that same preflight and calls the
+public ordinary scientific verifier before checking benchmark rows.
+
+`verify_completion(arguments, root)` requires the requested warmup and exact
+repetition count, finite positive elapsed times, matching output and call
+identities, exact covered/generated frame rates and recomputed timing summary.
+Validate CUDA memory baseline/peak/extra relationships when recorded. CPU
+measurements keep null memory fields. `evidence_paths` returns all verified
+ordinary raw records, outputs, text and noise; no model or decoder opens.
+
+Operation timing accepts queue form `--output <directory>` and writes
+`operation_timing.json`. Historical `--out <file>` remains supported and
+normalizes its output to that file's parent. Preserve the existing cache-depth
+sweep and calculations. Record requested settings, actual denoise/refresh
+repetition times, model/software identities and cache geometry with the
+original summary. Completion checks both operation inventories and derives
+the original statistics and per-chunk sum from the saved measurements. Its
+descriptor identifies the actual result file, and missing measurements fail
+rather than rerunning an operation.
+
+Include this benchmark source in the ordinary evaluation software profile.
+Retain each raw result's existing evaluator producer hash. Operation timing
+records its own producer hash and actual transformer bytes. Saved ordinary
+timing also checks exact denoise/refresh counts, including the shared guidance
+pass rules. For depth `D`, derive query and retained-key token counts from the
+same causal block plan; derive cache capacity from its clip-limited geometry.
+Cache bytes use saved layer count, width and native two-byte elements.
+
+Worked completion control: two repetitions require exactly two native timing
+rows. A changed elapsed summary, warmup count or output digest fails even if
+the raw encoding remains valid. An operation record with one absent depth
+cannot certify its requested cache-depth sweep.
 
 The default CLI accepts all ordinary evaluation arguments plus `--repetitions`
 and `--warmup`. It requires an explicit mode. Parse/check these counts before
@@ -110,6 +158,12 @@ Real-weight performance acceptance remains pending; CPU checks do not establish
 GPU speed or memory savings.
 
 ## Tests
+
+`test_ordinary_queue_completion.py` checks both modes on controlled CPU models,
+then blocks native loading while verifying complete measurements. Changed
+repetition/warmup counts, nonfinite times, summary/call/output/coverage claims
+and memory relationships fail. Operation controls cover missing depths/times,
+wrong cache geometry, changed producer bytes and altered per-chunk sums.
 
 [V6](verification.md) supplies expected explicit call counts.
 Worked check: three two-new-frame causal blocks cover seven encoded frames, or 49 RGB frames.

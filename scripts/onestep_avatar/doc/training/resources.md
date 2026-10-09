@@ -5,7 +5,9 @@
 Measure CUDA allocated and reserved peaks in the process that performs the work.
 Bind the unchanged budget file to each phase. Sampled total-device memory is a
 separate external observation; it cannot substitute for these measurements.
-Ordinary runs may omit a budget. Current native update acceptance requires it.
+Outside the queue, ordinary runs may omit a budget. Queued children always use
+the same effective budget as the queue's supervision/notification contract.
+Current native update acceptance requires complete local CUDA measurements.
 
 ## Data flow
 
@@ -54,6 +56,24 @@ the engine to preserve; it cannot certify completion. CPU runs record null peaks
 It retains optional tolerance data from the same parsed byte buffer. The
 experiment owner checks that data against its already declared rule. A second
 filename read must not pair tolerance from new bytes with an old budget hash.
+Optional `overall_seconds` is retained only when present and must be a finite
+positive number, excluding booleans. It is an overall queue deadline; a local
+phase never resets or substitutes for that deadline.
+
+`default_budget` binds the declared 1,800-second phase bound and
+48,000,000,000-byte allocated bound to canonical JSON bytes, with `path=null`
+and a reproducible content SHA. `effective_budget(path)` selects an unchanged
+explicit file record or that default without writing a file. `read_budget(None)`
+still returns null outside this explicit queue policy.
+`budget_environment` serializes the checked effective record and its SHA into
+`ONESTEP_AVATAR_EFFECTIVE_BUDGET` and
+`ONESTEP_AVATAR_EFFECTIVE_BUDGET_SHA256`. `budget_from_environment` requires
+both fields, valid queue token/job bindings and unchanged file/default identity.
+Partial, malformed or mismatched bindings fail before phase work.
+`Phase(..., budget=None)` adopts only this bound queue budget. An explicit
+phase budget must equal any inherited queue budget. Beginning and ending a
+phase rechecks both identity and environment; events and saved measurements
+carry the effective SHA. No default applies to an unqueued CPU measurement.
 `Phase.start` and `Phase.finish` bracket load, each update and each export.
 An allocated peak or elapsed time greater than its bound fails the phase.
 Reserved peaks remain measurements, not a limit with an invented threshold.
@@ -83,6 +103,12 @@ Worked check: with a 48,000,000,000-byte allocated bound, a peak of
 48,000,000,001 fails, even if sampled total-device memory was lower. A reserved
 peak above that number does not by itself fail the allocated-memory criterion.
 A missing rank-three export record cannot certify a four-rank update.
+With a queued canonical default and a fake 100-second CUDA phase, the saved
+record and both notifications carry the default SHA. A measured peak of
+48,000,000,001 bytes fails under this default even if the phase caller supplied
+null. Changing only the environment SHA or using a different explicit phase
+budget refuses work; changing budget bytes during a phase preserves a failed
+record with its original SHA.
 
 ## Invariants
 
@@ -103,3 +129,6 @@ diagnostic overhead. Phase checks supplement external wall-time supervision.
 Use controlled CUDA counters to check reset/synchronization order, peaks, elapsed
 time, exception preservation, exact limits and budget changes. Validate missing,
 duplicate and malformed rank/phase inventories and explicit CPU refusal.
+Effective-budget controls check canonical default identity, optional overall
+validation, paired queue bindings, explicit/default disagreement, inherited
+phase events and original no-budget behavior outside the queue.

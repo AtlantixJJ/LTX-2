@@ -16,6 +16,8 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
+from scripts.onestep_avatar.execution.devices import select_devices, validate_inventory, validate_selection
+
 
 def _identity(pid: int) -> dict | None:
     from scripts.onestep_avatar.execution.queue import process_identity  # noqa: PLC0415 -- single stable identity owner
@@ -152,26 +154,17 @@ class ProcessRegistry:
             previous["commands"].append(identity["command"])
 
     def choose(self, memory: dict[int, int], *, training: bool) -> tuple[int, ...] | None:
-        from scripts.onestep_avatar.execution.queue import (  # noqa: PLC0415 -- preserve existing GPU selection
-            ALLOWED_GPUS,
-            EVALUATION_PREFERENCE,
-            TRAIN_GPUS,
-        )
-
-        if not ALLOWED_GPUS.issubset(memory) or any(type(value) is not int or value < 0 for value in memory.values()):
-            raise ValueError("incomplete direct GPU memory inventory")
+        validate_inventory(memory)
         with self._lock():
-            records = self._read()["attempts"].values()
-            busy = {gpu for row in records if row["state"] != "closed" for gpu in row["gpus"]}
-        free = {gpu for gpu in ALLOWED_GPUS if memory[gpu] < 1024 and gpu not in busy}
-        if training:
-            return TRAIN_GPUS if set(TRAIN_GPUS).issubset(free) else None
-        return next(((gpu,) for gpu in EVALUATION_PREFERENCE if gpu in free), None)
+            active = [row for row in self._read()["attempts"].values() if row["state"] != "closed"]
+            if any(_same_handle(row["owner"], self.owner) for row in active):
+                return None
+            busy = {gpu for row in active for gpu in row["gpus"]}
+        return select_devices(memory, training=training, busy=busy)
 
-    def acquire(self, gpus: tuple[int, ...], *, job: str) -> bool:
-        from scripts.onestep_avatar.execution.queue import ALLOWED_GPUS  # noqa: PLC0415 -- existing device restriction
-
-        if self.owned or not gpus or len(set(gpus)) != len(gpus) or not set(gpus).issubset(ALLOWED_GPUS):
+    def acquire(self, gpus: tuple[int, ...], *, job: str, training: bool | None = None) -> bool:
+        validate_selection(gpus, training=training)
+        if self.owned:
             raise ValueError("own process start requires unique allowed GPUs and a fresh attempt")
         with self._lock():
             record = self._read()
@@ -181,9 +174,7 @@ class ProcessRegistry:
                    or _same_handle(row["owner"], self.owner)) for row in record["attempts"].values()):
                 return False
             memory = self.inventory()
-            if not ALLOWED_GPUS.issubset(memory) or any(
-                    type(value) is not int or value < 0 for value in memory.values()):
-                raise ValueError("incomplete direct GPU memory inventory")
+            validate_inventory(memory)
             if any(memory[gpu] >= 1024 for gpu in gpus):
                 return False
             record["attempts"][self.token] = {

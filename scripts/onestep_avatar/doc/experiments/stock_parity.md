@@ -171,3 +171,45 @@ binds the empty `experiments/__init__.py` marker along with the checker.
 These files are explicit experiment extras; ordinary profiles do not
 include the experiment marker. Existing results retain their original
 source attribution, and affected native checks run again after the code gate.
+
+## G8 queue interface and completion
+
+```mermaid
+flowchart TB
+  S[("Pinned scientific spec")] --> P["read_spec"]
+  P --> V["verify_completion"]
+  M[("manifest.json and raw files")] --> V
+  V --> R(["Checked scientific result for queue"])
+  classDef code fill:#dbeafe,stroke:#2563eb;
+  classDef saved fill:#e5e7eb,stroke:#6b7280;
+  classDef result fill:#f3e8ff,stroke:#9333ea;
+  class P,V code;
+  class S,M saved;
+  class R result;
+```
+
+
+The queue owns launch, device selection, process records and bounded supervision.
+The checker accepts a pinned schema-one specification with its literal protocol
+and original scientific `arguments`, plus queue-owned `--output` and local
+`--gpu-id`. Execution flags in the scientific arguments fail before writes.
+Public `parse_args`, `read_spec`, `runtime_profile`, `verify_completion` and
+`evidence_paths` provide normalization, phase/topology data and saved-only
+completion. The manifest binds exact spec bytes, normalized scientific settings
+and the complete local artifact inventory. Original producer hashes stay intact;
+new runs bind the spec helper as an explicit experiment extra.
+
+`dependency_outputs(spec)` identifies the saved result directories that need
+earlier queue receipts. An optional stock reference, the E2 update comparison,
+or an E3 capture snapshot must be an explicit dependency. A missing dependency
+fails CPU queue preparation, before claims or launch.
+
+Completion verifies the original scientific controls from actual saved artifacts.
+It repeats the CPU input preflight without the fresh-output refusal, then loads
+all four saved latent paths, noise and traces. It recomputes `compare_paths`,
+checks clean c0 in every latent, exact scheduler levels and declared forward
+counts. It checks the RGB comparison record and every local byte, without a
+decoder. The saved manifest is excluded from the producer's older raw inventory.
+It loads no model or decoder, starts no child, and never repairs missing output.
+A missing, changed or escaped artifact prevents completion. CPU fixtures prove
+these refusals; final-source native acceptance still requires fresh queue jobs.

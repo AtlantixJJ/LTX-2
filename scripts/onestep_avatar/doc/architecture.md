@@ -126,13 +126,13 @@ model/               common, backbone, adapters, sampling, bidirectional, causal
 training/            config, engine, checkpoints, startup, runtime,
                      resources, numerics, consumer_trace, update_state
 execution/           queue, queue_launch, queue_protocol,
-                     process_registry, supervision, software
+                     process_registry, supervision, software, devices, runtime
 experiments/         training_update_check, training_slice_check,
                      adapter_effect_check, continuation_check, causality,
                      stock_parity, fusion_parity, sigma_sweep,
                      sigma_sweep_jobs, sigma_sweep_results,
                      future_noise_study, convert_progress_jobs,
-                     stats, saved_probe_metrics, legacy_adapters
+                     stats, saved_probe_metrics, spec_protocol, legacy_adapters
 configs/             fsdp.yaml, fsdp_forward_prefetch.yaml, README.md recipes
 doc/                 mirrored module designs and cross-module contracts
 tests/               ordinary tests; tests/experiments/ for experiment tests
@@ -334,18 +334,20 @@ has a model-free completion check.
 |---|---|---|---|
 | `train` | `train` through `accelerate launch` | four | `training.engine` scientific verification (current) |
 | `evaluate` | `evaluate` | one | `evaluate.verify_evaluation_conditions` (current) |
-| `preview` | `previews` | one | `previews.verify_preview_job` (current function, moved) |
-| `product` | `infer` | one | **New** `infer.verify_completion`: raw encoding, records, generated-only MP4 and review match their recorded hashes |
-| `bench` | `bench` | one | **New** `bench.verify_completion`: the timing record is complete for the requested repetitions and warmup |
+| `preview` | `previews` | one | `previews.verify_completion` (implemented): checked preview state from `verify_preview_job` plus the immutable completion marker |
+| `product` | `infer` | one | `infer.verify_completion` (implemented): raw encoding, records, generated-only MP4 and review match their recorded hashes |
+| `bench` | `bench` | one | `bench.verify_completion` (implemented): the timing record is complete for the requested repetitions and warmup |
 | `decode` | `decode_saved` | one | decoder receipt check (current) |
 | `render` | `comparisons` | one | `comparisons.verify_saved_comparison_completion` (current, moved) |
 | `experiment` | the selected experiment module | one | that module's `verify_completion(spec, root)` |
 
-**GPU pool.** `execution/queue.py` must have one pool constant, GPUs 0–7.
+**GPU pool.** The single import-light owner is `execution/devices.py`:
+`GPU_POOL` is GPUs 0–7 and `TRAIN_PROCESSES` is four. The queue and ledger
+import this policy; the queue's exported names are aliases, not another pool.
 `train` selects four free devices and keeps four processes. Single-GPU kinds
-pick from the same pool. Today the code uses
-`TRAIN_GPUS = (0, 1, 2, 3)` and `EVALUATION_PREFERENCE = (5, 4, 3, 2, 1, 0)`;
-the second constant must become an order inside the pool.
+pick one free device from the same ordered pool. Selections may be noncontiguous.
+The pool and every-kind supervision are implemented. Final G8 CPU verification
+remains pending until all group checks pass; native acceptance is separate.
 
 **Experiment selection.** An `experiment` job carries `experiment` (a
 selector), `spec`, `spec_sha256` and `arguments`. The canonical job hash covers
@@ -399,7 +401,7 @@ worker-absence proof, and the child log.
 
 **Checkers inside a job.** A checker never claims GPUs, writes a ledger row or
 calls `supervise`. `continuation_check.supervised_run` and
-`training_update_check.supervised_reference` retire. When a protocol needs a
+`training_update_check.supervised_reference` are removed. When a protocol needs a
 separate process (for example the E4 serial reference), that process becomes
 its own queue job, and the step that needs its output depends on it through the
 existing job dependencies.
@@ -409,7 +411,8 @@ future-noise rows with `kind: "evaluate"` plus intervention options, are
 historical data. They keep their receipts and attribution. A rerun uses a fresh
 job list that the moved builders (`experiments/sigma_sweep_jobs.py`,
 `experiments/future_noise_study.py`) write, with fresh output IDs. The
-`--claims-dir` alias for old reservation files retires.
+`--claims-dir` alias for old reservation files is removed; parsing refuses it
+before reading jobs or writing state.
 
 ### Software profiles
 
@@ -418,10 +421,9 @@ The five profiles stay: `training`, `evaluation`, `inference`, `decoding` and
 with final paths. `__init__.py` joins `COMMON`, because it now defines the roots.
 `hashing.py` stays in `COMMON`.
 
-- No ordinary profile lists an `experiments/` or `expr/` file. Today the
-  `evaluation` profile lists `stock_parity.py` and the `decoding` profile lists
-  `sigma_sweep.py` and `sigma_sweep_results.py`. Those entries leave when the
-  files move.
+- No ordinary profile lists an `experiments/` or `expr/` file. The stock and
+  sigma study owners are already removed from ordinary profiles. Common
+  runtime/device/protocol owners bind queue execution without importing studies.
 - An experiment binds its own files with
   `software.capture(<profile>, mode, extra_sources=(<experiment files>,))`.
   There is one provenance system.

@@ -1,5 +1,11 @@
 # `evaluate.py` — compare generated videos
 
+The module entry calls the shared queue runtime helper. Outside a queue binding,
+it calls the public operation unchanged. In a queued child, the helper measures
+one actual local resource phase and records any declared numerical policy. The
+queue owns launch, supervision and worker-absence evidence; this module starts
+no child through that helper. See [runtime](execution/runtime.md).
+
 Status: **Implemented ordinary evaluation; full native acceptance remains incomplete.** Explicit modes, strict preflight,
 saved-noise sampling, guidance, raw saves, queued verification and automatic
 rendering from pinned references exist. `media` prepares reference RGB and
@@ -370,3 +376,9 @@ use the stdlib-only-at-import hashing owner.
 `verify_evaluation_conditions` accepts keyword-only `branch_provider`, `records_validator` and explicit `extra_sources`. The provider returns ordered `(folder, noise)` pairs; `None` uses the verified per-case noise. The shared verifier still checks exact inventory, requested settings, masters, adapter contracts, text, clean c0, output shape and serialized output identity for each branch. The caller owns pair meaning and extra calculations. Callback paths must remain under their requested variant. No callable is loaded from data or discovered.
 
 Worked check: the default one-variant run verifies exactly its ordinary `result.json`. An explicit provider for two folders must supply both records; a missing, duplicated or escaped folder fails. An explicit validator runs only after both outputs pass shared invariants. Ordinary CLIs cannot select callbacks.
+
+Saved completion compares clean c0 by exact tensor bytes, including signed zero.
+Numeric equality alone cannot prove that recorded clean condition was preserved.
+Saved text must be a finite native-bf16 tensor with three dimensions and batch
+one. Negative text must have the same shape. No cross-attention width is inferred
+from saved data; projected and raw contexts use different widths.

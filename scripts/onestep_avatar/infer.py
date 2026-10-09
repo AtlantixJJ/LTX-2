@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -16,6 +18,9 @@ from scripts.onestep_avatar.model import backbone, bidirectional, causal, common
 from scripts.onestep_avatar.model.sampling import validate_schedule
 from scripts.onestep_avatar.training import checkpoints
 from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
+
+if TYPE_CHECKING:
+    from scripts.prune.core.model_registry import RefinerModel
 
 
 def check_inputs(guide: torch.Tensor, first_image: torch.Tensor, guide_record: dict, image_record: dict) -> None:
@@ -51,6 +56,7 @@ def generate(  # noqa: PLR0912, PLR0913 -- explicit product inputs and mode disp
     seed: int,
     epsilon: torch.Tensor | None = None,
     predict_x0=None,  # noqa: ANN001 -- native or guided predictor
+    input_observer: Callable[[dict[str, torch.Tensor]], None] | None = None,
 ) -> tuple[torch.Tensor, dict]:
     """Sample from guide/c0 tokens without inventing a capture target or quality score."""
     levels = list(validate_schedule(schedule))
@@ -82,6 +88,8 @@ def generate(  # noqa: PLR0912, PLR0913 -- explicit product inputs and mode disp
                 epsilon[:, interval] = common.epsilon_block(guide[:, interval], seed + index)
     if epsilon.shape != guide.shape or not torch.isfinite(epsilon).all():
         raise ValueError("product noise must be finite and match guide tokens")
+    if input_observer is not None:
+        input_observer({"text": context.detach().cpu(), "noise": epsilon.detach().cpu()})
     with evaluate.measure_calls(transformer) as measured:
         if mode == "bidirectional":
             tokens, counts = bidirectional.sample(
@@ -171,10 +179,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             parser.error("block length and K must be positive")
         if not 0 <= args.mode_settings.context_latent_frames <= causal.MAX_CONTEXT_LATENT_FRAMES:
             parser.error("history depth is outside the supported range")
+    args.completion = completion_descriptor(args)
     return args
 
 
-def prepare_product(args: argparse.Namespace) -> tuple:  # noqa: PLR0912 -- ordered input and calibration gates
+def completion_descriptor(args: argparse.Namespace) -> dict:
+    """Describe required records without reading scientific inputs or output."""
+    paths = [args.output / "result.json"]
+    if args.decode:
+        paths.append(args.output / "rendering.json")
+    if args.review:
+        paths.append(args.output / "review/rendering.json")
+    return {"records": [str(path.resolve()) for path in paths]}
+
+
+def prepare_product(args: argparse.Namespace, *, require_fresh_output: bool = True) -> tuple:  # noqa: PLR0912 -- ordered input and calibration gates
     """Check files and exact adapter conditions without opening any model session."""
     guide_record = torch.load(args.guide, map_location="cpu", weights_only=True)
     image_record = torch.load(args.first_image, map_location="cpu", weights_only=True)
@@ -188,7 +207,7 @@ def prepare_product(args: argparse.Namespace) -> tuple:  # noqa: PLR0912 -- orde
     }
     if args.decode and fps != int(fps):
         raise ValueError("native MP4 writer requires an integer playback rate")
-    if args.output.exists() and (not args.output.is_dir() or any(args.output.iterdir())):
+    if require_fresh_output and args.output.exists() and (not args.output.is_dir() or any(args.output.iterdir())):
         raise ValueError("product output is already used; choose a new directory")
     frames = guide.shape[2] if args.span_latent_frames is None else args.span_latent_frames
     if not 1 <= frames <= guide.shape[2]:
@@ -246,6 +265,233 @@ def prepare_product(args: argparse.Namespace) -> tuple:  # noqa: PLR0912 -- orde
         requested.update(history_mode="cache", kv_source="refresh")
     checked = evaluate.check_adapter(args.checkpoint, requested, product=True)
     return specification, guide[:, :, :frames], image, fps, requested, checked
+
+
+def _product_tensor(path: Path) -> torch.Tensor:
+    """Require the native saved precision without any model or decoder work."""
+    value = torch.load(path, map_location="cpu", weights_only=True)
+    if (
+        not isinstance(value, torch.Tensor)
+        or value.dtype != torch.bfloat16
+        or value.numel() == 0
+        or not torch.isfinite(value).all()
+    ):
+        raise ValueError("product completion requires finite native-bf16 tensors")
+    return value
+
+
+def _media_evidence(record: dict, directory: Path, *, video_name: str) -> list[Path]:
+    """Check fixed media paths and byte claims; never regenerate missing media."""
+    outputs = record.get("outputs", {})
+    if set(outputs) != {"video", "poster"}:
+        raise ValueError("product rendering requires video and poster")
+    paths = []
+    for role, name in (("video", video_name), ("poster", "poster.png")):
+        expected = directory / name
+        claim = outputs[role]
+        if (
+            Path(claim.get("path", "")).resolve() != expected.resolve()
+            or not expected.resolve().is_relative_to(directory.resolve())
+            or claim.get("sha256") != sha256(expected)
+        ):
+            raise ValueError("product rendered media path or bytes differ")
+        paths.append(expected)
+    return paths
+
+
+def _verify_product_media(
+    args: argparse.Namespace, specification: RefinerModel, guide: torch.Tensor, image: torch.Tensor, record: dict
+) -> list[Path]:
+    """Bind requested native decoding and review to the already checked raw encoding."""
+    from scripts.onestep_avatar.execution import software  # noqa: PLC0415 -- model-free provenance
+
+    vae = Path(specification.paths.video_vae())
+    vae_hash, settings = sha256(vae), media.native_decoder_settings()
+    key = media.decode_key(
+        record["output"]["sha256"], vae_hash, record["output"]["shape"], "native_decode_video", args.seed, settings
+    )
+    frames = common.pixel_frames_for(record["frames"], specification.scale_factors.time)
+    path = args.output / "rendering.json"
+    rendering = json.loads(path.read_text())
+    expected = {
+        "schema_version": 2,
+        "kind": "onestep_avatar.generated_render",
+        "fps": record["fps"],
+        "frames": frames,
+        "poster_frame": args.poster_frame,
+        "capture_reference": None,
+        "software": record["software"],
+        "decode_key": key,
+        "decoder": {
+            "vae_path": str(vae),
+            "vae_sha256": vae_hash,
+            "seed": args.seed,
+            "settings": settings,
+            "torch": torch.__version__,
+        },
+    }
+    if any(rendering.get(name) != value for name, value in expected.items()):
+        raise ValueError("product generated rendering differs from requested decode settings")
+    software.check_current(rendering.get("software"))
+    paths = [path, *_media_evidence(rendering, args.output, video_name="generated.mp4")]
+    if not args.review:
+        return paths
+    path = args.output / "review/rendering.json"
+    review = json.loads(path.read_text())
+    common_settings = {
+        "capture_reference": None,
+        "input_files": record["input_files"],
+        "raw_output": record["output"],
+        "decoder_settings": settings,
+        "generated_decode_key": key,
+        "mode": args.mode,
+        "schedule": args.schedule,
+        "decoded_inputs": {
+            role: media.decode_key(
+                hashing.tensor_sha256(latent), vae_hash, list(latent.shape), "native_decode_video", args.seed, settings
+            )
+            for role, latent in (("first_image", image), ("guide", guide))
+        },
+    }
+    expected = {
+        "schema_version": 2,
+        "layout_version": 1,
+        "layout": "inference",
+        "fps": record["fps"],
+        "source_frames": list(range(frames)),
+        "source_times": [frame / record["fps"] for frame in range(frames)],
+        "poster_frame": args.poster_frame,
+        "software": record["software"],
+        "common_settings": common_settings,
+    }
+    if any(review.get(name) != value for name, value in expected.items()):
+        raise ValueError("product review differs from raw output or checked decoded inputs")
+    panels = review.get("panels", [])
+    if (
+        len(panels) != 3
+        or [panel.get("role") for panel in panels] != ["first_image", "guide", "generated"]
+        or [panel.get("title") for panel in panels] != ["Input image", "Guide", "Generated"]
+        or any(
+            panel.get("still") != (index == 0)
+            or panel.get("missing_reason") is not None
+            or panel.get("source_frames") != ([] if index == 0 else list(range(frames)))
+            for index, panel in enumerate(panels)
+        )
+    ):
+        raise ValueError("product review roles or synchronized frame mapping differ")
+    software.check_current(review.get("software"))
+    return [*paths, path, *_media_evidence(review, path.parent, video_name="comparison.mp4")]
+
+
+def verify_completion(arguments: list[str], root: Path) -> dict:
+    """Check complete raw/product-media evidence without native sessions or writes."""
+    from scripts.onestep_avatar.execution import software  # noqa: PLC0415 -- saved completion only
+    from scripts.prune.core.session import DEFAULT_PROMPT  # noqa: PLC0415 -- constant, no session creation
+
+    args = parse_args(arguments)
+    if args.output.resolve() != root.resolve() or args.dry_run:
+        raise ValueError("product completion output differs from requested execution")
+    specification, guide, image, fps, requested, checked = prepare_product(args, require_fresh_output=False)
+    root = args.output
+    record = json.loads((root / "result.json").read_text())
+    grid = common.ClipGrid.build(
+        guide.shape[2],
+        guide.shape[3] * specification.scale_factors.height,
+        guide.shape[4] * specification.scale_factors.width,
+        fps,
+        specification,
+        device=torch.device("cpu"),
+        dtype=torch.bfloat16,
+        latent_channels=guide.shape[1],
+    )
+    guide_tokens, image_tokens = (grid.patchify(value.to(torch.bfloat16)) for value in (guide, image))
+    inputs_path = root / "generation_inputs.pt"
+    inputs = torch.load(inputs_path, map_location="cpu", weights_only=True)
+    if (
+        not isinstance(inputs, dict)
+        or set(inputs) != {"text", "noise"}
+        or any(
+            not isinstance(value, torch.Tensor)
+            or value.dtype != torch.bfloat16
+            or value.numel() == 0
+            or not torch.isfinite(value).all()
+            for value in inputs.values()
+        )
+        or inputs["noise"].shape != guide_tokens.shape
+        or inputs["text"].ndim != 3
+        or inputs["text"].shape[0] != 1
+    ):
+        raise ValueError("product completion saved text/noise shape, precision or values differ")
+    expected = {
+        "schema_version": 2,
+        "state": "complete",
+        "mode": args.mode,
+        "mode_settings": asdict(args.mode_settings),
+        "guide_mode": "d1",
+        "global_sigma_dtype": common.SIGMA_PRECISION,
+        "schedule": args.schedule,
+        "seed": args.seed,
+        "frames": guide.shape[2],
+        "capture_reference": None,
+        "conditions": requested,
+        "fps": fps,
+        "input_files": args.input_files,
+        "prompt": DEFAULT_PROMPT if args.prompt is None else args.prompt,
+        "guide_sha256": hashing.tensor_sha256(guide_tokens),
+        "c0_sha256": hashing.tensor_sha256(image_tokens),
+        "noise_sha256": hashing.tensor_sha256(inputs["noise"]),
+        "text_sha256": hashing.tensor_sha256(inputs["text"]),
+        "generation_inputs": {"path": str(inputs_path), "sha256": sha256(inputs_path)},
+        "producer_source_sha256": sha256(Path(__file__)),
+        "software": software.capture("inference", args.mode, decoder=args.decode),
+        **checked,
+    }
+    if any(name not in record or record[name] != value for name, value in expected.items()):
+        raise ValueError("product completion scientific settings or input identities differ")
+    encoded = root / "generated.pt"
+    prediction = _product_tensor(encoded)
+    if (
+        record.get("output") != {"path": str(encoded), "sha256": sha256(encoded), "shape": list(prediction.shape)}
+        or list(prediction.shape) != list(guide.shape)
+        or hashing.tensor_sha256(prediction[:, :, :1]) != hashing.tensor_sha256(image.to(torch.bfloat16))
+    ):
+        raise ValueError("product completion raw output shape, bytes or clean c0 differs")
+    blocks = 1
+    refresh = 0
+    if args.mode == "causal":
+        geometry = causal.CausalGeometry(
+            specification.scale_factors,
+            args.mode_settings.block_latent_frames,
+            args.mode_settings.context_latent_frames,
+        )
+        blocks = refresh = len(geometry.plan(guide.shape[2]))
+    denoises = blocks * (len(args.schedule) - 1)
+    expected_counts = {
+        "model_calls": denoises + refresh,
+        "denoise_calls": denoises,
+        "prime_calls": 0,
+        "refresh_calls": refresh,
+    }
+    if record.get("call_counts") != expected_counts:
+        raise ValueError("product completion model-call inventory differs")
+    software.check_current(record["software"])
+    if args.decode:
+        _verify_product_media(args, specification, guide, image, record)
+    return record
+
+
+def evidence_paths(arguments: list[str], root: Path) -> list[Path]:
+    """Return the fully checked raw/text/noise and requested media byte inventory."""
+    verify_completion(arguments, root)
+    args = parse_args(arguments)
+    paths = [root / "result.json", root / "generated.pt", root / "generation_inputs.pt"]
+    if args.decode:
+        paths.extend(root / name for name in ("rendering.json", "generated.mp4", "poster.png"))
+    if args.review:
+        paths.extend(root / "review" / name for name in ("rendering.json", "comparison.mp4", "poster.png"))
+    if any(not path.resolve().is_relative_to(root.resolve()) for path in paths):
+        raise ValueError("product completion evidence escapes its output")
+    return sorted(paths)
 
 
 def render_review(
@@ -344,8 +590,10 @@ def main(argv: list[str] | None = None) -> int:
     software.check_current(producer_software)
     if args.checkpoint is not None:
         checkpoints.recheck_adapter(args.checkpoint, checked["contract"], checked["adapter_sha256"])
-    with inference_transformer(session, args.checkpoint, checked.get("contract"),
-                               adapter_sha256=checked.get("adapter_sha256")) as transformer:
+    consumed = {}
+    with inference_transformer(
+        session, args.checkpoint, checked.get("contract"), adapter_sha256=checked.get("adapter_sha256")
+    ) as transformer:
         output, record = generate(
             transformer,
             context,
@@ -356,13 +604,20 @@ def main(argv: list[str] | None = None) -> int:
             settings=args.mode_settings,
             schedule=args.schedule,
             seed=args.seed,
+            input_observer=consumed.update,
         )
     del transformer
+    inputs_path = args.output / "generation_inputs.pt"
+    args.output.mkdir(parents=True, exist_ok=True)
+    dataset.atomic_write(inputs_path, lambda temporary: torch.save(consumed, temporary))
     record.update(
         conditions=requested,
         fps=fps,
         input_files=args.input_files,
         software=producer_software,
+        generation_inputs={"path": str(inputs_path), "sha256": sha256(inputs_path)},
+        prompt=DEFAULT_PROMPT if args.prompt is None else args.prompt,
+        producer_source_sha256=sha256(Path(__file__)),
         **checked,
     )
     software.check_current(producer_software)
@@ -428,4 +683,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from scripts.onestep_avatar.execution.runtime import run
+
+    raise SystemExit(run(main))

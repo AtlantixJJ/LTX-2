@@ -17,7 +17,7 @@ from scripts.onestep_avatar.execution import process_registry, supervision
 
 
 def free():
-    return {gpu: 0 for gpu in range(6)}
+    return {gpu: 0 for gpu in range(8)}
 
 
 def registry(tmp_path):

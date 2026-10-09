@@ -118,3 +118,41 @@ For scalar non-first-frame outputs `0,2` around guide value `1`, excursion is `1
 These are arithmetic examples, not observed corpus results.
 After implementation changes, check zero-weight/missing-mask records, coverage counts,
 repeated filenames, and the exact scope of moment summaries before interpreting results.
+
+## G8 queue interface and completion
+
+The queue owns launch, device selection, process records and bounded supervision.
+The checker accepts a pinned schema-one specification with its literal protocol
+and original scientific `arguments`, plus queue-owned `--output` and local
+`--gpu-id`. Execution flags in the scientific arguments fail before writes.
+Public `parse_args`, `read_spec`, `resource_phases`, `verify_completion` and
+`evidence_paths` provide normalization, phase/topology data and saved-only
+completion. The manifest binds exact spec bytes, normalized scientific settings
+and the complete local artifact inventory. Original producer hashes stay intact;
+new runs bind the spec helper as an explicit experiment extra.
+
+Completion verifies the original scientific controls from actual saved artifacts.
+It loads no model or decoder, starts no child, and never repairs missing output.
+A missing, changed or escaped artifact prevents completion. CPU fixtures prove
+these refusals; final-source native acceptance still requires fresh queue jobs.
+
+The strict outer output is a directory. The original scientific `--out` setting
+is injected as `analysis_summary.json` inside that directory. Scientific specs
+cannot supply their own `--out`, GPU, process or supervision setting. The queue
+records one generic `runtime` phase. `--no-gpu` retains the pair-only arithmetic.
+
+New map runs also save `map_raw.pt`: each exact guide latent and its ordered
+outputs, keyed by source-relative video name. Source path/hash records bind
+these tensors to the selected video inventory. Completion requires the saved
+output count, shape, finite values and unchanged clean first frame. It recomputes
+excursion, pairwise spread, quantiles and the original `.1` heuristic from those
+actual tensors. Pair completion reuses the original CPU paired-master reader
+and metric function. `inputs.json` binds the exact selected masters, masks and
+videos plus producer software. Extra files, escaped links, missing sources,
+changed inputs or rehashed false measurements fail completion.
+
+Float32 GPU and CPU reductions can differ in their last bits. Completion uses
+fixed `rel_tol=1e-5`, `abs_tol=1e-6` for numerical metric readback only; this does
+not change the original `.1` and `.6` heuristic thresholds. Zero weight produces
+an invalid nonfinite measurement and cannot pass completion. The source decoder
+and transformer are never invoked by this saved verifier.

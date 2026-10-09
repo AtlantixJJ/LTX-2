@@ -4,6 +4,7 @@ import json
 import subprocess
 import os
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -32,7 +33,7 @@ def write_jobs(path, jobs):
 
 
 def inventory(busy=False):
-    return SimpleNamespace(stdout='\n'.join(f'{gpu}, {1024 if busy and gpu < 6 else 0}' for gpu in range(8)))
+    return SimpleNamespace(stdout='\n'.join(f'{gpu}, {1024 if busy else 0}' for gpu in range(8)))
 
 
 def reservations(path):
@@ -60,11 +61,11 @@ def test_loop_waits_then_dispatches_appended_dependency_and_verifies_all_receipt
 
     def launch(command, **kwargs):
         output = tmp_path / command[command.index('--output') + 1]
-        assert kwargs['env']['CUDA_VISIBLE_DEVICES'] == '5'
+        assert kwargs['env']['CUDA_VISIBLE_DEVICES'] == '0'
         assert command[-2:] == ['--gpu-id', '0']
         assert (claims_dir / '5').read_text() == 'historical evaluation'
         saved = json.loads(ledger.read_text())['attempts'][kwargs['env']['ONESTEP_AVATAR_QUEUE_TOKEN']]
-        assert saved['job'] == output.name and saved['gpus'] == [5] and saved['state'] == 'active'
+        assert saved['job'] == output.name and saved['gpus'] == [0] and saved['state'] == 'active'
         if launched:
             state = json.loads(state_path.read_text())
             assert state['jobs']['first']['state'] == 'complete'
@@ -123,13 +124,16 @@ def test_loop_preserves_unrecovered_or_failed_attempts_without_inventory(tmp_pat
     assert state_path.read_bytes() == original and not (tmp_path / 'claims').exists()
 
 
-def test_loop_does_not_accept_complete_label_with_missing_evidence(tmp_path, monkeypatch, controlled_evaluation_conditions):
+@pytest.mark.usefixtures('controlled_queue_observation', 'controlled_evaluation_conditions')
+def test_loop_does_not_accept_complete_label_with_missing_evidence(tmp_path, monkeypatch):
+    """Scope a controlled completion envelope to missing-artifact refusal."""
     path, state_path = tmp_path / 'jobs.json', tmp_path / 'state.json'
     write_jobs(path, [job('first')])
     prepared = queue.prepare_jobs(path)
     output = tmp_path / 'first'
     evaluate.save_case(torch.zeros(1, 2, 7, 2, 2), {'mode': 'causal'}, output)
-    receipt = queue.completion_receipt(prepared[0])
+    receipt = queue.completion_receipt(prepared[0], attempt={})
+    receipt['execution']['binding']['completed_at'] = time.time()
     with queue.queue_state(state_path, prepared) as state:
         state['jobs']['first'].update(state='complete', receipt=receipt)
     (output / 'generated.pt').unlink()
@@ -192,8 +196,10 @@ def test_child_failure_stops_loop_and_preserves_partial_outputs(tmp_path, monkey
 @pytest.mark.parametrize('interval', ['0', '-1', 'nan', 'inf', '61'])
 def test_invalid_poll_interval_fails_before_reading_jobs(interval, tmp_path):
     with pytest.raises(SystemExit):
-        queue.main(['--jobs', str(tmp_path / 'missing.json'), '--state', str(tmp_path / 'state.json'),
-                    '--execute', '--loop', '--claims-dir', str(tmp_path / 'claims'), '--poll-seconds', interval])
+        queue.main([
+            '--jobs', str(tmp_path / 'missing.json'), '--state', str(tmp_path / 'state.json'),
+            '--execute', '--loop', '--process-ledger', str(tmp_path / 'processes.json'), '--poll-seconds', interval,
+        ])
     assert not list(tmp_path.iterdir())
 
 
@@ -212,6 +218,12 @@ def recovery_fixture(tmp_path, *, child_pid=99999999, publish=False):
 def test_recovery_cli_verifies_terminal_outputs_without_inventory(tmp_path, monkeypatch, capsys, publish, controlled_evaluation_conditions):
     path, state_path, prepared = recovery_fixture(tmp_path, publish=publish)
     monkeypatch.setattr(subprocess, 'run', lambda *_args, **_kwargs: pytest.fail('queried GPU inventory'))
+    if publish:
+        original = state_path.read_bytes()
+        with pytest.raises(ValueError, match='supervision'):
+            queue.main(['--jobs', str(path), '--state', str(state_path), '--recover'])
+        assert state_path.read_bytes() == original
+        return  # Scientific bytes alone cannot establish a supervised attempt.
     assert queue.main(['--jobs', str(path), '--state', str(state_path), '--recover']) == 0
     result = json.loads(capsys.readouterr().out)
     expected = 'complete' if publish else 'failed'

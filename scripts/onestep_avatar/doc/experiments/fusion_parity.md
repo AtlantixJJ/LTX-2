@@ -1,5 +1,11 @@
 # `experiments/fusion_parity.py` — historical five-case adapter comparison
 
+The module entry calls the shared queue runtime helper. Outside a queue binding,
+it calls the public operation unchanged. In a queued child, the helper measures
+one actual local resource phase and records any declared numerical policy. The
+queue owns launch, supervision and worker-absence evidence; this module starts
+no child through that helper. See [runtime](../execution/runtime.md).
+
 ## Objective
 
 Preserve the D1 block-zero fused-x0 versus unmerged-PEFT-velocity comparison.

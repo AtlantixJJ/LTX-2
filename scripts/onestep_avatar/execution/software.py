@@ -20,6 +20,8 @@ DISTRIBUTIONS = ('torch', 'peft', 'safetensors', 'accelerate', 'transformers',
                  'numpy', 'Pillow', 'opencv-python', 'imageio', 'imageio-ffmpeg', 'lpips')
 COMMON = ('model/__init__.py', 'training/__init__.py',
           'corpus/__init__.py', '__init__.py', 'execution/__init__.py', 'execution/software.py', 'hashing.py',
+          'execution/runtime.py', 'execution/devices.py', 'execution/queue_protocol.py',
+          'execution/supervision.py', 'training/resources.py', 'training/numerics.py',
           'corpus/dataset.py', 'corpus/subset.py', 'corpus/precompute.py', 'corpus/geometry.py', 'corpus/mask_video.py',
           'training/config.py', 'training/checkpoints.py', 'model/common.py', 'model/sampling.py',
           'model/backbone.py', 'model/adapters.py')

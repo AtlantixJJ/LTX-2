@@ -1,4 +1,5 @@
 """Validate and run pinned training previews; see doc/previews.md."""
+
 from __future__ import annotations
 
 import argparse
@@ -22,13 +23,17 @@ from scripts.onestep_avatar.training import checkpoints
 
 def check_preview_reference_bundle(fixed: dict) -> dict | None:
     """Bind checked prepared RGB to the fixed capture and guide producers."""
-    producer_inputs = fixed.get('producer_inputs', {})
+    producer_inputs = fixed.get("producer_inputs", {})
     if not isinstance(producer_inputs, dict):
-        raise ValueError('preview preparation input identities must be a mapping')
+        raise ValueError("preview preparation input identities must be a mapping")
     for source in producer_inputs.values():
-        if (not isinstance(source, dict) or not isinstance(source.get('path'), str)
-                or not Path(source['path']).is_absolute() or sha256(Path(source['path'])) != source.get('sha256')):
-            raise ValueError('preview preparation input changed or lacks an absolute identity')
+        if (
+            not isinstance(source, dict)
+            or not isinstance(source.get("path"), str)
+            or not Path(source["path"]).is_absolute()
+            or sha256(Path(source["path"])) != source.get("sha256")
+        ):
+            raise ValueError("preview preparation input changed or lacks an absolute identity")
     identity = fixed.get("reference_bundle")
     if identity is None:
         return None
@@ -50,7 +55,6 @@ def check_preview_reference_bundle(fixed: dict) -> dict | None:
         if not isinstance(guide, dict) or guide.get("input_fingerprint") != producer["guide_rgb_sha256"]:
             raise ValueError("preview reference bundle uses a different guide render")
     return producer
-
 
 
 def verify_preview_job(path: Path, *, verify_files: bool = True) -> dict:
@@ -81,7 +85,6 @@ def verify_preview_job(path: Path, *, verify_files: bool = True) -> dict:
     if contract["adapter"]["step"] != checkpoint["step"] or contract["mode"] != fixed["mode"]:
         raise ValueError("preview adapter step or mode differs from its job")
     return job
-
 
 
 def _verify_preview_outputs(records: list[dict], job: dict, *, rendered: bool) -> None:  # noqa: PLR0912 -- all completion evidence gates
@@ -128,7 +131,6 @@ def _verify_preview_outputs(records: list[dict], job: dict, *, rendered: bool) -
                 raise ValueError("preview encoded/rendered output changed")
 
 
-
 def set_preview_state(
     path: Path,
     state: str,
@@ -173,7 +175,6 @@ def set_preview_state(
         return job
 
 
-
 def render_preview_outputs(path: Path, *, gpu_id: int) -> dict:  # noqa: PLR0915 -- ordered decoder/media lifecycle
     """Render owned saved preview results without another transformer call."""
     from scripts.onestep_avatar import media  # noqa: PLC0415 -- saved-output rendering
@@ -214,9 +215,14 @@ def render_preview_outputs(path: Path, *, gpu_id: int) -> dict:  # noqa: PLR0915
         raise ValueError("preview rendering output is already used")
     question = "Does the adapter change the output?"
     output_panels = [
-        media.Panel(role, title, None, tuple(producer["source_frames"]),
-                    value=("no adapter" if role == "baseline" else f"step {job['checkpoint']['step']}")
-                    if selected else "", missing_reason="Not requested" if not selected else "")
+        media.Panel(
+            role,
+            title,
+            None,
+            tuple(producer["source_frames"]),
+            value=("no adapter" if role == "baseline" else f"step {job['checkpoint']['step']}") if selected else "",
+            missing_reason="Not requested" if not selected else "",
+        )
         for role, selected, title in (("baseline", base, "Base output"), ("changed", changed, "Adapter output"))
     ]
     planned = references + output_panels
@@ -282,7 +288,6 @@ def render_preview_outputs(path: Path, *, gpu_id: int) -> dict:  # noqa: PLR0915
     )
 
 
-
 def generate_preview(path: Path, *, gpu_id: int) -> list[dict]:
     """Run a pinned preview's raw stage; rendering is required for completion."""
     try:
@@ -332,7 +337,6 @@ def generate_preview(path: Path, *, gpu_id: int) -> list[dict]:
         raise
 
 
-
 def verify_preview_tensors(fixed: dict, tensors: dict[str, torch.Tensor | None]) -> None:
     """Reject changed execution tensors before opening a transformer."""
     for role, identity in fixed["input_files"].items():
@@ -347,15 +351,262 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse the pinned preview job; its evaluator arguments come from the record."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--preview-job", type=Path, required=True)
-    parser.add_argument("--gpu-id", type=int, required=True)
-    return parser.parse_args(argv)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--gpu-id", type=int, default=0)
+    args = parser.parse_args(argv)
+    args.completion = completion_descriptor(args)
+    return args
+
+
+def completion_descriptor(args: argparse.Namespace) -> dict | None:
+    """Expose queue records without reading the mutable preview job."""
+    if args.output is None:
+        return None
+    return {"records": [str((args.output / "preview_completion.json").resolve())]}
+
+
+def queue_identity(arguments: list[str]) -> dict:
+    """Pin immutable scientific identity while preview state remains writable."""
+    args = parse_args(arguments)
+    job = verify_preview_job(args.preview_job, verify_files=False)
+    output = Path(job["output"]).resolve()
+    if args.output is None or args.output.resolve() != output:
+        raise ValueError("queued preview output differs from its pinned job")
+    return {
+        "id": job["id"],
+        "checkpoint": job["checkpoint"],
+        "fixed_inputs_sha256": job["fixed_inputs"]["sha256"],
+        "output": str(output),
+    }
+
+
+def _completion_evidence(job: dict, root: Path) -> list[Path]:  # noqa: PLR0912, PLR0915 -- ordered raw/media evidence gates
+    """Check complete raw/render evidence through the ordinary public verifier."""
+    if job.get("state") != "complete" or Path(job["output"]).resolve() != root.resolve():
+        raise ValueError("queued preview requires its complete pinned output")
+    if type(job.get("raw_attempt")) is not int or job["raw_attempt"] < 0:
+        raise ValueError("queued preview requires its exact raw attempt")
+    results, renderings = job.get("results", []), job.get("renderings", [])
+    paths = []
+    for identities in (results, renderings):
+        if (
+            not isinstance(identities, list)
+            or not identities
+            or len({row["path"] for row in identities}) != len(identities)
+        ):
+            raise ValueError("queued preview evidence inventory is missing or duplicated")
+        for row in identities:
+            path = Path(row["path"])
+            if not path.resolve().is_relative_to(root.resolve()):
+                raise ValueError("queued preview evidence escapes its output")
+            paths.append(path)
+    _verify_preview_outputs(results, job, rendered=False)
+    _verify_preview_outputs(renderings, job, rendered=True)
+    destination = root / f"attempt_{job['raw_attempt']:04d}"
+    arguments = [
+        *job["fixed_inputs"]["evaluation_arguments"],
+        "--checkpoint",
+        job["checkpoint"]["path"],
+        "--output",
+        str(destination),
+    ]
+    records = [Path(row["path"]) for row in results]
+    evaluate.verify_evaluation_conditions(arguments, records)
+    paths.extend(evaluate.evaluation_evidence_paths(arguments, records))
+    if not any(json.loads(path.read_text()).get("adapter_sha256") == job["checkpoint"]["sha256"] for path in records):
+        raise ValueError("queued preview has no pinned adapter output")
+    expected_rendering = root / f"render_attempt_{job['raw_attempt']:04d}" / "rendering.json"
+    if len(renderings) != 1 or Path(renderings[0]["path"]).resolve() != expected_rendering.resolve():
+        raise ValueError("queued preview rendering differs from its raw attempt")
+    rendering = json.loads(expected_rendering.read_text())
+    fixed = job["fixed_inputs"]
+    if rendering.get("common_settings", {}).get("reference_bundle") != fixed.get("reference_bundle"):
+        raise ValueError("queued preview rendering uses different reference pixels")
+    from scripts.onestep_avatar import media  # noqa: PLC0415 -- saved metadata only
+
+    references, producer = media.load_training_references(Path(fixed["reference_bundle"]["path"]))
+    if (
+        rendering.get("schema_version") != 2
+        or rendering.get("layout") not in ("training", "compact_training")
+        or rendering.get("fps") != producer["fps"]
+        or rendering.get("source_frames") != producer["source_frames"]
+        or rendering.get("source_times") != [frame / producer["fps"] for frame in producer["source_frames"]]
+    ):
+        raise ValueError("queued preview rendering coverage differs from its references")
+    raw = [json.loads(path.read_text()) for path in records]
+    changed = [row for row in raw if row.get("adapter_sha256") == job["checkpoint"]["sha256"]]
+    base = [row for row in raw if row.get("adapter") is None]
+    if (
+        len(changed) != 1
+        or len(base) > 1
+        or len(raw) != len(changed) + len(base)
+        or any(
+            row.get("source") != producer["source"]
+            or row.get("fps") != producer["fps"]
+            or (row["frames"] - 1) * 8 + 1 != len(producer["source_frames"])
+            for row in raw
+        )
+    ):
+        raise ValueError("queued preview result roles or reference coverage differ")
+    parsed = evaluate.parse_args(arguments)
+    specification = backbone.resolve(parsed.model, parsed.variant)
+    vae_hash, settings = sha256(Path(specification.paths.video_vae())), media.native_decoder_settings()
+    if vae_hash != producer["vae_sha256"] or settings != producer["decoder_settings"]:
+        raise ValueError("queued preview decoder differs from its reference producer")
+    decoder_records = [
+        {
+            "role": role,
+            "decode_key": media.decode_key(
+                row[0]["output"]["sha256"],
+                vae_hash,
+                row[0]["output"]["shape"],
+                "native_decode_video",
+                producer["decode_seed"],
+                settings,
+            ),
+        }
+        for role, row in (("baseline", base), ("changed", changed))
+        if row
+    ]
+    expected_settings = {
+        "preview_job_id": job["id"],
+        "fixed_inputs_sha256": fixed["sha256"],
+        "result_records": results,
+        "reference_bundle": fixed["reference_bundle"],
+        "decoder_records": decoder_records,
+    }
+    if (
+        rendering.get("common_settings") != expected_settings
+        or rendering.get("software") != software.capture("decoding")
+        or rendering.get("layout_version") != 1
+        or rendering.get("poster_frame") != 0
+        or rendering.get("question") != "Does the adapter change the output?"
+    ):
+        raise ValueError("queued preview rendering decoder or presentation identity differs")
+    planned = [
+        *references,
+        *(
+            media.Panel(
+                role,
+                title,
+                None,
+                tuple(producer["source_frames"]) if selected else (),
+                value=("no adapter" if role == "baseline" else f"step {job['checkpoint']['step']}") if selected else "",
+                missing_reason="" if selected else "Not requested",
+            )
+            for role, selected, title in (("baseline", base, "Base output"), ("changed", changed, "Adapter output"))
+        ),
+    ]
+    by_role = {panel.role: panel for panel in planned}
+    panels = rendering.get("panels", [])
+    layout_roles = [
+        (row, column, role)
+        for row, roles in enumerate(media.LAYOUTS[rendering["layout"]])
+        for column, role in enumerate(roles)
+    ]
+    if not isinstance(panels, list) or len(panels) != len(layout_roles):
+        raise ValueError("queued preview panel inventory differs")
+    for panel, (row, column, role) in zip(panels, layout_roles, strict=True):
+        source = by_role.get(role)
+        expected_panel = {
+            "row": row,
+            "column": column,
+            "role": role,
+            "title": source.title if source else "Unused",
+            "value": source.value if source else "",
+            "source_frames": list(source.source_frames) if source else [],
+            "still": source.still if source else False,
+            "missing_reason": source.missing_reason if source else "Unused",
+        }
+        pixel_hash = panel.get("pixels_sha256")
+        if (
+            any(panel.get(key) != value for key, value in expected_panel.items())
+            or ((source is None or source.missing_reason) and pixel_hash is not None)
+            or (source is not None and source.pixels is not None and pixel_hash != media._pixel_identity(source.pixels))
+            or (
+                source is not None
+                and role in ("baseline", "changed")
+                and not source.missing_reason
+                and (
+                    not isinstance(pixel_hash, str)
+                    or len(pixel_hash) != 64
+                    or any(character not in "0123456789abcdef" for character in pixel_hash)
+                )
+            )
+        ):
+            raise ValueError("queued preview panel role, label or pixel identity differs")
+    for role, name in (("video", "comparison.mp4"), ("poster", "poster.png")):
+        path = expected_rendering.parent / name
+        if Path(rendering["outputs"][role]["path"]).resolve() != path.resolve():
+            raise ValueError("queued preview rendered media path differs")
+        paths.append(path)
+    if any(not path.resolve().is_relative_to(root.resolve()) for path in paths):
+        raise ValueError("queued preview artifact escapes its output")
+    return sorted(set(paths))
+
+
+def verify_completion(arguments: list[str], root: Path) -> dict:
+    """Require the immutable queue marker and current raw/rendered byte evidence."""
+    args = parse_args(arguments)
+    identity = queue_identity(arguments)
+    if args.output.resolve() != root.resolve():
+        raise ValueError("queued preview completion output differs")
+    job = verify_preview_job(args.preview_job)
+    paths = _completion_evidence(job, root)
+    record = json.loads((root / "preview_completion.json").read_text())
+    expected = {
+        "schema_version": 1,
+        "state": "complete",
+        "identity": identity,
+        "results": job["results"],
+        "renderings": job["renderings"],
+        "evidence": [{"path": str(path.resolve()), "sha256": sha256(path)} for path in paths],
+        "producer_source_sha256": sha256(Path(__file__)),
+    }
+    if record != expected:
+        raise ValueError("queued preview completion identity or byte inventory differs")
+    return record
+
+
+def evidence_paths(arguments: list[str], root: Path) -> list[Path]:
+    """Inventory only verified artifacts under the preview output directory."""
+    record = verify_completion(arguments, root)
+    return sorted([root / "preview_completion.json", *(Path(row["path"]) for row in record["evidence"])])
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    generate_preview(args.preview_job, gpu_id=args.gpu_id)
+    if args.output is not None:
+        arguments = ["--preview-job", str(args.preview_job), "--output", str(args.output)]
+        identity = queue_identity(arguments)
+        if (args.output / "preview_completion.json").exists():
+            verify_completion(arguments, args.output)
+            return 0
+        complete = verify_preview_job(args.preview_job).get("state") == "complete"
+    else:
+        complete = False
+    if not complete:
+        generate_preview(args.preview_job, gpu_id=args.gpu_id)
+    if args.output is not None:
+        job = verify_preview_job(args.preview_job)
+        paths = _completion_evidence(job, args.output)
+        record = {
+            "schema_version": 1,
+            "state": "complete",
+            "identity": identity,
+            "results": job["results"],
+            "renderings": job["renderings"],
+            "evidence": [{"path": str(path.resolve()), "sha256": sha256(path)} for path in paths],
+            "producer_source_sha256": sha256(Path(__file__)),
+        }
+        destination = args.output / "preview_completion.json"
+        if destination.exists():
+            raise ValueError("queued preview completion marker already exists")
+        atomic_write(destination, lambda temporary: temporary.write_text(json.dumps(record, indent=2) + "\n"))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from scripts.onestep_avatar.execution.runtime import run
+
+    raise SystemExit(run(main))

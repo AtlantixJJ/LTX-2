@@ -19,6 +19,12 @@ def test_literal_experiment_table_has_only_reviewed_current_owner() -> None:
         "sigma_sweep": "scripts.onestep_avatar.experiments.sigma_sweep",
         "causality": "scripts.onestep_avatar.experiments.causality",
         "fusion_parity": "scripts.onestep_avatar.experiments.fusion_parity",
+        "stock_parity": "scripts.onestep_avatar.experiments.stock_parity",
+        "adapter_effect_check": "scripts.onestep_avatar.experiments.adapter_effect_check",
+        "continuation_check": "scripts.onestep_avatar.experiments.continuation_check",
+        "training_update_check": "scripts.onestep_avatar.experiments.training_update_check",
+        "training_slice_check": "scripts.onestep_avatar.experiments.training_slice_check",
+        "stats": "scripts.onestep_avatar.experiments.stats",
     }
 
 

@@ -439,6 +439,8 @@ def supervise(  # noqa: PLR0912, PLR0913, PLR0915 -- one finite lifecycle, expli
                     returncode = child.wait(timeout=shutdown_seconds)
             if returncode is not None:
                 result["returncode"] = returncode
+                if overall_seconds is not None and time.monotonic() - started >= overall_seconds:
+                    raise TimeoutError("overall_deadline: original job deadline expired")
                 if returncode != 0:
                     raise ValueError(f"registered child exited with status {returncode}")
                 if any(item["index"] != len(contract["phases"]) for item in progress.values()):
@@ -450,8 +452,8 @@ def supervise(  # noqa: PLR0912, PLR0913, PLR0915 -- one finite lifecycle, expli
             if current is None or current["terminal"]:
                 identity_uncertain = True
                 raise ValueError("registered child disappeared before Popen terminal observation")
-            if overall_seconds is not None and now - started > overall_seconds:
-                raise TimeoutError("explicit overall command deadline exceeded")
+            if overall_seconds is not None and now - started >= overall_seconds:
+                raise TimeoutError("overall_deadline: original job deadline expired")
             for rank, item in progress.items():
                 if item["active"] is not None and now - item["active"] > phase_seconds:
                     raise TimeoutError(f"rank {rank} phase {contract['phases'][item['index']]} deadline exceeded")
@@ -498,6 +500,9 @@ def supervise(  # noqa: PLR0912, PLR0913, PLR0915 -- one finite lifecycle, expli
             result["error"] = result["error"] or f"worker inventory failed: {type(inventory_error).__name__}"
             result["events"].append({"event": "worker_inventory_failed", "error": str(inventory_error)})
         result["elapsed_s"] = time.monotonic() - started
+        if (result["state"] == "passed" and overall_seconds is not None
+                and result["elapsed_s"] >= overall_seconds):
+            result.update(state="failed", error="overall_deadline: expired during terminal observation")
         result["notifications"] = sorted(seen)
         _publish(evidence_path, result)
     return result

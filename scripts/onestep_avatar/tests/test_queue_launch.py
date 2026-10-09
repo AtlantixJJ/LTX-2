@@ -100,7 +100,7 @@ def ended_owned_attempt(tmp_path, monkeypatch):
     ledger.write_text(json.dumps({'schema_version': 1, 'attempts': {'b' * 32: owned,
         'unrelated-history': {'state': 'closed', 'preserved': 'original unrelated bytes'}}}))
     monkeypatch.setattr(launch, 'process_identity', lambda pid: None)
-    monkeypatch.setattr(process_registry, 'gpu_memory', lambda **kwargs: {gpu: 0 for gpu in range(6)})
+    monkeypatch.setattr(process_registry, 'gpu_memory', lambda **kwargs: {gpu: 0 for gpu in range(8)})
     return ledger, request, owned, ranks, notifications
 
 
@@ -164,7 +164,7 @@ def test_ended_owned_recovery_refuses_uncertainty_without_ledger_mutation(tmp_pa
     elif failure == 'incomplete_containment':
         changed['observations'][0]['complete'] = False
     elif failure in ('busy_gpu', 'incomplete_gpu', 'invalid_gpu'):
-        memory = {gpu: 0 for gpu in range(6)}
+        memory = {gpu: 0 for gpu in range(8)}
         if failure == 'busy_gpu': memory[1] = 1024
         elif failure == 'incomplete_gpu': del memory[1]
         else: memory[1] = True
@@ -189,7 +189,7 @@ def test_ended_owned_recovery_rechecks_handles_after_direct_inventory(tmp_path, 
     original_bytes = ledger.read_bytes()
     def inventory(**kwargs):
         monkeypatch.setattr(launch, 'process_identity', lambda pid: ranks[0] if pid == ranks[0]['pid'] else None)
-        return {gpu: 0 for gpu in range(6)}
+        return {gpu: 0 for gpu in range(8)}
     monkeypatch.setattr(process_registry, 'gpu_memory', inventory)
     with pytest.raises(ValueError, match='remains live'):
         launch.recover_owned_attempt(ledger, request, timeout=2)
@@ -299,7 +299,7 @@ def test_registered_nontraining_recovery_refuses_ambiguous_evidence(tmp_path, mo
             return {**identity, 'start_ticks': identity['start_ticks'] + int(failure == 'reused_child')}
         monkeypatch.setattr(launch, 'process_identity', observe)
     elif failure in ('busy_gpu', 'missing_gpu', 'invalid_gpu'):
-        memory = {gpu: 0 for gpu in range(6)}
+        memory = {gpu: 0 for gpu in range(8)}
         if failure == 'busy_gpu': memory[0] = 1024
         elif failure == 'missing_gpu': del memory[0]
         else: memory[0] = True
@@ -331,7 +331,7 @@ def test_registered_recovery_rechecks_original_handles_and_bytes(tmp_path, monke
         else:
             identity = owned['processes'][str(owned['child_pid'])]['identity']
             monkeypatch.setattr(launch, 'process_identity', lambda pid: identity if pid == identity['pid'] else None)
-        return {gpu: 0 for gpu in range(6)}
+        return {gpu: 0 for gpu in range(8)}
     monkeypatch.setattr(process_registry, 'gpu_memory', inventory)
     with pytest.raises(ValueError):
         registered_recovery(ledger, launch_path, owned, expected_row_sha256=row_hash, expected_launch_sha256=launch_hash)
@@ -344,7 +344,7 @@ def test_registered_recovery_covers_ended_real_package_child(tmp_path, monkeypat
     owner_source = (
         'import json, subprocess, sys\nfrom pathlib import Path\n'
         'from scripts.onestep_avatar.execution.process_registry import ProcessRegistry\n'
-        f'owner=ProcessRegistry(Path({str(ledger)!r}),inventory=lambda:{{gpu:0 for gpu in range(6)}})\n'
+        f'owner=ProcessRegistry(Path({str(ledger)!r}),inventory=lambda:{{gpu:0 for gpu in range(8)}})\n'
         'assert owner.acquire((0,),job="real-direct-media")\n'
         'child=subprocess.Popen([sys.executable,"-m","scripts.onestep_avatar.media","--help"],'
         'stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n'
@@ -366,7 +366,7 @@ def test_registered_recovery_covers_ended_real_package_child(tmp_path, monkeypat
     command = row['processes'][str(row['child_pid'])]['identity']['command']
     launch_path.write_text(json.dumps({'command': command, 'physical_gpu': 0, 'visible_gpu': 0,
         'environment_changes': {TOKEN_ENV: token, JOB_ENV: 'a' * 64, 'CUDA_VISIBLE_DEVICES': '0'}}))
-    monkeypatch.setattr(process_registry, 'gpu_memory', lambda **kwargs: {gpu: 0 for gpu in range(6)})
+    monkeypatch.setattr(process_registry, 'gpu_memory', lambda **kwargs: {gpu: 0 for gpu in range(8)})
     result = launch.recover_registered_attempt(ledger, token, expected_row_sha256=launch._row_digest(row),
         launch_evidence=launch_path, expected_launch_sha256=launch.digest(launch_path), timeout=2)
     assert result['registered_processes_absent'] is True and result['original_exitcode'] is None
@@ -603,6 +603,7 @@ def test_child_rechecks_grant_and_journal_instead_of_trusting_publication(tmp_pa
         finally:stop(child)
 
 
+@pytest.mark.usefixtures('controlled_queue_observation')
 @pytest.mark.parametrize('changed', [None, 'grant', 'bootstrap', 'request', 'command', 'ticks', 'protocol'])
 def test_real_dispatch_registers_before_grant_and_observes_approved_transition(tmp_path, monkeypatch, changed):
     executed, release = tmp_path/'executed.json', tmp_path/'release'
@@ -615,7 +616,7 @@ def test_real_dispatch_registers_before_grant_and_observes_approved_transition(t
     job = {'id':'case','kind':'evaluate','sha256':'a'*64,'dependencies':[],
            'arguments':['--mode','causal'],'output':str(tmp_path/'output')}
     monkeypatch.setattr(queue,'job_command',lambda *_: (command,{}))
-    monkeypatch.setattr(queue,'completion_receipt',lambda *_: {'job_sha256':job['sha256'],'evidence':[]})
+    monkeypatch.setattr(queue,'completion_receipt',lambda *_, **__: {'job_sha256':job['sha256'],'evidence':[]})
     claims=queue.GPUClaims(tmp_path/'claims')
     assert claims.acquire((4,),job='case')
     state_path=tmp_path/'state.json'
@@ -668,16 +669,19 @@ def test_real_dispatch_registers_before_grant_and_observes_approved_transition(t
         release.write_text('exit')
 
 
-def test_real_dispatch_registration_failure_never_grants_and_retains_live_child_claims(tmp_path, monkeypatch):
+def test_real_dispatch_registration_failure_never_grants_and_bounded_stops_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path, executed=request_for(tmp_path)
     request=launch.load_request(path)
     job={'id':'case','kind':'evaluate','sha256':'a'*64,'dependencies':[],
          'arguments':['--mode','causal'],'output':str(tmp_path/'output')}
     monkeypatch.setattr(queue,'job_command',lambda *_: (request['command'],{}))
-    claims=queue.GPUClaims(tmp_path/'claims'); assert claims.acquire((4,),job='case')
+    claims=process_registry.ProcessRegistry(tmp_path/'ledger.json',inventory=lambda:dict.fromkeys(range(8),0))
+    assert claims.acquire((4,),job='case')
     original=launch.wait_registration
     child_handle=[]
-    def fail(path,child,command,refresh,**kwargs):
+    def fail(path: Path, child: subprocess.Popen, command: list[str], refresh: object, **kwargs: object) -> None:
         child_handle.append(child)
         original(path,child,command,refresh,**kwargs)
         raise ValueError('controlled registration interruption')
@@ -687,13 +691,20 @@ def test_real_dispatch_registration_failure_never_grants_and_retains_live_child_
         with pytest.raises(ValueError,match='controlled registration interruption'):
             queue.run_child(job,claims,tmp_path/'child.log',state_path=state_path,jobs=[job],poll_seconds=.01)
         row=json.loads(state_path.read_text())['jobs']['case']
-        assert row['state']=='running' and row['child_pid']==child_handle[0].pid
+        assert row['state']=='failed'
+        assert row['child_pid']==child_handle[0].pid
         assert not (Path(row['launch_request']).parent/'grant.json').exists()
-        assert not executed.exists() and claims.owned=={4}
-        assert child_handle[0].poll() is None
+        assert not executed.exists()
+        assert not claims.owned
+        assert child_handle[0].poll() is not None
+        observed=json.loads(Path(row['supervision_result']).read_text())
+        assert observed['workers_absent'] is True
+        assert observed['state']=='failed'
     finally:
-        for child in child_handle: stop(child)
-        if claims.owned: claims.release()
+        for child in child_handle:
+            stop(child)
+        if claims.owned:
+            claims.release()
 
 
 @pytest.mark.parametrize('fail_sync', [False, True])
