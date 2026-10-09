@@ -8,10 +8,9 @@ from pathlib import Path
 import pytest
 import torch
 
-from scripts.onestep_avatar import WORKSPACE_ROOT, evaluate
+from scripts.onestep_avatar import WORKSPACE_ROOT, evaluate, hashing
 from scripts.onestep_avatar.experiments import future_noise_study as study
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar import hashing
 
 
 @pytest.fixture

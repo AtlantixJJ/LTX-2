@@ -1,22 +1,23 @@
 """Validate and run pinned training previews; see doc/previews.md."""
 from __future__ import annotations
+
 import argparse
 import fcntl
 import hashlib
 import json
 import os
-import sys
 import time
 from pathlib import Path
+
 import torch
-from scripts.onestep_avatar import evaluate
+
+from scripts.onestep_avatar import evaluate, hashing
 from scripts.onestep_avatar.corpus import subset
 from scripts.onestep_avatar.corpus.dataset import atomic_write
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import backbone
 from scripts.onestep_avatar.training import checkpoints
-from scripts.onestep_avatar import hashing
 
 
 def check_preview_reference_bundle(fixed: dict) -> dict | None:

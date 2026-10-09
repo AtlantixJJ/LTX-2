@@ -18,7 +18,7 @@ from safetensors.torch import save_file
 
 from ltx_core.model.transformer.model import X0Model
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar import evaluate, hashing
 from scripts.onestep_avatar.corpus import dataset, precompute, subset
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.experiments import adapter_effect_check as effect
@@ -27,7 +27,6 @@ from scripts.onestep_avatar.model import adapters
 from scripts.onestep_avatar.tests.test_causal_core import _geometry, _grid, _model
 from scripts.onestep_avatar.tests.test_checkpoint_contract import _contract
 from scripts.onestep_avatar.training import checkpoints, config, numerics, resources
-from scripts.onestep_avatar import hashing
 
 
 @pytest.mark.parametrize("defect", [None, "evaluation_digest", "shape", "dtype", "changed_bytes"])

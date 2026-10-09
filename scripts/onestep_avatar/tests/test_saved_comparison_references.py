@@ -8,11 +8,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import evaluate, media
+from scripts.onestep_avatar import comparisons, hashing, media
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model.common import VideoLatentPatchifier
-from scripts.onestep_avatar import comparisons, hashing
 
 
 def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dict, list[int]]:

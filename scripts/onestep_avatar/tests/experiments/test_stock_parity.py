@@ -6,9 +6,9 @@ import pytest
 import torch
 
 from ltx_core.types import SpatioTemporalScaleFactors
+from scripts.onestep_avatar import hashing
 from scripts.onestep_avatar.experiments import stock_parity
 from scripts.onestep_avatar.model import common
-from scripts.onestep_avatar import hashing
 
 
 class Geometry:

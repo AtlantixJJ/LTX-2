@@ -15,7 +15,7 @@ from accelerate.utils import DistributedType
 from safetensors.torch import save_file
 
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar import hashing
 from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.experiments import training_slice_check as slice_check
@@ -24,7 +24,6 @@ from scripts.onestep_avatar.model import adapters, common
 from scripts.onestep_avatar.tests.test_causal_core import _model
 from scripts.onestep_avatar.tests.test_training_runtime import CPUAccelerator
 from scripts.onestep_avatar.training import checkpoints, config, resources, runtime
-from scripts.onestep_avatar import hashing
 
 Context = tuple[SimpleNamespace, dict, torch.Tensor]
 OriginalArtifacts = tuple[dict, config.RunSettings, dict, SimpleNamespace, dict, dict]

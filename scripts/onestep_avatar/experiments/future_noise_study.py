@@ -9,9 +9,8 @@ import torch
 
 from scripts.onestep_avatar.corpus import subset
 from scripts.onestep_avatar.corpus.dataset import atomic_write
-from scripts.onestep_avatar.hashing import tensor_sha256
 from scripts.onestep_avatar.execution.queue import validate_job_list
-from scripts.onestep_avatar.hashing import sha256
+from scripts.onestep_avatar.hashing import sha256, tensor_sha256
 from scripts.onestep_avatar.model.sampling import validate_schedule
 
 

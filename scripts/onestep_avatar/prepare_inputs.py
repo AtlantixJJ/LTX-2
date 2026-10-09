@@ -12,14 +12,13 @@ import numpy as np
 import torch
 from PIL import Image
 
-from scripts.onestep_avatar import evaluate, media
+from scripts.onestep_avatar import evaluate, hashing, media
 from scripts.onestep_avatar.corpus import dataset, geometry, precompute
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import common
 from scripts.prune.core import ltx_adapter, model_registry, preflight
 from scripts.prune.core.session import DTYPE
-from scripts.onestep_avatar import hashing
 
 
 def single_image(path: Path, *, matte: bool = False) -> np.ndarray:

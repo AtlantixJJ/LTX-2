@@ -9,14 +9,13 @@ from pathlib import Path
 
 import torch
 
-from scripts.onestep_avatar import evaluate, media
+from scripts.onestep_avatar import evaluate, hashing, media
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import backbone, bidirectional, causal, common
 from scripts.onestep_avatar.model.sampling import validate_schedule
 from scripts.onestep_avatar.training import checkpoints
 from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
-from scripts.onestep_avatar import hashing
 
 
 def check_inputs(guide: torch.Tensor, first_image: torch.Tensor, guide_record: dict, image_record: dict) -> None:

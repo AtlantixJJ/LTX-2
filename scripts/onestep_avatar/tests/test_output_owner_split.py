@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import LTX_ROOT, PACKAGE_ROOT, evaluate, hashing, previews
+from scripts.onestep_avatar import LTX_ROOT, PACKAGE_ROOT, evaluate, hashing
 
 
 def test_tensor_identity_preserves_shape_dtype_and_original_contiguous_bytes() -> None:

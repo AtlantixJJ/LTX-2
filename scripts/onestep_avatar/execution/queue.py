@@ -518,8 +518,10 @@ def prepare_job(raw: dict, root: Path) -> dict:  # noqa: PLR0912, PLR0915 -- sha
         selected = importlib.import_module(experiment_entry(job["experiment"]))
         parser = selected.parse_args
     else:
-        from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- selected ordinary owner
-        from scripts.onestep_avatar import comparisons  # noqa: PLC0415 -- render owner is selected lazily
+        from scripts.onestep_avatar import (  # noqa: PLC0415 -- select ordinary owners lazily
+            comparisons,
+            evaluate,
+        )
 
         parser = comparisons.parse_saved_comparison_args if job["kind"] == "render" else evaluate.parse_args
     try:

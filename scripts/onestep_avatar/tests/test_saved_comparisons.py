@@ -8,8 +8,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import evaluate, media
-from scripts.onestep_avatar import comparisons
+from scripts.onestep_avatar import comparisons, evaluate, media
 
 
 def test_saved_study_spec_renders_master_and_output_with_report_metrics(tmp_path, monkeypatch):

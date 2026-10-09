@@ -3,7 +3,6 @@
 import pytest
 import torch
 
-from scripts.onestep_avatar import evaluate
 from scripts.onestep_avatar import metrics
 
 

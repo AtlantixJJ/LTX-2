@@ -16,13 +16,12 @@ import torch
 from PIL import Image
 from safetensors.torch import load_file
 
-from scripts.onestep_avatar import evaluate, infer, media
+from scripts.onestep_avatar import evaluate, hashing, infer, media
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import queue, software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, common
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources
-from scripts.onestep_avatar import hashing
 
 if TYPE_CHECKING:
     from scripts.prune.core.session import Session

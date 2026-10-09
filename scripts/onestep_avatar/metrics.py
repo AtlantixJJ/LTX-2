@@ -4,9 +4,11 @@ These arithmetic and saved-mask helpers never open transformer, text or VAE
 weights. An explicit caller may supply an LPIPS model for perceptual scores.
 """
 from __future__ import annotations
+
 import math
 from collections.abc import Iterator
 from pathlib import Path
+
 import torch
 
 

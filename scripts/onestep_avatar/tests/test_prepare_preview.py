@@ -6,13 +6,12 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import evaluate, media, prepare_inputs
+from scripts.onestep_avatar import evaluate, media, prepare_inputs, previews
 from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- fixture dependency
 from scripts.onestep_avatar.tests.test_training_preflight import checked_settings  # noqa: F401
 from scripts.onestep_avatar.training import engine
-from scripts.onestep_avatar import previews
 
 
 @pytest.fixture

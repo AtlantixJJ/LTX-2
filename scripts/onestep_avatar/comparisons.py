@@ -1,18 +1,21 @@
 """Render and verify saved comparisons; see doc/comparisons.md."""
 from __future__ import annotations
+
 import argparse
 import json
 import math
 import sys
 from pathlib import Path
+
 import torch
+
 from ltx_core.components.patchifiers import VideoLatentPatchifier
-from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar import evaluate, hashing
+from scripts.onestep_avatar import metrics as metrics_ops
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.corpus.dataset import atomic_write
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar import hashing, metrics as metrics_ops
 
 
 def _saved_panel_path(item: dict, root: Path) -> tuple[Path, bool]:

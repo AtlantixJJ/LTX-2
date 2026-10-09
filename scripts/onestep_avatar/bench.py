@@ -13,6 +13,7 @@ from pathlib import Path
 
 import torch
 
+from scripts.onestep_avatar import hashing
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.model import common
 from scripts.onestep_avatar.model.causal import BlockCache, CausalGeometry
@@ -20,7 +21,6 @@ from scripts.onestep_avatar.model.common import ClipGrid
 from scripts.prune.core import model_registry
 from scripts.prune.core.session import DEFAULT_PROMPT
 from scripts.prune.data import prompt_cache
-from scripts.onestep_avatar import hashing
 
 DTYPE = torch.bfloat16
 EDGE = 1024  # §4.5's only geometry

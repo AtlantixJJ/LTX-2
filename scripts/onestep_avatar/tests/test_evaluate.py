@@ -7,8 +7,8 @@ from dataclasses import replace
 import pytest
 import torch
 
-from scripts.onestep_avatar import evaluate
-from scripts.onestep_avatar import comparisons, hashing, metrics as metrics_ops
+from scripts.onestep_avatar import comparisons, evaluate, hashing
+from scripts.onestep_avatar import metrics as metrics_ops
 
 
 def test_saved_comparison_renderer_rejects_empty_spec_before_model_session(tmp_path):  # noqa: ANN001, ANN201

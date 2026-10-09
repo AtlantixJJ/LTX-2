@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
-import hashlib
 import json
 import math
-import os
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -17,7 +14,7 @@ from pathlib import Path
 
 import torch
 
-from ltx_core.components.patchifiers import VideoLatentPatchifier
+from scripts.onestep_avatar import hashing, metrics
 from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.corpus.dataset import atomic_write
 from scripts.onestep_avatar.execution import software
@@ -27,11 +24,6 @@ from scripts.onestep_avatar.model import backbone, bidirectional, causal, common
 from scripts.onestep_avatar.model.sampling import validate_schedule
 from scripts.onestep_avatar.training import checkpoints
 from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
-from scripts.onestep_avatar import hashing, metrics
-
-
-
-
 
 
 def saved_latent_metrics(

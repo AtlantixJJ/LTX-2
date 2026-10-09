@@ -5,8 +5,7 @@ import json
 import numpy as np
 import pytest
 
-from scripts.onestep_avatar import evaluate
-from scripts.onestep_avatar import metrics
+from scripts.onestep_avatar import evaluate, metrics
 
 
 def test_known_ramp_and_seams_have_exact_boundary_and_motion_definitions() -> None:

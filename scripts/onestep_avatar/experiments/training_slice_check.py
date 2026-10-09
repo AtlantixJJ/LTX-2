@@ -14,7 +14,7 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedType
 from safetensors.torch import load_file
 
-from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar import hashing
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import queue, software
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
@@ -22,7 +22,6 @@ from scripts.onestep_avatar.experiments import training_update_check
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import bidirectional, causal, common
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources, runtime, update_state
-from scripts.onestep_avatar import hashing
 
 ENTRY = "scripts/onestep_avatar/experiments/training_slice_check.py"
 EXTRA_SOURCES = (ENTRY, 'scripts/onestep_avatar/experiments/__init__.py',
