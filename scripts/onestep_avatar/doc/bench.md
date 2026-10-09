@@ -22,8 +22,7 @@ Report model loading and decoding separately from generation.
 
 The default CLI accepts all ordinary evaluation arguments plus `--repetitions`
 and `--warmup`. It requires an explicit mode. Parse/check these counts before
-input access. Reject future-noise probes and preview jobs: those have separate
-execution/completion contracts. Reuse evaluation preflight, prompt/guidance,
+input access. Ordinary parsing rejects retired study options; preview jobs have a separate execution/completion contract. Reuse evaluation preflight, prompt/guidance,
 adapter loading and fixed noise. For each case/adapter, run the measured sampler
 with fresh cache state, then make one untimed artifact call to save an ordinary
 encoding/result. Require that artifact's tensor hash to equal every measured

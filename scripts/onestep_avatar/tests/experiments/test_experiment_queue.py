@@ -15,7 +15,11 @@ pytest_plugins = ("scripts.onestep_avatar.tests.experiments.test_sigma_sweep",)
 
 
 def test_literal_experiment_table_has_only_reviewed_current_owner() -> None:
-    assert queue.EXPERIMENTS == {"sigma_sweep": "scripts.onestep_avatar.experiments.sigma_sweep"}
+    assert queue.EXPERIMENTS == {
+        "sigma_sweep": "scripts.onestep_avatar.experiments.sigma_sweep",
+        "causality": "scripts.onestep_avatar.experiments.causality",
+        "fusion_parity": "scripts.onestep_avatar.experiments.fusion_parity",
+    }
 
 
 @pytest.mark.parametrize("prepared_input", [False, True])

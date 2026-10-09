@@ -5,7 +5,7 @@ import json
 import pytest
 import torch
 
-from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar.experiments import saved_probe_metrics as evaluate
 from scripts.onestep_avatar.hashing import sha256
 
 

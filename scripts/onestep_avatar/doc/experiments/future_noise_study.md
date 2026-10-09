@@ -25,14 +25,14 @@ The changed pin still blocks that input conversion, not the directory move.
 Read the original subset, study manifest, saved A/B noise and prefix block
 noise. Check identities and intervention boundaries. Convert membership with
 the existing subset owner. Publish full-frame noise, membership, five package
-jobs and a migration record in a fresh directory. The package queue executes
+experiment jobs plus five pinned protocol specifications and a migration record in a fresh directory. The package queue executes
 the jobs separately; reports read their saved outputs.
 
 ```mermaid
 flowchart LR
   saved[(Original subset and noise)] --> prepare[prepare]
   prepare --> data[(Checked membership and full noise)]
-  prepare --> jobs[(Five evaluation jobs)]
+  prepare --> jobs[(Five experiment jobs)]
   jobs --> queue[Package queue]
   data --> queue
   queue --> results([Saved model results])
@@ -63,13 +63,13 @@ retains J-A, J-A-repeat, J-B/B2/B3, C-A and C-B as names for the new records.
 Current preflight still checks base/VAE/master identities at execution time.
 An old manifest cannot prove those identities for a new execution.
 
-Publication writes all seven derived files first. Hash their serialized bytes
+Publication writes all twelve derived files first. The five specifications preserve the scientific arguments, while each job selects `experiment: causality` and supplies `spec` plus `spec_sha256`. Hash their serialized bytes
 and recheck all four original inputs after those writes. Publish the version-two
 conversion record atomically and last, with the exact artifact inventory and
 current preparation source hash. A failure leaves an incomplete directory with
 no accepted conversion record. Never reuse that directory as a fresh run.
 `verify_preparation` is a read-only integrity check. It requires the expected
-schema/kind/status, unchanged producer, exact four-noise plus membership/plan/job
+schema/kind/status, unchanged producer, exact four-noise plus membership/plan/job/specification
 inventory, and matching input/artifact file hashes. It checks package job schema
 and reconstructs the expected job arguments and role map from the saved input
 manifest. It opens no models and makes no numerical or native-parity claim.
@@ -111,3 +111,7 @@ must fail, leave partial files and omit conversion.json. Rewriting a derived
 file after publication, changing its recorded inventory or changing the producer
 must fail read-only verification. Semantically changed jobs must fail even if
 their serialized artifact hash was also updated.
+
+### Pinned causality dispatch
+
+All five rows, including the unchanged A repeat, use the reviewed `causality` selector. `job_data` builds each version-one `future_noise` specification from the original exact arguments, removes only queue-owned output/device settings, and computes the SHA-256 of the exact JSON bytes that preparation writes. Interventions retain both original and changed result folders; the repeat retains its ordinary folder. Job completion names the final experiment manifest. Preparation binds all five spec files and read-only verification reconstructs their meaning as well as their hashes. Old evaluate job lists remain historical data; no new row passes retired options to ordinary evaluate.

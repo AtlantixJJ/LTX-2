@@ -7,6 +7,8 @@ Only complete verified results supply generated tensor paths/hashes. Missing
 results fail without launching models or writing files. Retain embedded job
 choices in the normalized spec. The caller owns tensor geometry, decoding and
 final publication; schema-one historical tensor specs bypass this helper.
+The ordinary parser rejects intervention flags before cell checks, so this
+reader never requests experiment-only attributes from its parsed settings.
 """
 
 import json
@@ -34,7 +36,7 @@ def resolve_cells(spec: dict, hashes: dict, levels: dict) -> None:
                 or args.mode_settings.context_latent_frames != 8 or args.mode_settings.teacher_forcing
                 or args.history_mode != "cache" or args.kv_source != "refresh"
                 or args.cfg != 1 or args.stg != 0 or args.rescale != 0 or args.checkpoint
-                or args.research_override or args.changed_noise_file is not None
+                or args.research_override
                 or args.noise_file is None or not args.source or len(args.source) != 1):
             raise ValueError("result-bound sweep evaluation conditions differ")
         signature = (str(args.subset.resolve()), tuple(args.source), args.seed, args.prompt,

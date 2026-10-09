@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import sys
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -24,207 +23,6 @@ from scripts.onestep_avatar.model import backbone, bidirectional, causal, common
 from scripts.onestep_avatar.model.sampling import validate_schedule
 from scripts.onestep_avatar.training import checkpoints
 from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
-
-
-def saved_latent_metrics(
-    output: torch.Tensor, capture: torch.Tensor, guide: torch.Tensor, *, long: bool = False
-) -> dict:
-    """Preserve historical generated-frame measurements separately from training loss."""
-    if (
-        output.ndim != 4
-        or output.shape != capture.shape
-        or output.shape != guide.shape
-        or output.shape[1] < 3
-        or output.shape[1] % 2 != 1
-        or min(output.shape[2:]) < 2
-        or any(not torch.isfinite(value).all() for value in (output, capture, guide))
-    ):
-        raise ValueError("saved metrics require finite matching C,F,H,W complete two-frame blocks")
-    output, capture, guide = (value.float() for value in (output, capture, guide))
-    frames = output.shape[1]
-    if not long and frames != 17:
-        raise ValueError("short saved metrics require exactly 17 encoded frames")
-    blocks = [(1, 3)] + [(start, start + 2) for start in range(3, frames, 2)]
-
-    def detail(value: torch.Tensor) -> float:
-        return float(
-            (value[:, :, 1:] - value[:, :, :-1]).abs().mean() + (value[:, :, :, 1:] - value[:, :, :, :-1]).abs().mean()
-        )
-
-    def ratio(numerator: float, denominator: float) -> float:
-        if denominator == 0:
-            raise ValueError("saved metric ratio has a zero denominator")
-        return numerator / denominator
-
-    result = {
-        "c0_exact": bool(torch.equal(output[:, 0], capture[:, 0])),
-        "per_block_mse": [float((output[:, a:b] - capture[:, a:b]).square().mean()) for a, b in blocks],
-    }
-    if long:
-        return {
-            **result,
-            "latent_frames": frames,
-            "per_block_guide_mse": [float((guide[:, a:b] - capture[:, a:b]).square().mean()) for a, b in blocks],
-            "per_block_detail_ratio": [ratio(detail(output[:, a:b]), detail(capture[:, a:b])) for a, b in blocks],
-        }
-    boundaries = [end for _, end in blocks[:-1]]
-
-    def seam(value: torch.Tensor) -> float:
-        steps = (value[:, 1:] - value[:, :-1]).square().mean(dim=(0, 2, 3))
-        across = torch.stack([steps[end - 1] for end in boundaries]).mean()
-        inside = torch.stack([steps[t - 1] for t in range(2, frames) if t not in boundaries]).mean()
-        if float(inside) == 0:
-            raise ValueError("saved metric ratio has a zero denominator")
-        return float(across / inside)
-
-    def motion(value: torch.Tensor) -> float:
-        return float((value[:, 2:] - value[:, 1:-1]).abs().mean())
-
-    return {
-        **result,
-        "capture_mse": float((output[:, 1:] - capture[:, 1:]).square().mean()),
-        "guide_mse": float((guide[:, 1:] - capture[:, 1:]).square().mean()),
-        "motion_ratio": ratio(motion(output), motion(capture)),
-        "detail_ratio": ratio(detail(output[:, 1:]), detail(capture[:, 1:])),
-        "guide_detail_ratio": ratio(detail(guide[:, 1:]), detail(capture[:, 1:])),
-        "seam_ratio": seam(output),
-        "capture_seam_ratio": seam(capture),
-    }
-
-
-def measure_saved_probe(directory: Path, *, long: bool = False) -> dict:
-    """Measure verified saved historical encodings, without any model session."""
-    manifest = json.loads((directory / "manifest.json").read_text())
-    rows, seen = [], set()
-    for video in manifest["videos"]:
-        artifacts = video["artifacts"]
-        seed = artifacts.get("seed", manifest.get("seed"))
-        key = (artifacts["view"], seed)
-        if key in seen:
-            continue
-        seen.add(key)
-        capture, _ = dataset.load_training_master(Path(artifacts["capture"]))
-        guide, _ = dataset.load_training_master(Path(artifacts["guide"]))
-        for latent in artifacts["latents"]:
-            path = directory / latent["path"]
-            if sha256(path) != latent["sha256"]:
-                raise ValueError(f"saved encoding content changed: {path}")
-            output = torch.load(path, map_location="cpu", weights_only=True)
-            if not isinstance(output, torch.Tensor) or output.ndim != 5 or output.shape[0] != 1:
-                raise ValueError("saved output must be a single B,C,F,H,W tensor")
-            frames = output.shape[2]
-            view = Path(artifacts["view"])
-            row = {
-                "view": f"{view.parent.parent.parent.name}/{view.parent.parent.name}/{view.name}",
-                "seed": seed,
-                **saved_latent_metrics(output[0], capture[:, :frames], guide[:, :frames], long=long),
-            }
-            if not long:
-                row.update(
-                    sigma=latent["sigma"],
-                    arm=latent["arm"],
-                    latent_sha256=latent["sha256"],
-                    epsilon_sha256=artifacts["epsilon_sha256"],
-                )
-            rows.append(row)
-    result = {"probe": str(directory), "checkpoint": manifest.get("checkpoint"), "rows": rows}
-    if not long:
-        result.update(
-            off_condition=manifest.get("off_condition", False),
-            model_variant=manifest.get("model_variant"),
-            schedule=manifest["videos"][0]["schedule"] if manifest["videos"] else None,
-        )
-    atomic_write(
-        directory / ("metrics_long.json" if long else "metrics.json"),
-        lambda temporary: temporary.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n"),
-    )
-    return result
-
-
-
-
-
-
-
-
-def sigma_sweep_boundary_metrics(video, capture, guide, mask) -> dict:  # noqa: ANN001 -- historical NumPy RGB arrays
-    """Preserve historical fixed-129-frame boundary scores, with explicit undefined ratios."""
-    import numpy as np  # noqa: PLC0415 -- historical metric arithmetic
-
-    arrays = (video, capture, guide)
-    if (any(not isinstance(value, np.ndarray) for value in arrays)
-            or video.ndim != 4 or video.shape[0] != 129 or video.shape[-1] != 3
-            or min(video.shape[1:3]) < 1 or any(value.shape != video.shape for value in arrays)):
-        raise ValueError("sigma sweep requires aligned nonempty 129,H,W,3 RGB arrays")
-    if any(not np.issubdtype(value.dtype, np.floating) or not np.isfinite(value).all()
-           or value.min() < 0 or value.max() > 1 for value in arrays):
-        raise ValueError("sigma sweep requires finite floating pixels in [0,1]")
-    if not isinstance(mask, np.ndarray) or mask.dtype != np.bool_ or mask.shape != video.shape[:3]:
-        raise ValueError("sigma sweep requires an aligned boolean foreground mask")
-    video, capture, guide = [value.astype(np.float32, copy=False) if value.dtype.itemsize < 4 else value
-                             for value in arrays]
-    boundaries, post_eviction = (17, 33, 49, 65, 81, 97, 113), {81, 97, 113}
-    indices = {boundary - 1 for boundary in boundaries}
-
-    def errors(left, right, selected):  # noqa: ANN001, ANN202 -- checked NumPy inputs
-        delta = np.abs(left - right).mean(-1)
-        return (delta * selected).sum((1, 2)) / selected.sum((1, 2)).clip(1)
-
-    def ratio(numerator: float, denominator: float) -> float | None:
-        if denominator == 0:
-            return None
-        with np.errstate(over="ignore", invalid="ignore"):
-            result = float(numerator / denominator)
-        if not math.isfinite(result):
-            raise ValueError("sigma sweep ratio is nonfinite")
-        return result
-
-    def mean(values: list) -> float | None:
-        return None if any(value is None for value in values) else float(np.mean(values))
-
-    motion, capture_motion = (
-        metrics.masked_rgb_transition_steps(video, mask),
-        metrics.masked_rgb_transition_steps(capture, mask),
-    )
-    rows = []
-    for boundary in boundaries:
-        index = boundary - 1
-        local = [motion[j] for j in range(index - 4, index + 5) if j != index and j not in indices]
-        local_capture = np.delete(capture_motion[index - 4:index + 5], 4)
-        local_ratio = ratio(motion[index], np.mean(local))
-        capture_ratio = ratio(capture_motion[index], local_capture.mean())
-        rows.append({"boundary": boundary, "post_eviction": boundary in post_eviction,
-                     "step": float(motion[index]), "ratio_to_local_interior": local_ratio,
-                     "capture_ratio": capture_ratio,
-                     "ratio_status": "undefined_zero_local_motion" if local_ratio is None else "defined",
-                     "capture_ratio_status": "undefined_zero_local_motion" if capture_ratio is None else "defined"})
-    motion_ratio = ratio(motion[16:].mean(), capture_motion[16:].mean())
-    return {
-        "per_boundary": rows,
-        "mean_boundary_ratio": mean([row["ratio_to_local_interior"] for row in rows]),
-        "mean_boundary_ratio_pre_eviction": mean([row["ratio_to_local_interior"] for row in rows
-                                                 if not row["post_eviction"]]),
-        "mean_boundary_ratio_post_eviction": mean([row["ratio_to_local_interior"] for row in rows
-                                                  if row["post_eviction"]]),
-        "interior_step": float(np.mean([motion[i] for i in range(16, 128) if i not in indices])),
-        "motion_over_capture": motion_ratio,
-        "motion_ratio_status": "undefined_zero_capture_motion" if motion_ratio is None else "defined",
-        "err_vs_capture": float(errors(video[1:], capture[1:], mask[1:]).mean()),
-        "err_vs_guide": float(errors(video[1:], guide[1:], mask[1:]).mean()),
-        "drift_vs_c0_last": float(errors(video[128:], video[:1], mask[128:])[0]),
-        "per_frame_err_vs_capture": errors(video, capture, mask).round(4).tolist(),
-        "per_transition_step": motion.round(4).tolist(),
-    }
-
-
-
-
-
-
-
-
-
-
 
 
 def check_adapter(path: Path | None, requested: dict, *, override: bool = False, product: bool = False) -> dict:
@@ -404,56 +202,6 @@ def sample_case(  # noqa: PLR0913 -- explicit checked model inputs and selected 
     }
 
 
-def probe_future_noise(
-    transformer: torch.nn.Module,
-    context: torch.Tensor,
-    grid: common.ClipGrid,
-    capture: torch.Tensor,
-    guide: torch.Tensor | None,
-    noise: torch.Tensor,
-    changed_noise: torch.Tensor,
-    *,
-    change_start_frame: int,
-    **settings,
-) -> tuple[list[torch.Tensor], dict]:
-    """Change only later saved noise and measure the earlier generated encoding."""
-    if not 0 < change_start_frame < grid.latent_frames:
-        raise ValueError("future-noise boundary must leave nonempty earlier and later regions")
-    if settings.get("mode") == "causal":
-        mode = settings["mode_settings"]
-        plan = causal.CausalGeometry(
-            grid.tools.scale_factors, mode.block_latent_frames, mode.context_latent_frames
-        ).plan(grid.latent_frames)
-        if change_start_frame not in [end for _, end in plan[:-1]]:
-            raise ValueError("causal future-noise boundary must separate completed blocks")
-    boundary = change_start_frame * grid.tokens_per_latent_frame
-    source = common.source_for(capture, guide, settings["guide_mode"])
-    if noise.shape != source.shape or not torch.isfinite(noise).all() or not torch.isfinite(changed_noise).all():
-        raise ValueError("future-noise tensors must be finite and match the complete source")
-    if noise.shape != changed_noise.shape or noise.dtype != changed_noise.dtype or noise.device != changed_noise.device:
-        raise ValueError("future-noise tensors must have identical shape, dtype and device")
-    if not torch.equal(noise[:, :boundary], changed_noise[:, :boundary]):
-        raise ValueError("future-noise diagnostic changed earlier noise")
-    if torch.equal(noise[:, boundary:], changed_noise[:, boundary:]):
-        raise ValueError("future-noise diagnostic requires changed later noise")
-    outputs, records = [], []
-    for epsilon in (noise, changed_noise):
-        output, record = sample_case(transformer, context, grid, capture, guide, epsilon, **settings)
-        outputs.append(output)
-        records.append(record)
-    left, right = (output[:, :, :change_start_frame] for output in outputs)
-    return outputs, {
-        "change_start_encoded_frame": change_start_frame,
-        "earlier_output_bit_identical": torch.equal(left, right),
-        "earlier_output_max_abs_delta": float((left.float() - right.float()).abs().max()),
-        "later_output_max_abs_delta": float(
-            (outputs[0][:, :, change_start_frame:].float() - outputs[1][:, :, change_start_frame:].float()).abs().max()
-        ),
-        "records": records,
-        "scope": "fixed model inputs; only noise at/after the encoded boundary differs",
-    }
-
-
 def save_case(output: torch.Tensor, record: dict, destination: Path) -> dict:
     """Publish encoding first, then a JSON record with its actual serialized hash."""
     destination.mkdir(parents=True, exist_ok=True)
@@ -469,30 +217,6 @@ def save_case(output: torch.Tensor, record: dict, destination: Path) -> dict:
         lambda temporary: temporary.write_text(json.dumps(completed, indent=2, allow_nan=False) + "\n"),
     )
     return completed
-
-
-def save_future_noise_probe(outputs: list[torch.Tensor], diagnostic: dict, provenance: dict, destination: Path) -> dict:
-    """Publish both raw results before a diagnostic, preserving their distinct noise hashes."""
-    if len(outputs) != 2 or len(diagnostic.get("records", [])) != 2:
-        raise ValueError("future-noise publication requires two outputs and records")
-    saved = [
-        save_case(encoded, {**raw, **provenance}, destination / name)
-        for encoded, raw, name in zip(outputs, diagnostic["records"], ("original", "changed"), strict=True)
-    ]
-    completed = {**diagnostic, "records": saved}
-    atomic_write(
-        destination / "future_noise.json",
-        lambda temporary: temporary.write_text(json.dumps(completed, indent=2) + "\n"),
-    )
-    return completed
-
-
-
-
-
-
-
-
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:  # noqa: PLR0912, PLR0915 -- explicit mode/diagnostic argument gates
@@ -522,8 +246,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:  # noqa: PL
     parser.add_argument("--kv-source", choices=("refresh", "denoise"))
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--noise-file", type=Path)
-    parser.add_argument("--changed-noise-file", type=Path)
-    parser.add_argument("--future-noise-start", type=int)
     parser.add_argument("--gpu-id", type=int, default=0)
     parser.add_argument("--prompt", default=None)
     parser.add_argument("--cfg", type=float, default=1.0)
@@ -535,10 +257,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:  # noqa: PL
     parser.add_argument("--adapter-application", choices=adapter_loader.METHODS, default=adapter_loader.UNMERGED)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    if (args.changed_noise_file is None) != (args.future_noise_start is None):
-        parser.error("future-noise probe requires both changed noise and an encoded boundary")
-    if args.changed_noise_file is not None and (args.noise_file is None or args.future_noise_start < 1):
-        parser.error("future-noise probe requires saved original noise and a positive boundary")
     if not math.isfinite(args.cfg) or args.cfg < 0:
         parser.error("CFG scale must be finite and nonnegative")
     if not math.isfinite(args.stg) or args.stg < 0 or not math.isfinite(args.rescale) or not 0 <= args.rescale <= 1:
@@ -641,17 +359,6 @@ def prepare_evaluation(args: argparse.Namespace, *, require_fresh_output: bool =
     if saved_noise is not None and saved_noise.dtype != torch.bfloat16:
         raise ValueError("saved comparison noise must use the native bf16 dtype")
     args.saved_noise = saved_noise
-    args.changed_noise = (
-        None
-        if args.changed_noise_file is None
-        else torch.load(args.changed_noise_file, map_location="cpu", weights_only=True)
-    )
-    if args.changed_noise is not None and (
-        not isinstance(args.changed_noise, torch.Tensor)
-        or args.changed_noise.dtype != torch.bfloat16
-        or not torch.isfinite(args.changed_noise).all()
-    ):
-        raise ValueError("changed comparison noise must be a finite native-bf16 tensor")
     if saved_noise is not None and len(ids) != 1:
         raise ValueError("a saved noise file belongs to exactly one selected video")
     for source in ids:
@@ -678,17 +385,6 @@ def prepare_evaluation(args: argparse.Namespace, *, require_fresh_output: bool =
         expected_noise = (1, frames * video.z_y.shape[2] * video.z_y.shape[3], video.z_y.shape[0])
         if saved_noise is not None and tuple(saved_noise.shape) != expected_noise:
             raise ValueError("saved noise shape differs from selected input tokens")
-        if args.changed_noise is not None:
-            start = args.future_noise_start
-            boundary = start * video.z_y.shape[2] * video.z_y.shape[3]
-            if not 0 < start < frames or tuple(args.changed_noise.shape) != expected_noise:
-                raise ValueError("future-noise boundary/shape differs from selected input")
-            if args.mode == "causal" and start not in [end for _, end in plan[:-1]]:
-                raise ValueError("causal future-noise boundary must separate completed blocks")
-            if not torch.equal(saved_noise[:, :boundary], args.changed_noise[:, :boundary]):
-                raise ValueError("future-noise diagnostic changed earlier noise")
-            if torch.equal(saved_noise[:, boundary:], args.changed_noise[:, boundary:]):
-                raise ValueError("future-noise diagnostic requires changed later noise")
         if ((frames - 1) * specification.scale_factors.time + 1) / video.fps > common.MAX_ROPE_SECONDS:
             raise ValueError("selected range exceeds the model position limit")
         requested = {
@@ -719,21 +415,33 @@ def prepare_evaluation(args: argparse.Namespace, *, require_fresh_output: bool =
     return specification, variants, cases, membership
 
 
-def verify_evaluation_conditions(arguments: list[str], record_paths: list[Path]) -> None:  # noqa: PLR0912, PLR0915 -- all scientific evidence must agree
+def verify_evaluation_conditions(  # noqa: PLR0912, PLR0915 -- all scientific evidence must agree
+    arguments: list[str], record_paths: list[Path], *,
+    branch_provider: Callable[[Path], list[tuple[Path, torch.Tensor | None]]] | None = None,
+    records_validator: Callable[[Path, list[dict], list[torch.Tensor]], None] | None = None,
+    extra_sources: tuple[str, ...] = (),
+) -> None:
     """Verify queued results against current inputs, without opening model sessions."""
     from ltx_pipelines.utils.constants import DEFAULT_NEGATIVE_PROMPT  # noqa: PLC0415
     from scripts.prune.core.session import DEFAULT_PROMPT, DTYPE  # noqa: PLC0415 -- constants only
 
+    if (branch_provider is not None or records_validator is not None) and (not extra_sources
+            or (branch_provider is not None and not callable(branch_provider))
+            or (records_validator is not None and not callable(records_validator))):
+        raise ValueError("custom evaluation verification requires explicit source owners")
     args = parse_args(arguments)
     specification, variants, cases, membership = prepare_evaluation(args, require_fresh_output=False)
+
+    def branches(destination: Path) -> list[tuple[Path, torch.Tensor | None]]:
+        rows = [(destination, None)] if branch_provider is None else branch_provider(destination)
+        if not rows or any(not folder.resolve().is_relative_to(destination.resolve()) for folder, _ in rows):
+            raise ValueError("evaluation verification branch escapes its variant")
+        return rows
     expected_paths = []
     for case_index in range(len(cases)):
         for variant_index in range(len(variants)):
             destination = args.output / f"case_{case_index:04d}" / f"variant_{variant_index:03d}"
-            expected_paths.extend(
-                [destination / "result.json"] if args.changed_noise_file is None
-                else [destination / branch / "result.json" for branch in ("original", "changed")]
-            )
+            expected_paths.extend(folder / "result.json" for folder, _ in branches(destination))
     resolved = [path.resolve() for path in record_paths]
     if len(set(resolved)) != len(resolved) or set(resolved) != {path.resolve() for path in expected_paths}:
         raise ValueError("queue evaluation result inventory differs from requested cases")
@@ -766,9 +474,6 @@ def verify_evaluation_conditions(arguments: list[str], record_paths: list[Path])
         noise = tensor(case_dir / "noise.pt")
         if noise.shape != capture.shape or (args.saved_noise is not None and not torch.equal(noise, args.saved_noise)):
             raise ValueError("queue evaluation saved noise differs from requested input")
-        changed = None if args.changed_noise is None else tensor(case_dir / "changed_noise.pt")
-        if changed is not None and not torch.equal(changed, args.changed_noise):
-            raise ValueError("queue evaluation saved changed noise differs from requested input")
         fixed = {
             "schema_version": 2, "state": "complete", "mode": args.mode,
             "mode_settings": asdict(args.mode_settings), "guide_mode": args.guide_mode,
@@ -781,16 +486,17 @@ def verify_evaluation_conditions(arguments: list[str], record_paths: list[Path])
             "prompt": prompt, "guidance": guidance,
             "negative_prompt": negative_prompt if negative is not None else None,
             "producer_source_sha256": sha256(Path(__file__)),
-            "software": software.capture("evaluation", args.mode),
+            "software": software.capture("evaluation", args.mode, extra_sources=extra_sources),
         }
         if args.mode == "causal":
             fixed.update(history_mode=args.history_mode, kv_source=args.kv_source)
         for variant_index, adapter in enumerate(adapters):
             destination = case_dir / f"variant_{variant_index:03d}"
             branch_records, predictions = [], []
-            branches = [(destination, noise)] if changed is None else [
-                (destination / "original", noise), (destination / "changed", changed)]
-            for folder, epsilon in branches:
+            for folder, branch_noise in branches(destination):
+                epsilon = noise if branch_noise is None else branch_noise
+                if epsilon.shape != noise.shape or epsilon.dtype != noise.dtype or not torch.isfinite(epsilon).all():
+                    raise ValueError("evaluation verification branch noise differs from the source geometry")
                 record = json.loads((folder / "result.json").read_text())
                 software.check_current(record.get("software"))
                 expected = {**fixed, **adapter, "noise_sha256": hashing.tensor_sha256(epsilon)}
@@ -799,27 +505,19 @@ def verify_evaluation_conditions(arguments: list[str], record_paths: list[Path])
                 encoded = folder / "generated.pt"
                 if Path(record.get("output", {}).get("path", "")).resolve() != encoded.resolve():
                     raise ValueError("queue evaluation encoding path differs from requested variant")
+                if record.get("output", {}).get("sha256") != sha256(encoded):
+                    raise ValueError("evaluation encoding bytes differ from the published record")
                 prediction = tensor(encoded)
+                if record.get("output", {}).get("shape") != list(prediction.shape):
+                    raise ValueError("evaluation encoding shape differs from the published record")
                 if list(prediction.shape) != [1, *video.z_y[:, :frames].shape]:
                     raise ValueError("queue evaluation encoding shape differs from requested video")
                 if not torch.equal(prediction[:, :, :1], video.z_y[:, :1].unsqueeze(0).to(dtype=DTYPE)):
                     raise ValueError("queue evaluation changed clean first-image input")
                 branch_records.append(record)
                 predictions.append(prediction)
-            if changed is not None:
-                diagnostic = json.loads((destination / "future_noise.json").read_text())
-                boundary = args.future_noise_start
-                left, right = (value[:, :, :boundary] for value in predictions)
-                expected_diagnostic = {
-                    "change_start_encoded_frame": boundary, "records": branch_records,
-                    "earlier_output_bit_identical": torch.equal(left, right),
-                    "earlier_output_max_abs_delta": float((left.float()-right.float()).abs().max()),
-                    "later_output_max_abs_delta": float((predictions[0][:, :, boundary:].float()
-                                                         -predictions[1][:, :, boundary:].float()).abs().max()),
-                }
-                if any(key not in diagnostic or diagnostic[key] != value
-                       for key, value in expected_diagnostic.items()):
-                    raise ValueError("queue evaluation future-noise diagnostic differs from saved results")
+            if records_validator is not None:
+                records_validator(destination, branch_records, predictions)
 
 
 def evaluation_evidence_paths(arguments: list[str], record_paths: list[Path]) -> list[Path]:
@@ -831,52 +529,23 @@ def evaluation_evidence_paths(arguments: list[str], record_paths: list[Path]) ->
         paths.add(args.output / "negative_text.pt")
     for record in record_paths:
         paths.add(record.parent / "generated.pt")
-        variant = record.parent if args.changed_noise_file is None else record.parent.parent
-        paths.add(variant.parent / "noise.pt")
-        if args.changed_noise_file is not None:
-            paths.update((variant.parent / "changed_noise.pt", variant / "future_noise.json"))
+        paths.add(record.parent.parent / "noise.pt")
     return sorted(paths)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def execute_evaluation(  # noqa: PLR0912, PLR0915 -- explicit sampler and native session orchestration
     args: argparse.Namespace, sample_runner: Callable[..., tuple[torch.Tensor, dict]] | None = None, *,
     preview_tensor_validator: Callable[[dict, dict[str, torch.Tensor | None]], None] | None = None,
+    result_publisher: Callable[[torch.Tensor, dict, Path], object] | None = None,
+    extra_sources: tuple[str, ...] = (),
 ) -> int:
     """Execute ordinary sampling; a fixed preview requires its canonical tensor validator."""
     if getattr(args, "preview_fixed", None) is not None and not callable(preview_tensor_validator):
         raise ValueError("fixed preview requires its explicit preview tensor validator")
-    if sample_runner is not None and args.changed_noise_file is not None:
-        raise ValueError("future-noise probes reject a custom sample runner")
+    if result_publisher is not None and (not callable(result_publisher) or not extra_sources):
+        raise ValueError("custom evaluation publication requires explicit source owners")
     producer_source = sha256(Path(__file__))
-    producer_software = software.capture("evaluation", args.mode)
+    producer_software = software.capture("evaluation", args.mode, extra_sources=extra_sources)
     specification, variants, cases, membership = prepare_evaluation(args)
     if (getattr(args, "preview_fixed", None) is not None and args.cfg != 1.0
             and 'negative_text' not in args.preview_fixed.get('input_files', {})):
@@ -989,9 +658,6 @@ def execute_evaluation(  # noqa: PLR0912, PLR0915 -- explicit sampler and native
         atomic_write(
             destination / "noise.pt", lambda temporary, saved_noise=saved_noise: torch.save(saved_noise, temporary)
         )
-        changed_noise = None if args.changed_noise is None else args.changed_noise.to(device=device)
-        if changed_noise is not None:
-            atomic_write(destination / "changed_noise.pt", lambda temporary: torch.save(args.changed_noise, temporary))
         for index, checkpoint in enumerate(variants):
             software.check_current(producer_software)
             if checkpoint is not None:
@@ -1001,11 +667,7 @@ def execute_evaluation(  # noqa: PLR0912, PLR0915 -- explicit sampler and native
                 session, checkpoint, adapters[index].get("contract"), method=args.adapter_application,
                 adapter_sha256=adapters[index].get("adapter_sha256")
             ) as transformer:
-                sampler = (
-                    (sample_case if sample_runner is None else sample_runner)
-                    if changed_noise is None
-                    else probe_future_noise
-                )
+                sampler = sample_case if sample_runner is None else sample_runner
                 result = sampler(
                     transformer,
                     context,
@@ -1013,8 +675,6 @@ def execute_evaluation(  # noqa: PLR0912, PLR0915 -- explicit sampler and native
                     capture,
                     guide,
                     epsilon,
-                    *((changed_noise,) if changed_noise is not None else ()),
-                    **({"change_start_frame": args.future_noise_start} if changed_noise is not None else {}),
                     mode=args.mode,
                     mode_settings=args.mode_settings,
                     guide_mode=args.guide_mode,
@@ -1031,7 +691,7 @@ def execute_evaluation(  # noqa: PLR0912, PLR0915 -- explicit sampler and native
             # The context manager cannot release the caller's retained reference.
             # Drop it before loading the next full resident checkpoint.
             del transformer
-            output, record = result if changed_noise is None else (result[0][0], result[1]["records"][0])
+            output, record = result
             record = dict(record)
             record.update(
                 conditions=requested,
@@ -1061,258 +721,14 @@ def execute_evaluation(  # noqa: PLR0912, PLR0915 -- explicit sampler and native
             if sha256(Path(__file__)) != producer_source:
                 raise ValueError("evaluation producer source changed before result publication")
             software.check_current(producer_software)
-            if changed_noise is None:
-                save_case(output, record, variant_output)
-            else:
-                outputs, diagnostic = result
-                common_record = {key: value for key, value in record.items() if key not in diagnostic["records"][0]}
-                save_future_noise_probe(outputs, diagnostic, common_record, variant_output)
+            publisher = save_case if result_publisher is None else result_publisher
+            publisher(output, record, variant_output)
     return 0
 
 
-def fusion_probe_block(transformer, kind: str, session, capture: torch.Tensor, guide: torch.Tensor, fps: float) -> torch.Tensor:  # noqa: ANN001, E501 -- native external model/session handles
-    """Preserve the historical diagnostic's one empty-cache block, input and seed."""
-    from scripts.prune.core.session import DTYPE  # noqa: PLC0415 -- native training dtype
-
-    geometry = causal.deployed_geometry(session.model.scale_factors)
-    _, frames, height, width = capture.shape
-    grid = common.ClipGrid.build(
-        frames, height * geometry.scale_factors.height, width * geometry.scale_factors.width,
-        fps, geometry, device=session.device, dtype=DTYPE, latent_channels=session.model.caps.latent_channels,
-    )
-    span = geometry.plan(frames)[0]
-    lo, hi = grid.token_span(*span)
-    target = grid.patchify(capture.unsqueeze(0).to(device=session.device, dtype=DTYPE))
-    source = grid.patchify(guide.unsqueeze(0).to(device=session.device, dtype=DTYPE))
-    c0 = target[:, :grid.tokens_per_latent_frame]
-    inner = common.base_model(transformer)
-    cache = causal.BlockCache.allocate(
-        grid, geometry, num_layers=len(inner.transformer_blocks), inner_dim=inner.inner_dim,
-        device=session.device, dtype=DTYPE,
-    )
-    noisy = common.with_clean_prefix(common.noise_block(source[:, lo:hi], 0.421875, 42), c0)
-    return causal.fusion_parity_block(
-        transformer, kind, grid, cache, noisy, session.context, 0.421875, span,
-        clean_prefix_tokens=c0.shape[1],
-    ).float().cpu()
-
-
-def fusion_parity_metrics(outputs: dict[str, torch.Tensor]) -> dict:
-    """Compare raw outputs and adapter effects without hiding undefined ratios."""
-    if set(outputs) != {"bare", "step0", "fused1", "peft0", "peft1"}:
-        raise ValueError("fusion parity requires all five model cases")
-    reference = outputs["bare"]
-    if reference.numel() == 0 or any(
-        value.shape != reference.shape or not torch.isfinite(value).all() for value in outputs.values()
-    ):
-        raise ValueError("fusion parity outputs must have matching shapes and finite values")
-
-    def relative(delta: torch.Tensor, base: torch.Tensor) -> float | None:
-        denominator = float(base.norm())
-        return None if denominator == 0 else float(delta.norm() / base.norm())
-
-    effect_peft = outputs["peft1"] - outputs["peft0"]
-    effect_fused = outputs["fused1"] - reference
-    gap = relative(effect_fused - effect_peft, effect_peft)
-    return {
-        "step0_equals_bare_bitwise": bool(torch.equal(outputs["step0"], reference)),
-        "rel_l2_step0_vs_bare": relative(outputs["step0"] - reference, reference),
-        "rel_l2_training_path_vs_probe_path_no_adapter": relative(outputs["peft0"] - reference, reference),
-        "rel_l2_adapter_effect_peft": relative(effect_peft, outputs["peft0"]),
-        "rel_l2_adapter_effect_fused": relative(effect_fused, reference),
-        "rel_l2_effect_fused_vs_effect_peft": gap,
-        "rel_l2_fused1_vs_peft1": relative(outputs["fused1"] - outputs["peft1"], outputs["peft1"]),
-        "tolerance_rel_l2_effect": 0.2,
-        "fused_vs_peft_within_tolerance": gap is not None and gap <= 0.2,
-        "effect_ratio_status": "undefined_zero_peft_effect" if gap is None else "defined",
-    }
-
-
-def evaluate_fusion_parity(run: Path, view: Path, output: Path, *, gpu_id: int, step: int = 1) -> dict:
-    """Own the five historical fusion cases and publish only completed diagnostic results."""
-    from peft import LoraConfig, get_peft_model  # noqa: PLC0415
-
-    from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps  # noqa: PLC0415
-    from ltx_trainer.model_loader import load_transformer  # noqa: PLC0415
-    from scripts.onestep_avatar.model.adapters import LORA_TARGETS  # noqa: PLC0415
-    from scripts.prune.core.session import DTYPE, open_session  # noqa: PLC0415
-
-    if type(step) is not int or step < 1 or output.exists():
-        raise ValueError("fusion diagnostic requires a positive trained step and fresh output")
-    config_path = run / "config.json"
-    config = json.loads(config_path.read_text())
-    if (config.get("lora_target") not in LORA_TARGETS
-            or type(config.get("lora_rank")) is not int or config["lora_rank"] < 1):
-        raise ValueError("fusion diagnostic requires a valid saved LoRA configuration")
-    alpha = config.get("lora_alpha")
-    if type(alpha) not in (int, float) or not math.isfinite(alpha) or alpha <= 0:
-        raise ValueError("fusion diagnostic requires a positive saved LoRA alpha")
-    if alpha != config["lora_rank"]:
-        raise ValueError("fusion diagnostic requires alpha equal to rank for the fused path")
-    dev = backbone.transformer_path("2.5", "dev")
-    step0 = run / "checkpoints/lora_weights_step_00000.safetensors"
-    trained = run / f"checkpoints/lora_weights_step_{step:05d}.safetensors"
-    capture_path, guide_path = view / dataset.capture_bundle_name("white"), view / dataset.guide_bundle_name("white")
-    paths = [config_path, dev, step0, trained, capture_path, guide_path]
-    if any(not path.is_file() for path in paths):
-        raise ValueError("fusion diagnostic input file is missing")
-    capture, fps = dataset.load_training_master(capture_path)
-    guide, guide_fps = dataset.load_training_master(guide_path)
-    if capture.shape != guide.shape or fps != guide_fps or capture.shape[1] < 3:
-        raise ValueError("fusion diagnostic requires matching capture/guide geometry, fps and block-zero coverage")
-    identities = {str(path.resolve()): sha256(path) for path in paths}
-    session = open_session(argparse.Namespace(model="2.5", gpu_id=gpu_id, seed=42),
-                           script="onestep_avatar.evaluate.fusion_parity", transformer_path=dev)
-    outputs = {}
-    for name, adapters in (("bare", ()), ("step0", (step0,)), ("fused1", (trained,))):
-        loras = tuple(LoraPathStrengthAndSDOps(str(path), 1.0, LTXV_LORA_COMFY_RENAMING_MAP) for path in adapters)
-        with session.transformer(dev, loras=loras) as transformer:
-            outputs[name] = fusion_probe_block(transformer, "x0", session, capture, guide, fps)
-        del transformer
-        torch.cuda.empty_cache()
-    model = load_transformer(checkpoint_path=str(dev), device=session.device, dtype=DTYPE, video_only=True)
-    model.requires_grad_(False)
-    model = get_peft_model(model, LoraConfig(r=config["lora_rank"], lora_alpha=alpha,
-                           target_modules=LORA_TARGETS[config["lora_target"]], lora_dropout=0.0))
-    model.eval()
-    for name, path in (("peft0", step0), ("peft1", trained)):
-        checkpoints.load_stage_init(model, path)
-        outputs[name] = fusion_probe_block(model, "velocity", session, capture, guide, fps)
-    del model
-    torch.cuda.empty_cache()
-    if any(sha256(path) != identities[str(path.resolve())] for path in paths):
-        raise ValueError("fusion diagnostic inputs changed during execution")
-    result = {"view": str(view), "trained_step": step, "sigma": 0.421875, "block": 0, "noise_seed": 42,
-              **fusion_parity_metrics(outputs), "input_sha256": identities}
-    output.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(output, lambda temporary: temporary.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n"))
-    return result
-
-
-@torch.no_grad()
-def causality_probe(transformer, session, capture: torch.Tensor, guide: torch.Tensor, fps: float, sigma: float) -> dict:  # noqa: ANN001 -- native model/session handles
-    """Keep global noise mapping and execute exactly eight generated-history blocks."""
-    from scripts.prune.core.session import DTYPE  # noqa: PLC0415
-
-    levels = list(validate_schedule([sigma, 0.0]))
-    if capture.shape != guide.shape or capture.ndim != 4 or capture.shape[1] < 17:
-        raise ValueError("causality diagnostic requires matching masters and eight complete blocks")
-    if any(not torch.isfinite(value).all() for value in (capture, guide)):
-        raise ValueError("causality diagnostic masters must be finite")
-    geometry = causal.deployed_geometry(session.model.scale_factors)
-    _, frames, height, width = capture.shape
-    grid = common.ClipGrid.build(
-        frames, height * geometry.scale_factors.height, width * geometry.scale_factors.width,
-        fps, geometry, device=session.device, dtype=DTYPE, latent_channels=session.model.caps.latent_channels,
-    )
-    plan = geometry.plan(frames)[:8]
-    target = grid.patchify(capture.unsqueeze(0).to(device=session.device, dtype=DTYPE))
-    source = grid.patchify(guide.unsqueeze(0).to(device=session.device, dtype=DTYPE))
-    original = common.epsilon_block(target, 42)
-    alternate = common.epsilon_block(target, 99)
-    first = plan[3][1]
-    boundary = first * grid.tokens_per_latent_frame
-    mixed = torch.cat((original[:, :boundary], alternate[:, boundary:]), dim=1)
-    outputs, records = [], []
-    for epsilon in (original, mixed):
-        with measure_calls(transformer) as measured:
-            tokens, counts = causal.sample(
-                common.denoised_from_x0_model(transformer), session.context, grid, source,
-                target[:, :grid.tokens_per_latent_frame], transformer=transformer,
-                geometry=geometry, schedule=levels, seed=42, epsilon=epsilon, blocks=plan,
-                teacher_forcing=False, history_mode="cache", kv_source="refresh",
-            )
-        covered = plan[-1][1]
-        outputs.append(grid.unpatchify_block(tokens[:, :covered * grid.tokens_per_latent_frame], covered).float().cpu())
-        if not torch.isfinite(outputs[-1]).all():
-            raise ValueError("causality diagnostic produced nonfinite output")
-        records.append({"noise_sha256": hashing.tensor_sha256(epsilon), "call_counts": {**counts, **measured}})
-    left, right = outputs
-    later_delta = float((left[:, :, first:] - right[:, :, first:]).abs().max())
-    return {
-        "shared_noise_blocks": [0, 1, 2, 3], "changed_noise_blocks": [4, 5, 6, 7],
-        "latent_frames_compared_equal": [0, first],
-        "earlier_blocks_bit_identical": bool(torch.equal(left[:, :, :first], right[:, :, :first])),
-        "later_blocks_max_abs_diff": later_delta, "later_blocks_changed": later_delta > 0,
-        "records": records, "capture_sha256": hashing.tensor_sha256(target),
-        "guide_sha256": hashing.tensor_sha256(source), "text_sha256": hashing.tensor_sha256(session.context),
-    }
-
-
-def evaluate_causality(checkpoint: Path, view: Path, output: Path, *, gpu_id: int, sigma: float) -> dict:
-    """Check scientific inputs before weights, then publish the historical comparison."""
-    from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps  # noqa: PLC0415
-    from scripts.prune.core.session import open_session  # noqa: PLC0415
-
-    validate_schedule([sigma, 0.0])
-    if output.exists():
-        raise ValueError("causality diagnostic requires a fresh output")
-    dev = backbone.transformer_path("2.5", "dev")
-    capture_path = view / dataset.capture_bundle_name("white")
-    guide_path = view / dataset.guide_bundle_name("white")
-    paths = [dev, checkpoint, capture_path, guide_path]
-    if any(not path.is_file() for path in paths):
-        raise ValueError("causality diagnostic input file is missing")
-    capture, fps = dataset.load_training_master(capture_path)
-    guide, guide_fps = dataset.load_training_master(guide_path)
-    if capture.shape != guide.shape or fps != guide_fps or capture.shape[1] < 17:
-        raise ValueError("causality diagnostic requires matching masters, fps and eight complete blocks")
-    meta = checkpoints.read_adapter_metadata(checkpoint)
-    checkpoints.check_adapter_conditions(
-        meta, base=backbone.identity(dev, "dev", "2.5"), objective="white", guide_mode="d1",
-        schedule=[sigma, 0.0], geometry={"block_latent_frames": 2, "context_latent_frames": 8,
-                                       "sink_latent_frames": 1}, teacher_forcing=False,
-    )
-    identities = {str(path.resolve()): sha256(path) for path in paths}
-    session = open_session(argparse.Namespace(model="2.5", gpu_id=gpu_id, seed=42),
-                           script="onestep_avatar.evaluate.causality", transformer_path=dev)
-    loras = (LoraPathStrengthAndSDOps(str(checkpoint), 1.0, LTXV_LORA_COMFY_RENAMING_MAP),)
-    with session.transformer(dev, loras=loras) as transformer:
-        diagnostic = causality_probe(transformer, session, capture, guide, fps, sigma)
-    del transformer
-    torch.cuda.empty_cache()
-    if any(sha256(path) != identities[str(path.resolve())] for path in paths):
-        raise ValueError("causality diagnostic inputs changed during execution")
-    result = {"checkpoint": str(checkpoint), "view": str(view), "sigma": sigma,
-              **diagnostic, "input_sha256": identities}
-    output.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(output, lambda temporary: temporary.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n"))
-    return result
-
-
 def main(argv: list[str] | None = None) -> int:
-    arguments = sys.argv[1:] if argv is None else argv
-    if "--causality" in arguments:
-        parser = argparse.ArgumentParser(description="Compare eight D1 blocks with changed later noise")
-        parser.add_argument("--causality", action="store_true", required=True)
-        parser.add_argument("--checkpoint", type=Path, required=True)
-        parser.add_argument("--view", type=Path, required=True)
-        parser.add_argument("--output", type=Path, required=True)
-        parser.add_argument("--gpu-id", type=int, required=True)
-        parser.add_argument("--sigma", type=float, required=True)
-        args = parser.parse_args(arguments)
-        evaluate_causality(args.checkpoint, args.view, args.output, gpu_id=args.gpu_id, sigma=args.sigma)
-        return 0
-    if "--fusion-parity" in arguments:
-        parser = argparse.ArgumentParser(description="Compare PEFT and fused adapter effects on D1 block zero")
-        parser.add_argument("--fusion-parity", action="store_true", required=True)
-        parser.add_argument("--run", type=Path, required=True)
-        parser.add_argument("--view", type=Path, required=True)
-        parser.add_argument("--output", type=Path, required=True)
-        parser.add_argument("--gpu-id", type=int, required=True)
-        parser.add_argument("--step", type=int, default=1)
-        args = parser.parse_args(arguments)
-        evaluate_fusion_parity(args.run, args.view, args.output, gpu_id=args.gpu_id, step=args.step)
-        return 0
-    if "--saved-metrics" in arguments:
-        parser = argparse.ArgumentParser(description="Measure saved encodings without loading models")
-        parser.add_argument("--saved-metrics", nargs="+", type=Path, required=True)
-        parser.add_argument("--long-metrics", action="store_true")
-        args = parser.parse_args(arguments)
-        for directory in args.saved_metrics:
-            measure_saved_probe(directory, long=args.long_metrics)
-        return 0
-    return execute_evaluation(parse_args(arguments))
+    """Execute only ordinary explicitly selected evaluation."""
+    return execute_evaluation(parse_args(argv))
 
 
 if __name__ == "__main__":

@@ -6,8 +6,11 @@ entry is temporary for live queues and is not a new-run recipe.
 
 Use the `ltx` environment from the LTX-2 root. Only guide rendering uses
 `argavatar`. Query `nvidia-smi` directly and register starts in the single
-shared own-process ledger. Independent checks may run concurrently on GPUs
-0–3; four-rank training still requires all four. These recipes describe
+shared own-process ledger. The user amendment on 2026-10-09 authorizes one
+shared pool of GPUs 0–7; four-rank training selects four free devices.
+The current pre-G8 queue still fixes training to 0–3 and selects single-device
+jobs in preference order 5 through 0; it does not dispatch 6 or 7 yet. This is
+a transitional implementation restriction, not a user prohibition. These recipes describe
 commands; this refactor does not start campaigns or bulk preprocessing.
 The current task only prepares the next agent's handoff. Its work order is
 code refactor first, CPU/import/boundary validation next, then fresh affected
@@ -445,7 +448,7 @@ requirements and exact panel layouts. Report code consumes saved results only.
 Historical saved-encoding measurements use the package owner directly:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.evaluate \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.saved_probe_metrics \
   --saved-metrics <PROBE_DIRECTORY>
 ```
 
@@ -477,7 +480,7 @@ Use saved native-bf16 token tensors for exactly one selected video. The second
 tensor keeps all tokens before the boundary unchanged and changes later tokens:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.evaluate \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.causality \
   --mode causal --subset <VIDEO_LIST> --source <SOURCE_ID> \
   --variant dev --guide-mode d1 --schedule 0.421875 0 \
   --block-latent-frames 2 --context-latent-frames 8 --span-latent-frames 17 \
@@ -498,7 +501,7 @@ opening weights. Masters need at least 17 encoded frames; global noise draws
 retain the entire recorded master. Use a new output path:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.evaluate \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.causality \
   --causality --checkpoint <ADAPTER> --view <VIEW> --sigma 0.421875 \
   --gpu-id <FREE_GPU> --output <FRESH_JSON>
 ```
@@ -532,7 +535,9 @@ research override. Real-weight product/review acceptance remains pending.
 For the native E4 check, use the ordinary explicit-mode four-process training
 recipe with `--steps 1 --save-initial --save-update-state --chains-per-rank 2`
 and no preview input. Keep gradient checkpointing enabled. The existing queue
-uses the fixed training pool 0–3; idle GPUs outside that pool do not change it.
+currently uses the fixed training set 0–3. G8 must implement the authorized
+0–7 shared pool while preserving the four-rank topology; idle GPUs outside the
+current set do not yet change dispatch.
 `--save-update-state` writes the actual training text and named fp32 Adam moments.
 It changes evidence only and is not a resume option.
 
@@ -628,3 +633,7 @@ converted historical whole-clip jobs. It preserves the old forward/backward
 prefetch and full-shard settings. The queue supplies `--num_processes 4` and
 the recorded port. Historical configs under `expr/` remain provenance inputs;
 they are not imported by package execution.
+
+### Queued causality and fusion specifications
+
+The experiment queue accepts the `causality` and `fusion_parity` selectors. Each job names `spec`, its exact `spec_sha256`, `--spec`, `--output`, and completion `{"manifest": "<OUTPUT>/manifest.json"}`. Queue device selection supplies `--gpu-id`. Causality version-one specs select `protocol: future_noise` with the preserved scientific argument list (absolute input paths, without output/device overrides), or `protocol: eight_block` with absolute `checkpoint`, `view`, and exact `sigma`. Fusion specs use `protocol: fusion_parity`, absolute `run`, `view`, and positive integer `step`. Existing outputs require a fresh destination.

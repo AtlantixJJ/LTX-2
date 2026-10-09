@@ -20,7 +20,11 @@ TRAIN_GPUS = (0, 1, 2, 3)
 EVALUATION_PREFERENCE = (5, 4, 3, 2, 1, 0)
 
 # Fixed reviewed selectors; ordinary kinds never consult this table.
-EXPERIMENTS = {"sigma_sweep": "scripts.onestep_avatar.experiments.sigma_sweep"}
+EXPERIMENTS = {
+    "sigma_sweep": "scripts.onestep_avatar.experiments.sigma_sweep",
+    "causality": "scripts.onestep_avatar.experiments.causality",
+    "fusion_parity": "scripts.onestep_avatar.experiments.fusion_parity",
+}
 
 
 def experiment_entry(selector: str) -> str:
@@ -1114,6 +1118,11 @@ def completion_receipt(job: dict) -> dict:
     elif job["kind"] == "experiment":
         paths = ([Path(completion["manifest"])] if "manifest" in completion else [])
         paths.extend(Path(value) for value in completion.get("records", []))
+        selected = importlib.import_module(experiment_entry(job["experiment"]))
+        if hasattr(selected, "evidence_paths"):
+            paths = selected.evidence_paths(Path(job["spec"]), Path(job["output"]))
+            if any(not path.resolve().is_relative_to(Path(job["output"]).resolve()) for path in paths):
+                raise ValueError("experiment receipt evidence escapes its output directory")
     elif job["kind"] in ("decode", "render"):
         paths = [Path(completion["manifest"])]
     else:

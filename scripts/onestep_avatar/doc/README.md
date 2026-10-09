@@ -12,10 +12,9 @@ Status: **Implementation authorized and in progress.**
 The user directed execution of the revised plan. Shared input helpers, schedules,
 the checked master reader, and bidirectional functions now exist.
 The full restructure remains incomplete. Each module records its own status.
-The current task prepares a self-contained handoff for the next agent.
 The required work order is code refactor, CPU/import/boundary validation, fresh
-affected native checks, then GPU experiments on the final source. This update
-moves no production source and launches no GPU job.
+affected native checks, then GPU experiments on the final source. The active
+handoff records verified owner groups and the next unfinished group.
 
 ## Review reading order
 
@@ -232,7 +231,7 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
   a still-required old executor until its callers and required behavior have a
   checked final owner; follow the active handoff's disposition rule. Do not retain
   a broken command indefinitely. The owner now lives in `experiments/`; G7
-retargets its intervention jobs to the planned `causality` selector.
+uses the implemented `causality` selector and pins its five scientific specifications.
 
 - **`experiments/convert_progress_jobs.py`:** data-only conversion of historical progress
   rows to package evaluation jobs. Preserve both fixed views, seed 42, sigma
@@ -447,3 +446,12 @@ exercise the public completion owner directly.
 ### Ordinary output owners
 
 [metrics.py](metrics.md) owns reusable array measurements. [previews.py](previews.md) owns fixed preview records and rendering. [comparisons.py](comparisons.md) owns saved comparison rendering and completion. The ordinary evaluator calls an explicitly supplied fixed-preview tensor validator; it imports no previews module.
+
+### Extracted study owners
+
+- [Causality](experiments/causality.md): saved-noise interventions and the preserved eight-block comparison, with queued specs and model-free full completion.
+- [Fusion parity](experiments/fusion_parity.md): the original five-case block-zero adapter protocol, with queued raw-tensor completion.
+- [Saved probe metrics](experiments/saved_probe_metrics.md): direct model-free short/long historical measurements.
+- [Sigma sweep](experiments/sigma_sweep.md): fixed 129-frame boundary score inventory; general transitions stay in the ordinary metrics owner.
+
+Ordinary evaluation keeps no retired study parser or intervention branch. Native scope and final architecture acceptance remain in the active handoff.

@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from scripts.onestep_avatar import evaluate, hashing
+from scripts.onestep_avatar.experiments import causality
 from scripts.onestep_avatar.experiments import continuation_check as check
 from scripts.onestep_avatar.model import causal, common
 from scripts.onestep_avatar.tests.test_causal_core import CHANNELS, DEVICE, EDGE, FPS, SCALE, _context, _model
@@ -210,7 +211,7 @@ def test_prepared_future_controls_use_native_public_sampler(
     changed = noise.clone()
     changed[:, boundary * grid.tokens_per_latent_frame:] += 0.125
     with evaluate.measure_calls(model) as measured:
-        _outputs, result = evaluate.probe_future_noise(
+        _outputs, result = causality.probe_future_noise(
             model, context, grid, capture, guide, noise, changed, change_start_frame=boundary,
             mode="causal", mode_settings=CausalSettings(block_latent_frames=2, context_latent_frames=8),
             guide_mode="d1", schedule=[sigma, 0.0], seed=42, history_mode=history_mode,

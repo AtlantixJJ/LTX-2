@@ -2,7 +2,7 @@
 import json
 from contextlib import nullcontext
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -59,20 +59,32 @@ def completed(checked_settings, monkeypatch, tmp_path):
     arguments = ['--mode', 'bidirectional', '--subset', str(settings.subset), '--output', str(settings.output),
                  '--variant', 'dev', '--guide-mode', 'd0', '--schedule', '0.725', '0', '--seed', '42']
 
-    def execute(extra=(), *, mode=None, guide_mode=None):
+    def execute(extra=(), *, mode=None, guide_mode=None, execution_owner: ModuleType | None = None):
         command = arguments + list(extra)
         if mode is not None:
             command[command.index('--mode')+1] = mode
         if guide_mode is not None:
             command[command.index('--guide-mode')+1] = guide_mode
-        args = evaluate.parse_args(command)
-        evaluate.execute_evaluation(args)
+        if execution_owner is None:
+            args = evaluate.parse_args(command)
+            evaluate.execute_evaluation(args)
+        else:
+            scientific = list(command)
+            index = scientific.index('--output')
+            del scientific[index:index + 2]
+            spec = settings.output.parent / 'causality_spec.json'
+            spec.write_text(json.dumps({'schema_version': 1, 'protocol': 'future_noise', 'arguments': scientific}))
+            execution_owner.main(['--spec', str(spec), '--output', str(settings.output)])
         paths = sorted(settings.output.glob('case_*/variant_*/result.json'))
         if not paths:
             paths = sorted(settings.output.glob('case_*/variant_*/*/result.json'))
         assert paths
         job = {'id': 'checked', 'kind': 'evaluate', 'arguments': command, 'output': str(settings.output),
                'completion': {'records': [str(path) for path in paths]}}
+        if execution_owner is not None:
+            job.update(kind='experiment', experiment='causality', spec=str(spec), spec_sha256=sha256(spec),
+                       arguments=['--spec', str(spec), '--output', str(settings.output)],
+                       completion={'manifest': str(settings.output / 'manifest.json')})
         jobs_path = settings.output.parent/'queue_jobs.json'
         jobs_path.write_text(json.dumps({'schema_version': 1, 'jobs': [job]}))
         job = queue.prepare_jobs(jobs_path)[0]
@@ -235,26 +247,6 @@ def test_saved_evidence_changes_fail_even_with_updated_output_hash(completed, as
         queue.verify_completion(job)
 
 
-def test_future_noise_requires_both_branches_and_original_noise_input(completed):
-    execute, _, settings, membership, _ = completed
-    noise = torch.randn(1, 28, 2, dtype=torch.bfloat16)
-    changed = noise.clone()
-    changed[:, 12:] += 1
-    root = settings.output.parent
-    noise_path, changed_path = root/'noise.pt', root/'changed.pt'
-    torch.save(noise, noise_path)
-    torch.save(changed, changed_path)
-    source = membership['sources'][0]['relative_dir']
-    job, paths = execute(['--source', source, '--noise-file', str(noise_path),
-                          '--changed-noise-file', str(changed_path), '--future-noise-start', '3'])
-    assert len(paths) == 2
-    job['completion']['records'] = [str(paths[0])]
-    with pytest.raises(ValueError, match='inventory differs'):
-        queue.verify_completion(job)
-    job['completion']['records'] = [str(path) for path in paths]
-    torch.save(noise+1, noise_path)
-    with pytest.raises(ValueError):
-        queue.verify_completion(job)
 
 
 def test_guidance_saves_actual_negative_text_and_binds_prompt(completed):
@@ -315,28 +307,6 @@ def test_receipts_pin_input_file_bytes_even_when_tensor_content_is_identical(com
         queue.verify_receipt(job, receipt)
 
 
-@pytest.mark.parametrize('field', ['change_start_encoded_frame', 'records', 'earlier_output_bit_identical',
-                                  'earlier_output_max_abs_delta', 'later_output_max_abs_delta'])
-def test_future_noise_diagnostic_is_bound_to_both_actual_outputs(completed, field):
-    execute, _, settings, membership, _ = completed
-    noise = torch.randn(1, 28, 2, dtype=torch.bfloat16)
-    changed = noise.clone()
-    changed[:, 12:] += 1
-    noise_path, changed_path = settings.output.parent/'noise.pt', settings.output.parent/'changed.pt'
-    torch.save(noise, noise_path)
-    torch.save(changed, changed_path)
-    job, _ = execute(['--source', membership['sources'][0]['relative_dir'], '--noise-file', str(noise_path),
-                      '--changed-noise-file', str(changed_path), '--future-noise-start', '3'])
-    receipt = queue.completion_receipt(job)
-    assert len(receipt['evidence']) == 8
-    path = settings.output/'case_0000/variant_000/future_noise.json'
-    data = json.loads(path.read_text())
-    if field == 'records': data[field].reverse()
-    elif field == 'earlier_output_bit_identical': data[field] = not data[field]
-    else: data[field] += 1
-    path.write_text(json.dumps(data))
-    with pytest.raises(ValueError, match='future-noise diagnostic differs'):
-        queue.verify_completion(job)
 
 
 @pytest.mark.parametrize('changed', [None, 'guide', 'sidecar'])

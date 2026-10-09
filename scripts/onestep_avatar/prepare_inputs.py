@@ -193,9 +193,9 @@ def prepare_preview(args: argparse.Namespace) -> dict:
 
     if args.output.exists() or args.output.is_symlink():
         raise ValueError('preview preparation requires a fresh output directory')
-    forbidden = {'--output', '--checkpoint', '--gpu-id', '--dry-run', '--changed-noise-file', '--future-noise-start'}
+    forbidden = {'--output', '--checkpoint', '--gpu-id', '--dry-run'}
     if any(token.split('=', 1)[0] in forbidden for token in args.evaluation_arguments):
-        raise ValueError('preview preparation rejects execution-owned and future-noise options')
+        raise ValueError('preview preparation rejects execution-owned options')
     evaluation = evaluate.parse_args([*args.evaluation_arguments, '--output', str(args.output/'unexecuted')])
     if len(evaluation.source) != 1:
         raise ValueError('preview preparation requires exactly one explicit source')

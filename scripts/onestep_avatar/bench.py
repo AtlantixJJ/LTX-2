@@ -256,8 +256,6 @@ def main(argv: list[str] | None = None) -> int:
     if measured.repetitions < 1 or measured.warmup < 0:
         parser.error("benchmark needs positive repetitions and nonnegative warmup")
     args = evaluate.parse_args(remaining)
-    if args.changed_noise_file is not None:
-        parser.error("benchmark does not run future-noise probes")
 
     def sample_runner(transformer, *inputs, **settings):  # noqa: ANN001, ANN202 -- ordinary sampler interface
         timings = measure_generation(

@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import evaluate
 from scripts.onestep_avatar.corpus import dataset
+from scripts.onestep_avatar.experiments import fusion_parity as evaluate
 
 
 def test_package_block_matches_original_grid_and_noise_on_real_transformer():

@@ -3,6 +3,7 @@
 import json
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 import torch
@@ -368,107 +369,14 @@ def test_controlled_comparison_rejects_a_second_change_and_preserves_records():
         evaluate.validate_comparison([original, changed], "adapter")
 
 
-def test_future_noise_probe_preserves_completed_causal_blocks():
-    model = _model()
-    grid = _grid(_geometry())
-    capture = torch.zeros(1, 28, 8)
-    noise = torch.ones_like(capture)
-    changed = noise.clone()
-    changed[:, 12:] = -1
-    outputs, record = evaluate.probe_future_noise(
-        model, torch.zeros(1, 3, 16), grid, capture, capture, noise, changed,
-        change_start_frame=3, mode='causal', mode_settings=CausalSettings(),
-        guide_mode='d1', schedule=[0.725, 0], seed=42,
-        predict_x0=common.denoised_from_velocity_model(model),
-    )
-    assert record['earlier_output_bit_identical']
-    assert record['earlier_output_max_abs_delta'] == 0
-    assert record['later_output_max_abs_delta'] > 0
-    assert record['records'][0]['noise_sha256'] != record['records'][1]['noise_sha256']
-    assert torch.equal(outputs[0][:, :, :3], outputs[1][:, :, :3])
 
 
-@pytest.mark.parametrize('invalid', ['nan_later', 'earlier_change', 'identical', 'dtype', 'source_shape', 'inside_block'])
-def test_future_noise_invalid_inputs_fail_before_either_sampling(invalid, monkeypatch):
-    grid = _grid(_geometry())
-    capture = torch.zeros(1, 28, 8)
-    noise = torch.ones_like(capture)
-    changed = noise.clone()
-    changed[:, 12:] = -1
-    boundary = 3
-    if invalid == 'nan_later':
-        changed[:, 12:] = float('nan')
-    elif invalid == 'earlier_change':
-        changed[:, 0] = 2
-    elif invalid == 'identical':
-        changed = noise.clone()
-    elif invalid == 'dtype':
-        changed = changed.double()
-    elif invalid == 'source_shape':
-        noise, changed = noise[:, :20], changed[:, :20]
-    else:
-        boundary = 2
-    monkeypatch.setattr(evaluate, 'sample_case', lambda *a, **k: pytest.fail('invalid probe executed sampling'))
-    with pytest.raises(ValueError):
-        evaluate.probe_future_noise(
-            None, torch.zeros(1, 3, 16), grid, capture, capture, noise, changed,
-            change_start_frame=boundary, mode='causal', mode_settings=CausalSettings(), guide_mode='d1',
-            schedule=[0.725, 0], seed=42,
-        )
 
 
-@pytest.mark.parametrize('options', [
-    ['--future-noise-start', '3'],
-    ['--changed-noise-file', 'changed.pt'],
-    ['--changed-noise-file', 'changed.pt', '--future-noise-start', '3'],
-    ['--noise-file', 'original.pt', '--changed-noise-file', 'changed.pt', '--future-noise-start', '0'],
-])
-def test_future_noise_cli_requires_complete_saved_inputs(options):
-    with pytest.raises(SystemExit):
-        evaluate.parse_args([
-            '--mode', 'causal', '--subset', 'unused', '--output', 'unused',
-            '--schedule', '0.725', '0', *options,
-        ])
 
 
-@pytest.mark.parametrize('bad_prefix', [False, True])
-def test_future_noise_preflight_checks_saved_pair(checked_settings, tmp_path, bad_prefix):
-    settings, membership = checked_settings
-    source = membership['sources'][0]['relative_dir']
-    from scripts.onestep_avatar.corpus import dataset
-    video = dataset.ClipStore(membership).load(source, require_guide=False)
-    original = torch.zeros(1, 7 * video.z_y.shape[2] * video.z_y.shape[3], video.z_y.shape[0], dtype=torch.bfloat16)
-    changed = original.clone()
-    changed[:, (0 if bad_prefix else 3 * video.z_y.shape[2] * video.z_y.shape[3]):] = 1
-    left, right = tmp_path / 'original.pt', tmp_path / 'changed.pt'
-    torch.save(original, left)
-    torch.save(changed, right)
-    args = evaluate.parse_args([
-        '--mode', 'causal', '--subset', str(settings.subset), '--output', str(settings.output),
-        '--variant', 'dev', '--guide-mode', 'd0', '--source', source,
-        '--schedule', '0.725', '0', '--span-latent-frames', '7',
-        '--noise-file', str(left), '--changed-noise-file', str(right), '--future-noise-start', '3',
-    ])
-    if bad_prefix:
-        with pytest.raises(ValueError, match='changed earlier noise'):
-            evaluate.prepare_evaluation(args)
-    else:
-        evaluate.prepare_evaluation(args)
-        assert torch.equal(args.changed_noise, changed)
-    assert not settings.output.exists()
 
 
-def test_future_noise_publication_preserves_distinct_noise_and_shared_provenance(tmp_path):
-    outputs = [torch.zeros(1, 2, 7, 1, 1), torch.ones(1, 2, 7, 1, 1)]
-    diagnostic = {'records': [{'noise_sha256': 'a' * 64}, {'noise_sha256': 'b' * 64}], 'earlier_output_bit_identical': False}
-    provenance = {'source': 'fixed/view', 'adapter_sha256': 'c' * 64, 'fps': 30}
-    completed = evaluate.save_future_noise_probe(outputs, diagnostic, provenance, tmp_path / 'probe')
-    assert 'output' not in diagnostic['records'][0]
-    for index, record in enumerate(completed['records']):
-        assert record['source'] == 'fixed/view' and record['adapter_sha256'] == 'c' * 64
-        assert record['noise_sha256'] == ('a' if index == 0 else 'b') * 64
-        assert torch.equal(torch.load(record['output']['path'], weights_only=True), outputs[index])
-    assert json.loads((tmp_path / 'probe/future_noise.json').read_text()) == completed
 
 
 @pytest.mark.parametrize('field,value', [('history_mode', 'recompute'), ('kv_source', 'denoise')])
@@ -489,3 +397,18 @@ def test_history_comparison_binds_the_same_changed_condition_field(field, value)
     with pytest.raises(ValueError, match='second factor'):
         evaluate.validate_comparison([original, changed], field)
     assert original['conditions'] == {'history_mode': 'cache', 'kv_source': 'refresh'}
+
+
+@pytest.mark.parametrize(
+    'flag', ['--changed-noise-file', '--future-noise-start', '--causality', '--fusion-parity', '--saved-metrics']
+)
+def test_retired_study_flags_are_unknown_before_writes(
+    flag: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / 'unchanged'
+    with pytest.raises(SystemExit) as error:
+        evaluate.main(['--mode', 'causal', '--subset', 'missing', '--output', str(output),
+                       '--schedule', '0.725', '0', flag, 'unused'])
+    assert error.value.code == 2
+    assert 'unrecognized arguments' in capsys.readouterr().err
+    assert not output.exists()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import subprocess
 import sys
@@ -10,6 +11,60 @@ from pathlib import Path
 import pytest
 
 from scripts.onestep_avatar import LTX_ROOT, PACKAGE_ROOT
+
+
+def test_production_imports_keep_experiments_out_of_ordinary_owners() -> None:
+    prefix = "scripts.onestep_avatar"
+    violations = []
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+        relative = path.relative_to(PACKAGE_ROOT)
+        if relative.parts[0] in ("tests", "experiments"):
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                targets = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                parent = [prefix, *relative.parts[:-1]]
+                base = node.module or ""
+                if node.level:
+                    base = ".".join([*parent[: len(parent) - node.level + 1], *([base] if base else [])])
+                targets = [base, *(base + "." + alias.name for alias in node.names)]
+            else:
+                continue
+            if any(
+                target == prefix + ".experiments" or target.startswith(prefix + ".experiments.") for target in targets
+            ):
+                violations.append((str(relative), node.lineno))
+    assert not violations, violations
+
+
+def test_experiments_call_public_package_owners() -> None:
+    violations = []
+    for path in sorted((PACKAGE_ROOT / "experiments").rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        aliases = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("scripts.onestep_avatar"):
+                for name in node.names:
+                    aliases.add(name.asname or name.name)
+                    if name.name.startswith("_"):
+                        violations.append((str(path.relative_to(PACKAGE_ROOT)), node.lineno, name.name))
+            elif isinstance(node, ast.Import):
+                aliases.update(
+                    name.asname or name.name.split(".")[0]
+                    for name in node.names
+                    if name.name.startswith("scripts.onestep_avatar")
+                )
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in aliases
+                and node.attr.startswith("_")
+                and node.attr != "__file__"  # Module-byte provenance is public Python metadata.
+            ):
+                violations.append((str(path.relative_to(PACKAGE_ROOT)), node.lineno, node.attr))
+    assert not violations, violations
 
 
 def blocked_environment() -> dict[str, str]:

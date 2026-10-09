@@ -8,12 +8,83 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from scripts.onestep_avatar import evaluate, hashing, media
+from scripts.onestep_avatar import hashing, media
 from scripts.onestep_avatar import metrics as metrics_ops
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.experiments import sigma_sweep_results
 from scripts.onestep_avatar.hashing import sha256
+
+
+def sigma_sweep_boundary_metrics(video, capture, guide, mask) -> dict:  # noqa: ANN001 -- historical NumPy RGB arrays
+    """Preserve historical fixed-129-frame boundary scores, with explicit undefined ratios."""
+    import numpy as np  # noqa: PLC0415 -- historical metric arithmetic
+
+    arrays = (video, capture, guide)
+    if (any(not isinstance(value, np.ndarray) for value in arrays)
+            or video.ndim != 4 or video.shape[0] != 129 or video.shape[-1] != 3
+            or min(video.shape[1:3]) < 1 or any(value.shape != video.shape for value in arrays)):
+        raise ValueError("sigma sweep requires aligned nonempty 129,H,W,3 RGB arrays")
+    if any(not np.issubdtype(value.dtype, np.floating) or not np.isfinite(value).all()
+           or value.min() < 0 or value.max() > 1 for value in arrays):
+        raise ValueError("sigma sweep requires finite floating pixels in [0,1]")
+    if not isinstance(mask, np.ndarray) or mask.dtype != np.bool_ or mask.shape != video.shape[:3]:
+        raise ValueError("sigma sweep requires an aligned boolean foreground mask")
+    video, capture, guide = [value.astype(np.float32, copy=False) if value.dtype.itemsize < 4 else value
+                             for value in arrays]
+    boundaries, post_eviction = (17, 33, 49, 65, 81, 97, 113), {81, 97, 113}
+    indices = {boundary - 1 for boundary in boundaries}
+
+    def errors(left, right, selected):  # noqa: ANN001, ANN202 -- checked NumPy inputs
+        delta = np.abs(left - right).mean(-1)
+        return (delta * selected).sum((1, 2)) / selected.sum((1, 2)).clip(1)
+
+    def ratio(numerator: float, denominator: float) -> float | None:
+        if denominator == 0:
+            return None
+        with np.errstate(over="ignore", invalid="ignore"):
+            result = float(numerator / denominator)
+        if not math.isfinite(result):
+            raise ValueError("sigma sweep ratio is nonfinite")
+        return result
+
+    def mean(values: list) -> float | None:
+        return None if any(value is None for value in values) else float(np.mean(values))
+
+    motion, capture_motion = (
+        metrics_ops.masked_rgb_transition_steps(video, mask),
+        metrics_ops.masked_rgb_transition_steps(capture, mask),
+    )
+    rows = []
+    for boundary in boundaries:
+        index = boundary - 1
+        local = [motion[j] for j in range(index - 4, index + 5) if j != index and j not in indices]
+        local_capture = np.delete(capture_motion[index - 4:index + 5], 4)
+        local_ratio = ratio(motion[index], np.mean(local))
+        capture_ratio = ratio(capture_motion[index], local_capture.mean())
+        rows.append({"boundary": boundary, "post_eviction": boundary in post_eviction,
+                     "step": float(motion[index]), "ratio_to_local_interior": local_ratio,
+                     "capture_ratio": capture_ratio,
+                     "ratio_status": "undefined_zero_local_motion" if local_ratio is None else "defined",
+                     "capture_ratio_status": "undefined_zero_local_motion" if capture_ratio is None else "defined"})
+    motion_ratio = ratio(motion[16:].mean(), capture_motion[16:].mean())
+    return {
+        "per_boundary": rows,
+        "mean_boundary_ratio": mean([row["ratio_to_local_interior"] for row in rows]),
+        "mean_boundary_ratio_pre_eviction": mean([row["ratio_to_local_interior"] for row in rows
+                                                 if not row["post_eviction"]]),
+        "mean_boundary_ratio_post_eviction": mean([row["ratio_to_local_interior"] for row in rows
+                                                  if row["post_eviction"]]),
+        "interior_step": float(np.mean([motion[i] for i in range(16, 128) if i not in indices])),
+        "motion_over_capture": motion_ratio,
+        "motion_ratio_status": "undefined_zero_capture_motion" if motion_ratio is None else "defined",
+        "err_vs_capture": float(errors(video[1:], capture[1:], mask[1:]).mean()),
+        "err_vs_guide": float(errors(video[1:], guide[1:], mask[1:]).mean()),
+        "drift_vs_c0_last": float(errors(video[128:], video[:1], mask[128:])[0]),
+        "per_frame_err_vs_capture": errors(video, capture, mask).round(4).tolist(),
+        "per_transition_step": motion.round(4).tolist(),
+    }
+
 
 LEVELS = {0.421875: ("one_step", 1), 0.725: ("official", 2),
           0.909375: ("official", 3), 1.0: ("official", 8)}
@@ -68,7 +139,7 @@ def prepare(  # noqa: PLR0912 -- ordered historical/result-bound preflight gates
         raise ValueError("sigma sweep VAE identity differs from the requested decoder")
     hashes[str(vae_path)] = spec["vae"]["sha256"]
     sources = {str(Path(module.__file__).resolve()): sha256(Path(module.__file__))
-               for module in (media, evaluate)}
+               for module in (media, metrics_ops)}
     sources[str(Path(__file__).resolve())] = sha256(Path(__file__))
     if spec["schema_version"] == 2:
         sources[str(Path(sigma_sweep_results.__file__).resolve())] = sha256(Path(sigma_sweep_results.__file__))
@@ -107,7 +178,7 @@ def execute(spec_path: Path, output: Path, *, gpu_id: int) -> dict:
         kind, calls = LEVELS[cell["sigma"]]
         cells.append({"sigma": cell["sigma"], "arm": cell["arm"], "calls_per_block": calls, "path": kind,
                       "c0_equal": torch.equal(tensors[name][:, :, :1], reference_c0),
-                      **evaluate.sigma_sweep_boundary_metrics(videos[name], reference, videos["guide"], mask)})
+                      **sigma_sweep_boundary_metrics(videos[name], reference, videos["guide"], mask)})
     d0, d1 = tensors["sigma1.000000_d0"], tensors["sigma1.000000_d1"]
     metrics = {"tag": spec["tag"], "decode_seed": 42, "boundaries": [17, 33, 49, 65, 81, 97, 113],
                "post_eviction": [81, 97, 113], "cells": cells,

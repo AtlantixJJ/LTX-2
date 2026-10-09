@@ -49,7 +49,7 @@ def full_noise(manifest: dict, noises: dict, blocks: dict) -> dict[str, torch.Te
     return result
 
 
-def job_data(manifest: dict, destination: Path) -> tuple[dict, dict]:
+def job_data(manifest: dict, destination: Path, *, specifications: dict | None = None) -> tuple[dict, dict]:
     """Specify all intervention and repeat controls with the public evaluator CLI."""
     schedule = list(validate_schedule(manifest["schedule"]))
     if schedule[0] != 1.0 or manifest["geometry"]["block_latent_frames"] != 2:
@@ -77,8 +77,19 @@ def job_data(manifest: dict, destination: Path) -> tuple[dict, dict]:
         else:
             records = [str(base / "result.json")]
             outputs["J-A-repeat"] = records[0]
-        jobs.append({"id": f"future_noise_{label}_{changed or 'A'}", "kind": "evaluate",
-                     "arguments": args, "output": str(output), "completion": {"records": records}})
+        scientific = list(args)
+        output_index = scientific.index('--output')
+        del scientific[output_index:output_index + 2]
+        spec = {'schema_version': 1, 'protocol': 'future_noise', 'arguments': scientific}
+        spec_path = destination / f'spec_{label}_{changed or "A"}.json'
+        serialized = json.dumps(spec, indent=2) + '\n'
+        if specifications is not None:
+            specifications[spec_path.name] = spec
+        jobs.append({'id': f'future_noise_{label}_{changed or "A"}', 'kind': 'experiment',
+                     'experiment': 'causality', 'spec': str(spec_path),
+                     'spec_sha256': hashlib.sha256(serialized.encode()).hexdigest(),
+                     'arguments': ['--spec', str(spec_path), '--output', str(output)],
+                     'output': str(output), 'completion': {'manifest': str(output / 'manifest.json')}})
     record = {"schema_version": 1, "jobs": jobs}
     validate_job_list(record)
     return record, outputs
@@ -99,17 +110,20 @@ def prepare(manifest_path: Path, noise_path: Path, block_path: Path, subset_path
         source["relative_dir"] for source in membership["sources"]
     }:
         raise ValueError("historical source/background differs from converted membership")
-    jobs, outputs = job_data(manifest, output)
+    specifications = {}
+    jobs, outputs = job_data(manifest, output.resolve(), specifications=specifications)
     if any(sha256(Path(path)) != digest for path, digest in inputs.items()):
         raise ValueError("historical conversion inputs changed during preparation")
     output.mkdir(parents=True, exist_ok=False)
     for name, value in noises.items():
         torch.save(value, output / f"noise_{name}.pt")
+    for name, value in specifications.items():
+        (output / name).write_text(json.dumps(value, indent=2) + "\n")
     for name, value in (("membership", membership), ("frame_plan", plan), ("jobs", jobs)):
         (output / f"{name}.json").write_text(json.dumps(value, indent=2) + "\n")
     artifacts = {name: sha256(output / name) for name in
                  ("noise_A.pt", "noise_B.pt", "noise_B2.pt", "noise_B3.pt",
-                  "membership.json", "frame_plan.json", "jobs.json")}
+                  "membership.json", "frame_plan.json", "jobs.json", *specifications)}
     if any(sha256(Path(path)) != digest for path, digest in inputs.items()):
         raise ValueError("historical conversion inputs changed during derived-file writes")
     record = {"schema_version": 2, "kind": "onestep_avatar.future_noise_preparation",
@@ -131,8 +145,11 @@ def verify_preparation(output: Path) -> dict:
             or record.get("status") != "prepared_only_native_parity_pending"
             or record.get("producer_source_sha256") != sha256(Path(__file__))):
         raise ValueError("future-noise preparation identity changed")
+    manifest = json.loads(Path(record["input_manifest"]).read_text())
+    specifications = {}
+    jobs, roles = job_data(manifest, output.resolve(), specifications=specifications)
     expected = {"noise_A.pt", "noise_B.pt", "noise_B2.pt", "noise_B3.pt",
-                "membership.json", "frame_plan.json", "jobs.json"}
+                "membership.json", "frame_plan.json", "jobs.json", *specifications}
     artifacts = record.get("artifact_file_hashes", {})
     inputs = record.get("input_file_hashes", {})
     paths = record.get("input_paths", {})
@@ -144,10 +161,10 @@ def verify_preparation(output: Path) -> dict:
         raise ValueError("future-noise preparation original input changed")
     if any(sha256(output / name) != digest for name, digest in artifacts.items()):
         raise ValueError("future-noise preparation derived artifact changed")
-    manifest = json.loads(Path(record["input_manifest"]).read_text())
-    jobs, roles = job_data(manifest, output.resolve())
     if json.loads((output / "jobs.json").read_text()) != jobs or record.get("outputs") != roles:
         raise ValueError("future-noise preparation job settings or roles changed")
+    if any(json.loads((output / name).read_text()) != spec for name, spec in specifications.items()):
+        raise ValueError("future-noise preparation specification meaning changed")
     noises = full_noise(manifest, torch.load(paths["noise"], map_location="cpu", weights_only=True),
                        torch.load(paths["blocks"], map_location="cpu", weights_only=True))
     for name, expected_noise in noises.items():

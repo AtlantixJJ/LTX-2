@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from scripts.onestep_avatar import WORKSPACE_ROOT, evaluate, hashing
+from scripts.onestep_avatar import WORKSPACE_ROOT, hashing
+from scripts.onestep_avatar.experiments import causality as evaluate
 from scripts.onestep_avatar.experiments import future_noise_study as study
 from scripts.onestep_avatar.hashing import sha256
 
@@ -66,11 +67,14 @@ def test_invalid_noise_cannot_enter_package_jobs(saved: tuple, defect: str) -> N
 
 def test_job_data_preserves_repeat_modes_boundary_and_seven_results(saved: tuple, tmp_path: Path) -> None:
     manifest, _, _ = saved
-    record, outputs = study.job_data(manifest, tmp_path)
+    specifications = {}
+    record, outputs = study.job_data(manifest, tmp_path, specifications=specifications)
+    for name, spec in specifications.items():
+        (tmp_path / name).write_text(json.dumps(spec, indent=2) + "\n")
     assert set(outputs) == {"J-A", "J-A-repeat", "J-B", "J-B2", "J-B3", "C-A", "C-B"}
     assert len(record["jobs"]) == 5
     for job in record["jobs"]:
-        args = evaluate.parse_args(job["arguments"])
+        args = evaluate.read_spec(evaluate.parse_args(job["arguments"]))
         assert args.source == [manifest["source"]]
         assert args.schedule == manifest["schedule"]
         assert args.seed == 42
@@ -79,9 +83,10 @@ def test_job_data_preserves_repeat_modes_boundary_and_seven_results(saved: tuple
         assert not args.checkpoint
         if args.changed_noise_file:
             assert args.future_noise_start == 3
-            assert len(job["completion"]["records"]) == 2
+            assert job["kind"] == "experiment"
+            assert job["experiment"] == "causality"
         else:
-            assert job["completion"]["records"] == [outputs["J-A-repeat"]]
+            assert outputs["J-A-repeat"].endswith("case_0000/variant_000/result.json")
         if args.mode == "causal":
             assert args.mode_settings.block_latent_frames == 2
             assert args.mode_settings.context_latent_frames == 8
@@ -172,7 +177,7 @@ def test_current_preparation_verifies_without_execution(preparation_inputs: tupl
     paths, output = preparation_inputs
     result = study.prepare(*paths, output)
     assert result["schema_version"] == 2
-    assert len(result["artifact_file_hashes"]) == 7
+    assert len(result["artifact_file_hashes"]) == 12
     assert study.verify_preparation(output) == result
     before = {path: sha256(path) for path in output.iterdir()}
     study.main(["--verify-preparation", str(output)])
@@ -213,8 +218,7 @@ def test_preparation_verification_refuses_changed_bytes_and_semantics(
         else:
             data = json.loads(artifact.read_text())
             if defect == "jobs_rehashed":
-                args = data["jobs"][0]["arguments"]
-                args[args.index("--seed") + 1] = "43"
+                data["jobs"][0]["spec_sha256"] = "0" * 64
             elif defect == "membership_rehashed":
                 data["objective"] = "white"
             else:

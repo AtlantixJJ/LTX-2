@@ -41,7 +41,7 @@ flowchart LR
   spec[(Checked saved sweep spec)] --> preflight[prepare]
   preflight --> decode[media.decode]
   decode --> pixels(Floating RGB)
-  pixels --> score[evaluate boundary metrics]
+  pixels --> score[sigma_sweep boundary metrics]
   pixels --> samples[(Saved videos and samples)]
   score --> metrics[(Saved metrics)]
   samples --> report([Report sheets])
@@ -85,7 +85,7 @@ seed-42 generator for each input. No text context or transformer is created.
 Convert decoded FCHW to floating FHWC, using the historical 255 divisor for
 byte-range pixels. Require exactly 129 aligned RGB frames. Form one mask from
 the union of min-channel below 0.9 in capture, guide and all eight outputs.
-Call evaluate's canonical transition/boundary measurements on the uncompressed
+Call this study owner's boundary measurements and `metrics.masked_rgb_transition_steps` on the uncompressed
 floats. Preserve tag, boundary/eviction metadata, c0 equality against sigma-one
 D0, and sigma-one D0/D1 equality and maximum delta.
 
@@ -151,3 +151,7 @@ levels/arms. Verify sigma-one equality, resolve ten tensors without sessions or
 writes, and exercise controlled decoder media and queue receipts. Changed
 seed, arm, paired masters, noise, result metadata, saved text and late evidence
 must fail. Decoder readiness requires all eight unchanged generation receipts.
+
+### Historical boundary metric ownership
+
+`sigma_sweep_boundary_metrics` lives here because its fixed 129-frame inventory, seven boundary locations, four-neighbor references and post-eviction attribution belong to this study. The general aligned-mask transition operation stays in `metrics.py`. The exact historical arithmetic, zero-denominator statuses, four-decimal arrays and worked numeric controls remain unchanged. Ordinary evaluation imports no sweep owner.

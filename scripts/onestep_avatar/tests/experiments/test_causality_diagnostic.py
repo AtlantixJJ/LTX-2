@@ -7,8 +7,9 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import evaluate, visualize_d0, visualize_d1
+from scripts.onestep_avatar import visualize_d0, visualize_d1
 from scripts.onestep_avatar.corpus import dataset
+from scripts.onestep_avatar.experiments import causality as evaluate
 from scripts.onestep_avatar.model import causal
 from scripts.onestep_avatar.training import engine
 

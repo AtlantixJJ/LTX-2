@@ -1,7 +1,7 @@
 # Architecture — package layout, ownership and dependencies
 
 Operational GPU and process rules (direct `nvidia-smi`, one shared own-process
-ledger, concurrent runs on GPUs 0–3) are user amendments in the
+ledger, concurrent runs on GPUs 0–7) are user amendments in the
 [package guidance](../CLAUDE.md). This document does not repeat them.
 
 Status: **Required design, approved 2026-10-08. The source does not match it yet.**
@@ -67,8 +67,10 @@ They replace any earlier statement that conflicts with them.
    pilot caller's monkeypatches and the checkers' self-launch paths retire.
    Corpus production (`corpus/precompute.py`, `corpus/build_guidance.py`)
    keeps its documented direct commands.
-9. **One GPU pool: GPUs 0–3.** Every queue kind draws from one pool constant.
-   Four-rank training needs all four; single-GPU jobs wait while it runs.
+9. **One GPU pool: GPUs 0–7 (expanded by the user on 2026-10-09).** Every
+   queue kind draws from one pool constant. Training selects four free GPUs
+   and keeps four ranks. Single-GPU jobs can use the other free devices;
+   two independent four-rank jobs can run when all eight devices are free.
 
 ## Terms and classification
 
@@ -339,8 +341,9 @@ has a model-free completion check.
 | `render` | `comparisons` | one | `comparisons.verify_saved_comparison_completion` (current, moved) |
 | `experiment` | the selected experiment module | one | that module's `verify_completion(spec, root)` |
 
-**GPU pool.** `execution/queue.py` has one pool constant, GPUs 0–3. `train`
-needs all four. Single-GPU kinds pick from the same pool. Today the code uses
+**GPU pool.** `execution/queue.py` must have one pool constant, GPUs 0–7.
+`train` selects four free devices and keeps four processes. Single-GPU kinds
+pick from the same pool. Today the code uses
 `TRAIN_GPUS = (0, 1, 2, 3)` and `EVALUATION_PREFERENCE = (5, 4, 3, 2, 1, 0)`;
 the second constant must become an order inside the pool.
 
@@ -605,7 +608,7 @@ The handoff's code gate uses these checks. Each must pass on the final source.
   builds its command and verifies completion on CPU fixtures. A CPU fixture
   shows bounded supervision for a non-`train` kind, and an overall deadline
   that a simulated startup retry and a queue restart do not reset. No kind can
-  select a GPU outside 0–3.
+  select a GPU outside 0–7; training still selects exactly four.
 - **B7 Environments.** `conda run -n argavatar python -m
   scripts.onestep_avatar.corpus.build_guidance --help` exits zero.
 - **B8 Reports.** The maintained AR report rebuilds byte-identically from saved

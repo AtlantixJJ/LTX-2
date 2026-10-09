@@ -197,3 +197,7 @@ binds the empty `experiments/__init__.py` marker along with the checker.
 These files are explicit experiment extras; ordinary profiles do not
 include the experiment marker. Existing results retain their original
 source attribution, and affected native checks run again after the code gate.
+
+### Shared intervention owner
+
+E3 reads ordinary settings and future-noise choices through the public `experiments.causality.parse_future_args`, `prepare_evaluation`, `execute_evaluation` and `verify_evaluation_conditions` entrypoints. Those methods complete the unchanged pair preflight and full saved scientific checks, then use ordinary evaluation once for loading and shared sampling. The checker adds causality to its explicit software source owners. Observed-prefix callbacks still use ordinary evaluation directly. Historical original records keep their attribution.

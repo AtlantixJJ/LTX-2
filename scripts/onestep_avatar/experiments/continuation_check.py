@@ -24,6 +24,7 @@ from ltx_core.model.transformer.modality import Modality
 from scripts.onestep_avatar import LTX_ROOT, evaluate, hashing
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import software
+from scripts.onestep_avatar.experiments import causality
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import causal, common
 from scripts.onestep_avatar.training.resources import Phase
@@ -33,7 +34,8 @@ CHUNK_ELEMENTS = 131072
 EXTRA_SOURCES = ("scripts/onestep_avatar/experiments/continuation_check.py",
                  "scripts/onestep_avatar/training/resources.py",
                  "scripts/onestep_avatar/execution/supervision.py",
-                 'scripts/onestep_avatar/experiments/__init__.py')
+                 'scripts/onestep_avatar/experiments/__init__.py',
+                 'scripts/onestep_avatar/experiments/causality.py')
 IMPORTED_OWNER_SHA256 = sha256(Path(__file__))
 
 
@@ -397,7 +399,7 @@ def prepare(args: argparse.Namespace) -> dict:  # noqa: PLR0912, PLR0915 -- orde
     arguments = _replace_argument(arguments, "--prompt", baseline["prompt"])
     if args.history == "capture" and control is None:
         arguments.append("--teacher-forcing")
-    options = evaluate.parse_args(arguments)
+    options = causality.parse_future_args(arguments)
     if (options.mode != "causal" or options.model != "2.5" or options.variant != "dev"
             or options.guide_mode != "d1" or options.schedule != [args.sigma, 0.0]
             or options.mode_settings.block_latent_frames != 2
@@ -414,7 +416,7 @@ def prepare(args: argparse.Namespace) -> dict:  # noqa: PLR0912, PLR0915 -- orde
                 args.history == "capture") or (options.changed_noise_file is None) != (args.history == "capture")
             or (options.changed_noise_file is not None and options.future_noise_start not in (3, 11))):
         raise ValueError("data-only E3 control metadata differs from its actual parsed scientific comparison")
-    specification, variants, cases, membership = evaluate.prepare_evaluation(options)
+    specification, variants, cases, membership = causality.prepare_evaluation(options)
     if len(cases) != 1 or variants != [None]:
         raise ValueError("continuation observations require one source and base-only weights")
     video, frames, requested, _adapters = cases[0]
@@ -561,7 +563,7 @@ def run(args: argparse.Namespace, prepared: dict) -> dict:  # noqa: PLR0915 -- b
         phase.start()
         started = True
         if args.phase == "control":
-            evaluate.execute_evaluation(prepared["options"])
+            causality.execute_evaluation(prepared["options"])
             controls = control_results(prepared)
             ordinary = sum(row["call_counts"]["model_calls"] for row in controls)
             model_calls = {"actual_model_calls": ordinary, "ordinary_model_calls": ordinary,
@@ -614,7 +616,7 @@ def control_results(prepared: dict) -> list[dict]:
     future = prepared["changed_noise"] is not None
     paths = ([destination / name / "result.json" for name in ("original", "changed")] if future else
              [destination / "result.json"])
-    evaluate.verify_evaluation_conditions(prepared["arguments"], paths)
+    causality.verify_evaluation_conditions(prepared["arguments"], paths)
     rows = [{"file": {"path": str(path.resolve()), "sha256": sha256(path)},
              "call_counts": json.loads(path.read_text())["call_counts"], "diagnostic_extra_forwards": 0}
             for path in paths]

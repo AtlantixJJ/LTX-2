@@ -299,8 +299,11 @@ A list revision may append jobs; changing an existing job's canonical hash fails
 
 The train command uses the current environment's Accelerate executable with
 one recorded configuration, process count, port and the package module.
-Training uses GPUs 0–3 together and four processes. Evaluation/decoding use one
-GPU, preferring 5 then 4 and using 3–0 only in training gaps. Never use 6 or 7.
+Required by the 2026-10-09 user amendment: every kind draws from one shared
+pool of GPUs 0–7; training selects four free devices and keeps four processes.
+Current pre-G8 source instead fixes training to 0–3 and single-GPU preference
+to 5,4,3,2,1,0. It does not dispatch 6 or 7 yet. This is an implementation
+restriction pending G8, not a prohibition on those devices.
 `job_command` constructs only argument arrays for the fixed owners. Use the
 current Python with `-m accelerate.commands.launch` for training. Set
 `CUDA_VISIBLE_DEVICES` to claimed physical IDs. Single-GPU children receive
@@ -474,8 +477,9 @@ Current `dispatch_ready` constructs `ProcessRegistry`, chooses devices from
 direct inventory and acquires one token-bound ledger row. It queries occupancy
 again before creating a child. A busy device leaves the job pending; an invalid
 query refuses without a launch. Only this attempt's record can be released.
-Independent checks may use GPUs 0–3 concurrently, but a four-rank training job
-requires the whole prescribed pool. External programs can still start after a
+Independent checks may use the authorized GPUs 0–7 concurrently; the current
+dispatcher still has the transitional limits above. Training requires four
+free devices with unchanged four-rank topology. External programs can still start after a
 query; the ledger coordinates only this pipeline's own starts.
 
 The retained `GPUClaims` helper and original reservation files are historical
@@ -694,3 +698,9 @@ The `render` kind launches `scripts.onestep_avatar.comparisons` with the saved
 specification, exact seed/output and child-visible GPU index. Preparation and
 completion call that same owner directly; ordinary evaluation retains its own
 module. The decoder and preview owners stay separate explicit commands.
+
+### Extracted causality and fusion selectors
+
+The literal experiment table now also names `causality` and `fusion_parity`. Their `parse_args` methods expose spec/output/device and a contained manifest descriptor without reading scientific input paths; this preserves both passes of relative queue path normalization. The selected owner reads and checks its scientific spec after canonicalization, executes through shared model owners, and verifies saved scientific controls without native loading.
+
+An explicit selected owner may expose `evidence_paths(spec, root)` for its complete verified artifact inventory. The queue uses it only in the experiment receipt branch, after scientific completion, and requires every returned path to stay inside output. This records raw tensors, branch summaries, text and noise without making ordinary jobs know their roles. The sigma-sweep receipt remains unchanged.

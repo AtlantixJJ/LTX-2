@@ -8,10 +8,11 @@ No privileged access is required. Preserve original claim,
 launch, result and acceptance files unchanged. Scientific inputs, budgets,
 tolerances and native E1–E5 gates remain unchanged.
 
-**Concurrent runs — user amendment, 2026-10-08:** independent runs may execute
-at the same time on GPUs 0–3. Query direct occupancy before each launch and
+**Concurrent runs — user amendment, 2026-10-09:** independent runs may execute
+at the same time on any GPUs 0–7. Query direct occupancy before each launch and
 register each original owner in the shared process ledger. Keep the prescribed
-four-rank training topology; concurrent ordinary checks do not change it.
+four-rank training topology, selecting four free devices from the shared pool;
+concurrent ordinary checks do not change it. This expands the October 8 pool.
 
 Guidance for Claude Code when working inside this package: the one-step LTX-2.5 avatar
 renderer, corpus tooling and model training in **one tree**.
@@ -27,7 +28,7 @@ experiment owners, retire duplicate execution after caller/data/code checks,
 and validate the final layout. Run fresh affected native checks and the unchanged
 E5 pilots afterward. Missing learning or longer-video evidence does not block
 reversible source moves. Scientific acceptance requirements remain unchanged.
-The current task is the handoff for the next agent; do not describe proposed
+The active handoff owns implementation progress; do not describe proposed
 paths as shipped.
 
 **Refactor design decisions — user, 2026-10-08:** the
@@ -39,7 +40,7 @@ experiment module, replaces the `sigma_sweep` queue kind with one `experiment`
 kind, moves the whole-clip pruning producer to `scripts/prune/`, and limits
 `expr/` cleanup to retiring executors and freezing old reports. The queue
 becomes the only launcher for model work, with bounded supervision and an
-overall deadline for every kind and one GPU pool (GPUs 0–3); do not write
+overall deadline for every kind and one GPU pool (GPUs 0–7); do not write
 hand-written launch controllers. The refactoring agent commits one verified
 owner group at a time on LTX-2 branch `onestep-avatar-refactor`; it never
 pushes and never updates the workspace's recorded LTX-2 commit. The handoff's
