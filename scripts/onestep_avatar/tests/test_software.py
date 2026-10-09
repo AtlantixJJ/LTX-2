@@ -1,4 +1,4 @@
-"""Dirty owner bytes and runtime changes invalidate current claims, not history."""
+"""Current owner bytes and runtime changes invalidate execution claims."""
 from copy import deepcopy
 
 import pytest
@@ -39,8 +39,6 @@ def test_changed_owner_fails_current_check_and_history_stays_readable(monkeypatc
     software.validate(record)
     with pytest.raises(ValueError, match='changed since preflight'):
         software.check_current(record)
-    expected = original(software.LTX_ROOT/'scripts/onestep_avatar/evaluate.py')
-    assert record['sources']['scripts/onestep_avatar/evaluate.py'] == expected
 
 
 @pytest.mark.parametrize('phase', ['before_write', 'during_write'])

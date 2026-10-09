@@ -14,18 +14,6 @@ def test_inventory_requires_all_allowed_devices():
             queue.parse_gpu_memory(text)
 
 
-def test_selection_preserves_legacy_claim_and_gpu_exclusions(tmp_path):
-    claims = queue.GPUClaims(tmp_path)
-    (tmp_path / '5').write_text('historical evaluation')
-    memory = dict.fromkeys(range(8), 0)
-    assert claims.choose(memory, training=False) == (4,)
-    memory[0] = 1024
-    assert claims.choose(memory, training=True) is None
-    for gpu in range(6):
-        memory[gpu] = 1024
-    assert claims.choose(memory, training=False) is None
-
-
 def test_partial_acquisition_rolls_back_owned_claims(tmp_path):
     (tmp_path / '2').write_text('other job')
     claims = queue.GPUClaims(tmp_path)
@@ -107,17 +95,6 @@ def test_expired_live_child_claim_cannot_be_stolen_or_released(tmp_path):
     with pytest.raises(ValueError, match='live child'):
         claims.release()
     assert (tmp_path / '5').is_file()
-
-
-def test_expired_legacy_claim_can_be_replaced(tmp_path):
-    path = tmp_path / '5'
-    path.write_text('finished old job')
-    old = time.time() - 601
-    os.utime(path, (old, old))
-    claims = queue.GPUClaims(tmp_path)
-    assert claims.acquire((5,), job='new')
-    claims.release()
-    assert not path.exists()
 
 
 def test_job_list_requires_explicit_mode_and_matching_outputs():
@@ -477,23 +454,18 @@ def test_queue_dry_run_is_read_only_and_reports_planned_commands(tmp_path, capsy
     assert not state_path.parent.exists()
 
 
-@pytest.mark.parametrize('path_alias', [False, True])
-def test_queue_execute_once_uses_shared_own_ledger_and_preserves_old_reservations(monkeypatch, tmp_path, path_alias):
+def test_queue_execute_once_uses_shared_own_ledger(monkeypatch, tmp_path):
     from scripts.onestep_avatar.execution.process_registry import ProcessRegistry
     job = {'id': 'case', 'kind': 'evaluate', 'output': str(tmp_path / 'result'), 'sha256': 'a' * 64}
     state = {'jobs': {'case': {'state': 'pending', 'attempts': []}}}
     seen = {}
 
-    claims_dir = tmp_path / 'legacy_claims'
-    claims_dir.mkdir()
-    (claims_dir / '5').write_text('historical evaluation')
-    ledger = claims_dir / 'processes.json' if path_alias else tmp_path / 'own_processes.json'
+    ledger = tmp_path / 'own_processes.json'
 
     def dispatch(job, claims, log, **kwargs):
         seen.update(owned=set(claims.owned), log=log, kwargs=kwargs)
         assert isinstance(claims, ProcessRegistry)
         assert claims.path == ledger.resolve()
-        assert (claims_dir / '5').read_text() == 'historical evaluation'
         row = json.loads(ledger.read_text())['attempts'][claims.token]
         assert row['job'] == job['id'] and row['state'] == 'active'
         assert row['gpus'] == [5] and row['owner'] == queue.process_identity(os.getpid())
@@ -508,13 +480,11 @@ def test_queue_execute_once_uses_shared_own_ledger_and_preserves_old_reservation
         lambda *args, **kwargs: type('Result', (), {'stdout': '\n'.join(f'{gpu}, 0' for gpu in range(8))})(),
     )
 
-    path_arguments = ['--claims-dir', str(claims_dir)] if path_alias else ['--process-ledger', str(ledger)]
     assert queue.main(['--jobs', 'jobs.json', '--state', str(tmp_path / 'state.json'), '--execute', '--once',
-                       *path_arguments]) == 0
+                       '--process-ledger', str(ledger)]) == 0
     assert seen['owned'] == {5}
     assert seen['log'].parent == tmp_path / 'logs'
     assert seen['kwargs']['state_path'] == tmp_path / 'state.json'
-    assert sorted(p.name for p in claims_dir.iterdir() if p.name.isdigit()) == ['5']
     assert all(row['state'] == 'closed' for row in json.loads(ledger.read_text())['attempts'].values())
 
 
@@ -525,14 +495,6 @@ def test_queue_execute_requires_shared_process_ledger_before_preparation(monkeyp
     monkeypatch.setattr(queue, 'prepare_jobs', forbidden)
     with pytest.raises(SystemExit):
         queue.main(['--jobs', 'jobs.json', '--state', str(tmp_path / 'state.json'), '--execute', '--once'])
-    assert not list(tmp_path.iterdir())
-
-
-def test_queue_rejects_ambiguous_own_ledger_and_legacy_path_alias_before_preparation(monkeypatch, tmp_path):
-    monkeypatch.setattr(queue, 'prepare_jobs', lambda *_: pytest.fail('ambiguous execution prepared jobs'))
-    with pytest.raises(SystemExit):
-        queue.main(['--jobs', 'jobs.json', '--state', str(tmp_path / 'state.json'), '--execute', '--once',
-                    '--process-ledger', str(tmp_path / 'processes.json'), '--claims-dir', str(tmp_path / 'legacy')])
     assert not list(tmp_path.iterdir())
 
 

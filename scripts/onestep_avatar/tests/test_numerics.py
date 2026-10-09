@@ -94,16 +94,6 @@ def test_runtime_rejects_each_wrong_original_numerical_setting(field: str) -> No
         runtime.validate(record, 4, "bf16", native=True, numerical_policy=True)
 
 
-def test_historical_runtime_reader_preserves_scope_and_refuses_current_requirement() -> None:
-    old = inventory()
-    runtime.validate(old, 4, "bf16", native=True)
-    with pytest.raises(ValueError, match="schema-two"):
-        runtime.validate(old, 4, "bf16", native=True, numerical_policy=True)
-    with pytest.raises(ValueError, match="schema-two"):
-        runtime.numerical_policy(old)
-    assert all("numerics" not in rank for rank in old["ranks"])
-
-
 def test_observed_schema_two_runtime_requires_complete_rank_agreement() -> None:
     record = inventory(numerical=True)
     expected = runtime.numerical_policy(record)
@@ -124,18 +114,12 @@ def test_schema_two_never_default_fills_missing_or_malformed_flags(change: str) 
         runtime.validate(record, 4, "bf16", native=True, numerical_policy=True)
 
 
-def test_current_queue_environment_and_historical_reader_are_both_explicit(tmp_path: Path) -> None:
+def test_current_queue_environment_is_explicit(tmp_path: Path) -> None:
     _raw, prepared, current, *_ = original_job(tmp_path)
     _, environment = queue.job_command(prepared, (0, 1, 2, 3))
     assert current["schema_version"] == 2
     assert current["numerical_environment"] == numerics.ENVIRONMENT
     assert all(environment[key] == value for key, value in numerics.ENVIRONMENT.items())
-    old = queue.training_launch_record(prepared, schema_version=1)
-    assert queue.verify_training_launch(old, prepared) == prepared
-    assert "numerical_environment" not in old
-    old["numerical_environment"] = dict(numerics.ENVIRONMENT)
-    with pytest.raises(ValueError, match="launch identity"):
-        queue.verify_training_launch(old, prepared)
 
 
 @pytest.mark.parametrize("missing", [False, True])

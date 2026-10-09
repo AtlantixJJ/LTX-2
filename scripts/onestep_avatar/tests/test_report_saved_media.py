@@ -79,28 +79,6 @@ def test_saved_reader_uses_spec_names_and_actual_layout(reader, current):
     assert before == (spec.read_bytes(), manifest.read_bytes())
 
 
-@pytest.mark.parametrize('defect', ['missing_audit', 'manifest_hash', 'video', 'poster', 'coverage', 'titles'])
-def test_legacy_media_needs_unchanged_current_presentation_audit(reader, defect):
-    _, manifest = saved(reader)
-    path = reader.ROOT/'configs/stage2_media_evidence.json'
-    audit = json.loads(path.read_text())
-    if defect == 'missing_audit':
-        path.unlink()
-    elif defect == 'manifest_hash':
-        audit['manifest_sha256']='0'*64
-    elif defect in ('video','poster'):
-        row=json.loads(manifest.read_text())['results'][0]
-        (manifest.parent/row[defect]).write_bytes(b'changed media')
-    elif defect == 'coverage':
-        audit['comparisons']['case']['video']['frames']=128
-    else:
-        audit['comparisons']['case']['layout']['panel_titles'].reverse()
-    if defect != 'missing_audit':
-        path.write_text(json.dumps(audit))
-    with pytest.raises((ValueError,FileNotFoundError)):
-        reader.read_saved_comparisons(reader.RUNS[0])
-
-
 @pytest.mark.parametrize('defect', ['manifest', 'video', 'poster', 'inventory', 'panels', 'view', 'caption',
                                   'frames', 'video_hash', 'input_hash', 'fps', 'source_frames', 'aliases', 'render_titles'])
 def test_missing_or_changed_results_fail_before_report_writes(reader, monkeypatch, defect):

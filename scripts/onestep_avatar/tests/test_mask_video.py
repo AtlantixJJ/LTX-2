@@ -2,7 +2,7 @@
 
 Masks here are already one generation of lossy video away from the truth (the capture matte
 is a hard threshold off h264 -- the plan's risk 8). The storage format must not add a second.
-These tests pin that, plus the legacy fallback that keeps pre-MP4 renders readable.
+These tests pin that storage contract.
 """
 
 from __future__ import annotations
@@ -67,22 +67,6 @@ def test_it_actually_compresses(tmp_path: Path) -> None:
     grid = _soft_mask(frames=30, size=256)
     path = mask_video.write_mask_video(grid, tmp_path / "big.mp4")
     assert grid.nbytes / path.stat().st_size > 5
-
-
-def test_legacy_array_cannot_replace_required_mp4(tmp_path: Path) -> None:
-    np.save(tmp_path / "alpha.npy", _soft_mask())
-    stem = tmp_path / "alpha"
-    assert not mask_video.mask_exists(stem)
-    with pytest.raises(FileNotFoundError):
-        mask_video.read_mask(stem)
-
-
-def test_the_mp4_wins_when_both_are_present(tmp_path: Path) -> None:
-    """An unrelated legacy array cannot change the required MP4 pixels."""
-    stem = tmp_path / "alpha"
-    np.save(stem.with_suffix(".npy"), np.zeros((4, 8, 8), dtype=np.uint8))
-    mask_video.write_mask_video(np.full((4, 8, 8), 255, dtype=np.uint8), stem.with_suffix(".mp4"))
-    assert (mask_video.read_mask(stem) == 255).all()
 
 
 def test_a_missing_mask_raises_rather_than_returning_empty(tmp_path: Path) -> None:

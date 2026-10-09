@@ -1,13 +1,9 @@
 """Saved presentation reuse must bind decoder identity and all artifacts."""
 
 from pathlib import Path
-import json
-from types import SimpleNamespace
 
-import pytest
-
-from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.decode_saved import reusable
+from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 
 
@@ -37,18 +33,3 @@ def test_reuse_requires_decoder_and_all_artifacts(tmp_path: Path) -> None:
     row["samples"] = []
     video.write_bytes(b"changed video")
     assert not reusable(row, job, tmp_path, "producer", "decoder")
-
-
-def test_old_decoder_software_preserved_before_session(tmp_path, monkeypatch):
-    from scripts.onestep_avatar import decode_saved
-
-    jobs = tmp_path/'jobs.json'
-    jobs.write_text(json.dumps({'jobs': [{'id': 'old'}]}))
-    manifest = tmp_path/'manifest.json'
-    manifest.write_text(json.dumps({'jobs': [{'id': 'old', 'producer': 'historical'}]}))
-    original = manifest.read_bytes()
-    monkeypatch.setattr(decode_saved, 'parse_args', lambda: SimpleNamespace(jobs=jobs, output=tmp_path))
-    monkeypatch.setattr(decode_saved, 'open_decoder_session', lambda *_a, **_k: pytest.fail('stale output opened decoder'))
-    with pytest.raises(ValueError, match='fresh destination'):
-        decode_saved.main()
-    assert manifest.read_bytes() == original

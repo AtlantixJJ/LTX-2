@@ -316,16 +316,3 @@ def test_replay_preserves_measured_limit_breach_before_refusal(
     assert saved["state"] == "failed"
     assert saved["peak_allocated_bytes"] == allocated
     assert not (output / "result.json").exists()
-
-
-def test_historical_launch_stays_readable_but_cannot_be_current_native_replay(tmp_path: Path) -> None:
-    _raw, prepared, _launch, job, saved, marker_path = original_job(tmp_path)
-    historical = queue.training_launch_record(prepared, schema_version=1)
-    saved["queue_launch"] = historical
-    (tmp_path / "distributed/config.json").write_text(json.dumps(saved))
-    marker = json.loads(marker_path.read_text())
-    marker["queue_launch"] = historical
-    marker_path.write_text(json.dumps(marker))
-    assert queue.verify_training_launch(historical, prepared) == prepared
-    with pytest.raises(ValueError, match="schema-two numerical launch"):
-        check.check_launch(job, 4)

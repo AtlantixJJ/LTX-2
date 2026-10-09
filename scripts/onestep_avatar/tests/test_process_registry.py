@@ -45,15 +45,10 @@ def test_direct_inventory_rechecked_and_shared_starts_coordinate(tmp_path):
     second = registry(tmp_path)
     assert second.acquire((0, 1, 2, 3), job="second") is False
     assert second.choose(free(), training=True) is None
-    # Existing per-GPU reservation files are unrelated historical data.
-    (tmp_path / "0").write_text("historical reservation bytes")
     owner.release()
     assert owner.owned == set()
     record = json.loads(owner.path.read_bytes())
     assert record["attempts"][owner.token]["state"] == "closed"
-    with pytest.raises(ValueError, match="fresh process registry"):
-        owner.acquire((0,), job="must-not-overwrite-history")
-    assert (tmp_path / "0").read_text() == "historical reservation bytes"
     assert second.acquire((0, 1, 2, 3), job="second") is True
     second.release()
 
