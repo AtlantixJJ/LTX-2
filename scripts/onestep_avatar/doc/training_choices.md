@@ -19,8 +19,8 @@ See [README terms](../README.md#terms-used-here) before the model designs.
 
 Training supports explicit bidirectional and causal modes.
 A transitional mode-less loop still uses causal block sequences.
-The old loop's one-block complete-video path and `--whole-clip` visualizer
-are legacy behavior. Typed bidirectional execution has no cache or priming.
+The old loop's one-block complete-video path is legacy behavior; the pruning
+whole-clip producer moved to `scripts.prune.evaluate.whole_clip_baseline`. Typed bidirectional execution has no cache or priming.
 The `--mode` switch is implemented. See
 [current acceptance](known_gaps.md#current-acceptance-and-next-step) for the
 verified numerical scope and remaining workflow/quality gates.

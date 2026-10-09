@@ -12,7 +12,7 @@ Read capture masters through `onestep_avatar.corpus.dataset.load_training_master
 Use the same schema, shape and frame-rate checks as native input reconstruction.
 Do not import the training CLI to read capture data.
 
-Run `scripts.onestep_avatar.visualize_d1` twice with identical `--view`, `--whole-clip`, `--sigmas`, `--prompt`, `--seed`, and model/guidance flags, changing only `--transformer`. Keep both fresh output directories. The producer saves the capture bundle hash, one global epsilon tensor per view, D0 predicted latents per sigma, and a decoded GT|D0|D1 MP4. Then run:
+Run [`scripts.prune.evaluate.whole_clip_baseline`](whole_clip_baseline.md) twice with identical `--view`, `--sigmas`, `--prompt`, `--seed`, and model/guidance flags, changing only `--transformer`. Keep both fresh output directories. The producer saves the capture bundle hash, one global epsilon tensor per view, D0 predicted latents per sigma, and a decoded GT|D0|D1 MP4. Then run:
 
 ```bash
 conda run -n ltx python -m scripts.prune.evaluate.whole_clip_d0 \

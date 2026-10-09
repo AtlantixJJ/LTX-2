@@ -57,8 +57,9 @@ Reserve room for the current write before removing old entries.
 Typed [bidirectional](model/bidirectional.md) training processes one segment
 directly with full attention. It has no cache, prime or refresh call.
 Typed [causal](model/causal.md) training uses the block/cache calculations above.
-The transitional mode-less engine and old `visualize_d1 --whole-clip` path are
-legacy execution paths awaiting removal; they do not define typed mode behavior.
+The transitional mode-less engine is a legacy execution path awaiting removal;
+it does not define typed mode behavior. The pruning whole-clip producer is
+`scripts.prune.evaluate.whole_clip_baseline`.
 Select the mode explicitly. D0/D1 and dev/distilled remain separate choices.
 Joint attention over past frames and a current block is a diagnostic, not a third training mode.
 

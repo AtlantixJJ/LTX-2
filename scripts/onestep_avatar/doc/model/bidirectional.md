@@ -2,7 +2,7 @@
 
 Status: **Training and generation functions, typed engine, and explicit-mode training/evaluation CLI integration implemented. Product inference and final real-weight checks remain pending.**
 Current reference: `training.engine.train_chain` with one block starting at frame zero, and
-`visualize_d1 --whole-clip`.
+the pruning producer `scripts.prune.evaluate.whole_clip_baseline`.
 
 ## Objective
 

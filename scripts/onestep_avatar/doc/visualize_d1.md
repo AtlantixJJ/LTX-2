@@ -1,6 +1,8 @@
 # `visualize_d1.py` — paired source comparison
 
-Status: **Legacy model/media orchestration; caller migration and retirement remain incomplete.**
+Status: **Legacy model/media orchestration; retires in refactor group G11.** The `--whole-clip`
+pruning producer moved to `scripts.prune.evaluate.whole_clip_baseline` (G10), which reproduces
+this path's saved files bit-for-bit; pruning callers no longer use this module.
 Current sources import `model.causal` as the local alias `causal_core`.
 The old `scripts.onestep_avatar.causal_core` module path is removed.
 Use the typed `evaluate.py` path for ordinary evaluation. The current handoff

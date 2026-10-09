@@ -1,7 +1,8 @@
 # Whole-clip pruning architecture
 
-`data.whole_clip` validates baseline manifests, reconstructs capture/noise/context
-inputs and verifies paired candidates. `score.whole_clip_d0_scores` observes
+`evaluate.whole_clip_baseline` produces the saved baseline and candidate
+whole-clip rollouts. `data.whole_clip` validates those manifests, reconstructs
+capture/noise/context inputs and verifies paired candidates. `score.whole_clip_d0_scores` observes
 native forwards through `score.hooks`, computes `score.estimators` statistics and
 writes a pinned mask. `score.export_pruned` turns that mask into a checkpoint.
 `score.export_depth` separately binds intact-block removal to native saved

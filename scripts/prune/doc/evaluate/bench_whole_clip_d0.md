@@ -6,7 +6,7 @@ Measure the unpruned and compact-pruned LTX-2.5 **one-step whole-clip D0 transfo
 
 ## Data flow
 
-The CLI reads the two `visualize_d1 --whole-clip` manifests from the pruning comparison, validates their fixed setup and actual saved noise equality. `data.whole_clip.build_input` reconstructs the exact D0 modality from the baseline alone: `lerp(capture, epsilon, sigma)`, clean frame 0, global positions, one block `[0,T)`, all-ones bidirectional mask, and the same prompt context. Before timing an arm, it compares that arm's first forward with its saved latent output and refuses a maximum absolute difference above 0.02. It then runs a warmup and repeated synchronized wall-clock forwards.
+The CLI reads the two [`whole_clip_baseline`](whole_clip_baseline.md) manifests from the pruning comparison, validates their fixed setup and actual saved noise equality. `data.whole_clip.build_input` reconstructs the exact D0 modality from the baseline alone: `lerp(capture, epsilon, sigma)`, clean frame 0, global positions, one block `[0,T)`, all-ones bidirectional mask, and the same prompt context. Before timing an arm, it compares that arm's first forward with its saved latent output and refuses a maximum absolute difference above 0.02. It then runs a warmup and repeated synchronized wall-clock forwards.
 
 The default order is baseline → candidate → baseline; `--order BAB` reverses it. The repeated outside arm exposes run-order drift. The JSON saves every timing, median, mean, range, peak allocated CUDA memory, input/source fingerprints, geometry, hardware, and saved-output parity check. Checkpoint loading, noising, VAE decoding and MP4 encoding are outside the timed scope.
 

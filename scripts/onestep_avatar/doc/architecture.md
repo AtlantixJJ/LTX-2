@@ -40,9 +40,10 @@ They replace any earlier statement that conflicts with them.
    metrics, the A1/B1c statistics and legacy adapter conversion also move there,
    with their behavior unchanged.
 2. **The pruning baseline producer moves to `scripts/prune/`.** The sibling
-   pruning package uses `visualize_d1 --whole-clip` to make its baselines and
-   candidates. That producer becomes a prune-owned command with the same output
-   format. `visualize_d1.py` then retires completely.
+   pruning package used `visualize_d1 --whole-clip` to make its baselines and
+   candidates. That producer is now the prune-owned command
+   `scripts.prune.evaluate.whole_clip_baseline` with the same output format.
+   `visualize_d1.py` then retires completely.
 3. **`expr/` cleanup is limited.** Every executor, launcher and runnable source
    snapshot under `expr/onestep_avatar/` becomes non-executable provenance.
    Report-only code stays unchanged. Only maintained reports must rebuild from
@@ -517,20 +518,19 @@ Keep both FSDP configurations: `configs/fsdp.yaml` and
 
 ### Cross-package caller: `scripts/prune/`
 
-`scripts/prune/` imports `dataset.load_training_master`, `model.common` and
-`model.causal`. Its README and `doc/evaluate/whole_clip_d0.md` run
-`visualize_d1 --whole-clip` for the baseline and for each pruned candidate.
-`scripts/prune/data/whole_clip.py` reads that output format.
+`scripts/prune/` imports `corpus.dataset.load_training_master`, `model.common`
+and `model.causal`. `scripts/prune/data/whole_clip.py` reads the saved
+whole-clip rollout format.
 
-**Required:** move the whole-clip D0 producer into `scripts/prune/` as a
-prune-owned CLI (proposed `scripts/prune/evaluate/whole_clip_baseline.py`;
-follow `scripts/prune/CLAUDE.md` for the final name and doc). Keep the output
+**Implemented:** the whole-clip producer is the prune-owned CLI
+`scripts/prune/evaluate/whole_clip_baseline.py`, documented in
+`scripts/prune/doc/evaluate/whole_clip_baseline.md`. It keeps the output
 format and options (`--view`, `--sigmas`, `--prompt`, `--seed`, model and
-guidance options, `--transformer`). Build it on public `corpus/` readers,
-`model/` owners and prune's own `data/whole_clip.py`, not on the retired
-`Chain` types. Update prune imports for `corpus/` and its docs in the same
-change. After the code gate, one native check must reproduce a saved prune
-baseline with the new producer (see the handoff).
+guidance options, `--transformer`), and is built on public `corpus/` readers
+and `model/` owners, not on the retired `Chain` types. The `--whole-clip`,
+LoRA, history and trajectory options of the old visualizer are not carried
+over; the design doc records why. After the code gate, one native check must
+reproduce a saved prune baseline with the new producer (see the handoff).
 
 ### Tests and docs
 

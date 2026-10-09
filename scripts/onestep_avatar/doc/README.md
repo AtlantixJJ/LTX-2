@@ -352,7 +352,7 @@ and [migration map](architecture.md#migration-map); that map wins over the
 | `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | version-two records and tensor preflight stay; legacy conversion is in `experiments/legacy_adapters.py` |
 | removed `onestep_core.py` | [infer.md](infer.md) | explicit-mode product CLI/API and shared model/media owners |
 | `visualize_d0.py` | [visualize_d0.md](visualize_d0.md) | retarget needed checks to final owners, then delete |
-| `visualize_d1.py` | [visualize_d1.md](visualize_d1.md) | move the `--whole-clip` pruning producer to `scripts/prune/`, then delete |
+| `visualize_d1.py` | [visualize_d1.md](visualize_d1.md) | pruning producer moved to `scripts.prune.evaluate.whole_clip_baseline`; delete in G11 |
 | `bench.py` | [bench.md](bench.md) | causal-operation diagnostic and explicit-mode whole-generation CLI implemented; native measurement pending |
 | `model/backbone.py` | [source docstrings](../model/backbone.py) | moved; keep the weight-identity description |
 | `hashing.py` | [source docstrings](../hashing.py) | stays at the root as a leaf utility; gains `tensor_sha256` |

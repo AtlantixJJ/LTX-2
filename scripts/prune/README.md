@@ -10,7 +10,7 @@ loading the transformer.
 
 ## Workflow
 
-1. Save a baseline with `python -m scripts.onestep_avatar.visualize_d1 --whole-clip`.
+1. Save a baseline with `python -m scripts.prune.evaluate.whole_clip_baseline --view <view> ... --sigmas <levels> --prompt "" --seed 42 --gpu-id N --output <baseline-dir>`.
    Use the original capture, unguided BF16 inference, one step at each sigma, and
    saved epsilon and output latents. Fix prompt, geometry, fps and seed.
    Whole-clip attention uses no dense mask. Keep sigma and token timesteps in
@@ -28,7 +28,7 @@ loading the transformer.
    `python -m scripts.prune.checks.export_parity --baseline <baseline-dir> --masks <mask.json> --exported-checkpoint <candidate.safetensors> --view <held-out-view> --sigmas 0.725 0.909375 --gpu-id N`.
    The default maximum absolute tolerance is 0.02; failure exits nonzero.
 5. Generate the same saved whole-clip setup with
-   `visualize_d1 --whole-clip --transformer <candidate.safetensors>`, then compare:
+   `python -m scripts.prune.evaluate.whole_clip_baseline ... --transformer <candidate.safetensors>`, then compare:
    `python -m scripts.prune.evaluate.whole_clip_d0 --baseline <baseline-dir> --candidate <candidate-dir> --output <comparison-dir>`.
    This verifies input identity and renders synchronized capture VAE, baseline
    D0 VAE and candidate D0 VAE panels.
