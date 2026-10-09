@@ -1,4 +1,4 @@
-"""Prepare package generation jobs from historical sigma-sweep evidence; see doc/sigma_sweep_jobs.md."""
+"""Prepare package generation jobs from historical sigma-sweep evidence; see doc/experiments/sigma_sweep_jobs.md."""
 
 import argparse
 import json
@@ -7,9 +7,10 @@ from pathlib import Path
 
 import torch
 
-from scripts.onestep_avatar import evaluate, sigma_sweep
+from scripts.onestep_avatar import evaluate
 from scripts.onestep_avatar.corpus import dataset, precompute, subset
 from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.experiments import sigma_sweep
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import backbone
 from scripts.prune.core.provenance import checkpoint_fingerprint
@@ -127,7 +128,9 @@ def prepare(cases_path: Path, output: Path) -> dict:  # noqa: PLR0912, PLR0915 -
                               [(sigma, arm) for sigma in sigma_sweep.LEVELS for arm in ("d0", "d1")],
                               case_jobs, strict=True)]}
         media_output = output / "decoded" / tag
-        jobs.append({"id": f"decode_{tag}", "kind": "sigma_sweep",
+        jobs.append({"id": f"decode_{tag}", "kind": "experiment", "experiment": "sigma_sweep",
+                     "spec": str(spec_path),
+                     "spec_sha256": bytes_sha256((json.dumps(spec, indent=2) + "\n").encode()).hexdigest(),
                      "arguments": ["--spec", str(spec_path), "--output", str(media_output)],
                      "dependencies": [job["id"] for job in case_jobs], "output": str(media_output),
                      "completion": {"manifest": str(media_output / "manifest.json")}})

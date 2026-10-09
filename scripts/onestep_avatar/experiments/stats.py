@@ -27,7 +27,7 @@ plan is currently guessing at:
 exist in the ``ltx`` env. (r) and (c) are pure tensor arithmetic over the corpus master latents and
 need no GPU at all -- ``--no-gpu`` runs exactly those.
 
-    conda run -n ltx python -m scripts.onestep_avatar.stats \\
+    conda run -n ltx python -m scripts.onestep_avatar.experiments.stats \\
       --renders ../../ARG-Avatar/expr --pairs ../data/AnimatableHuman/DNARenderingVideo \\
       --out ../expr/onestep_avatar/analysis_summary.json --gpu-id 2
 """
@@ -244,7 +244,7 @@ def measure_map(
     from scripts.prune.core.session import Session  # noqa: PLC0415 -- torch-heavy, imported late.
 
     session = Session(
-        model=model, device=device, script="onestep_avatar.stats", context=context
+        model=model, device=device, script="onestep_avatar.experiments.stats", context=context
     )
     with session.transformer() as transformer:
         for path, z_g, fps, height, width in encoded:

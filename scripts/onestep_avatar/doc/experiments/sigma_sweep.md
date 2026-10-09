@@ -1,4 +1,4 @@
-# `sigma_sweep.py` — decode saved sigma-sweep results
+# `experiments/sigma_sweep.py` — decode saved sigma-sweep results
 
 ## Objective
 
@@ -56,6 +56,16 @@ flowchart LR
 ```
 
 ## Organization logic
+
+The public `parse_args(argv)` returns ordinary parsed values plus a `completion`
+mapping derived from its resolved output: `{"manifest": "<output>/manifest.json"}`.
+This is data for the generic queue, not a launcher. The descriptor is checked
+before writes and included in the canonical job identity. `verify_completion`
+rechecks every saved artifact without opening a native handle.
+The decoding software profile stays ordinary; this experiment explicitly adds
+its own module, the empty experiment marker and `sigma_sweep_results.py` through
+`extra_sources`. Historical manifests retain their original source attribution.
+
 
 Capture the shared decoding software manifest before input preparation. Check
 it before opening the VAE, before writing media and before final publication;
@@ -120,6 +130,14 @@ The saved old masters can be decoded for historical evidence without relabeling
 them as current training inputs. A VAE mismatch refuses the requested comparison.
 
 ## Tests
+
+The complete-movie mutation control calls the public completion verifier.
+First verify the unchanged positive control. Change saved movie bytes while
+all poster PNG bytes remain identical, require rejection without a decoder or
+new artifact, then restore the original movie and require success. The older
+`sheets.py` report stays byte-identical and frozen; it is no longer imported
+as an executable test dependency after the source move.
+
 
 Use a controlled decoder and real small media writes to verify ten inputs,
 seed/reset, raw scores, all cell identities, c0 controls and output hashes.

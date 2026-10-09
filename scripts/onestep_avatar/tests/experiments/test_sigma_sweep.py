@@ -1,6 +1,5 @@
 """Saved sigma-sweep decoding has one package owner and checks inputs before native sessions."""
 
-import importlib.util
 import json
 from contextlib import nullcontext
 from pathlib import Path
@@ -9,8 +8,9 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import WORKSPACE_ROOT, media, sigma_sweep
+from scripts.onestep_avatar import media
 from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.experiments import sigma_sweep
 from scripts.onestep_avatar.hashing import sha256
 from scripts.prune.core import model_registry as registry
 
@@ -63,7 +63,8 @@ def saved_sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
 
 def sweep_queue_job(path: Path, output: Path) -> dict:
     """Prepare the real queue command through its public parser and identity owner."""
-    job = {"id": "matched", "kind": "sigma_sweep",
+    job = {"id": "matched", "kind": "experiment", "experiment": "sigma_sweep",
+           "spec": str(path), "spec_sha256": sha256(path),
            "arguments": ["--spec", str(path), "--output", str(output)],
            "output": str(output), "completion": {"manifest": str(output / "manifest.json")}}
     jobs = path.parent / "queue_jobs.json"
@@ -75,7 +76,7 @@ def test_queue_sweep_command_and_complete_receipt_use_real_owner(saved_sweep: tu
     _, path, output, calls = saved_sweep
     job = sweep_queue_job(path, output)
     command, environment = queue.job_command(job, (4,))
-    assert command[2:4] == ["scripts.onestep_avatar.sigma_sweep", "--spec"]
+    assert command[2:4] == ["scripts.onestep_avatar.experiments.sigma_sweep", "--spec"]
     assert command[-2:] == ["--gpu-id", "0"]
     assert environment == {"CUDA_VISIBLE_DEVICES": "4"}
     assert not queue.verify_completion(job)
@@ -257,17 +258,21 @@ def test_short_movie_prevents_complete_manifest(saved_sweep: tuple, monkeypatch:
     assert not (output / "manifest.json").exists()
 
 
-def test_report_refuses_changed_movie_outside_selected_samples(saved_sweep: tuple) -> None:
+def test_public_completion_refuses_changed_movie_with_unchanged_poster_records(saved_sweep: tuple) -> None:
     _, path, output, calls = saved_sweep
     manifest = sigma_sweep.execute(path, output, gpu_id=4)
-    source = WORKSPACE_ROOT / "expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/sheets.py"
-    spec = importlib.util.spec_from_file_location("saved_sweep_report", source)
-    report = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(report)
-    Path(manifest["outputs"]["sigma0.725000_d0"]["video"]).write_bytes(b"changed movie")
+    assert sigma_sweep.verify_completion(path, output) == manifest
+    row = manifest["outputs"]["sigma0.725000_d0"]
+    movie = Path(row["video"])
+    original_movie = movie.read_bytes()
+    posters = {sample["path"]: sha256(Path(sample["path"])) for sample in row["samples"]}
+    inventory = sorted(str(p.relative_to(output)) for p in output.rglob('*'))
+    movie.write_bytes(original_movie + b'changed movie bytes outside poster records')
     before = len(calls)
-    destination = output.parent / "refused_report"
     with pytest.raises(ValueError, match="saved media path or bytes changed"):
-        report.build(output / "manifest.json", destination)
-    assert not destination.exists()
+        sigma_sweep.verify_completion(path, output)
+    assert all(sha256(Path(p)) == digest for p, digest in posters.items())
+    assert sorted(str(p.relative_to(output)) for p in output.rglob('*')) == inventory
     assert len(calls) == before
+    movie.write_bytes(original_movie)
+    assert sigma_sweep.verify_completion(path, output) == manifest

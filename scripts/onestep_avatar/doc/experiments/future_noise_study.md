@@ -1,4 +1,4 @@
-# `future_noise_study.py` — prepare the historical future-noise comparison
+# `experiments/future_noise_study.py` — prepare the historical future-noise comparison
 
 Status: preparation and read-only integrity verification implemented; checked
 real input conversion, numerical replacement parity and executor retirement

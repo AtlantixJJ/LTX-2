@@ -1,4 +1,4 @@
-"""Decode and score saved historical sigma-sweep tensors; see doc/sigma_sweep.md."""
+"""Decode and score saved historical sigma-sweep tensors; see doc/experiments/sigma_sweep.md."""
 
 import argparse
 import json
@@ -8,9 +8,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from scripts.onestep_avatar import evaluate, media, sigma_sweep_results
+from scripts.onestep_avatar import evaluate, media
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import software
+from scripts.onestep_avatar.experiments import sigma_sweep_results
 from scripts.onestep_avatar.hashing import sha256
 
 LEVELS = {0.421875: ("one_step", 1), 0.725: ("official", 2),
@@ -77,10 +78,14 @@ def execute(spec_path: Path, output: Path, *, gpu_id: int) -> dict:
     """Decode matched saved outputs, then publish scored media and final provenance."""
     from ltx_trainer.video_utils import save_video  # noqa: PLC0415 -- presentation writer
 
-    producer_software = software.capture('decoding')
+    producer_software = software.capture('decoding', extra_sources=(
+        'scripts/onestep_avatar/experiments/__init__.py',
+        'scripts/onestep_avatar/experiments/sigma_sweep.py',
+        'scripts/onestep_avatar/experiments/sigma_sweep_results.py',
+    ))
     spec, tensors, inputs, sources = prepare(spec_path, output)
     software.check_current(producer_software)
-    session = media.open_decoder_session(spec["model"], gpu_id, script="onestep_avatar.sigma_sweep")
+    session = media.open_decoder_session(spec["model"], gpu_id, script="onestep_avatar.experiments.sigma_sweep")
     videos = {}
     with session.decoder() as decoder, torch.inference_mode():
         for name, tensor in tensors.items():
@@ -233,6 +238,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.verify and args.gpu_id is not None:
         parser.error("saved verification rejects --gpu-id")
+    # Public parser data: the generic queue binds this exact evidence inventory.
+    args.completion = {"manifest": str(args.output.resolve() / "manifest.json")}
     return args
 
 

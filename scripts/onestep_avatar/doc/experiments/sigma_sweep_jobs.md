@@ -1,4 +1,4 @@
-# `sigma_sweep_jobs.py` — preserve historical generation as package jobs
+# `experiments/sigma_sweep_jobs.py` — preserve historical generation as package jobs
 
 ## Objective
 
@@ -13,7 +13,8 @@ source, text, schedule, guidance and epsilon identities produce checked one-view
 memberships, saved 17-frame noise prefixes and eight evaluation jobs per case.
 The public package queue executes that job list later. Each case also produces
 a version-two decoding spec embedding its eight evaluation jobs and one
-sigma_sweep queue job depending on all eight IDs. This yields 32 evaluations
+`experiment` queue job with selector `sigma_sweep`, spec path and required
+SHA-256, depending on all eight IDs. This yields 32 evaluations
 plus four dependent decodes. Specs pin original masters and the current VAE;
 unknown future tensor hashes are resolved only from verified scientific results.
 
@@ -58,6 +59,8 @@ original seed, literal prompt and exact schedule. Use fresh per-cell outputs.
 No checkpoint or research override is introduced. Job completion names the
 single ordinary evaluator result record. Validate package job schema before
 publication and recheck original files both before and after derived writes.
+Compute the spec SHA-256 from the exact indented JSON plus terminal newline
+that will be published; the fresh decoder job pins those bytes.
 The preparation record binds all thirteen derived files and the current producer,
 subset and evaluator source hashes. A late change leaves partial data without
 a preparation record or job list. Publish jobs.json atomically last.
@@ -91,6 +94,9 @@ conflicting paired inputs, wrong forcing/guidance, wrong weights and existing
 output. Check the saved historical preparation against its original producer
 bytes in Git. Run the current model-free producer into a fresh test directory,
 bind its current producer/source hashes, and check the same original input
-hashes, memberships, noise and schedules in both preparations. Never replace a
+hashes, memberships, noise and schedules in both preparations. Historical
+rows are read as original data with their retired kind; fresh rows alone
+exercise the current queue and its spec fields. Preserve the fixed original
+Git blob path as attribution, even though the current producer moved. Never replace a
 historical record's producer hash with the current source hash. Native model
 and queue execution remain separate acceptance requirements.

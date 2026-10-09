@@ -1,4 +1,4 @@
-# `stats.py` — measurement, no training
+# `experiments/stats.py` — measurement, no training
 
 ## Objective
 

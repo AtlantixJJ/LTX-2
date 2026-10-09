@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import importlib
 import json
 import math
 import os
@@ -17,6 +18,47 @@ from scripts.onestep_avatar.execution.queue_protocol import LAUNCH_PROTOCOL
 ALLOWED_GPUS = frozenset(range(6))
 TRAIN_GPUS = (0, 1, 2, 3)
 EVALUATION_PREFERENCE = (5, 4, 3, 2, 1, 0)
+
+# Fixed reviewed selectors; ordinary kinds never consult this table.
+EXPERIMENTS = {"sigma_sweep": "scripts.onestep_avatar.experiments.sigma_sweep"}
+
+
+def experiment_entry(selector: str) -> str:
+    """Resolve a fixed experiment selector without importing or discovering code."""
+    if not isinstance(selector, str) or selector not in EXPERIMENTS:
+        raise ValueError("queue experiment selector is unknown")
+    return EXPERIMENTS[selector]
+
+
+def validate_completion_descriptor(descriptor: dict) -> None:
+    """Require model-free evidence paths as data, before normalization or imports."""
+    if (not isinstance(descriptor, dict) or not descriptor
+            or set(descriptor) - {"manifest", "records"}
+            or ("manifest" in descriptor and (not isinstance(descriptor["manifest"], str)
+                or not descriptor["manifest"]))
+            or ("records" in descriptor and (not isinstance(descriptor["records"], list)
+                or not descriptor["records"] or any(not isinstance(p, str) or not p
+                                                   for p in descriptor["records"])))):
+        raise ValueError("queue experiment parser completion descriptor is malformed")
+
+
+def validate_experiment_job(job: dict) -> None:
+    """Check the selector and pinned spec as data before an owner can be imported."""
+    experiment_entry(job.get("experiment"))
+    validate_completion_descriptor(job.get("completion"))
+    spec = job.get("spec")
+    digest = job.get("spec_sha256")
+    if (not isinstance(spec, str) or not spec
+            or not isinstance(digest, str) or len(digest) != 64
+            or any(c not in "0123456789abcdef" for c in digest)):
+        raise ValueError("queue experiment requires a specification path and SHA-256")
+    arguments = job["arguments"]
+    if arguments.count("--spec") != 1:
+        raise ValueError("queue experiment requires one explicit specification")
+    index = arguments.index("--spec")
+    if index + 1 >= len(arguments) or arguments[index + 1] != spec:
+        raise ValueError("queue experiment specification differs from command")
+
 
 
 class QueueChildError(ValueError):
@@ -394,11 +436,13 @@ def validate_job_list(record: dict) -> list[dict]:  # noqa: PLR0912 -- ordered s
         identifier = job.get("id")
         if not isinstance(identifier, str) or not identifier or identifier in identifiers:
             raise ValueError("queue job IDs must be unique nonempty strings")
-        if job.get("kind") not in ("train", "evaluate", "decode", "render", "sigma_sweep"):
+        if job.get("kind") not in ("train", "evaluate", "decode", "render", "experiment"):
             raise ValueError("queue job must select a supported package owner")
         arguments = job.get("arguments")
         if not isinstance(arguments, list) or any(not isinstance(value, str) for value in arguments):
             raise ValueError("queue arguments must be strings")
+        if job["kind"] == "experiment":
+            validate_experiment_job(job)
         if job["kind"] in ("train", "evaluate"):
             if arguments.count("--mode") != 1:
                 raise ValueError("queue model jobs require one explicit mode")
@@ -470,8 +514,9 @@ def prepare_job(raw: dict, root: Path) -> dict:  # noqa: PLR0912, PLR0915 -- sha
         from scripts.onestep_avatar.training.config import parse_settings as parser  # noqa: PLC0415
     elif job["kind"] == "decode":
         from scripts.onestep_avatar.decode_saved import parse_args as parser  # noqa: PLC0415
-    elif job["kind"] == "sigma_sweep":
-        from scripts.onestep_avatar.sigma_sweep import parse_args as parser  # noqa: PLC0415
+    elif job["kind"] == "experiment":
+        selected = importlib.import_module(experiment_entry(job["experiment"]))
+        parser = selected.parse_args
     else:
         from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- selected ordinary owner
 
@@ -534,13 +579,22 @@ def prepare_job(raw: dict, root: Path) -> dict:  # noqa: PLR0912, PLR0915 -- sha
         job["render_spec_sha256"] = sha256(parsed.render_saved_comparisons)
         if completion.get("manifest") != str(Path(output) / "render_manifest.json"):
             raise ValueError("queue saved-comparison completion manifest differs from output")
-    if job["kind"] == "sigma_sweep":
-        if not parsed.spec.is_file():
-            raise ValueError("queue sigma-sweep specification is missing")
-        job["sweep_spec"] = str(parsed.spec.resolve())
-        job["sweep_spec_sha256"] = sha256(parsed.spec)
-        if completion.get("manifest") != str(Path(output) / "manifest.json"):
-            raise ValueError("queue sigma-sweep completion manifest differs from output")
+    if job["kind"] == "experiment":
+        spec = (root / job["spec"]).resolve()
+        if parsed.spec.resolve() != spec:
+            raise ValueError("queue experiment specification differs from parsed arguments")
+        if not spec.is_file():
+            raise ValueError("queue experiment specification is missing")
+        if sha256(spec) != job["spec_sha256"]:
+            raise ValueError("queue experiment specification changed from its claimed hash")
+        job["spec"] = str(spec)
+        descriptor = getattr(parsed, "completion", None)
+        validate_completion_descriptor(descriptor)
+        if completion != descriptor:
+            raise ValueError("queue experiment completion manifest differs from parsed output")
+        evidence = ([descriptor["manifest"]] if "manifest" in descriptor else []) + descriptor.get("records", [])
+        if any(not Path(p).resolve().is_relative_to(Path(output)) for p in evidence):
+            raise ValueError("queue experiment completion descriptor escapes its output directory")
     defaults = asdict(parsed) if is_dataclass(parsed) else vars(parsed)
 
     def encode(value):  # noqa: ANN001, ANN202 -- canonical JSON path/dataclass conversion
@@ -666,16 +720,16 @@ def job_command(job: dict, gpus: tuple[int, ...]) -> tuple[list[str], dict[str, 
             *job["arguments"],
         ]
     else:
-        if kind not in ("evaluate", "decode", "render", "sigma_sweep") or len(gpus) != 1:
+        if kind not in ("evaluate", "decode", "render", "experiment") or len(gpus) != 1:
             raise ValueError("queued evaluation/decoding requires one GPU and a package owner")
-        module = "decode_saved" if kind == "decode" else "evaluate"
-        if kind == "sigma_sweep":
-            module = "sigma_sweep"
-            from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- pinned decoder specification
+        module = "scripts.onestep_avatar.decode_saved" if kind == "decode" else "scripts.onestep_avatar.evaluate"
+        if kind == "experiment":
+            module = experiment_entry(job["experiment"])
+            from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- pinned experiment specification
 
-            spec_path = Path(job["sweep_spec"])
-            if not spec_path.is_file() or sha256(spec_path) != job["sweep_spec_sha256"]:
-                raise ValueError("queue sigma-sweep specification changed after preparation")
+            spec_path = Path(job["spec"])
+            if not spec_path.is_file() or sha256(spec_path) != job["spec_sha256"]:
+                raise ValueError("queue experiment specification changed after preparation")
         if kind == "decode":
             from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- pinned decoder list
 
@@ -688,7 +742,7 @@ def job_command(job: dict, gpus: tuple[int, ...]) -> tuple[list[str], dict[str, 
             spec_path = Path(job["render_spec"])
             if not spec_path.is_file() or sha256(spec_path) != job["render_spec_sha256"]:
                 raise ValueError("queue saved-comparison specification changed after preparation")
-        command = [sys.executable, "-m", f"scripts.onestep_avatar.{module}", *job["arguments"], "--gpu-id", "0"]
+        command = [sys.executable, "-m", module, *job["arguments"], "--gpu-id", "0"]
     return command, environment
 
 
@@ -750,15 +804,15 @@ def verify_completion(job: dict) -> bool:  # noqa: PLR0911, PLR0912, PLR0915 -- 
         return True
     if job["kind"] == "decode":
         return verify_decoder_completion(job)
-    if job["kind"] == "sigma_sweep":
-        from scripts.onestep_avatar import sigma_sweep  # noqa: PLC0415 -- complete saved-output verification
-
-        spec = Path(job["sweep_spec"])
-        if not spec.is_file() or sha256(spec) != job["sweep_spec_sha256"]:
-            raise ValueError("queue sigma-sweep specification changed after preparation")
-        if not evidence_path(completion["manifest"]).is_file():
+    if job["kind"] == "experiment":
+        selected = importlib.import_module(experiment_entry(job["experiment"]))
+        spec = Path(job["spec"])
+        if not spec.is_file() or sha256(spec) != job["spec_sha256"]:
+            raise ValueError("queue experiment specification changed after preparation")
+        evidence = ([completion["manifest"]] if "manifest" in completion else []) + completion.get("records", [])
+        if any(not evidence_path(value).is_file() for value in evidence):
             return False
-        sigma_sweep.verify_completion(spec, root)
+        selected.verify_completion(spec, root)
         return True
     if job["kind"] == "render":
         from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- canonical rendering verifier
@@ -1052,7 +1106,10 @@ def completion_receipt(job: dict) -> dict:
             for step in range(1, settings.steps + 1):
                 path = settings.output / "update_states" / f"step_{step:05d}.pt"
                 paths.extend((path, path.with_suffix(".json")))
-    elif job["kind"] in ("decode", "render", "sigma_sweep"):
+    elif job["kind"] == "experiment":
+        paths = ([Path(completion["manifest"])] if "manifest" in completion else [])
+        paths.extend(Path(value) for value in completion.get("records", []))
+    elif job["kind"] in ("decode", "render"):
         paths = [Path(completion["manifest"])]
     else:
         paths = [Path(value) for value in completion["records"]]

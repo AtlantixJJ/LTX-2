@@ -109,7 +109,7 @@ Review these decisions and expected results, rather than only the file-flow diag
 | [Crop](corpus/geometry.md#core-crop-calculation) | union, padded square, rounded shift/cap, subject-fit exclusion |
 | [Motion](corpus/motion.md#convert-one-frame) | all three format conversions, body/camera ownership, exact gap holding and timing |
 | [Masks](corpus/mask_video.md#derive-encoded-frame-coverage) | lossless bytes, spatial pooling, first-frame/eight-frame temporal groups |
-| [Statistics](stats.md#core-measurement-calculations) | RMS/weighted gaps, moment scope, pairwise noise spread, declared diagnostic inputs |
+| [Statistics](experiments/stats.md#core-measurement-calculations) | RMS/weighted gaps, moment scope, pairwise noise spread, declared diagnostic inputs |
 | [Capture/guide encoding](corpus/precompute.md#core-pixel-and-encoding-transformations) | full-resolution target preparation, fixed crop, VAE-aligned prefix and stored shapes |
 | [Guide rendering](corpus/build_guidance.md#organization-logic) | refined body plus view camera, one-pass RGBA work, exact background replacement |
 
@@ -203,34 +203,35 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
   source attribution; fresh affected native checks follow the final code gate.
   Preview/product scope remains separate. [Design](experiments/training_update_check.md).
 
-- **`sigma_sweep_jobs.py` (generation/dependent decoder preparation implemented;
-  native acceptance pending):** [design](sigma_sweep_jobs.md).
+- **`experiments/sigma_sweep_jobs.py` (generation/dependent decoder preparation implemented;
+  native acceptance pending):** [design](experiments/sigma_sweep_jobs.md).
   Preserve original paired masters, schedules, prompts and saved noise as
   explicit package evaluation jobs. Preparation never starts a model or queue.
 
-- **`sigma_sweep.py` (saved decoding and queue dispatch implemented; native acceptance
-  pending):** [design](sigma_sweep.md). Read hashed saved tensors, use one
+- **`experiments/sigma_sweep.py` (saved decoding and queue dispatch implemented; native acceptance
+  pending):** [design](experiments/sigma_sweep.md). Read hashed saved tensors, use one
   decoder-only session and shared metrics, publish ten videos and checked
   samples. Report-specific sheets read saved samples under expr and cannot
   invoke models. Historical launchers/analyzer are retired; exact source bytes
   remain as non-executable producer provenance text.
-  The `sigma_sweep` queue kind pins specs, uses one shared evaluation-device
+  The `experiment` queue kind with selector `sigma_sweep` pins specs, uses one shared evaluation-device
   claim and delegates complete output verification to this owner. Four saved
   historical decoder jobs are available; future generated-result binding is
-  implemented through version-two result-bound specs. `sigma_sweep_results.py`
+  implemented through version-two result-bound specs. `experiments/sigma_sweep_results.py`
   describes its small-file design in its header: check frozen/shared cell
   conditions, verify scientific completion and bind all result/text/noise bytes
   without models or writes.
 
-- **`future_noise_study.py` (preparation implemented, migration incomplete):**
-  [design](future_noise_study.md). Reconstruct exact saved noise and prepare
+- **`experiments/future_noise_study.py` (preparation implemented, migration incomplete):**
+  [design](experiments/future_noise_study.md). Reconstruct exact saved noise and prepare
   package jobs for the historical intervention/repeat/causal controls. Current
   real conversion refuses a changed guide-render pin in the old subset. Keep
   a still-required old executor until its callers and required behavior have a
   checked final owner; follow the active handoff's disposition rule. Do not retain
-  a broken command indefinitely. Planned owner: `experiments/future_noise_study.py`.
+  a broken command indefinitely. The owner now lives in `experiments/`; G7
+retargets its intervention jobs to the planned `causality` selector.
 
-- **`convert_progress_jobs.py`:** data-only conversion of historical progress
+- **`experiments/convert_progress_jobs.py`:** data-only conversion of historical progress
   rows to package evaluation jobs. Preserve both fixed views, seed 42, sigma
   0.8977352380752563 and exact one/four-call schedules from the shared scheduler.
   Read the run's arm and causal geometry; use an explicit research override for
@@ -325,7 +326,7 @@ and [migration map](architecture.md#migration-map); that map wins over the
 | `corpus/geometry.py` | [geometry.md](corpus/geometry.md) | move to `corpus/`; keep the shared crop rule |
 | `corpus/motion.py` | [motion.md](corpus/motion.md) | move to `corpus/`; keep pose conversion |
 | `corpus/mask_video.py` | [mask_video.md](corpus/mask_video.md) | move to `corpus/`; keep lossless masks; check old data use |
-| `stats.py` | [stats.md](stats.md) | move whole to `experiments/stats.py` (A1/B1c study code; no other consumer) |
+| `experiments/stats.py` | [stats.md](experiments/stats.md) | implemented at `experiments/stats.py` (A1/B1c study code; no other consumer) |
 | `plot_training.py` | [plot_training.md](plot_training.md) | keep training plots; remove old readers after log conversion |
 | `decode_saved.py` | [decode_saved.md](decode_saved.md) | use media; apply final size rule |
 | `train.py` | source header | thin CLI implemented; [engine](training/engine.md) and [config](training/config.md) extracted; remaining owners pending |
@@ -345,9 +346,9 @@ ordinary `evaluate.py`, A1/B1c orchestration to leave the shared root, and histo
 adapter conversion orchestration to leave the normal checkpoint owner. Shared
 measurement/model/validation primitives keep one common owner. G4 moved the
 five acceptance checkers, including the stock comparison, into `experiments/`.
-Sweep/progress owners still await G5; their current root paths and commands
-stay truthful until that move. Fresh affected native evidence follows the
-final code gate.
+G5 moved the six sweep/progress study owners into `experiments/` and migrated
+their tests. Current commands use those module paths. Fresh affected native
+evidence follows the final code gate.
 
 Current commands remain in [configs/README](../configs/README.md).
 Explicit `--mode` and the shared `fsdp.yaml` are implemented.
@@ -430,3 +431,10 @@ outside `tests/experiments/`. Replay cases use their unchanged checker
 through experiment tests. The blocked ordinary suite enables the single
 test-only import finder and passes its hook to children through preserved
 `PYTHONPATH`; supported production commands do not change their import policy.
+
+G5 preserves all six historical study owners under `experiments/` and their
+scientific tests under `tests/experiments/`. Only fresh sigma-sweep job builders
+use the current experiment dispatch. Original job lists and the fixed original
+producer Git blob remain historical attribution. Frozen report bytes are not
+rewritten or imported to provide moved execution; shared saved-artifact controls
+exercise the public completion owner directly.

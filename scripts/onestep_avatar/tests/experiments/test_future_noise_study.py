@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from scripts.onestep_avatar import WORKSPACE_ROOT, evaluate
-from scripts.onestep_avatar import future_noise_study as study
+from scripts.onestep_avatar.experiments import future_noise_study as study
 from scripts.onestep_avatar.hashing import sha256
 
 

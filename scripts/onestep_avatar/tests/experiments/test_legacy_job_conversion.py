@@ -6,8 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from scripts.onestep_avatar import WORKSPACE_ROOT, convert_progress_jobs
+from scripts.onestep_avatar import WORKSPACE_ROOT
 from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.experiments import convert_progress_jobs
 
 EXPR = WORKSPACE_ROOT / "expr/onestep_avatar/dev_training_20261001"
 

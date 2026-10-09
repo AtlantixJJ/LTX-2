@@ -22,7 +22,7 @@ def test_declared_real_owner_inventory_and_runtime(profile):
         assert any('/video_vae/' in name for name in record['sources'])
     else:
         assert 'scripts/onestep_avatar/model/causal.py' in record['sources']
-        assert 'scripts/onestep_avatar/model/bidirectional.py' not in record['sources']
+        assert ('scripts/onestep_avatar/model/bidirectional.py' in record['sources']) == (profile == 'evaluation')
     assert record['runtime']['distributions']['torch'] is not None
 
 

@@ -8,9 +8,10 @@ from pathlib import Path
 import pytest
 import torch
 
-from scripts.onestep_avatar import LTX_ROOT, WORKSPACE_ROOT, evaluate, sigma_sweep_jobs
+from scripts.onestep_avatar import LTX_ROOT, WORKSPACE_ROOT, evaluate
 from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.experiments import sigma_sweep_jobs
 from scripts.onestep_avatar.hashing import sha256
 
 EVIDENCE = WORKSPACE_ROOT / "expr/onestep_avatar/two_mode_restructure_20261005"
@@ -51,7 +52,9 @@ def test_actual_prepared_jobs_preserve_all_historical_inputs_and_schedules(  # n
         assert sha256(prepared / name) == digest
     for name, digest in provenance["input_file_hashes"].items():
         assert sha256(Path(name)) == digest
-    jobs = queue.prepare_jobs(prepared / "jobs.json")
+    # The retired kind remains historical data; only fresh jobs enter today's queue.
+    jobs = (json.loads((prepared / "jobs.json").read_text())["jobs"]
+            if preparation_kind == "historical" else queue.prepare_jobs(prepared / "jobs.json"))
     assert len(jobs) == 36
     for case in cases:
         official = json.loads(Path(case["official_manifest"]).read_text())
@@ -70,7 +73,11 @@ def test_actual_prepared_jobs_preserve_all_historical_inputs_and_schedules(  # n
         selected = [job for job in jobs if job["id"].startswith(f"sweep_{case['tag']}_")]
         assert len(selected) == 8
         decoder = next(job for job in jobs if job["id"] == f"decode_{case['tag']}")
-        assert decoder["kind"] == "sigma_sweep"
+        assert decoder["kind"] == ("sigma_sweep" if preparation_kind == "historical" else "experiment")
+        if preparation_kind == "current":
+            assert decoder["experiment"] == "sigma_sweep"
+            assert decoder["spec"] == str(prepared / f"{case['tag']}_decode.json")
+            assert decoder["spec_sha256"] == sha256(Path(decoder["spec"]))
         assert decoder["dependencies"] == [job["id"] for job in selected]
         spec = json.loads((prepared / f"{case['tag']}_decode.json").read_text())
         assert spec["schema_version"] == 2

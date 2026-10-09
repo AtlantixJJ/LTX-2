@@ -125,3 +125,16 @@ the new owner with the current queue, engine and runtime sources.
 The empty `corpus/__init__.py` marker is part of `COMMON`, so every ordinary
 profile binds the package that its corpus imports actually load. Historical
 manifest validation retains the original source paths and digests unchanged.
+
+## Experiment boundary after historical owner moves
+
+The ordinary decoding profile contains media, ordinary evaluation and saved
+decoding owners. It contains no experiment or expr source. Sigma sweep uses
+`extra_sources` to bind its own moved owners and marker. Evaluation likewise
+contains no stock checker. The B5 coverage test blocks experiments, enters a
+representative ordinary path in a fresh process and checks every loaded avatar
+owner against the selected profile. Empty model/training package markers and
+both eagerly imported mode owners are therefore bound even for a selected
+causal evaluation; this records actual dependencies without changing mode
+selection. A source omitted from that profile fails
+coverage even when no import statement directly names it.

@@ -8,9 +8,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import evaluate, sigma_sweep
+from scripts.onestep_avatar import evaluate
 from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.experiments import sigma_sweep
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_evaluation_completion import completed  # noqa: F401 -- shared CPU model fixture
 from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- transitive fixture
@@ -131,7 +132,8 @@ def test_result_bound_decode_and_receipt_reverify_all_generation_evidence(
                          + latent.float().mean().sigmoid() / 2).expand(129, 3, 2, 2))
     manifest = sigma_sweep.execute(path, output, gpu_id=4)
     assert manifest["spec"]["schema_version"] == 2
-    job = {"id": "decode", "kind": "sigma_sweep", "arguments": ["--spec", str(path), "--output", str(output)],
+    job = {"id": "decode", "kind": "experiment", "experiment": "sigma_sweep",
+           "spec": str(path), "spec_sha256": sha256(path), "arguments": ["--spec", str(path), "--output", str(output)],
            "output": str(output), "completion": {"manifest": str(output / "manifest.json")}}
     jobs = path.parent / "decoding_jobs.json"
     jobs.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
@@ -161,7 +163,8 @@ def test_missing_result_refuses_before_decoder(completed_sweep: tuple) -> None:
 def test_decoder_readiness_requires_all_eight_unchanged_receipts(completed_sweep: tuple) -> None:
     spec, path, output, calls = completed_sweep
     generation = [cell["evaluation_job"] for cell in spec["cells"]]
-    decode = {"id": "decode", "kind": "sigma_sweep", "arguments": ["--spec", str(path), "--output", str(output)],
+    decode = {"id": "decode", "kind": "experiment", "experiment": "sigma_sweep",
+           "spec": str(path), "spec_sha256": sha256(path), "arguments": ["--spec", str(path), "--output", str(output)],
               "output": str(output), "dependencies": [job["id"] for job in generation],
               "completion": {"manifest": str(output / "manifest.json")}}
     jobs_path = path.parent / "pipeline_jobs.json"

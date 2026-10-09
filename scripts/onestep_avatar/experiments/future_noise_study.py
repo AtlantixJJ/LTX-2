@@ -1,4 +1,4 @@
-"""Prepare preserved future-noise study inputs and package jobs; see doc/future_noise_study.md."""
+"""Prepare preserved future-noise study inputs and package jobs; see doc/experiments/future_noise_study.md."""
 
 import argparse
 import hashlib

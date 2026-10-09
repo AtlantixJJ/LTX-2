@@ -87,7 +87,7 @@ Before measurements, check `nvidia-smi` for an available device with at least
 34,000 MiB free. Use the `ltx` environment and the corpus path for both inputs:
 
 ```bash
-conda run --no-capture-output -n ltx python -u -m scripts.onestep_avatar.stats \
+conda run --no-capture-output -n ltx python -u -m scripts.onestep_avatar.experiments.stats \
   --model 2.5 --gpu-id <GPU_ID> \
   --renders ../data/AnimatableHuman/DNARenderingVideo \
   --render-glob argavatar_render.mp4 \
@@ -171,7 +171,7 @@ saved noise prefixes. The cases file pins the original manifests and the
 historical source supporting their unguided configuration. From `LTX-2`:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.sigma_sweep_jobs \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.sigma_sweep_jobs \
   --cases ../expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/configs/generation_cases.json \
   --output <FRESH_PREPARATION_DIRECTORY>
 ```
@@ -191,7 +191,9 @@ Native replacement parity remains an open acceptance gate.
 The package owns saved sweep decoding; reports read its saved PNG samples.
 The four historical decodes also have package queue data in
 `expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/configs/saved_decode_jobs.json`.
-These `sigma_sweep` jobs use shared own-process tracking, pin their specs and verify all saved
+These original `kind: "sigma_sweep"` rows are historical data. Fresh builders
+write `kind: "experiment"`, selector `sigma_sweep`, `spec` and `spec_sha256`.
+Current jobs use shared own-process tracking, pin their specs and verify all saved
 media and metric controls before publishing receipts. They decode existing
 historical tensors. Generation preparation also creates result-bound dependent
 decoders for new outputs.
@@ -202,26 +204,20 @@ destination. Check that the selected GPU is free and use the shared own-process 
 before native execution. From `LTX-2`:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.sigma_sweep \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.sigma_sweep \
   --spec <SAVED_SWEEP_SPEC> --output <FRESH_SAVED_MEDIA_DIRECTORY> --gpu-id <GPU>
 ```
 
-After decoding has completed, assemble report-only sheets from saved samples:
-
-```bash
-conda run --no-capture-output -n ltx python \
-  ../expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/sheets.py \
-  --manifest <SAVED_MEDIA_DIRECTORY>/manifest.json --output <FRESH_SHEET_DIRECTORY>
-```
-
-The report reader checks hashes and does not open models or repair missing
-media. These recipes do not establish native VAE parity. The old analyzer and
-generation launchers have been retired after package/report caller migration.
+The historical `sheets.py` report and saved sheets are frozen provenance.
+Their original code bytes remain unchanged; they are not a current rebuild
+command after the study owner move. Read the saved report and validate its
+current decoded artifacts through the public saved-completion command below.
+Old recipes do not establish native VAE parity.
 
 Check completed saved decoding without opening a decoder or discovering GPUs:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.sigma_sweep \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.sigma_sweep \
   --spec <SAVED_SWEEP_SPEC> --output <SAVED_MEDIA_DIRECTORY> --verify
 ```
 
@@ -238,7 +234,7 @@ prefix block-noise archive and legacy subset. It never starts a model or queue.
 Run from `LTX-2` in the `ltx` environment:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.future_noise_study \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.future_noise_study \
   --manifest <ORIGINAL_STUDY_MANIFEST> --noise <SAVED_NOISE_AB> \
   --blocks <ORIGINAL_BLOCK_NOISE> --subset <ORIGINAL_SUBSET> \
   --output <FRESH_PREPARATION_DIRECTORY>
@@ -247,14 +243,14 @@ conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.future_noi
 Current real preparation refuses a changed guide-render pin in `t2r2.json`.
 Do not remove it to bypass conversion checks. The old launcher remains pending
 checked data and parity; original results remain historical evidence. See the
-[preparation design](../doc/future_noise_study.md) for the exact noise slicing,
+[preparation design](../doc/experiments/future_noise_study.md) for the exact noise slicing,
 five jobs and seven result roles.
 
 For an already prepared directory, check original and derived bytes without
 starting a model or writing files:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.future_noise_study \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.future_noise_study \
   --verify-preparation <PREPARATION_DIRECTORY>
 ```
 

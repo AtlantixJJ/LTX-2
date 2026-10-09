@@ -18,7 +18,8 @@ PROFILES = ('training', 'evaluation', 'inference', 'decoding', 'preparation')
 DISTRIBUTIONS = ('torch', 'peft', 'safetensors', 'accelerate', 'transformers',
                  'ltx-core', 'ltx-pipelines', 'ltx-trainer', 'triton', 'flash-attn', 'natten',
                  'numpy', 'Pillow', 'opencv-python', 'imageio', 'imageio-ffmpeg', 'lpips')
-COMMON = ('corpus/__init__.py', '__init__.py', 'execution/__init__.py', 'execution/software.py', 'hashing.py',
+COMMON = ('model/__init__.py', 'training/__init__.py',
+          'corpus/__init__.py', '__init__.py', 'execution/__init__.py', 'execution/software.py', 'hashing.py',
           'corpus/dataset.py', 'corpus/subset.py', 'corpus/precompute.py', 'corpus/geometry.py', 'corpus/mask_video.py',
           'training/config.py', 'training/checkpoints.py', 'model/common.py', 'model/sampling.py',
           'model/backbone.py', 'model/adapters.py')
@@ -27,8 +28,9 @@ ENTRIES = {'training': ('train.py', 'training/engine.py', 'training/startup.py',
                         'training/numerics.py',
                         'execution/supervision.py', 'execution/process_registry.py', 'execution/queue.py',
                         'execution/queue_protocol.py'),
-           'evaluation': ('evaluate.py',), 'inference': ('infer.py', 'evaluate.py'),
-           'decoding': ('media.py', 'evaluate.py', 'decode_saved.py', 'sigma_sweep.py', 'sigma_sweep_results.py'),
+           'evaluation': ('evaluate.py', 'model/causal.py', 'model/bidirectional.py'),
+           'inference': ('infer.py', 'evaluate.py'),
+           'decoding': ('media.py', 'evaluate.py', 'decode_saved.py', 'model/causal.py', 'model/bidirectional.py'),
            'preparation': ('prepare_inputs.py', 'media.py', 'evaluate.py', 'training/engine.py')}
 GROUPS = ('scripts/prune/core', 'packages/ltx-core/src/ltx_core/model/transformer',
           'packages/ltx-core/src/ltx_core/loader', 'packages/ltx-core/src/ltx_core/guidance',

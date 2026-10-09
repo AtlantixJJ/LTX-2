@@ -63,15 +63,35 @@ Execute saved training, evaluation and decoder jobs inside the package.
 Keep study choices as JSON data. Report rebuilds read saved artifacts separately.
 Do not execute Python or shell implementations from `expr/`.
 
-The `sigma_sweep` job kind invokes the package's matched ten-role decoder and
-metric producer. Its public parser resolves `--spec` and `--output`; queue
-preparation pins spec bytes and requires completion at output/manifest.json.
-The queue rejects read-only `--verify` as an execution override. One evaluation
-GPU is claimed under the ordinary shared policy. Recheck spec identity before
-launch and completion. Missing final manifests remain pending; present ones
-must pass sigma_sweep.verify_completion, including all media and metric controls.
-Receipts bind the manifest after this complete owner verification. Dependency
-receipts still govern readiness, with no report or missing-input repair calls.
+The `experiment` kind reads one literal `EXPERIMENTS` table. Its first selector,
+`sigma_sweep`, names `scripts.onestep_avatar.experiments.sigma_sweep`.
+Ordinary kinds never read that table or import an experiment. An unknown
+selector fails the model-free job schema before input reads, claims, state
+writes or children. There is no discovery or registration API.
+
+Every experiment row carries `experiment`, `spec`, `spec_sha256` and arguments.
+The declared spec path must equal the single `--spec` argument. Preparation
+normalizes the path, verifies its required SHA-256, lazily imports the selected
+public parser, and checks its public `completion` descriptor. This descriptor
+is a nonempty mapping containing a `manifest` string and/or nonempty `records`
+list; every evidence path must stay inside the output. It must exactly match
+the normalized job completion fields. The parser descriptor and every job
+field enter the canonical job hash. A prepared row reconstructs the same hash;
+a changed descriptor, selector or spec digest cannot round-trip as that row.
+
+The selected module owns its evidence layout. For sigma sweep, the descriptor
+requires exactly `output/manifest.json`, so another manifest is refused before
+writes. Its unchanged ten-role decoder and metric producer runs on one GPU.
+Before constructing a command and before completion, recheck the saved spec
+hash. Missing final evidence remains pending. Present evidence must pass the
+selected module's `verify_completion(spec, output)`, with no model or decoder
+session. Receipts bind each descriptor path after complete owner verification.
+Dependency receipts continue to govern readiness.
+
+Old `kind: "sigma_sweep"` rows remain immutable historical data with their
+original receipts. The current queue rejects that retired kind. A rerun uses
+a fresh list from the moved builder with the `experiment` fields and fresh
+output paths; it does not update old jobs or producer attribution.
 
 **Historical reservation scanner, not used by new dispatch:** the retained
 `GPUClaims` recovery code follows the observation rules in this paragraph.
@@ -94,7 +114,7 @@ split selection and package output paths. The 52 progress jobs in
 `package_progress_jobs.json` select the original two fixed sources across
 splits, seed 42 and the exact one/four-call schedules. Their explicit research
 override records historical off-condition diagnostics. The data-only package
-converter is `convert_progress_jobs.py`; the original rows remain evidence in
+converter is `experiments/convert_progress_jobs.py`; the original rows remain evidence in
 `historical_visualization_jobs.json`. Queue dry runs prove command preparation;
 scientific completion and native execution require separate evidence.
 
@@ -235,7 +255,7 @@ Logs use unique attempt names outside the output directory. Execution does not
 adopt unknown running children. Typed training can use only the startup retry
 protocol below; other failures stop.
 The list has `schema_version: 1` and ordered `jobs`. Each job has a unique `id`,
-`kind` (`train`, `evaluate`, `decode`, `render`, or `sigma_sweep`), an `arguments` array of strings,
+`kind` (`train`, `evaluate`, `decode`, `render`, or `experiment`), an `arguments` array of strings,
 `output`, `dependencies` (earlier job IDs), and `completion` evidence.
 Train jobs also specify `accelerate_config`, `processes` and `port`.
 The `render` kind owns saved-comparison VAE work through the package evaluation
