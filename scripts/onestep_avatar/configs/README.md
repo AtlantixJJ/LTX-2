@@ -52,7 +52,7 @@ supervisor source snapshots do not satisfy that gate.
 After a valid one-update run, check its original job before serial replay:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.training_update_check \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.training_update_check \
   --job <CHECKED_ORIGINAL_JOB_JSON> --output <FRESH_SERIAL_OUT> --world-size 4 --dry-run
 ```
 
@@ -341,7 +341,7 @@ components with audio absent, plus a repeated control and the bidirectional
 sampler. It does not run joint audio-video generation or D1 guide mixing:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.stock_parity \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.stock_parity \
   --first-image <PREPARED_IMAGE>/image.pt --text-record <FIXED_PREVIEW>/preview.json \
   --output <FRESH_STOCK_CHECK> --frames 17 --steps 4 --seed 42 --gpu-id <FREE_GPU>
 ```
@@ -351,7 +351,7 @@ model/GPU work or output writes. The schedule uses the native scheduler without
 a latent argument. The current matching path explicitly uses float32 global
 sigma. Inspect repeated-control, intermediate-call, raw and decoded evidence
 before accepting it. Ordinary product precision, adapters and the seven-frame
-pilot remain separate checks. See [the module design](../doc/stock_parity.md).
+pilot remain separate checks. See [the module design](../doc/experiments/stock_parity.md).
 
 To check ordinary global-sigma precision, add `--reference-run
 <CHECKED_STOCK_CHECK>` and choose a fresh output. This reuses verified stock
@@ -545,7 +545,7 @@ Run the bounded serial reference in the `ltx` environment on one independently
 registered free device, with `CUDA_VISIBLE_DEVICES` set to that physical device:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.training_update_check \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.training_update_check \
   --job <ORIGINAL_TRAIN_JOB_JSON> --world-size 4 --output <FRESH_SERIAL_DIRECTORY>
 ```
 

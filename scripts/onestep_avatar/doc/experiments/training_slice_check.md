@@ -1,12 +1,11 @@
-# `training_slice_check.py` — localize one native update
+# `experiments/training_slice_check.py` — localize one native update
 
-Status: Bounded R3 diagnostic; original one-/two-slot numerical controls pass.
-They do not substitute for complete workflow acceptance. Read
-[current acceptance](known_gaps.md#current-acceptance-and-next-step). The current
-handoff orders this owner's structural move to `experiments/` and CPU/caller
-checks before fresh native experiments on the final owners. Preserve original
-numerical evidence and its source identity; missing native scope does not block
-the directory move. Ordinary training imports none of this module.
+Status: Bounded R3 diagnostic. Original one-/two-slot controls pass; complete workflow acceptance is separate.
+
+The implemented source owner is `experiments/training_slice_check.py`.
+Original native evidence keeps its original producer hashes and scope.
+Fresh affected native checks follow the complete code gate. Read
+[current acceptance](../known_gaps.md#current-acceptance-and-next-step).
 
 ## Objective
 
@@ -112,3 +111,11 @@ algorithms and cuDNN mode, disable cuDNN benchmarking and TF32, and require the
 child launch to bind `CUBLAS_WORKSPACE_CONFIG=:4096:8`. Record actual flags.
 First compare an unchanged serial repeat, then repeat this deterministic control;
 do not change tolerances to accommodate an unstable baseline.
+
+## Experiment package provenance
+
+The public `EXTRA_SOURCES` tuple retains every pre-move extra owner and
+binds the empty `experiments/__init__.py` marker along with the checker.
+These files are explicit experiment extras; ordinary profiles do not
+include the experiment marker. Existing results retain their original
+source attribution, and affected native checks run again after the code gate.

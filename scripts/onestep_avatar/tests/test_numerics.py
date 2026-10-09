@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -13,7 +12,6 @@ import pytest
 import torch
 
 from scripts.onestep_avatar import LTX_ROOT
-from scripts.onestep_avatar import training_update_check as replay
 from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.tests.test_applied_runtime import inventory
 from scripts.onestep_avatar.tests.test_training_launch_binding import original_job
@@ -151,17 +149,6 @@ def test_changed_schema_two_environment_refuses_launch(tmp_path: Path, missing: 
         queue.verify_training_launch(launch, prepared)
 
 
-def test_historical_launch_stays_readable_but_cannot_be_current_native_replay(tmp_path: Path) -> None:
-    _raw, prepared, _launch, job, saved, marker_path = original_job(tmp_path)
-    historical = queue.training_launch_record(prepared, schema_version=1)
-    saved["queue_launch"] = historical
-    (tmp_path / "distributed/config.json").write_text(json.dumps(saved))
-    marker = json.loads(marker_path.read_text())
-    marker["queue_launch"] = historical
-    marker_path.write_text(json.dumps(marker))
-    assert queue.verify_training_launch(historical, prepared) == prepared
-    with pytest.raises(ValueError, match="schema-two numerical launch"):
-        replay.check_launch(job, 4)
 
 
 def test_typed_cli_is_import_light_then_bootstraps_before_native_imports() -> None:

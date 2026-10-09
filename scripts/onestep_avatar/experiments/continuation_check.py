@@ -1,8 +1,8 @@
 """Observe native cached/recomputed history without another model algorithm.
 
-See doc/continuation_check.md. Capture and reference are separate bounded attempts;
+See doc/experiments/continuation_check.md. Capture and reference are separate bounded attempts;
 CPU snapshots prevent simultaneous resident cache/reference allocation. This
-experiment owner is temporary until the native source-migration gates pass.
+experiment uses the shared causal/cache owners; full native E3 acceptance remains open.
 """
 from __future__ import annotations
 
@@ -30,9 +30,10 @@ from scripts.onestep_avatar.training.resources import Phase
 
 TARGETS = (("before", (3, 5)), ("after", (11, 13)))
 CHUNK_ELEMENTS = 131072
-EXTRA_SOURCES = ("scripts/onestep_avatar/continuation_check.py",
+EXTRA_SOURCES = ("scripts/onestep_avatar/experiments/continuation_check.py",
                  "scripts/onestep_avatar/training/resources.py",
-                 "scripts/onestep_avatar/execution/supervision.py")
+                 "scripts/onestep_avatar/execution/supervision.py",
+                 'scripts/onestep_avatar/experiments/__init__.py')
 IMPORTED_OWNER_SHA256 = sha256(Path(__file__))
 
 
@@ -449,7 +450,7 @@ def prepare(args: argparse.Namespace) -> dict:  # noqa: PLR0912, PLR0915 -- orde
     # This reuses the shared fixed-input consumer; it does not fabricate a preview job.
     options.preview_fixed = fixed
     profile = software.capture("evaluation", "causal", extra_sources=EXTRA_SOURCES)
-    if profile["sources"]["scripts/onestep_avatar/continuation_check.py"] != IMPORTED_OWNER_SHA256:
+    if profile["sources"]["scripts/onestep_avatar/experiments/continuation_check.py"] != IMPORTED_OWNER_SHA256:
         raise ValueError("diagnostic owner bytes changed since this process imported them")
     if snapshot is not None and (profile != snapshot["software"] or fixed != snapshot["fixed_inputs"]):
         raise ValueError("reference source/runtime or fixed inputs differ from capture")
@@ -667,7 +668,7 @@ def supervised_run(args: argparse.Namespace, prepared: dict) -> dict:
         launch = evidence / "launch.json"
         write_json(launch, {"schema_version": 1, "binding": scientific_binding(prepared), "phase": args.phase,
                             "sigma": args.sigma, "history": args.history, "output": str(args.output)})
-        command = [sys.executable, "-m", "scripts.onestep_avatar.continuation_check", "--phase", args.phase,
+        command = [sys.executable, "-m", "scripts.onestep_avatar.experiments.continuation_check", "--phase", args.phase,
                    "--output", str(args.output), "--gpu-id", "0", "--launch-record", str(launch)]
         if args.phase == "reference":
             command.extend(["--snapshot", str(args.snapshot.resolve())])

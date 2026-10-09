@@ -1,4 +1,4 @@
-"""Matched stock video sampling diagnostic; see doc/stock_parity.md."""
+"""Matched stock video sampling diagnostic; see doc/experiments/stock_parity.md."""
 from __future__ import annotations
 
 import argparse
@@ -23,6 +23,9 @@ from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import backbone, bidirectional, common
 from scripts.prune.core.session import DEFAULT_PROMPT, DTYPE, Session
+
+ENTRY = "scripts/onestep_avatar/experiments/stock_parity.py"
+EXTRA_SOURCES = (ENTRY, 'scripts/onestep_avatar/experiments/__init__.py')
 
 PROTOCOL = {
     'scope': 'stock public video sampling path, audio absent; no outer RGB/text or joint audio-video parity',
@@ -149,9 +152,8 @@ def load_reference(path, protocol, image, context, grid):
     record = json.loads(result_path.read_text())
     original = record['protocol']
     software.validate(original['software'])
-    entry = 'scripts/onestep_avatar/stock_parity.py'
-    old_sources = {key: value for key, value in original['software']['sources'].items() if key != entry}
-    current_sources = {key: value for key, value in protocol['software']['sources'].items() if key != entry}
+    old_sources = {key: value for key, value in original['software']['sources'].items() if key != ENTRY}
+    current_sources = {key: value for key, value in protocol['software']['sources'].items() if key != ENTRY}
     if old_sources != current_sources or original['software']['runtime'] != protocol['software']['runtime']:
         raise ValueError('stock reference computation owners or runtime differ')
     for key in ('schedule', 'seed', 'frames', 'fps', 'prompt', 'input_files', 'guidance', 'initialization'):
@@ -191,7 +193,7 @@ def prepare(args):
         raise ValueError('stock check requires a fresh output directory')
     if args.steps < 2 or args.frames < 2:
         raise ValueError('stock check requires at least two steps and encoded frames')
-    producer = software.capture('evaluation', 'bidirectional', decoder=True)
+    producer = software.capture('evaluation', 'bidirectional', decoder=True, extra_sources=EXTRA_SOURCES)
     paths = (args.first_image, args.text_record)
     identities = {str(path.resolve()): sha256(path) for path in paths}
     image_record = torch.load(args.first_image, map_location='cpu', weights_only=True)

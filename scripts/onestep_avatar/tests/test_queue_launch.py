@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from scripts.onestep_avatar.execution import process_registry, queue, queue_launch as launch, supervision
+from scripts.onestep_avatar.execution import process_registry, queue, supervision
+from scripts.onestep_avatar.execution import queue_launch as launch
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, LAUNCH_PROTOCOL, TOKEN_ENV
 
 
@@ -213,7 +214,7 @@ def test_owned_recovery_rejects_nonregular_or_oversized_input(tmp_path, monkeypa
 def direct_registered_attempt(tmp_path, monkeypatch):
     ledger, request, owned, _ranks, _notifications = ended_owned_attempt(tmp_path, monkeypatch)
     child = owned['processes'][str(owned['child_pid'])]
-    command = [sys.executable, '-m', 'scripts.onestep_avatar.adapter_effect_check',
+    command = [sys.executable, '-m', 'scripts.onestep_avatar.experiments.adapter_effect_check',
                '--output', str(tmp_path / 'scientific-result'), '--gpu-id', '0', '--decode']
     child['identity']['command'] = command
     child['commands'] = [command]

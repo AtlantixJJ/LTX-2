@@ -1,11 +1,12 @@
 """Actual stock components with controlled x0 predictions; not native weight acceptance."""
-import torch
-import pytest
 import json
 from argparse import Namespace
 
+import pytest
+import torch
+
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import stock_parity
+from scripts.onestep_avatar.experiments import stock_parity
 from scripts.onestep_avatar.model import common
 
 
@@ -139,7 +140,8 @@ def reference_case(tmp_path):
         torch.save(grid.unpatchify_block(value, 3), tmp_path/(name+'.pt'))
     torch.save(traces, tmp_path/'traces.pt')
     torch.save(noise, tmp_path/'noise.pt')
-    protocol = dict(stock_parity.PROTOCOL, software=stock_parity.software.capture('evaluation','bidirectional',decoder=True),
+    protocol = dict(stock_parity.PROTOCOL, software=stock_parity.software.capture(
+        'evaluation', 'bidirectional', decoder=True, extra_sources=stock_parity.EXTRA_SOURCES),
                     schedule=levels.tolist(), seed=42, frames=3, fps=30., prompt='checked prompt', input_files={})
     record = {'protocol':protocol, 'raw':stock_parity.compare_paths(outputs,traces),
               'decoded':{'stock_repeat':{'unequal_elements':0}},

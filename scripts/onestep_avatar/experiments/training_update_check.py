@@ -1,4 +1,4 @@
-"""Bounded first-update serial reference; see doc/training_update_check.md."""
+"""Bounded first-update serial reference; see doc/experiments/training_update_check.md."""
 # CLI environment bootstrap must precede native imports.
 
 from __future__ import annotations
@@ -35,7 +35,8 @@ from scripts.onestep_avatar.model import adapters, bidirectional, causal, common
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources, runtime, update_state
 
 TOLERANCE = {"relative_l2": 0.02, "near_zero_rms": 1e-8, "absolute_rms": 1e-8}
-ENTRY = "scripts/onestep_avatar/training_update_check.py"
+ENTRY = "scripts/onestep_avatar/experiments/training_update_check.py"
+EXTRA_SOURCES = (ENTRY, 'scripts/onestep_avatar/experiments/__init__.py')
 
 
 def check_launch(job_path: Path, world: int) -> tuple[dict, dict, str]:
@@ -359,7 +360,7 @@ def _execute(  # noqa: PLR0915 -- bounded replay
     settings, store, plan, spec, visits, logs, states, initial, identities, context = prepare(job_path, world)
     launch, saved, precision = check_launch(job_path, world)
     original_numerics = runtime.numerical_policy(saved["runtime"])
-    producer = software.capture("training", settings.mode, extra_sources=(ENTRY,))
+    producer = software.capture("training", settings.mode, extra_sources=EXTRA_SOURCES)
     protocol = {
         "tolerance": TOLERANCE,
         "world_size": world,
@@ -548,7 +549,7 @@ def supervised_reference(job_path: Path, output: Path, world: int, ledger: Path,
             notifications, token=registry.token, job_sha256=job["sha256"], world=1,
             phases=["load", "update", "export"], budget_sha256=saved["resource_budget"]["sha256"],
         ))
-        command = [sys.executable, "-m", "scripts.onestep_avatar.training_update_check", "--job",
+        command = [sys.executable, "-m", "scripts.onestep_avatar.experiments.training_update_check", "--job",
                    str(job_path.resolve()), "--output", str(output.resolve()), "--world-size", str(world)]
         if trace:
             command.append("--consumer-trace")

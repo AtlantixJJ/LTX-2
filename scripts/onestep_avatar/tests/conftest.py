@@ -1,9 +1,25 @@
 """Controlled lifecycle fixtures; real launch-gate checks never use this fixture."""
+import importlib.util
+import os
 from pathlib import Path
 
 import pytest
 
+from scripts.onestep_avatar import PACKAGE_ROOT
 from scripts.onestep_avatar.execution import queue_launch
+
+if os.environ.get("ONESTEP_AVATAR_BLOCK_EXPERIMENTS") == "1":
+    hook_directory = PACKAGE_ROOT / "tests/blocked_imports"
+    hook_spec = importlib.util.spec_from_file_location(
+        "onestep_avatar_experiment_import_blocker", hook_directory / "sitecustomize.py")
+    if hook_spec is None or hook_spec.loader is None:
+        raise ImportError("experiment import blocker is absent")
+    hook_spec.loader.exec_module(importlib.util.module_from_spec(hook_spec))
+    previous_path = os.environ.get("PYTHONPATH")
+    if previous_path is None or str(hook_directory) not in previous_path.split(os.pathsep):
+        os.environ["PYTHONPATH"] = str(hook_directory) + (
+            "" if previous_path is None else os.pathsep + previous_path)
+    collect_ignore = ["experiments"]
 
 
 @pytest.fixture

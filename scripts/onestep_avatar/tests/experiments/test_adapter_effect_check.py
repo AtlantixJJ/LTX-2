@@ -18,10 +18,10 @@ from safetensors.torch import save_file
 
 from ltx_core.model.transformer.model import X0Model
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import adapter_effect_check as effect
 from scripts.onestep_avatar import evaluate
 from scripts.onestep_avatar.corpus import dataset, precompute, subset
 from scripts.onestep_avatar.execution import software
+from scripts.onestep_avatar.experiments import adapter_effect_check as effect
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters
 from scripts.onestep_avatar.tests.test_causal_core import _geometry, _grid, _model
@@ -768,7 +768,7 @@ def saved_effect(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch: py
     pins = {str(path): sha256(path) for path in (budget_path, noise_path, membership_path,
             *(Path(item["path"]) for item in selected.values()))}
     policy = {**numerics.POLICY, "cudnn_allow_tf32": True}
-    producer = software.capture("evaluation", "bidirectional", extra_sources=(effect.ENTRY,))
+    producer = software.capture("evaluation", "bidirectional", extra_sources=effect.EXTRA_SOURCES)
     protocol = {"kind": "onestep_avatar.adapter_effect_check", "schema_version": 1,
                 "scope": "shared_API_adapter_correction", "software": producer,
                 "input_files": pins, "resource_budget": budget, "checkpoints": selected,

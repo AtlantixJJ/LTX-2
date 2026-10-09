@@ -1,4 +1,4 @@
-# `stock_parity.py` — compare the stock video sampling path
+# `experiments/stock_parity.py` — compare the stock video sampling path
 
 Status: Implemented and CPU checked. Native video-component controls and the
 ordinary float32 correction have scoped acceptance; full E1 remains open.
@@ -49,6 +49,10 @@ verified stock comparison and generates only the missing ordinary arm. Before
 the G12 fix this exposed a bf16 difference; the corrected default must match.
 
 ## Organization logic
+
+The checker binds its own `ENTRY` through `software.capture(..., extra_sources=(ENTRY,))`.
+Ordinary evaluation does not bind or import this study. Original native
+results retain their original manifests; moving the owner does not restamp them.
 
 Before GPU work, reject an existing output directory, invalid steps or frame
 counts, malformed image metadata and changed fixed text files. Read the actual
@@ -159,3 +163,11 @@ failed controls and different image/text/schedule. CPU sigma-sensitive predictio
 must make the corrected ordinary default byte-identical to the explicitly
 float32 custom branch, including sigma-sensitive predictions. Full fresh runs
 include both custom branches alongside stock and stock repeat.
+
+## Experiment package provenance
+
+The public `EXTRA_SOURCES` tuple retains every pre-move extra owner and
+binds the empty `experiments/__init__.py` marker along with the checker.
+These files are explicit experiment extras; ordinary profiles do not
+include the experiment marker. Existing results retain their original
+source attribution, and affected native checks run again after the code gate.

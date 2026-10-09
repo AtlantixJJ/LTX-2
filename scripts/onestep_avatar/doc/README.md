@@ -150,7 +150,7 @@ Complete input production and native model acceptance remain pending.
 | `model/adapters.py` | [model/adapters.md](model/adapters.md) | >100; shared unmerged fp32 PEFT configuration/loading, x0 inference wrapper and explicit fusion diagnostic |
 | `execution/software.py` | [software.md](execution/software.md) | >100; explicit worktree owner hashes/runtime versions, current verification and historical integrity reading |
 | `prepare_inputs.py` | [prepare_inputs.md](prepare_inputs.md) | >100; fixed preview assembly/pinned text-noise-image tensors and actual one-RGB supplied-image VAE preparation |
-| `stock_parity.py` | [stock_parity.md](stock_parity.md) | >100; actual stock video sampling components, repeated controls, checked-reference precision comparison and decoded traces; native acceptance open |
+| `experiments/stock_parity.py` | [stock_parity.md](experiments/stock_parity.md) | >100; actual stock video sampling components, repeated controls, checked-reference precision comparison and decoded traces; native acceptance open |
 | `model/bidirectional.py` | [model/bidirectional.md](model/bidirectional.md) | >100; segment training and generation |
 | `model/causal.py` | [model/causal.md](model/causal.md) | >100; block and cache operations |
 | `model/sampling.py` | [model/sampling.md](model/sampling.md) | >100; exact denoising levels and steps |
@@ -194,13 +194,14 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
   moments with exact optimizer/step metadata. No frozen-weight gathering, training
   loop, experiment imports or resume protocol. Small-file design lives in its header.
 
-- **`training_update_check.py` (implemented root owner):** bounded
+- **`experiments/training_update_check.py` (implemented experiment owner):** bounded
   serial replay of one saved distributed update using public shared preparation,
   model-loading, token construction and mode functions. Reuse original rank/slot
   noise seeds. Compare named clipped gradients, gradient norm, loss and actual
-  exported adapters under predeclared tolerances. Both modes' numerical gates
-  pass; preview/product scope remains separate. [Design](training_update_check.md).
-  Proposed Stage D destination: `experiments/training_update_check.py`.
+  exported adapters under predeclared tolerances. G4 moved this owner into
+  `experiments/`. Both modes' original numerical evidence keeps its recorded
+  source attribution; fresh affected native checks follow the final code gate.
+  Preview/product scope remains separate. [Design](experiments/training_update_check.md).
 
 - **`sigma_sweep_jobs.py` (generation/dependent decoder preparation implemented;
   native acceptance pending):** [design](sigma_sweep_jobs.md).
@@ -240,25 +241,28 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
 - **`execution/queue_protocol.py` (implemented):** small constant owner for queue token/job
   environment names and the startup-event prefix. Import no model libraries.
   `training/startup.py` retains its public imported names for existing consumers.
-- **`training_slice_check.py` (bounded numerical localization controls pass):**
-  [One-rank update localization](training_slice_check.md) calls shared training
-  owners with exact original visits. Ordinary runtime does not import it.
-- **`adapter_effect_check.py` (bounded E2 comparison; full E2 incomplete):**
-  [Saved adapter correction](adapter_effect_check.md) compares the shared training
+- **`experiments/training_slice_check.py` (bounded numerical localization controls pass):**
+  [One-rank update localization](experiments/training_slice_check.md) calls shared training
+  owners with exact original visits. G4 moved this owner into `experiments/`.
+  Original controls retain their recorded source attribution; fresh affected
+  native checks follow the final code gate. Ordinary runtime does not import it.
+- **`experiments/adapter_effect_check.py` (bounded E2 comparison; full E2 incomplete):**
+  [Saved adapter correction](experiments/adapter_effect_check.md) compares the shared training
   reference, ordinary evaluation and product APIs with independent supplied c0,
   fixed guide/text/noise and original native numerical policy. It checks the fixed
   under-5% effect criterion and measures original-budget process resources. Fusion
-  stays diagnostic. Saved verification performs no model/decoder work. This
-  experiment owner moves during the next agent's Stage D refactor; ordinary
-  runtime must not import it.
-- **`continuation_check.py` (bounded E3 observation; native acceptance pending):**
-  [Native history observations](continuation_check.md) delegate unchanged cached
+  stays diagnostic. Saved verification performs no model/decoder work. G4
+  moved this owner into `experiments/`; fresh affected native E2 evidence
+  follows the final code gate. Ordinary runtime does not import it.
+- **`experiments/continuation_check.py` (bounded E3 observation; native acceptance pending):**
+  [Native history observations](experiments/continuation_check.md) delegate unchanged cached
   and recomputed sampling, snapshot real K/V and observe native attention inputs
   before/after eviction. Public future/capture controls use the ordinary evaluator.
   Shared resources and own-process supervision preserve the original E3 limits.
   CPU preflight and tiny-native controls do not prove full-weight or seven-frame
-  pilot acceptance. The owner moves during Stage D before final-source native
-  experiments; ordinary runtime must not import it.
+  pilot acceptance. G4 moved this owner into `experiments/`; fresh affected
+  native E3 evidence follows the final code gate. Ordinary runtime does not
+  import it.
 - **`execution/process_registry.py` (implemented, native launch evidence in progress):**
   [Own-process tracking](execution/process_registry.md) in one shared JSON file, direct GPU
   queries and exact targeted descendant identities. No privilege or unrelated
@@ -339,10 +343,11 @@ and [migration map](architecture.md#migration-map); that map wins over the
 The architecture contract also requires study/diagnostic orchestration to leave
 ordinary `evaluate.py`, A1/B1c orchestration to leave the shared root, and historical
 adapter conversion orchestration to leave the normal checkpoint owner. Shared
-measurement/model/validation primitives keep one common owner. Sweep/progress/
-stock-check files move into `experiments/` during the next agent's code refactor.
-Their current root paths and commands stay truthful until that actual move.
-Fresh affected native evidence is then produced on the final source.
+measurement/model/validation primitives keep one common owner. G4 moved the
+five acceptance checkers, including the stock comparison, into `experiments/`.
+Sweep/progress owners still await G5; their current root paths and commands
+stay truthful until that move. Fresh affected native evidence follows the
+final code gate.
 
 Current commands remain in [configs/README](../configs/README.md).
 Explicit `--mode` and the shared `fsdp.yaml` are implemented.
@@ -419,3 +424,9 @@ target list; checked contracts and file identity reach the model as data.
 Only explicit legacy subset conversion lazily calls the canonical causal
 planner, under the documented dependency exception. CPU boundary tests enforce
 that exception and model-free ordinary corpus imports.
+
+G4 keeps the ordinary Adam, numerical-policy, dispatch and typed-update tests
+outside `tests/experiments/`. Replay cases use their unchanged checker
+through experiment tests. The blocked ordinary suite enables the single
+test-only import finder and passes its hook to children through preserved
+`PYTHONPATH`; supported production commands do not change their import policy.

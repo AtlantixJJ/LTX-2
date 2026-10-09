@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from scripts.onestep_avatar import continuation_check as check
 from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar.experiments import continuation_check as check
 from scripts.onestep_avatar.model import causal, common
 from scripts.onestep_avatar.tests.test_causal_core import CHANNELS, DEVICE, EDGE, FPS, SCALE, _context, _model
 from scripts.onestep_avatar.training.config import CausalSettings

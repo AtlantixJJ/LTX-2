@@ -62,8 +62,9 @@ adapter loading and the selected mode. Add the entry/runtime owner for the chose
 profile. Model execution includes shared pruning core and prompt-cache owners,
 trainer loading and the core transformer/attention/guidance/loader/model tools.
 Record pipeline utilities that supply stock schedules and guidance.
-Evaluation also pins the stock sampling diagnostic and the reviewed outer
-pipeline calls. Native conditioning and batch splitting belong to the model
+Evaluation pins the reviewed native sampling pipeline calls. The stock
+comparison binds its own experiment entry through `extra_sources`; ordinary
+profiles contain no acceptance checker. Native conditioning and batch splitting belong to the model
 source inventory; their absence could otherwise change matched sampling without
 invalidating a manifest.
 Decoder profiles additionally pin media, saved decoder/sweep entry owners, native decode

@@ -1,13 +1,11 @@
-# `adapter_effect_check.py` — preserve the saved adapter correction
+# `experiments/adapter_effect_check.py` — preserve the saved adapter correction
 
-Status: Bounded E2 comparison owner; full E2 acceptance remains incomplete.
-Read [current acceptance](known_gaps.md#current-acceptance-and-next-step) for
-first-update versus two-view/trained-step scope. This owner still uses the root
-path. The current handoff orders its structural move to `experiments/` and
-CPU/caller checks first, then fresh E2 experiments on the final layout. Missing
-trained-step/view scope remains scientific acceptance work, not a directory-move
-prerequisite. Ordinary runtime imports none of this module. The owner adds no
-trainer, forward or cache algorithm.
+Status: Bounded E2 owner. Full two-view and trained-step acceptance remains incomplete.
+
+The implemented source owner is `experiments/adapter_effect_check.py`.
+Original native evidence keeps its original producer hashes and scope.
+Fresh affected native checks follow the complete code gate. Read
+[current acceptance](../known_gaps.md#current-acceptance-and-next-step).
 
 ## Objective
 
@@ -175,7 +173,7 @@ explicitly below:
 
 ```bash
 CUBLAS_WORKSPACE_CONFIG=:4096:8 \
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.adapter_effect_check \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.adapter_effect_check \
   --job <ORIGINAL_JOB.json> --update-check <PASSED_E4_RESULT.json> \
   --inputs <E2_INPUTS.json> --checkpoints <STEP_ZERO.safetensors> <STEP_ONE.safetensors> \
   --output <FRESH_OUTPUT> --gpu-id <LOCAL_GPU> --decode --fused-diagnostic
@@ -186,7 +184,7 @@ job and its three exports:
 
 ```bash
 CUBLAS_WORKSPACE_CONFIG=:4096:8 \
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.adapter_effect_check \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.adapter_effect_check \
   --job <PILOT_JOB.json> --update-job <ORIGINAL_E4_JOB.json> \
   --update-check <PASSED_E4_RESULT.json> --inputs <TWO_CAMERA_E2_INPUTS.json> \
   --subset <CHECKED_EVALUATION_MEMBERSHIP.json> \
@@ -275,3 +273,11 @@ both trained steps independently through all three shared API paths. Applied ori
 controls reject schema-one history, missing policies and rank disagreement.
 
 Every reference, evaluation and product adapter arm rechecks the exact pinned file, checked metadata and tensor slices before loading a backbone. Reference checks precede `load_transformer`. Pass the same bound identity to the shared inference loader.
+
+## Experiment package provenance
+
+The public `EXTRA_SOURCES` tuple retains every pre-move extra owner and
+binds the empty `experiments/__init__.py` marker along with the checker.
+These files are explicit experiment extras; ordinary profiles do not
+include the experiment marker. Existing results retain their original
+source attribution, and affected native checks run again after the code gate.

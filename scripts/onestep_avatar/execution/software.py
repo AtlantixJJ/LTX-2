@@ -27,7 +27,7 @@ ENTRIES = {'training': ('train.py', 'training/engine.py', 'training/startup.py',
                         'training/numerics.py',
                         'execution/supervision.py', 'execution/process_registry.py', 'execution/queue.py',
                         'execution/queue_protocol.py'),
-           'evaluation': ('evaluate.py', 'stock_parity.py'), 'inference': ('infer.py', 'evaluate.py'),
+           'evaluation': ('evaluate.py',), 'inference': ('infer.py', 'evaluate.py'),
            'decoding': ('media.py', 'evaluate.py', 'decode_saved.py', 'sigma_sweep.py', 'sigma_sweep_results.py'),
            'preparation': ('prepare_inputs.py', 'media.py', 'evaluate.py', 'training/engine.py')}
 GROUPS = ('scripts/prune/core', 'packages/ltx-core/src/ltx_core/model/transformer',

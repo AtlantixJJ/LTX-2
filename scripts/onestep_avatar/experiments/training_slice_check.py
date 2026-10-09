@@ -1,4 +1,4 @@
-"""Localize one native update; see doc/training_slice_check.md."""
+"""Localize one native update; see doc/experiments/training_slice_check.md."""
 
 from __future__ import annotations
 
@@ -14,15 +14,19 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedType
 from safetensors.torch import load_file
 
-from scripts.onestep_avatar import evaluate, training_update_check
+from scripts.onestep_avatar import evaluate
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import queue, software
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
+from scripts.onestep_avatar.experiments import training_update_check
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import bidirectional, causal, common
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources, runtime, update_state
 
-ENTRY = "scripts/onestep_avatar/training_slice_check.py"
+ENTRY = "scripts/onestep_avatar/experiments/training_slice_check.py"
+EXTRA_SOURCES = (ENTRY, 'scripts/onestep_avatar/experiments/__init__.py',
+                 "scripts/onestep_avatar/experiments/training_update_check.py",
+                 "scripts/onestep_avatar/evaluate.py")
 SUPPORT_CHANGES = {
     "scripts/onestep_avatar/execution/supervision.py", "scripts/onestep_avatar/training/consumer_trace.py",
     "scripts/onestep_avatar/training/checkpoints.py",
@@ -159,8 +163,7 @@ def execute(args: argparse.Namespace) -> dict:  # noqa: PLR0915 -- one bounded d
     accelerator = Accelerator(mixed_precision="bf16")
     expected = DistributedType.FSDP if args.execution == "fsdp" else DistributedType.NO
     runtime.check_accelerator(accelerator, 1, "bf16", distributed_type=expected)
-    producer = software.capture("training", settings.mode, extra_sources=(
-        ENTRY, "scripts/onestep_avatar/training_update_check.py", "scripts/onestep_avatar/evaluate.py"))
+    producer = software.capture("training", settings.mode, extra_sources=EXTRA_SOURCES)
     device = accelerator.device
     if device.type != "cuda":
         raise ValueError("native slice requires CUDA")

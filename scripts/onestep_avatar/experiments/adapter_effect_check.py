@@ -1,4 +1,4 @@
-"""Compare saved adapter corrections through shared APIs; see doc/adapter_effect_check.md."""
+"""Compare saved adapter corrections through shared APIs; see doc/experiments/adapter_effect_check.md."""
 
 from __future__ import annotations
 
@@ -26,7 +26,14 @@ from scripts.onestep_avatar.training import checkpoints, config, engine, resourc
 if TYPE_CHECKING:
     from scripts.prune.core.session import Session
 
-ENTRY = "scripts/onestep_avatar/adapter_effect_check.py"
+ENTRY = "scripts/onestep_avatar/experiments/adapter_effect_check.py"
+EXTRA_SOURCES = (ENTRY, 'scripts/onestep_avatar/experiments/__init__.py',
+                 'scripts/onestep_avatar/infer.py',
+                 'scripts/onestep_avatar/training/engine.py',
+                 'scripts/onestep_avatar/training/resources.py',
+                 'scripts/onestep_avatar/training/numerics.py',
+                 'scripts/onestep_avatar/training/runtime.py',
+                 )
 TOLERANCE = {"relative_effect_l2": 0.05, "near_zero_effect_rms": 1e-8, "absolute_effect_rms": 1e-8}
 PATHS = ("reference", "evaluation", "product")
 STATES = ("base", "zero", "step1")
@@ -386,10 +393,7 @@ def prepare(args: argparse.Namespace) -> dict:  # noqa: PLR0912, PLR0915 -- comp
                       "fps": fps, "requested": requested, "checked": checked,
                       "coverage": [0, frames],
                       "source_frames": list(range(common.pixel_frames_for(frames, specification.scale_factors.time)))})
-    extras = (ENTRY, "scripts/onestep_avatar/infer.py", "scripts/onestep_avatar/training/engine.py",
-              "scripts/onestep_avatar/training/resources.py", "scripts/onestep_avatar/training/numerics.py",
-              "scripts/onestep_avatar/training/runtime.py")
-    producer = software.capture("evaluation", settings.mode, decoder=args.decode, extra_sources=extras)
+    producer = software.capture("evaluation", settings.mode, decoder=args.decode, extra_sources=EXTRA_SOURCES)
     return {"job": job, "settings": settings, "specification": specification, "cases": cases,
             "checkpoints": checkpoint_paths, "contracts": contracts, "context": context,
             "budget": budget, "pins": pins, "software": producer, "schedule": inputs["schedule"],

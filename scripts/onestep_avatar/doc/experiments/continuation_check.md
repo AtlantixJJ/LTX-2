@@ -1,14 +1,11 @@
-# `continuation_check.py` — bounded native history observations
+# `experiments/continuation_check.py` — bounded native history observations
 
-Status: implemented and checked with real tiny native CPU attention/cache;
-full-weight GPU observations and E3 acceptance remain pending.
-This temporary package-root experiment owner still exists here. The current
-handoff orders its structural move to `experiments/` and CPU/caller checks
-before fresh E3 experiments on the final layout. The missing original
-before/after-eviction scope remains required scientific acceptance; it does
-not block the directory move. See
-[the handoff work order](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#refactor-work-order--owner-groups) and
-[current acceptance](known_gaps.md#current-acceptance-and-next-step).
+Status: Tiny native CPU attention/cache checks pass. Full-weight before/after-eviction E3 acceptance remains pending.
+
+The implemented source owner is `experiments/continuation_check.py`.
+Original native evidence keeps its original producer hashes and scope.
+Fresh affected native checks follow the complete code gate. Read
+[current acceptance](../known_gaps.md#current-acceptance-and-next-step).
 
 ## Objective
 
@@ -53,10 +50,10 @@ and resource owner included. Never restamp the historical producer manifest.
 Two native commands use fresh output directories:
 
 ```text
-python -m scripts.onestep_avatar.continuation_check --phase capture \
+python -m scripts.onestep_avatar.experiments.continuation_check --phase capture \
   --protocol <original-E3-protocol.json> --sigma 1.0 --history generated \
   --output <fresh-capture> --gpu-id 0
-python -m scripts.onestep_avatar.continuation_check --phase reference \
+python -m scripts.onestep_avatar.experiments.continuation_check --phase reference \
   --snapshot <fresh-capture>/continuation.json --output <fresh-reference> --gpu-id 0
 ```
 
@@ -68,7 +65,7 @@ No native run is authorized by a dry run.
 The `control` phase consumes one ID from the existing data-only 12-control plan:
 
 ```text
-python -m scripts.onestep_avatar.continuation_check --phase control \
+python -m scripts.onestep_avatar.experiments.continuation_check --phase control \
   --protocol <original-E3-protocol.json> --control-plan <12-control-plan.json> \
   --control-id sigma_1.0_cached_future_before_eviction \
   --output <fresh-control> --gpu-id 0
@@ -192,3 +189,11 @@ the actual original one-view capture and a future-noise job, with all source,
 base checkpoint, master, c0, text and noise hashes retained. Full native 17-frame
 commands remain a separate acceptance requirement; short seven-frame controls
 from another owner cannot replace these observations.
+
+## Experiment package provenance
+
+The public `EXTRA_SOURCES` tuple retains every pre-move extra owner and
+binds the empty `experiments/__init__.py` marker along with the checker.
+These files are explicit experiment extras; ordinary profiles do not
+include the experiment marker. Existing results retain their original
+source attribution, and affected native checks run again after the code gate.

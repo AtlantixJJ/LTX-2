@@ -1,12 +1,11 @@
-# `training_update_check.py` — replay one distributed update in serial
+# `experiments/training_update_check.py` — replay one distributed update in serial
 
-Status: Implemented bounded E4 owner; both original numerical comparisons pass.
-Complete preview/product acceptance is separate; read
-[current acceptance](known_gaps.md#current-acceptance-and-next-step). The current
-handoff orders the structural move to `experiments/training_update_check.py`
-and CPU/caller checks before fresh native experiments on the final owners.
-Original native results retain their original producer hashes. The move does
-not close numerical or workflow acceptance under changed source.
+Status: Bounded E4 owner. Both original numerical comparisons pass; complete preview/product acceptance is separate.
+
+The implemented source owner is `experiments/training_update_check.py`.
+Original native evidence keeps its original producer hashes and scope.
+Fresh affected native checks follow the complete code gate. Read
+[current acceptance](../known_gaps.md#current-acceptance-and-next-step).
 
 ## Objective
 
@@ -207,3 +206,11 @@ Original failed records remain unchanged. CPU controls verify the policy binding
 Original four-rank updates in both modes and their fixed serial comparisons
 pass. Preserve their source-bound receipts; changed producers require affected
 fresh checks. Full workflows and final-source acceptance remain separate.
+
+## Experiment package provenance
+
+The public `EXTRA_SOURCES` tuple retains every pre-move extra owner and
+binds the empty `experiments/__init__.py` marker along with the checker.
+These files are explicit experiment extras; ordinary profiles do not
+include the experiment marker. Existing results retain their original
+source attribution, and affected native checks run again after the code gate.

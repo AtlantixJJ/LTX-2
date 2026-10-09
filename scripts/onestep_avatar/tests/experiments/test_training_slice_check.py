@@ -16,9 +16,9 @@ from safetensors.torch import save_file
 
 from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar import evaluate
-from scripts.onestep_avatar import training_slice_check as slice_check
 from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import software
+from scripts.onestep_avatar.experiments import training_slice_check as slice_check
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, common
 from scripts.onestep_avatar.tests.test_causal_core import _model
@@ -235,7 +235,7 @@ def saved_pair(tmp_path: Path) -> SavedPair:
                 "selected_slots": 1, "visits": [{"rank": 0, "slot": 0}], "world_size": 1,
                 "averaging_denominator": 1, "budget": budget, "tolerance": slice_check.training_update_check.TOLERANCE,
                 "input_sha256": {"original": "a" * 64}, "kernel_control": {"deterministic_algorithms": True},
-                "software": software.capture("training", "bidirectional", extra_sources=(slice_check.ENTRY,))}
+                "software": software.capture("training", "bidirectional", extra_sources=slice_check.EXTRA_SOURCES)}
     measurements = [{"schema_version": 1, "phase": phase, "rank": 0, "device": "cuda:0", "elapsed_s": 1,
                      "peak_allocated_bytes": 1000, "peak_reserved_bytes": 2000,
                      "budget_sha256": budget["sha256"], "state": "passed", "error": None}

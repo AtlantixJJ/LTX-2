@@ -22,8 +22,8 @@ if TYPE_CHECKING:
     import subprocess
 
 REGISTERED_RECOVERY_MODULES = frozenset({
-    'adapter_effect_check', 'bench', 'continuation_check', 'decode_saved', 'evaluate',
-    'infer', 'media', 'prepare_inputs', 'stock_parity',
+    'experiments.adapter_effect_check', 'bench', 'experiments.continuation_check', 'decode_saved', 'evaluate',
+    'infer', 'media', 'prepare_inputs', 'experiments.stock_parity',
 })
 
 
