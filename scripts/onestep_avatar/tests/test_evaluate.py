@@ -8,20 +8,21 @@ import pytest
 import torch
 
 from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar import comparisons, hashing, metrics as metrics_ops
 
 
 def test_saved_comparison_renderer_rejects_empty_spec_before_model_session(tmp_path):  # noqa: ANN001, ANN201
     spec = tmp_path / 'spec.json'
     spec.write_text('{"comparisons": []}')
     with pytest.raises(ValueError, match='specification is empty'):
-        evaluate.render_saved_comparisons(spec, tmp_path / 'out', gpu_id=0)
+        comparisons.render_saved_comparisons(spec, tmp_path / 'out', gpu_id=0)
 
 
 def test_saved_comparison_renderer_rejects_missing_latent_before_model_session(tmp_path):  # noqa: ANN001, ANN201
     spec = tmp_path / 'spec.json'
     spec.write_text('{"comparisons": [{"name": "case", "panels": [{"title": "x", "latent": "missing.pt"}]}]}')
     with pytest.raises(ValueError, match='latent is missing'):
-        evaluate.render_saved_comparisons(spec, tmp_path / 'out', gpu_id=0)
+        comparisons.render_saved_comparisons(spec, tmp_path / 'out', gpu_id=0)
 from ltx_core.components.guiders import MultiModalGuider, MultiModalGuiderParams
 from ltx_core.guidance.perturbations import (
     BatchedPerturbationConfig,
@@ -114,7 +115,7 @@ def test_sample_saved_noise_clean_c0_and_actual_call_counts(mode, tmp_path):
     assert record["call_counts"]["model_calls"] == len(calls) == (1 if mode == "bidirectional" else 6)
     assert record["call_counts"]["prime_calls"] == 0
     assert torch.equal(output[:, :, 0], grid.unpatchify_block(capture, 7)[:, :, 0])
-    assert record["noise_sha256"] == evaluate.tensor_sha256(noise)
+    assert record["noise_sha256"] == hashing.tensor_sha256(noise)
     assert record["metrics"]["per_frame_mse"][0] == 0
     saved = evaluate.save_case(output, record, tmp_path)
     assert json.loads((tmp_path / "result.json").read_text()) == saved
@@ -124,13 +125,13 @@ def test_sample_saved_noise_clean_c0_and_actual_call_counts(mode, tmp_path):
 
 def test_encoded_mean_retains_first_frame():
     prediction = torch.tensor([0.0, 2.0, 2.0]).reshape(1, 1, 3, 1, 1)
-    result = evaluate.encoded_metrics(prediction, torch.zeros_like(prediction))
+    result = metrics_ops.encoded_metrics(prediction, torch.zeros_like(prediction))
     assert result["mse"] == pytest.approx(8 / 3)
 
 
 def test_exact_rgb_match_json_has_no_infinity():
     pixels = torch.zeros(2, 3, 4, 4)
-    metrics = evaluate.rgb_metrics(pixels, pixels)
+    metrics = metrics_ops.rgb_metrics(pixels, pixels)
     assert metrics["per_frame_psnr"] == [None, None]
     assert metrics["exact_match"] == [True, True]
     json.dumps(metrics, allow_nan=False)
@@ -138,11 +139,11 @@ def test_exact_rgb_match_json_has_no_infinity():
 
 def test_tensor_identity_includes_shape_dtype_and_bytes():
     value = torch.zeros(2, 3)
-    identity = evaluate.tensor_sha256(value)
-    assert identity != evaluate.tensor_sha256(value.reshape(3, 2))
-    assert identity != evaluate.tensor_sha256(value.double())
+    identity = hashing.tensor_sha256(value)
+    assert identity != hashing.tensor_sha256(value.reshape(3, 2))
+    assert identity != hashing.tensor_sha256(value.double())
     value[0, 0] = 1
-    assert identity != evaluate.tensor_sha256(value)
+    assert identity != hashing.tensor_sha256(value)
 
 
 @pytest.mark.parametrize("scale", ["nan", "inf", "-1"])

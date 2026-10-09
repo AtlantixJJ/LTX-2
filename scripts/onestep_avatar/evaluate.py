@@ -10,7 +10,7 @@ import math
 import os
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -27,27 +27,11 @@ from scripts.onestep_avatar.model import backbone, bidirectional, causal, common
 from scripts.onestep_avatar.model.sampling import validate_schedule
 from scripts.onestep_avatar.training import checkpoints
 from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
+from scripts.onestep_avatar import hashing, metrics
 
 
-def tensor_sha256(value: torch.Tensor) -> str:
-    """Hash shape, dtype and original tensor bytes, independently of serialization."""
-    value = value.detach().cpu().contiguous()
-    digest = hashlib.sha256(json.dumps({"shape": list(value.shape), "dtype": str(value.dtype)}).encode())
-    digest.update(value.view(torch.uint8).numpy().tobytes())
-    return digest.hexdigest()
 
 
-def encoded_metrics(prediction: torch.Tensor, target: torch.Tensor) -> dict:
-    """Full-frame fp32 x0 MSE, with unchanged c0 retained in the denominator."""
-    if prediction.shape != target.shape or prediction.ndim != 5:
-        raise ValueError("encoded metrics require equal B,C,F,H,W tensors")
-    error = (prediction.float() - target.float()).square()
-    return {
-        "definition": "mean((prediction-capture)^2) in fp32, including c0",
-        "mse": float(error.mean()),
-        "per_frame_mse": error.mean(dim=(0, 1, 3, 4)).tolist(),
-        "frames": prediction.shape[2],
-    }
 
 
 def saved_latent_metrics(
@@ -165,54 +149,10 @@ def measure_saved_probe(directory: Path, *, long: bool = False) -> dict:
     return result
 
 
-def rgb_metrics(prediction: torch.Tensor, target: torch.Tensor) -> dict:
-    """Aligned unquantized FCHW float RGB measurements, without a synthetic mask."""
-    _check_rgb_pair(prediction, target)
-    error = (prediction.float() - target.float()).square()
-    mse = error.mean(dim=(1, 2, 3)).tolist()
-    total_mse = float(error.mean())
-    return {
-        "definition": "float RGB MSE and PSNR=-10*log10(MSE), before presentation compression",
-        "per_frame_mse": mse,
-        "per_frame_psnr": [None if x == 0 else -10 * math.log10(x) for x in mse],
-        "exact_match": [x == 0 for x in mse],
-        "frames": len(mse),
-        "mse": total_mse,
-        "psnr": None if total_mse == 0 else -10 * math.log10(total_mse),
-        "all_exact_match": total_mse == 0,
-    }
 
 
-def _check_rgb_pair(prediction: torch.Tensor, target: torch.Tensor) -> None:
-    if (
-        prediction.shape != target.shape
-        or prediction.ndim != 4
-        or prediction.shape[1] != 3
-        or any(size < 1 for size in prediction.shape)
-    ):
-        raise ValueError("RGB measurement requires matching nonempty F,3,H,W tensors")
-    if any(
-        not value.is_floating_point() or not torch.isfinite(value).all() or value.min() < 0 or value.max() > 1
-        for value in (prediction, target)
-    ):
-        raise ValueError("RGB measurement requires finite floating pixels in [0,1]")
 
 
-def masked_rgb_transition_steps(video, mask):  # noqa: ANN001, ANN201 -- historical NumPy RGB arrays
-    """Measure absolute frame changes in the supplied union-foreground mask."""
-    import numpy as np  # noqa: PLC0415 -- historical metric arithmetic
-
-    if (not isinstance(video, np.ndarray) or video.ndim != 4 or video.shape[0] < 2
-            or video.shape[-1] != 3 or min(video.shape[1:3]) < 1
-            or not np.issubdtype(video.dtype, np.floating) or not np.isfinite(video).all()
-            or video.min() < 0 or video.max() > 1):
-        raise ValueError("transition measurement requires finite nonempty F,H,W,3 RGB in [0,1]")
-    if not isinstance(mask, np.ndarray) or mask.dtype != np.bool_ or mask.shape != video.shape[:3]:
-        raise ValueError("transition measurement requires an aligned boolean foreground mask")
-    value = video.astype(np.float32, copy=False) if video.dtype.itemsize < 4 else video
-    delta = np.abs(value[1:] - value[:-1]).mean(-1)
-    selected = mask[1:] | mask[:-1]
-    return (delta * selected).sum((1, 2)) / selected.sum((1, 2)).clip(1)
 
 
 def sigma_sweep_boundary_metrics(video, capture, guide, mask) -> dict:  # noqa: ANN001 -- historical NumPy RGB arrays
@@ -250,7 +190,10 @@ def sigma_sweep_boundary_metrics(video, capture, guide, mask) -> dict:  # noqa: 
     def mean(values: list) -> float | None:
         return None if any(value is None for value in values) else float(np.mean(values))
 
-    motion, capture_motion = masked_rgb_transition_steps(video, mask), masked_rgb_transition_steps(capture, mask)
+    motion, capture_motion = (
+        metrics.masked_rgb_transition_steps(video, mask),
+        metrics.masked_rgb_transition_steps(capture, mask),
+    )
     rows = []
     for boundary in boundaries:
         index = boundary - 1
@@ -282,71 +225,14 @@ def sigma_sweep_boundary_metrics(video, capture, guide, mask) -> dict:  # noqa: 
     }
 
 
-def subject_mask(path: Path, frames: int, height: int, width: int) -> torch.Tensor | None:
-    """Replay the study's optional two-cell mask dilation for RGB QA only."""
-    from scripts.onestep_avatar.corpus import mask_video  # noqa: PLC0415 -- CPU lossless mask reader
-
-    if any(type(value) is not int or value < 1 for value in (frames, height, width)):
-        raise ValueError("subject mask requires positive frame count and dimensions")
-    if not path.is_file():
-        return None
-    raw = torch.from_numpy(mask_video.read_mask_video(path))
-    if raw.dtype != torch.uint8 or raw.ndim != 3 or raw.shape[0] < frames or any(size < 1 for size in raw.shape):
-        raise ValueError("subject mask does not cover the requested RGB frames")
-    grid = raw[:frames].float()[:, None] / 255
-    grid = torch.nn.functional.max_pool2d(grid, 5, stride=1, padding=2)
-    return torch.nn.functional.interpolate(grid, size=(height, width), mode="nearest")[:, 0] > 0.5
 
 
-def subject_rgb_metrics(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> dict:
-    """Measure aligned supplied subject pixels before presentation compression."""
-    _check_rgb_pair(prediction, target)
-    if mask.dtype != torch.bool or mask.shape != (prediction.shape[0], *prediction.shape[2:]) or not mask.any():
-        raise ValueError("subject mask must be nonempty boolean F,H,W aligned with RGB")
-    error = (prediction.float() - target.float()).square().mean(dim=1)
-    mse = float(error[mask.to(error.device)].mean())
-    return {
-        "mse": mse,
-        "psnr": None if mse == 0 else -10 * math.log10(mse),
-        "exact_match": mse == 0,
-        "selected_pixels": int(mask.sum()),
-    }
 
 
-def _lpips_batches(
-    model: torch.nn.Module, prediction: torch.Tensor, target: torch.Tensor, device: torch.device, batch: int
-) -> Iterator[torch.Tensor]:
-    """Share input/model gates while retaining native per-batch score tensors."""
-    _check_rgb_pair(prediction, target)
-    if type(batch) is not int or batch < 1:
-        raise ValueError("perceptual batch size must be a positive integer")
-    for start in range(0, len(prediction), batch):
-        left = prediction[start : start + batch].float().to(device) * 2 - 1
-        right = target[start : start + batch].float().to(device) * 2 - 1
-        scores = model(left, right)
-        if not isinstance(scores, torch.Tensor) or scores.numel() != len(left) or not torch.isfinite(scores).all():
-            raise ValueError("perceptual model must return one finite score per frame")
-        yield scores
 
 
-@torch.no_grad()
-def lpips_frame_scores(
-    model: torch.nn.Module, prediction: torch.Tensor, target: torch.Tensor, device: torch.device, batch: int = 16
-) -> list[float]:
-    """Return checked aligned scores; the caller chooses c0 exclusion and averaging."""
-    return [value for scores in _lpips_batches(model, prediction, target, device, batch)
-            for value in scores.flatten().tolist()]
 
 
-@torch.no_grad()
-def lpips_distance(
-    model: torch.nn.Module, prediction: torch.Tensor, target: torch.Tensor, device: torch.device, batch: int = 8
-) -> float:
-    """Preserve the scalar path's per-batch native sums and frame weighting."""
-    total = 0.0
-    for scores in _lpips_batches(model, prediction, target, device, batch):
-        total += float(scores.sum())
-    return total / len(prediction)
 
 
 def check_adapter(path: Path | None, requested: dict, *, override: bool = False, product: bool = False) -> dict:
@@ -514,14 +400,14 @@ def sample_case(  # noqa: PLR0913 -- explicit checked model inputs and selected 
         "schedule": levels,
         "seed": seed,
         "frames": frames,
-        "capture_sha256": tensor_sha256(capture),
-        "guide_sha256": None if guide is None else tensor_sha256(guide),
-        "c0_sha256": tensor_sha256(c0),
-        "noise_sha256": tensor_sha256(epsilon),
-        "text_sha256": tensor_sha256(context),
+        "capture_sha256": hashing.tensor_sha256(capture),
+        "guide_sha256": None if guide is None else hashing.tensor_sha256(guide),
+        "c0_sha256": hashing.tensor_sha256(c0),
+        "noise_sha256": hashing.tensor_sha256(epsilon),
+        "text_sha256": hashing.tensor_sha256(context),
         "call_counts": counts,
         "elapsed_s": time.perf_counter() - started,
-        "metrics": encoded_metrics(output, target),
+        "metrics": metrics.encoded_metrics(output, target),
         **({"history_mode": history_mode, "kv_source": kv_source} if mode == "causal" else {}),
     }
 
@@ -609,154 +495,12 @@ def save_future_noise_probe(outputs: list[torch.Tensor], diagnostic: dict, prove
     return completed
 
 
-def check_preview_reference_bundle(fixed: dict) -> dict | None:
-    """Bind checked prepared RGB to the fixed capture and guide producers."""
-    producer_inputs = fixed.get('producer_inputs', {})
-    if not isinstance(producer_inputs, dict):
-        raise ValueError('preview preparation input identities must be a mapping')
-    for source in producer_inputs.values():
-        if (not isinstance(source, dict) or not isinstance(source.get('path'), str)
-                or not Path(source['path']).is_absolute() or sha256(Path(source['path'])) != source.get('sha256')):
-            raise ValueError('preview preparation input changed or lacks an absolute identity')
-    identity = fixed.get("reference_bundle")
-    if identity is None:
-        return None
-    from scripts.onestep_avatar.media import load_training_references  # noqa: PLC0415 -- saved RGB only
-
-    path = Path(identity["path"])
-    if not path.is_absolute() or sha256(path) != identity["sha256"]:
-        raise ValueError("preview reference bundle manifest changed")
-    _, producer = load_training_references(path)
-    if producer["capture_encoding_sha256"] != fixed["input_files"]["capture"]["sha256"]:
-        raise ValueError("preview reference bundle uses a different capture encoding")
-    args = parse_args([*fixed["evaluation_arguments"], "--output", "/unused-preview-reference-check"])
-    if args.source != [producer["source"]]:
-        raise ValueError("preview reference bundle requires its one explicit source selection")
-    if args.guide_mode == "d1":
-        if not producer.get("guide_rgb_sha256"):
-            raise ValueError("D1 preview requires a checked guide reference")
-        guide = torch.load(Path(fixed["input_files"]["guide"]["path"]), map_location="cpu", weights_only=True)
-        if not isinstance(guide, dict) or guide.get("input_fingerprint") != producer["guide_rgb_sha256"]:
-            raise ValueError("preview reference bundle uses a different guide render")
-    return producer
 
 
-def verify_preview_job(path: Path, *, verify_files: bool = True) -> dict:
-    """Read only complete, unchanged checkpoints and pinned preview inputs."""
-    job = json.loads(path.read_text())
-    if job.get("schema_version") != 2 or job.get("kind") != "onestep_avatar.preview_job":
-        raise ValueError("preview requires a version-two job record")
-    fixed, checkpoint = job["fixed_inputs"], job["checkpoint"]
-    if subset.record_hash(fixed) != fixed.get("sha256"):
-        raise ValueError("fixed preview record changed")
-    identity = hashlib.sha256((checkpoint["sha256"] + fixed["sha256"]).encode()).hexdigest()
-    if job.get("id") != identity:
-        raise ValueError("preview job identity changed")
-    if not verify_files:
-        return job
-    for role, source in fixed["input_files"].items():
-        if sha256(Path(source["path"])) != source["sha256"]:
-            raise ValueError(f"preview {role} file changed")
-    check_preview_reference_bundle(fixed)
-    adapter = Path(checkpoint["path"])
-    marker = json.loads(adapter.with_suffix(".complete.json").read_text())
-    if marker.get("state") != "complete" or sha256(adapter) != checkpoint["sha256"]:
-        raise ValueError("preview checkpoint is incomplete or changed")
-    if marker.get("sha256") != checkpoint["sha256"] or marker.get("step") != checkpoint["step"]:
-        raise ValueError("preview completion marker differs from its pinned checkpoint")
-    contract = checkpoints.read_contract(adapter)
-    checkpoints.validate_adapter_tensors(adapter, contract)
-    if contract["adapter"]["step"] != checkpoint["step"] or contract["mode"] != fixed["mode"]:
-        raise ValueError("preview adapter step or mode differs from its job")
-    return job
 
 
-def _verify_preview_outputs(records: list[dict], job: dict, *, rendered: bool) -> None:  # noqa: PLR0912 -- all completion evidence gates
-    if not records:
-        raise ValueError("preview completion requires raw results and rendered outputs")
-    for identity in records:
-        path = Path(identity["path"])
-        if sha256(path) != identity["sha256"]:
-            raise ValueError("preview output record changed")
-        record = json.loads(path.read_text())
-        software.check_current(record.get("software"))
-        if rendered:
-            common_settings = record.get("common_settings", {})
-            if (
-                common_settings.get("preview_job_id") != job["id"]
-                or common_settings.get("fixed_inputs_sha256") != job["fixed_inputs"]["sha256"]
-            ):
-                raise ValueError("preview rendering belongs to different fixed inputs")
-            if common_settings.get("result_records") != job["results"]:
-                raise ValueError("preview rendering does not identify its generated result records")
-            outputs = record.get("outputs", {})
-            if set(outputs) != {"video", "poster"}:
-                raise ValueError("preview rendering lacks video or poster")
-        else:
-            if record.get("state") != "complete":
-                raise ValueError("preview encoding is not complete")
-            if record.get("mode") != job["fixed_inputs"]["mode"]:
-                raise ValueError("preview result has the wrong mode")
-            for role, key in (
-                ("capture", "capture_sha256"),
-                ("guide", "guide_sha256"),
-                ("first_image", "c0_sha256"),
-                ("text", "text_sha256"),
-                ("noise", "noise_sha256"),
-            ):
-                expected = job["fixed_inputs"]["input_files"].get(role)
-                if expected is not None and record.get(key) != expected.get("tensor_sha256"):
-                    raise ValueError(f"preview result changed the fixed {role} tensor")
-            if record.get("adapter") is not None and record.get("adapter_sha256") != job["checkpoint"]["sha256"]:
-                raise ValueError("preview result uses a different checkpoint")
-            outputs = {"encoding": record["output"]}
-        for output in outputs.values():
-            if sha256(Path(output["path"])) != output["sha256"]:
-                raise ValueError("preview encoded/rendered output changed")
 
 
-def set_preview_state(
-    path: Path,
-    state: str,
-    *,
-    error: str | None = None,
-    results: list[dict] | None = None,
-    renderings: list[dict] | None = None,
-) -> dict:
-    """Serialize job transitions; they never write to training or checkpoint files."""
-    transitions = {
-        "pending": {"running", "failed"},
-        "failed": {"running"},
-        "running": {"complete", "failed"},
-        "complete": set(),
-    }
-    with path.with_suffix(".lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        job = verify_preview_job(path, verify_files=state != "failed")
-        if state not in transitions.get(job.get("state"), set()):
-            raise ValueError("unsupported preview state transition")
-        if job["state"] == "running" and job.get("pid") != os.getpid():
-            try:
-                os.kill(job["pid"], 0)
-            except ProcessLookupError:
-                pass
-            else:
-                raise ValueError("preview is owned by a live process")
-        if state == "complete":
-            _verify_preview_outputs(results or [], job, rendered=False)
-            job["results"] = results
-            _verify_preview_outputs(renderings or [], job, rendered=True)
-            if not any(
-                json.loads(Path(r["path"]).read_text()).get("adapter_sha256") == job["checkpoint"]["sha256"]
-                for r in results
-            ):
-                raise ValueError("preview has no generated result from its pinned checkpoint")
-            job.update(results=results, renderings=renderings)
-        if state == "failed" and not error:
-            raise ValueError("failed preview requires a recorded reason")
-        job.update(state=state, pid=os.getpid(), updated_at=time.time(), error=error)
-        atomic_write(path, lambda temporary: temporary.write_text(json.dumps(job, indent=2) + "\n"))
-        return job
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:  # noqa: PLR0912, PLR0915 -- explicit mode/diagnostic argument gates
@@ -1013,7 +757,7 @@ def verify_evaluation_conditions(arguments: list[str], record_paths: list[Path])
     negative = tensor(args.output / "negative_text.pt") if args.cfg != 1.0 else None
     guidance = {
         "cfg": args.cfg, "stg": args.stg, "stg_blocks": args.stg_blocks, "rescale": args.rescale,
-        "negative_text_sha256": None if negative is None else tensor_sha256(negative),
+        "negative_text_sha256": None if negative is None else hashing.tensor_sha256(negative),
     }
     prompt = DEFAULT_PROMPT if args.prompt is None else args.prompt
     negative_prompt = (DEFAULT_NEGATIVE_PROMPT if args.negative_prompt is None else args.negative_prompt)
@@ -1039,8 +783,9 @@ def verify_evaluation_conditions(arguments: list[str], record_paths: list[Path])
             "schedule": args.schedule, "seed": args.seed, "frames": frames,
             "conditions": requested, "source": video.source, "fps": video.fps,
             "membership_sha256": membership["sha256"], "input_file_hashes": video.hashes,
-            "capture_sha256": tensor_sha256(capture), "guide_sha256": None if guide is None else tensor_sha256(guide),
-            "c0_sha256": tensor_sha256(c0), "text_sha256": tensor_sha256(context),
+            "capture_sha256": hashing.tensor_sha256(capture),
+            "guide_sha256": None if guide is None else hashing.tensor_sha256(guide),
+            "c0_sha256": hashing.tensor_sha256(c0), "text_sha256": hashing.tensor_sha256(context),
             "prompt": prompt, "guidance": guidance,
             "negative_prompt": negative_prompt if negative is not None else None,
             "producer_source_sha256": sha256(Path(__file__)),
@@ -1056,7 +801,7 @@ def verify_evaluation_conditions(arguments: list[str], record_paths: list[Path])
             for folder, epsilon in branches:
                 record = json.loads((folder / "result.json").read_text())
                 software.check_current(record.get("software"))
-                expected = {**fixed, **adapter, "noise_sha256": tensor_sha256(epsilon)}
+                expected = {**fixed, **adapter, "noise_sha256": hashing.tensor_sha256(epsilon)}
                 if any(key not in record or record[key] != value for key, value in expected.items()):
                     raise ValueError("queue evaluation scientific settings or input evidence differ")
                 encoded = folder / "generated.pt"
@@ -1101,634 +846,41 @@ def evaluation_evidence_paths(arguments: list[str], record_paths: list[Path]) ->
     return sorted(paths)
 
 
-def render_preview_outputs(path: Path, *, gpu_id: int) -> dict:  # noqa: PLR0915 -- ordered decoder/media lifecycle
-    """Render owned saved preview results without another transformer call."""
-    from scripts.onestep_avatar import media  # noqa: PLC0415 -- saved-output rendering
-    from scripts.prune.core.session import Session  # noqa: PLC0415 -- decoder-only session
-
-    producer_software = software.capture("decoding")
-    job = verify_preview_job(path)
-    if job.get("state") != "running" or job.get("pid") != os.getpid():
-        raise ValueError("preview rendering requires the current running owner")
-    fixed = job["fixed_inputs"]
-    if fixed.get("reference_bundle") is None:
-        raise ValueError("preview rendering requires pinned reference pixels")
-    references, producer = media.load_training_references(Path(fixed["reference_bundle"]["path"]))
-    decoder_settings = media.native_decoder_settings()
-    if producer.get("decoder_settings") != decoder_settings:
-        raise ValueError("preview reference decoder settings differ from the current runtime")
-    results = job.get("results", [])
-    _verify_preview_outputs(results, job, rendered=False)
-    records = [json.loads(Path(row["path"]).read_text()) for row in results]
-    changed = [record for record in records if record.get("adapter_sha256") == job["checkpoint"]["sha256"]]
-    base = [record for record in records if record.get("adapter") is None]
-    if len(changed) != 1 or len(base) > 1 or len(records) != len(changed) + len(base):
-        raise ValueError("preview rendering requires one pinned adapter and at most one base")
-    for record in records:
-        if (
-            record.get("source") != producer["source"]
-            or record.get("fps") != producer["fps"]
-            or (record["frames"] - 1) * 8 + 1 != len(producer["source_frames"])
-        ):
-            raise ValueError("preview output source/timebase/coverage differs from its references")
-    args = parse_args([*fixed["evaluation_arguments"], "--output", job["output"]])
-    specification = backbone.resolve(args.model, args.variant)
-    vae_hash = sha256(Path(specification.paths.video_vae()))
-    if vae_hash != producer["vae_sha256"]:
-        raise ValueError("preview rendering VAE differs from its fixed references")
-    destination = Path(job["output"]) / f"render_attempt_{job['raw_attempt']:04d}"
-    if destination.exists() and any(destination.iterdir()):
-        raise ValueError("preview rendering output is already used")
-    question = "Does the adapter change the output?"
-    output_panels = [
-        media.Panel(role, title, None, tuple(producer["source_frames"]),
-                    value=("no adapter" if role == "baseline" else f"step {job['checkpoint']['step']}")
-                    if selected else "", missing_reason="Not requested" if not selected else "")
-        for role, selected, title in (("baseline", base, "Base output"), ("changed", changed, "Adapter output"))
-    ]
-    planned = references + output_panels
-    try:
-        media.layout_geometry(planned, question=question, layout="training")
-        layout = "training"
-    except ValueError:
-        layout = media.compact_layout(planned, question=question, layout="training")
-    software.check_current(producer_software)
-    session = Session(specification, torch.device(f"cuda:{gpu_id}"), "onestep_avatar.preview_render", None)
-    decode_records = []
-    with session.decoder() as decoder:
-        for role, selected, title in (("baseline", base, "Base output"), ("changed", changed, "Adapter output")):
-            if not selected:
-                references.append(media.Panel(role, title, None, missing_reason="Not requested"))
-                continue
-            record = selected[0]
-            latent = torch.load(Path(record["output"]["path"]), map_location="cpu", weights_only=True)
-            pixels = media.decode(session, latent, decoder, producer["decode_seed"])
-            references.append(
-                media.Panel(
-                    role,
-                    title,
-                    pixels,
-                    tuple(producer["source_frames"]),
-                    value="no adapter" if role == "baseline" else f"step {job['checkpoint']['step']}",
-                )
-            )
-            decode_records.append(
-                {
-                    "role": role,
-                    "decode_key": media.decode_key(
-                        record["output"]["sha256"],
-                        vae_hash,
-                        list(latent.shape),
-                        "native_decode_video",
-                        producer["decode_seed"],
-                        decoder_settings,
-                    ),
-                }
-            )
-    pixels, rendering = media.render_panels(
-        references,
-        question=question,
-        layout=layout,
-        fps=producer["fps"],
-        common_settings={
-            "preview_job_id": job["id"],
-            "fixed_inputs_sha256": fixed["sha256"],
-            "result_records": results,
-            "reference_bundle": fixed["reference_bundle"],
-            "decoder_records": decode_records,
-        },
-    )
-    rendering["software"] = producer_software
-    media.save_render(pixels, rendering, destination)
-    rendered_path = destination / "rendering.json"
-    return set_preview_state(
-        path,
-        "complete",
-        results=results,
-        renderings=[{"path": str(rendered_path.resolve()), "sha256": sha256(rendered_path)}],
-    )
 
 
-def _saved_panel_path(item: dict, root: Path) -> tuple[Path, bool]:
-    """Resolve the shared saved-output/master spelling without loading data."""
-    reference = item.get("latent")
-    if not isinstance(reference, str) or not reference:
-        raise ValueError("saved comparison latent is missing")
-    master = reference.startswith(("capture:", "guide:"))
-    path = Path(reference.split(":", 1)[1] if master else reference)
-    path = (root / path).resolve()
-    return path, master
 
 
-def saved_comparison_inputs_ready(spec_path: Path) -> bool:
-    """Wait for saved panel files; invalid empty specifications fail rather than wait."""
-    spec = json.loads(spec_path.read_text())
-    comparisons = spec.get("comparisons")
-    if not isinstance(comparisons, list) or not comparisons:
-        raise ValueError("saved comparison specification is empty")
-    paths = []
-    for comparison in comparisons:
-        panels = comparison.get("panels")
-        if not isinstance(panels, list) or not panels:
-            raise ValueError("saved comparison requires panels")
-        root = spec_path.resolve().parent
-        if "reference_bundle" in comparison:
-            reference_path = (root / comparison["reference_bundle"]).resolve()
-            paths.append(reference_path)
-            if reference_path.is_file():
-                reference = json.loads(reference_path.read_text())
-                paths.extend(Path(row["path"]) for row in reference.get("panels", []) if row.get("path") is not None)
-        for panel in panels:
-            if "reference_role" not in panel:
-                paths.append(_saved_panel_path(panel, root)[0])
-            if "result" in panel:
-                paths.append((root / panel["result"]).resolve())
-    return all(path.is_file() for path in paths)
 
 
-def _saved_panel_input(item: dict, root: Path, span: int, fps: float) -> tuple[torch.Tensor, dict]:
-    """Resolve an existing output or a checked master without changing recorded bytes."""
-    path, master = _saved_panel_path(item, root)
-    if not path.is_file():
-        raise ValueError("saved comparison latent is missing")
-    fingerprint = sha256(path)
-    if master:
-        latent, source_fps = dataset.load_training_master(path)
-        if source_fps != fps:
-            raise ValueError("saved comparison bundle fps differs from playback fps")
-        if latent.shape[1] < span:
-            raise ValueError("saved comparison master has insufficient frame coverage")
-        latent = latent[:, :span].unsqueeze(0)
-    else:
-        latent = torch.load(path, map_location="cpu", weights_only=True)
-    if (
-        not isinstance(latent, torch.Tensor) or latent.ndim != 5 or latent.shape[0] != 1
-        or not latent.is_floating_point() or min(latent.shape) < 1 or not torch.isfinite(latent).all()
-    ):
-        raise ValueError("saved comparison requires a finite floating B,C,F,H,W latent with batch one")
-    if latent.shape[2] != span:
-        raise ValueError("saved comparison encoded geometry differs from requested coverage")
-    if sha256(path) != fingerprint:
-        raise ValueError("saved comparison latent changed while loading")
-    return latent, {"path": str(path), "sha256": fingerprint, "shape": list(latent.shape), "master": master}
 
 
-def _saved_comparison_inputs(  # noqa: PLR0912 -- all saved RGB/result gates precede decoder work
-    comparison: dict, root: Path, model: str, seed: int
-) -> list[tuple[torch.Tensor, dict]]:
-    """Read latent-only panels or exactly matched, already-prepared RGB references."""
-    from scripts.onestep_avatar import media  # noqa: PLC0415 -- checked saved RGB reader
-    from scripts.prune.core import model_registry  # noqa: PLC0415 -- geometry only
-
-    span, fps = comparison.get("span", 17), comparison.get("fps", 30)
-    panels = comparison["panels"]
-    if "reference_bundle" not in comparison:
-        if any("reference_role" in panel for panel in panels):
-            raise ValueError("saved RGB panels require a reference bundle")
-        return [_saved_panel_input(panel, root, span, fps) for panel in panels]
-    if "view" in comparison:
-        raise ValueError("saved RGB reference comparisons do not use legacy view metrics")
-    path = (root / comparison["reference_bundle"]).resolve()
-    manifest_hash = sha256(path)
-    references, producer = media.load_training_references(path)
-    manifest = json.loads(path.read_text())
-    if sha256(path) != manifest_hash:
-        raise ValueError("saved reference bundle changed while loading")
-    software.check_current(producer.get("software"))
-    scale = model_registry.resolve(model).scale_factors
-    frames = 1 + (span - 1) * scale.time
-    if (producer.get("fps") != fps or producer.get("source_frames") != list(range(frames))
-            or producer.get("decode_seed") != seed
-            or producer.get("decoder_settings") != media.native_decoder_settings()
-            or producer.get("vae_sha256") != sha256(Path(model_registry.resolve(model).paths.video_vae()))):
-        raise ValueError("saved reference source mapping, timebase or decoder settings differ")
-    if (len(panels) < 4 or [item.get("reference_role") for item in panels[:3]] != ["recorded", "decoded", "guide"]
-            or any("reference_role" in item for item in panels[3:])):
-        raise ValueError("saved reference panels require recorded, decoded, guide before outputs")
-    inputs, records = [], []
-    for item, panel, row in zip(panels[:3], references, manifest["panels"], strict=True):
-        pixels = panel.pixels
-        if (item.get("role") != panel.role or "latent" in item or pixels is None
-                or pixels.ndim != 4 or pixels.shape[:2] != (frames, 3)
-                or not (pixels.is_floating_point() or pixels.dtype == torch.uint8)
-                or not torch.isfinite(pixels).all()):
-            raise ValueError("saved reference RGB values or panel roles are invalid")
-        inputs.append((pixels, {"path": row["path"], "sha256": row["sha256"], "shape": list(pixels.shape),
-                               "kind": "rgb_reference", "reference_bundle": {"path": str(path),
-                                                                                "sha256": manifest_hash}}))
-    for item in panels[3:]:
-        latent, evidence = _saved_panel_input(item, root, span, fps)
-        if "result" not in item:
-            raise ValueError("saved reference output requires its executed result record")
-        result_path = (root / item["result"]).resolve()
-        result_hash = sha256(result_path)
-        record = json.loads(result_path.read_text())
-        software.validate(record.get("software"))
-        if (record.get("state") != "complete" or record.get("source") != producer.get("source")
-                or record.get("fps") != fps or record.get("frames") != span
-                or record.get("input_file_hashes", {}).get("capture") != producer.get("capture_encoding_sha256")
-                or record.get("input_file_hashes", {}).get("render") != producer.get("guide_rgb_sha256")
-                or record.get("membership_sha256") != producer.get("membership_sha256")
-                or record.get("conditions", {}).get("task", {}).get("objective") != producer.get("objective")
-                or record.get("guide_mode") != "d1"
-                or Path(record.get("output", {}).get("path", "")).resolve() != Path(evidence["path"])
-                or record.get("output", {}).get("sha256") != evidence["sha256"]
-                or record.get("output", {}).get("shape") != list(latent.shape)
-                or tensor_sha256(VideoLatentPatchifier(patch_size=1).patchify(latent[:, :, :1]))
-                != record.get("c0_sha256")):
-            raise ValueError("saved output result differs from its RGB references or encoding")
-        if any(pixels.shape[-2:] != (latent.shape[-2] * scale.height, latent.shape[-1] * scale.width)
-               for pixels, _ in inputs[:3]):
-            raise ValueError("saved reference RGB dimensions differ from output encoding")
-        evidence["result"] = {"path": str(result_path), "sha256": result_hash}
-        inputs.append((latent, evidence))
-        records.append(record)
-    if len(records) > 1:
-        validate_comparison(records, comparison.get("changed_factor"))
-        if any(record.get("software") != records[0].get("software") for record in records[1:]):
-            raise ValueError("saved comparison output producers differ")
-    return inputs
 
 
-def _saved_input_bytes_current(inputs: list[tuple[torch.Tensor, dict]]) -> bool:
-    """Check every bound pixel, latent, manifest and executed-result file once."""
-    files = {}
-    for _, record in inputs:
-        for evidence in (record, record.get("reference_bundle"), record.get("result")):
-            if evidence is not None:
-                files[evidence["path"]] = evidence["sha256"]
-    return all(sha256(Path(path)) == digest for path, digest in files.items())
 
 
-def parse_saved_comparison_args(argv: list[str], *, require_gpu: bool = False) -> argparse.Namespace:
-    """One parser for direct rendering and queue normalization."""
-    parser = argparse.ArgumentParser(description="Render saved comparison latents with the package decoder owner")
-    parser.add_argument("--render-saved-comparisons", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--gpu-id", type=int, required=require_gpu, default=0)
-    parser.add_argument("--seed", type=int, default=42)
-    return parser.parse_args(argv)
 
 
-def saved_comparison_identity(spec_path: Path, spec: dict, seed: int) -> dict:
-    """Bind a saved render to actual decoder bytes and software, without model loading."""
-    from scripts.onestep_avatar import media  # noqa: PLC0415
-    from scripts.prune.core import model_registry  # noqa: PLC0415
-
-    model = model_registry.resolve(spec.get("model", "2.5"))
-    vae = Path(model.paths.video_vae()).resolve()
-    return {
-        "spec": str(spec_path.resolve()), "spec_sha256": sha256(spec_path), "seed": seed,
-        "decoder": {"model": spec.get("model", "2.5"), "variant": spec.get("variant", "dev"),
-                    "vae_path": str(vae), "vae_sha256": sha256(vae), "settings": media.native_decoder_settings()},
-        "source_code_sha256": {"evaluate": sha256(Path(__file__)), "media": sha256(Path(media.__file__))},
-        "software": software.capture("decoding"),
-    }
 
 
-def _save_comparison_variant(pixels: torch.Tensor, record: dict, output: Path, name: str) -> dict:
-    """Save a shared-layout variant and bind its stable report-facing media names."""
-    from scripts.onestep_avatar import media  # noqa: PLC0415 -- common RGB media owner
-
-    destination = output / name
-    complete = media.save_render(pixels, record, destination)
-    named_video, named_poster = output / f"{name}.mp4", output / f"{name}_poster.png"
-    (destination / "comparison.mp4").replace(named_video)
-    (destination / "poster.png").replace(named_poster)
-    for field, path in (("video", named_video), ("poster", named_poster)):
-        complete["outputs"][field] = {"path": str(path), "sha256": sha256(path)}
-    (destination / "rendering.json").write_text(json.dumps(complete, indent=2) + "\n")
-    return {"rendering": complete, "video": named_video.name, "poster": named_poster.name}
 
 
-def render_saved_comparisons(  # noqa: PLR0912, PLR0915 -- preflight, decode, QA and publication in order
-    spec_path: Path, output: Path, *, gpu_id: int, seed: int = 42
-) -> dict:
-    """Decode and render a saved comparison specification under package ownership.
-
-    The spec contains only saved latent paths and panel metadata. This function
-    opens the selected VAE session, never a transformer, and publishes media
-    through the shared renderer. Report code receives the manifest afterward.
-    """
-    from scripts.onestep_avatar import media  # noqa: PLC0415 -- shared preflight/decode/render owner
-
-    spec_hash = sha256(spec_path)
-    spec = json.loads(spec_path.read_text())
-    if not isinstance(spec.get("comparisons"), list) or not spec["comparisons"]:
-        raise ValueError("saved comparison specification is empty")
-    if (output / "render_manifest.json").exists():
-        raise ValueError("saved comparison output already exists")
-    spec_root = spec_path.resolve().parent
-    names = set()
-    reserved_outputs = set()
-    prepared = []
-    compact_layouts = []
-    for comparison in spec["comparisons"]:
-        if not isinstance(comparison, dict) or not isinstance(comparison.get("name"), str) or not comparison["name"]:
-            raise ValueError("saved comparison requires a nonempty name")
-        if comparison["name"] in names:
-            raise ValueError("saved comparison names must be unique")
-        names.add(comparison["name"])
-        if Path(comparison["name"]).name != comparison["name"] or comparison["name"] in (".", ".."):
-            raise ValueError("saved comparison name must be one safe path component")
-        for name in (comparison["name"], comparison["name"] + "_compact"):
-            for target in (output / name, output / f"{name}.mp4", output / f"{name}_poster.png"):
-                if target in reserved_outputs:
-                    raise ValueError("saved comparison output names collide")
-                reserved_outputs.add(target)
-                if target.exists():
-                    raise ValueError("saved comparison output already exists")
-        span, fps = comparison.get("span", 17), comparison.get("fps", 30)
-        if type(span) is not int or span < 1 or type(fps) not in (int, float) or not math.isfinite(fps) or fps <= 0:
-            raise ValueError("saved comparison span and fps must be positive")
-        panels = comparison.get("panels")
-        if not isinstance(panels, list) or not panels:
-            raise ValueError("saved comparison requires panels")
-        for panel in panels:
-            if not isinstance(panel, dict) or not isinstance(panel.get("title"), str):
-                raise ValueError("saved comparison panel metadata is invalid")
-        inputs = _saved_comparison_inputs(comparison, spec_root, spec.get("model", "2.5"), seed)
-        latents = [value for value, record in inputs if record.get("kind") != "rgb_reference"]
-        if any(latent.shape != latents[0].shape for latent in latents):
-            raise ValueError("saved comparison panels must have identical encoded geometry")
-        if "view" in comparison and latents[0].shape[2] < 2:
-            raise ValueError("saved comparison metrics require frames after the first image")
-        metadata = [media.Panel(item.get("role", f"panel_{index}"), item["title"], None, (),
-                                value=item.get("value", "")) for index, item in enumerate(panels)]
-        question, layout = comparison.get("question", comparison["name"]), comparison.get("layout", "comparison")
-        panel_size = tuple(comparison.get("panel_size", [400, 400]))
-        media.layout_geometry(metadata, question=question, layout=layout, panel_size=panel_size,
-                              viewing_width=comparison.get("viewing_width", 1280))
-        compact_layouts.append(media.compact_layout(metadata, question=question, layout=layout, panel_size=panel_size))
-        prepared.append(inputs)
-
-    identity = saved_comparison_identity(spec_path, spec, seed)
-    if identity["spec_sha256"] != spec_hash:
-        raise ValueError("saved comparison specification changed during preflight")
-    if any(not _saved_input_bytes_current(inputs) for inputs in prepared):
-        raise ValueError("saved comparison inputs changed during preflight")
-    software.check_current(identity["software"])
-    session = media.open_decoder_session(
-        spec.get("model", "2.5"), gpu_id, script="onestep_avatar.evaluate.saved_comparisons"
-    )
-    perceptual = None
-    if any("view" in comparison for comparison in spec["comparisons"]):
-        import lpips  # noqa: PLC0415 -- historical RGB QA only
-
-        perceptual = lpips.LPIPS(net="alex", verbose=False).to(session.device).eval()
-    output.mkdir(parents=True, exist_ok=True)
-    manifest = []
-    with session.decoder() as decoder, torch.inference_mode():
-        for comparison, inputs, compact_layout in zip(spec["comparisons"], prepared, compact_layouts, strict=True):
-            panels = []
-            for index, (item, (value, record)) in enumerate(zip(comparison["panels"], inputs, strict=True)):
-                pixels = value if record.get("kind") == "rgb_reference" else media.decode(session, value, decoder, seed)
-                panels.append(
-                    media.Panel(
-                        item.get("role", f"panel_{index}"),
-                        item["title"],
-                        pixels,
-                        tuple(range(len(pixels))),
-                        value=item.get("value", ""),
-                    )
-                )
-            metrics = []
-            if "view" in comparison:
-                reference = panels[0].pixels
-                view = (spec_root / comparison["view"]).resolve()
-                mask = subject_mask(view / "capture_mask_crop.mp4", len(reference), *reference.shape[-2:])
-                for item, panel in zip(comparison["panels"], panels, strict=True):
-                    metrics.append({
-                        "title": item["title"], "latent": item.get("latent"),
-                        "psnr_full": rgb_metrics(panel.pixels[1:], reference[1:])["psnr"],
-                        "psnr_subject": None if mask is None else subject_rgb_metrics(
-                            panel.pixels[1:], reference[1:], mask[1:]
-                        )["psnr"],
-                        "lpips": lpips_distance(perceptual, panel.pixels[1:], reference[1:], session.device),
-                    })
-            rendered, record = media.render_panels(
-                panels,
-                question=comparison.get("question", comparison["name"]),
-                layout=comparison.get("layout", "comparison"),
-                fps=comparison.get("fps", 30),
-                common_settings={"spec": str(spec_path.resolve()), "seed": seed},
-                poster_frame=min(comparison.get("poster_frame", 96), len(panels[0].pixels) - 1),
-                panel_size=tuple(comparison.get("panel_size", [400, 400])),
-                viewing_width=comparison.get("viewing_width", 1280),
-            )
-            record["software"] = identity["software"]
-            full = _save_comparison_variant(rendered, record, output, comparison["name"])
-            del rendered
-            compact_pixels, compact_record = media.render_panels(
-                panels, question=comparison.get("question", comparison["name"]), layout=compact_layout,
-                fps=comparison.get("fps", 30), panel_size=tuple(comparison.get("panel_size", [400, 400])),
-                viewing_width=480, common_settings={"spec": str(spec_path.resolve()), "seed": seed},
-                poster_frame=min(comparison.get("poster_frame", 96), len(panels[0].pixels) - 1),
-            )
-            compact_record["software"] = identity["software"]
-            compact = _save_comparison_variant(compact_pixels, compact_record, output, comparison["name"] + "_compact")
-            del compact_pixels
-            manifest.append({**comparison, **full, "compact": compact, "inputs": [row for _, row in inputs],
-                             "frames": len(panels[0].pixels), "metrics": metrics})
-    if (saved_comparison_identity(spec_path, spec, seed) != identity
-            or any(not _saved_input_bytes_current(inputs) for inputs in prepared)):
-        raise ValueError("saved comparison inputs changed before publication")
-    result = {"schema_version": 3, **identity, "comparisons": manifest, "results": manifest}
-    atomic_write(
-        output / "render_manifest.json",
-        lambda temporary: temporary.write_text(json.dumps(result, indent=2) + "\n"),
-    )
-    return result
 
 
-def _verify_comparison_variant(  # noqa: PLR0912 -- bound layout/media checks
-    request: dict, row: dict, output: Path, *, frames: int, fps: float, spec_path: Path, seed: int
-) -> bool:
-    from scripts.onestep_avatar import media  # noqa: PLC0415 -- single geometry owner
-
-    rendering = row.get("rendering", {})
-    software.check_current(rendering.get("software"))
-    if (rendering.get("fps") != fps
-            or rendering.get("source_frames") != list(range(frames))
-            or rendering.get("layout") != request.get("layout", "comparison")
-            or rendering.get("question") != request.get("question", request["name"])
-            or rendering.get("poster_frame") != min(request.get("poster_frame", 96), frames - 1)
-            or rendering.get("panel_size") != request.get("panel_size", [400, 400])
-            or rendering.get("viewing_width") != request.get("viewing_width", 1280)
-            or rendering.get("common_settings") != {"spec": str(spec_path.resolve()), "seed": seed}):
-        raise ValueError("saved comparison completion coverage or settings differ")
-    metadata = [media.Panel(item.get("role", f"panel_{index}"), item["title"], None, (),
-                            value=item.get("value", "")) for index, item in enumerate(request["panels"])]
-    geometry = media.layout_geometry(metadata, question=request.get("question", request["name"]),
-                                     layout=request.get("layout", "comparison"),
-                                     panel_size=tuple(request.get("panel_size", [400, 400])),
-                                     viewing_width=request.get("viewing_width", 1280))
-    if (rendering.get("font_size") != geometry["font_size"]
-            or rendering.get("display_size") != geometry["display_size"]
-            or rendering.get("source_times") != [value / fps for value in range(frames)]):
-        raise ValueError("saved comparison completion geometry or readability differs")
-    panels = [item for item in rendering.get("panels", []) if item.get("role") != "unused"]
-    roles = [panel.get("role", f"panel_{index}") for index, panel in enumerate(request["panels"])]
-    if rendering["layout"] in media.COMPARISON_COLUMNS:
-        columns = min(media.COMPARISON_COLUMNS[rendering["layout"]], len(roles))
-        roles += ["unused"] * (-len(roles) % columns)
-        positions = [(index // columns, index % columns, role) for index, role in enumerate(roles)]
-    else:
-        positions = [(r, c, role) for r, line in enumerate(media.LAYOUTS[rendering["layout"]])
-                     for c, role in enumerate(line)]
-    if [(item.get("row"), item.get("column"), item.get("role"))
-            for item in rendering.get("panels", [])] != positions:
-        raise ValueError("saved comparison completion panel positions differ")
-    if [item.get("title") for item in panels] != [item["title"] for item in request["panels"]]:
-        raise ValueError("saved comparison completion rendered titles differ")
-    for index, (panel, requested) in enumerate(zip(panels, request["panels"], strict=True)):
-        digest = panel.get("pixels_sha256")
-        if (not isinstance(digest, str) or len(digest) != 64
-                or any(char not in "0123456789abcdef" for char in digest)):
-            raise ValueError("saved comparison completion panel pixel hash is invalid")
-        if (panel.get("role") != requested.get("role", f"panel_{index}")
-                or panel.get("value") != requested.get("value", "")
-                or panel.get("source_frames") != list(range(frames))):
-            raise ValueError("saved comparison completion rendered panel settings differ")
-    for field, suffix in (("video", ".mp4"), ("poster", "_poster.png")):
-        name = row.get(field)
-        if name != request["name"] + suffix or Path(name).name != name:
-            raise ValueError("saved comparison completion media name differs")
-        artifact = output / name
-        if not artifact.resolve().is_relative_to(output.resolve()):
-            raise ValueError("saved comparison completion media escapes output")
-        if not artifact.is_file():
-            return False
-        recorded = rendering.get("outputs", {}).get(field, {})
-        if (Path(recorded.get("path", "")).resolve() != artifact.resolve()
-                or artifact.stat().st_size == 0 or sha256(artifact) != recorded.get("sha256")):
-            raise ValueError("saved comparison completion media hash or path differs")
-    return True
 
 
-def verify_saved_comparison_completion(  # noqa: PLR0912 -- exact rendering evidence gates together
-    spec_path: Path, output: Path, *, seed: int = 42
-) -> bool:
-    """Verify exact queued render evidence without invoking a decoder or model."""
-    from scripts.onestep_avatar import media  # noqa: PLC0415 -- canonical layout declarations
-    from scripts.prune.core import model_registry  # noqa: PLC0415
-
-    path = output / "render_manifest.json"
-    if not path.is_file():
-        return False
-    spec, result = json.loads(spec_path.read_text()), json.loads(path.read_text())
-    if not saved_comparison_inputs_ready(spec_path):
-        return False
-    identity = saved_comparison_identity(spec_path, spec, seed)
-    if result.get("schema_version") != 3 or any(result.get(key) != value for key, value in identity.items()):
-        raise ValueError("saved comparison completion identity differs")
-    expected, actual = spec.get("comparisons"), result.get("comparisons")
-    if not expected or not isinstance(actual, list) or len(actual) != len(expected) or result.get("results") != actual:
-        raise ValueError("saved comparison completion inventory differs")
-    scale = model_registry.resolve(spec.get("model", "2.5")).scale_factors.time
-    for request, row in zip(expected, actual, strict=True):
-        if any(row.get(key) != value for key, value in request.items()):
-            raise ValueError("saved comparison completion request fields differ")
-        span, fps = request.get("span", 17), request.get("fps", 30)
-        saved_inputs = row.get("inputs")
-        if not isinstance(saved_inputs, list) or len(saved_inputs) != len(request["panels"]):
-            raise ValueError("saved comparison completion input inventory differs")
-        try:
-            prepared = _saved_comparison_inputs(request, spec_path.resolve().parent, spec.get("model", "2.5"), seed)
-        except FileNotFoundError:
-            return False
-        inputs = [record for _, record in prepared]
-        if not _saved_input_bytes_current(prepared):
-            raise ValueError("saved comparison completion input hash or path differs")
-        del prepared
-        if row.get("inputs") != inputs:
-            raise ValueError("saved comparison completion input inventory differs")
-        frames = 1 + (span - 1) * scale
-        if row.get("frames") != frames:
-            raise ValueError("saved comparison completion coverage or settings differ")
-        if not _verify_comparison_variant(request, row, output, frames=frames, fps=fps, spec_path=spec_path, seed=seed):
-            return False
-        metadata = [media.Panel(item.get("role", f"panel_{index}"), item["title"], None, (),
-                                value=item.get("value", "")) for index, item in enumerate(request["panels"])]
-        layout = media.compact_layout(metadata, question=request.get("question", request["name"]),
-                                      layout=request.get("layout", "comparison"),
-                                      panel_size=tuple(request.get("panel_size", [400, 400])))
-        compact_request = {**request, "name": request["name"] + "_compact",
-                           "question": request.get("question", request["name"]), "layout": layout, "viewing_width": 480}
-        compact = row.get("compact")
-        if not isinstance(compact, dict):
-            raise ValueError("saved comparison completion requires compact media")
-        if not _verify_comparison_variant(compact_request, compact, output, frames=frames, fps=fps,
-                                          spec_path=spec_path, seed=seed):
-            return False
-        def pixel_hashes(record: dict) -> dict:
-            return {item["role"]: item.get("pixels_sha256") for item in record["panels"] if item["role"] != "unused"}
-        if pixel_hashes(row["rendering"]) != pixel_hashes(compact["rendering"]):
-            raise ValueError("saved comparison compact panel pixels differ")
-    return True
 
 
-def generate_preview(path: Path, *, gpu_id: int) -> list[dict]:
-    """Run a pinned preview's raw stage; rendering is required for completion."""
-    try:
-        job = verify_preview_job(path)
-    except Exception as error:
-        identity = verify_preview_job(path, verify_files=False)
-        if identity.get("state") == "pending":
-            set_preview_state(path, "failed", error=f"{type(error).__name__}: {error}")
-        raise
-    job = set_preview_state(path, "running")
-    try:
-        output = Path(job["output"])
-        attempt = 0
-        while (output / f"attempt_{attempt:04d}").exists():
-            attempt += 1
-        destination = output / f"attempt_{attempt:04d}"
-        args = parse_args(
-            [
-                *job["fixed_inputs"]["evaluation_arguments"],
-                "--checkpoint",
-                job["checkpoint"]["path"],
-                "--output",
-                str(destination),
-                "--gpu-id",
-                str(gpu_id),
-            ]
-        )
-        args.preview_fixed = job["fixed_inputs"]
-        execute_evaluation(args)
-        results = [
-            {"path": str(record.resolve()), "sha256": sha256(record)}
-            for record in sorted(destination.glob("case_*/variant_*/result.json"))
-        ]
-        _verify_preview_outputs(results, job, rendered=False)
-        with path.with_suffix(".lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            current = verify_preview_job(path)
-            if current.get("state") != "running" or current.get("pid") != os.getpid():
-                raise ValueError("preview generation lost its job ownership")
-            current.update(results=results, raw_attempt=attempt, updated_at=time.time())
-            atomic_write(path, lambda temporary: temporary.write_text(json.dumps(current, indent=2) + "\n"))
-        if job["fixed_inputs"].get("reference_bundle") is not None:
-            render_preview_outputs(path, gpu_id=gpu_id)
-        return results
-    except Exception as error:
-        set_preview_state(path, "failed", error=f"{type(error).__name__}: {error}")
-        raise
 
 
-def verify_preview_tensors(fixed: dict, tensors: dict[str, torch.Tensor | None]) -> None:
-    """Reject changed execution tensors before opening a transformer."""
-    for role, identity in fixed["input_files"].items():
-        if role == "subset":
-            continue
-        tensor = tensors.get(role)
-        if tensor is None or tensor_sha256(tensor) != identity.get("tensor_sha256"):
-            raise ValueError(f"preview execution changed the fixed {role} tensor")
 
 
-def execute_evaluation(args: argparse.Namespace, sample_runner=None) -> int:  # noqa: ANN001, PLR0912, PLR0915 -- explicit package sampler and native session orchestration
-    """Execute already parsed settings after all data and adapter preflight."""
+def execute_evaluation(  # noqa: PLR0912, PLR0915 -- explicit sampler and native session orchestration
+    args: argparse.Namespace, sample_runner: Callable[..., tuple[torch.Tensor, dict]] | None = None, *,
+    preview_tensor_validator: Callable[[dict, dict[str, torch.Tensor | None]], None] | None = None,
+) -> int:
+    """Execute ordinary sampling; a fixed preview requires its canonical tensor validator."""
+    if getattr(args, "preview_fixed", None) is not None and not callable(preview_tensor_validator):
+        raise ValueError("fixed preview requires its explicit preview tensor validator")
     if sample_runner is not None and args.changed_noise_file is not None:
         raise ValueError("future-noise probes reject a custom sample runner")
     producer_source = sha256(Path(__file__))
@@ -1828,7 +980,7 @@ def execute_evaluation(args: argparse.Namespace, sample_runner=None) -> int:  # 
             common.epsilon_block(capture, args.seed) if args.saved_noise is None else args.saved_noise.to(device=device)
         )
         if fixed is not None:
-            verify_preview_tensors(
+            preview_tensor_validator(
                 fixed,
                 {
                     "capture": capture,
@@ -1907,7 +1059,9 @@ def execute_evaluation(args: argparse.Namespace, sample_runner=None) -> int:  # 
                     "stg": args.stg,
                     "stg_blocks": args.stg_blocks,
                     "rescale": args.rescale,
-                    "negative_text_sha256": None if negative_context is None else tensor_sha256(negative_context),
+                    "negative_text_sha256": (
+                        None if negative_context is None else hashing.tensor_sha256(negative_context)
+                    ),
                 },
                 **adapters[index],
             )
@@ -2080,7 +1234,7 @@ def causality_probe(transformer, session, capture: torch.Tensor, guide: torch.Te
         outputs.append(grid.unpatchify_block(tokens[:, :covered * grid.tokens_per_latent_frame], covered).float().cpu())
         if not torch.isfinite(outputs[-1]).all():
             raise ValueError("causality diagnostic produced nonfinite output")
-        records.append({"noise_sha256": tensor_sha256(epsilon), "call_counts": {**counts, **measured}})
+        records.append({"noise_sha256": hashing.tensor_sha256(epsilon), "call_counts": {**counts, **measured}})
     left, right = outputs
     later_delta = float((left[:, :, first:] - right[:, :, first:]).abs().max())
     return {
@@ -2088,8 +1242,8 @@ def causality_probe(transformer, session, capture: torch.Tensor, guide: torch.Te
         "latent_frames_compared_equal": [0, first],
         "earlier_blocks_bit_identical": bool(torch.equal(left[:, :, :first], right[:, :, :first])),
         "later_blocks_max_abs_diff": later_delta, "later_blocks_changed": later_delta > 0,
-        "records": records, "capture_sha256": tensor_sha256(target),
-        "guide_sha256": tensor_sha256(source), "text_sha256": tensor_sha256(session.context),
+        "records": records, "capture_sha256": hashing.tensor_sha256(target),
+        "guide_sha256": hashing.tensor_sha256(source), "text_sha256": hashing.tensor_sha256(session.context),
     }
 
 
@@ -2165,19 +1319,6 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(arguments)
         for directory in args.saved_metrics:
             measure_saved_probe(directory, long=args.long_metrics)
-        return 0
-    if any(argument == "--preview-job" or argument.startswith("--preview-job=") for argument in arguments):
-        parser = argparse.ArgumentParser(
-            description="Generate pinned raw preview outputs; rendering completes the job."
-        )
-        parser.add_argument("--preview-job", type=Path, required=True)
-        parser.add_argument("--gpu-id", type=int, required=True)
-        args = parser.parse_args(arguments)
-        generate_preview(args.preview_job, gpu_id=args.gpu_id)
-        return 0
-    if any(value.split("=", 1)[0] == "--render-saved-comparisons" for value in arguments):
-        args = parse_saved_comparison_args(arguments, require_gpu=True)
-        render_saved_comparisons(args.render_saved_comparisons, args.output, gpu_id=args.gpu_id, seed=args.seed)
         return 0
     return execute_evaluation(parse_args(arguments))
 

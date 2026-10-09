@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar import metrics
 
 
 def test_known_ramp_and_seams_have_exact_boundary_and_motion_definitions() -> None:
@@ -34,7 +35,7 @@ def test_transition_mask_is_union_of_adjacent_frames() -> None:
     video[1, 0, 0], video[1, 0, 1], video[2, 0, 1] = 1, 0.25, 0.75
     mask = np.zeros((3, 1, 2), dtype=bool)
     mask[0, 0, 0], mask[2, 0, 1] = True, True
-    assert evaluate.masked_rgb_transition_steps(video, mask).tolist() == [1, 0.5]
+    assert metrics.masked_rgb_transition_steps(video, mask).tolist() == [1, 0.5]
 
 
 @pytest.mark.parametrize("empty_mask", [False, True])
@@ -55,7 +56,7 @@ def test_no_motion_produces_explicit_null_ratios_and_valid_json(empty_mask: bool
 def test_half_precision_pixel_sums_do_not_overflow() -> None:
     video = np.zeros((2, 256, 256, 3), dtype=np.float16)
     video[1] = 1
-    assert evaluate.masked_rgb_transition_steps(video, np.ones(video.shape[:3], dtype=bool)).tolist() == [1]
+    assert metrics.masked_rgb_transition_steps(video, np.ones(video.shape[:3], dtype=bool)).tolist() == [1]
 
 
 @pytest.mark.parametrize(

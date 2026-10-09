@@ -13,6 +13,7 @@ from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
 from scripts.onestep_avatar.training import config, engine
 from scripts.onestep_avatar.training.checkpoints import CONTRACT_KEY
+from scripts.onestep_avatar import hashing, previews
 
 
 def _fixed_inputs(tmp_path):
@@ -118,7 +119,8 @@ def test_generation_failure_records_reason_and_keeps_checkpoint(tmp_path, monkey
     marker_digest = sha256(checkpoint.with_suffix(".complete.json"))
     job_path = engine.enqueue_preview(checkpoint, fixed, settings.output)
 
-    def fail_execution(args):
+    def fail_execution(args, **kwargs):
+        assert kwargs["preview_tensor_validator"] is previews.verify_preview_tensors
         assert args.checkpoint == [checkpoint]
         assert args.preview_fixed == fixed
         assert args.output.name == "attempt_0000"
@@ -126,7 +128,7 @@ def test_generation_failure_records_reason_and_keeps_checkpoint(tmp_path, monkey
 
     monkeypatch.setattr(evaluate, "execute_evaluation", fail_execution)
     with pytest.raises(RuntimeError, match="input replay failed"):
-        evaluate.generate_preview(job_path, gpu_id=4)
+        previews.generate_preview(job_path, gpu_id=4)
     job = json.loads(job_path.read_text())
     assert job["state"] == "failed"
     assert job["error"] == "RuntimeError: input replay failed before transformer"
@@ -136,12 +138,12 @@ def test_generation_failure_records_reason_and_keeps_checkpoint(tmp_path, monkey
 
 def test_preview_actual_tensor_check_rejects_changed_bytes():
     value = torch.ones(1, 4, 2, dtype=torch.bfloat16)
-    fixed = {"input_files": {"capture": {"tensor_sha256": evaluate.tensor_sha256(value)}}}
-    evaluate.verify_preview_tensors(fixed, {"capture": value})
+    fixed = {"input_files": {"capture": {"tensor_sha256": hashing.tensor_sha256(value)}}}
+    previews.verify_preview_tensors(fixed, {"capture": value})
     with pytest.raises(ValueError, match="fixed capture tensor"):
-        evaluate.verify_preview_tensors(fixed, {"capture": value + 1})
+        previews.verify_preview_tensors(fixed, {"capture": value + 1})
     with pytest.raises(ValueError, match="fixed capture tensor"):
-        evaluate.verify_preview_tensors(fixed, {})
+        previews.verify_preview_tensors(fixed, {})
 
 
 def test_generation_corrupt_input_records_failure_before_execution(tmp_path, monkeypatch):
@@ -151,12 +153,12 @@ def test_generation_corrupt_input_records_failure_before_execution(tmp_path, mon
     job_path = engine.enqueue_preview(checkpoint, fixed, settings.output)
     Path(fixed["input_files"]["noise"]["path"]).write_bytes(b"changed input")
 
-    def forbidden(args):
+    def forbidden(args, **_kwargs):
         pytest.fail("changed pinned files must fail before generation")
 
     monkeypatch.setattr(evaluate, "execute_evaluation", forbidden)
     with pytest.raises(ValueError, match="noise file changed"):
-        evaluate.generate_preview(job_path, gpu_id=4)
+        previews.generate_preview(job_path, gpu_id=4)
     failed = json.loads(job_path.read_text())
     assert failed["state"] == "failed"
     assert "noise file changed" in failed["error"]
@@ -171,7 +173,7 @@ def test_generation_records_raw_evidence_and_retry_preserves_prior_attempt(tmp_p
     job_path = engine.enqueue_preview(checkpoint, fixed, settings.output)
     attempts = []
 
-    def save_raw(args):
+    def save_raw(args, **_kwargs):
         attempts.append(args.output)
         record = {
             "mode": fixed["mode"], "adapter": str(checkpoint), "adapter_sha256": checkpoint_hash,
@@ -188,14 +190,14 @@ def test_generation_records_raw_evidence_and_retry_preserves_prior_attempt(tmp_p
         return 0
 
     monkeypatch.setattr(evaluate, "execute_evaluation", save_raw)
-    results = evaluate.generate_preview(job_path, gpu_id=4)
+    results = previews.generate_preview(job_path, gpu_id=4)
     job = json.loads(job_path.read_text())
     assert job["state"] == "running"
     assert job["raw_attempt"] == 0
     assert job["results"] == results
     prior_hash = sha256(Path(results[0]["path"]))
-    evaluate.set_preview_state(job_path, "failed", error="reference rendering failed")
-    retry = evaluate.generate_preview(job_path, gpu_id=4)
+    previews.set_preview_state(job_path, "failed", error="reference rendering failed")
+    retry = previews.generate_preview(job_path, gpu_id=4)
     assert attempts[0].name == "attempt_0000"
     assert attempts[1].name == "attempt_0001"
     assert retry != results
@@ -212,13 +214,13 @@ def test_preview_failure_and_retry_do_not_change_checkpoint(tmp_path):
     digest = sha256(checkpoint)
     marker_digest = sha256(checkpoint.with_suffix(".complete.json"))
     job = engine.enqueue_preview(checkpoint, fixed, settings.output)
-    assert evaluate.set_preview_state(job, "running")["state"] == "running"
+    assert previews.set_preview_state(job, "running")["state"] == "running"
     with pytest.raises(ValueError, match="requires raw results"):
-        evaluate.set_preview_state(job, "complete")
+        previews.set_preview_state(job, "complete")
     assert json.loads(job.read_text())["state"] == "running"
-    failed = evaluate.set_preview_state(job, "failed", error="decode failed")
+    failed = previews.set_preview_state(job, "failed", error="decode failed")
     assert failed["error"] == "decode failed"
-    assert evaluate.set_preview_state(job, "running")["state"] == "running"
+    assert previews.set_preview_state(job, "running")["state"] == "running"
     assert sha256(checkpoint) == digest
     assert sha256(checkpoint.with_suffix(".complete.json")) == marker_digest
 
@@ -230,9 +232,9 @@ def test_changed_inputs_fail_before_job_claim(tmp_path):
     job = engine.enqueue_preview(checkpoint, fixed, settings.output)
     Path(fixed["input_files"]["noise"]["path"]).write_text("changed noise")
     with pytest.raises(ValueError, match="noise file changed"):
-        evaluate.set_preview_state(job, "running")
+        previews.set_preview_state(job, "running")
     assert json.loads(job.read_text())["state"] == "pending"
-    assert evaluate.set_preview_state(job, "failed", error="fixed noise changed")["error"] == "fixed noise changed"
+    assert previews.set_preview_state(job, "failed", error="fixed noise changed")["error"] == "fixed noise changed"
 
 
 def test_completion_requires_matched_raw_and_rendered_evidence(tmp_path):
@@ -240,7 +242,7 @@ def test_completion_requires_matched_raw_and_rendered_evidence(tmp_path):
     fixed = engine.read_preview_inputs(path, settings)
     checkpoint = _completed(tmp_path)
     job_path = engine.enqueue_preview(checkpoint, fixed, settings.output)
-    job = evaluate.set_preview_state(job_path, "running")
+    job = previews.set_preview_state(job_path, "running")
     result = {
         "mode": "bidirectional",
         "software": software.capture("evaluation", "bidirectional"),
@@ -262,7 +264,7 @@ def test_completion_requires_matched_raw_and_rendered_evidence(tmp_path):
     raw_path = destination / "result.json"
     results = [{"path": str(raw_path), "sha256": sha256(raw_path)}]
     with pytest.raises(ValueError, match="requires raw results and rendered"):
-        evaluate.set_preview_state(job_path, "complete", results=results)
+        previews.set_preview_state(job_path, "complete", results=results)
     rgb = torch.zeros(2, 3, 16, 32)
     panels = [
         media.Panel(role, title, rgb, (0, 1))
@@ -290,7 +292,7 @@ def test_completion_requires_matched_raw_and_rendered_evidence(tmp_path):
     rendered_path = tmp_path / "rendered" / "rendering.json"
     renderings = [{"path": str(rendered_path), "sha256": sha256(rendered_path)}]
     assert (
-        evaluate.set_preview_state(job_path, "complete", results=results, renderings=renderings)["state"] == "complete"
+        previews.set_preview_state(job_path, "complete", results=results, renderings=renderings)["state"] == "complete"
     )
 
 
@@ -314,14 +316,14 @@ def test_reference_bundle_pins_capture_source_and_guide(tmp_path):
     fixed['reference_bundle'] = {'path': str(manifest.resolve()), 'sha256': sha256(manifest)}
     path.write_text(json.dumps(fixed))
     checked = engine.read_preview_inputs(path, settings)
-    assert evaluate.check_preview_reference_bundle(checked) == producer
+    assert previews.check_preview_reference_bundle(checked) == producer
     checked['input_files']['capture']['sha256'] = 'b' * 64
     with pytest.raises(ValueError, match='different capture encoding'):
-        evaluate.check_preview_reference_bundle(checked)
+        previews.check_preview_reference_bundle(checked)
     checked['input_files']['capture']['sha256'] = producer['capture_encoding_sha256']
     (destination / 'guide.pt').write_bytes(b'changed RGB')
     with pytest.raises(ValueError, match='pixel file changed'):
-        evaluate.check_preview_reference_bundle(checked)
+        previews.check_preview_reference_bundle(checked)
 
 
 def test_d1_preview_refuses_absent_guide_even_with_missing_fingerprint(tmp_path):
@@ -401,7 +403,7 @@ def test_generation_with_reference_bundle_renders_and_completes(tmp_path, monkey
     job_path = engine.enqueue_preview(checkpoint, fixed, settings.output)
     original_hash = sha256(checkpoint)
 
-    def save_raw(args):
+    def save_raw(args, **_kwargs):
         record = {
             'mode': 'bidirectional', 'frames': 2, 'source': 'actor/view', 'fps': 30,
             'software': software.capture('evaluation', 'bidirectional'),
@@ -424,14 +426,14 @@ def test_generation_with_reference_bundle_renders_and_completes(tmp_path, monkey
         monkeypatch.setattr(native_session, 'Session', lambda *a: pytest.fail('decoder opened before runtime validation'))
         monkeypatch.setattr(media, 'decode', lambda *a: pytest.fail('pixels decoded before layout/runtime validation'))
         with pytest.raises(ValueError, match='decoder settings differ' if changed_runtime else 'no readable compact layout'):
-            evaluate.generate_preview(job_path, gpu_id=4)
+            previews.generate_preview(job_path, gpu_id=4)
         failed = json.loads(job_path.read_text())
         assert failed['state'] == 'failed'
         assert failed['results']
         assert sha256(checkpoint) == original_hash
         assert not list(Path(failed['output']).glob('render_attempt_*'))
         return
-    results = evaluate.generate_preview(job_path, gpu_id=4)
+    results = previews.generate_preview(job_path, gpu_id=4)
     completed = json.loads(job_path.read_text())
     assert completed['state'] == 'complete' and completed['results'] == results
     assert sha256(checkpoint) == original_hash

@@ -160,7 +160,10 @@ Complete input production and native model acceptance remain pending.
 | `training/resources.py` | [training/resources.md](training/resources.md) | >100; exact budget identity, synchronized local CUDA phase peaks/time and complete rank/phase validation |
 | `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | >100; save/read/check settings and derive checked legacy metadata |
 | `corpus/subset.py` | [subset.md](corpus/subset.md) | >100; fixed videos, person groups, hashes |
-| `evaluate.py` | [evaluate.md](evaluate.md) | >100; same-input comparisons, training previews, fusion and eight-block causality diagnostics |
+| `evaluate.py` | [evaluate.md](evaluate.md) | >100; ordinary matched evaluation; historical study branches await their experiment owners |
+| `metrics.py` | [metrics.md](metrics.md) | >100; reusable encoded, RGB, subject and LPIPS measurements |
+| `previews.py` | [previews.md](previews.md) | >100; fixed-preview validation, state, generation and rendering |
+| `comparisons.py` | [comparisons.md](comparisons.md) | >100; checked saved comparison rendering and completion |
 | `media.py` | [media.md](media.md) | >100; training/inference visualization |
 | `bench.py` | [bench.md](bench.md) | >100; actual mode cost |
 | `corpus/dataset.py` | [dataset.md](corpus/dataset.md) | >100; checked unsliced master reader and corpus names |
@@ -299,8 +302,10 @@ retargets its intervention jobs to the planned `causality` selector.
   Bind an optional attempt token/job hash and rank; mark updates before training.
   Propagate exceptions and emit only the defined contention/failure events.
   Own no retry, archive, model or process launch.
-- **`hashing.py`:** stream file bytes through one SHA-256 helper.
-  Do not substitute size/time for a content hash. Current size: 22 lines.
+- **`hashing.py`:** stream file bytes and hash tensor shape, dtype and original
+  contiguous bytes through one leaf owner. Keep module import standard-library
+  only; tensor hashing imports Torch inside its function. Do not substitute
+  size/time for a content hash. The small-file header owns the design.
 - **`qa.py`:** compare masks with the declared threshold and calculate overlap.
   This score is not a loss weight. Current size: 25 lines.
   Compare raw alpha and capture mask in the same crop, not composited RGB.
@@ -438,3 +443,7 @@ use the current experiment dispatch. Original job lists and the fixed original
 producer Git blob remain historical attribution. Frozen report bytes are not
 rewritten or imported to provide moved execution; shared saved-artifact controls
 exercise the public completion owner directly.
+
+### Ordinary output owners
+
+[metrics.py](metrics.md) owns reusable array measurements. [previews.py](previews.md) owns fixed preview records and rendering. [comparisons.py](comparisons.md) owns saved comparison rendering and completion. The ordinary evaluator calls an explicitly supplied fixed-preview tensor validator; it imports no previews module.

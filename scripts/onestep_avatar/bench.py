@@ -20,6 +20,7 @@ from scripts.onestep_avatar.model.common import ClipGrid
 from scripts.prune.core import model_registry
 from scripts.prune.core.session import DEFAULT_PROMPT
 from scripts.prune.data import prompt_cache
+from scripts.onestep_avatar import hashing
 
 DTYPE = torch.bfloat16
 EDGE = 1024  # §4.5's only geometry
@@ -53,7 +54,8 @@ def measure_generation(
     transformer: torch.nn.Module, *inputs, device: torch.device, repetitions: int = 3, warmup: int = 1, **settings
 ) -> dict:
     """Measure ordinary mode sampling with fixed inputs and fresh per-call cache."""
-    from scripts.onestep_avatar.evaluate import sample_case, tensor_sha256  # noqa: PLC0415 -- shared execution owner
+    from scripts.onestep_avatar.evaluate import sample_case  # noqa: PLC0415 -- shared execution owner
+    from scripts.onestep_avatar.hashing import tensor_sha256  # noqa: PLC0415 -- shared execution owner
 
     if repetitions < 1 or warmup < 0:
         raise ValueError("benchmark needs positive repetitions and nonnegative warmup")
@@ -267,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
             **settings,
         )
         output, record = evaluate.sample_case(transformer, *inputs, **settings)
-        identity = evaluate.tensor_sha256(output)
+        identity = hashing.tensor_sha256(output)
         if any(row["output_sha256"] != identity for row in timings["repetitions"]):
             raise ValueError("benchmark measured outputs differ from the saved artifact")
         timings["untimed_artifact_calls"] = 1

@@ -1,16 +1,19 @@
-"""``sha256(path)`` -- the one file-hash helper the corpus pass and the subset freezer share.
+"""Hash file contents and tensor identity through one root leaf owner.
 
-Not geometry (``geometry.py`` is pure crop-box math, no I/O) and not dataset layout
-(``dataset.py`` is filenames and paths, no bytes read) -- a hash is its own small concern, so it
-gets its own three-line module rather than living in either. This is the one new file S1 of the
-2026-09-17 cleanup plan allows: ``precompute.py`` and ``windows.py`` carried byte-identical
-1-MiB-chunk implementations of the same function.
-"""
+File hashing reads fixed-size chunks. Tensor hashing includes JSON shape and
+dtype, then contiguous original bytes on CPU. It imports Torch only inside
+the tensor function, so corpus guide imports retain the standard-library-only
+module boundary. Neither function changes its input or writes an artifact."""
 
 from __future__ import annotations
 
 import hashlib
+import json
+from typing import TYPE_CHECKING
 from pathlib import Path
+
+if TYPE_CHECKING:
+    import torch
 
 
 def sha256(path: Path, chunk: int = 1 << 20) -> str:
@@ -19,4 +22,13 @@ def sha256(path: Path, chunk: int = 1 << 20) -> str:
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(chunk), b""):
             digest.update(block)
+    return digest.hexdigest()
+
+def tensor_sha256(value: torch.Tensor) -> str:
+    """Hash shape, dtype and original tensor bytes, independently of serialization."""
+    import torch  # noqa: PLC0415 -- preserve a stdlib-only leaf at module import
+
+    value = value.detach().cpu().contiguous()
+    digest = hashlib.sha256(json.dumps({"shape": list(value.shape), "dtype": str(value.dtype)}).encode())
+    digest.update(value.view(torch.uint8).numpy().tobytes())
     return digest.hexdigest()

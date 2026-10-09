@@ -138,3 +138,15 @@ both eagerly imported mode owners are therefore bound even for a selected
 causal evaluation; this records actual dependencies without changing mode
 selection. A source omitted from that profile fails
 coverage even when no import statement directly names it.
+
+### Ordinary output-owner coverage
+
+The five ordinary profiles bind all owners loaded by their CPU entry paths.
+Tests block experiment imports in the parent and children, exercise training
+frame planning and token preparation, evaluation measurements and fixed-tensor
+validation, product input checks, saved comparison parsing and supplied-image
+or preview preparation. Training, evaluation and product use both explicit
+modes; preparation checks both preview modes plus independent RGB input.
+Each child inventories real loaded module paths and requires every path in
+the selected profile. Fixed-preview evaluation includes `previews.py`, the
+explicit validator owner, in its source receipt. No profile includes studies.

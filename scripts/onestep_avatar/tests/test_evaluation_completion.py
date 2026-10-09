@@ -14,6 +14,7 @@ from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- fixture dependency
 from scripts.onestep_avatar.tests.test_training_preflight import checked_settings  # noqa: F401
+from scripts.onestep_avatar import hashing
 
 
 @pytest.fixture
@@ -155,7 +156,7 @@ def test_causal_physical_prefix_roundtrip_preserves_null_span_c0_calls_and_saved
         assert record['call_counts']['model_calls'] == 6
         generated = torch.load(path.parent / 'generated.pt', weights_only=True)
         assert generated.shape == (1, 2, 7, 2, 2)
-        assert evaluate.tensor_sha256(generated[:, :, :1].permute(0, 2, 3, 4, 1).reshape(1, 4, 2)) == record['c0_sha256']
+        assert hashing.tensor_sha256(generated[:, :, :1].permute(0, 2, 3, 4, 1).reshape(1, 4, 2)) == record['c0_sha256']
     before = list(calls)
     assert queue.verify_completion(job)
     assert calls == before

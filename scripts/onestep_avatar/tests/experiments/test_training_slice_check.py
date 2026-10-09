@@ -24,6 +24,7 @@ from scripts.onestep_avatar.model import adapters, common
 from scripts.onestep_avatar.tests.test_causal_core import _model
 from scripts.onestep_avatar.tests.test_training_runtime import CPUAccelerator
 from scripts.onestep_avatar.training import checkpoints, config, resources, runtime
+from scripts.onestep_avatar import hashing
 
 Context = tuple[SimpleNamespace, dict, torch.Tensor]
 OriginalArtifacts = tuple[dict, config.RunSettings, dict, SimpleNamespace, dict, dict]
@@ -216,7 +217,7 @@ def saved_pair(tmp_path: Path) -> SavedPair:
     generator = torch.Generator().manual_seed(11)
     names = ["diffusion_model.q.lora_A.weight", "diffusion_model.q.lora_B.weight"]
     matrices = [torch.nn.Parameter(torch.randn(2, 4, generator=generator)), torch.nn.Parameter(torch.zeros(4, 2))]
-    initial = {name: evaluate.tensor_sha256(value) for name, value in zip(names, matrices, strict=True)}
+    initial = {name: hashing.tensor_sha256(value) for name, value in zip(names, matrices, strict=True)}
     zero = {name: value.detach().bfloat16().clone() for name, value in zip(names, matrices, strict=True)}
     optimizer = torch.optim.AdamW(matrices, lr=0.0001, betas=(0.9, 0.999), eps=1e-8, weight_decay=0)
     x = torch.randn(3, 4, generator=generator)

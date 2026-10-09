@@ -12,6 +12,7 @@ from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- fixture dependency
 from scripts.onestep_avatar.tests.test_training_preflight import checked_settings  # noqa: F401
 from scripts.onestep_avatar.training import engine
+from scripts.onestep_avatar import previews
 
 
 @pytest.fixture
@@ -84,7 +85,7 @@ def test_prepared_inputs_consumed_by_actual_training_and_tensor_checker(preview_
              if role not in ('subset','capture','guide')}
     tensors['capture']=tokens
     if task=='d1': tensors['guide']=tokens
-    evaluate.verify_preview_tensors(fixed,tensors)
+    previews.verify_preview_tensors(fixed,tensors)
     assert torch.equal(tensors['first_image'],tokens[:,:grid.tokens_per_latent_frame])
     assert tensors['noise'].shape==(1,28,2) and tensors['noise'].dtype==torch.bfloat16
     assert not (args.output/'unexecuted').exists()
@@ -145,7 +146,7 @@ def test_guided_execution_loads_fixed_contexts_before_transformer(preview_case,m
     command=evaluate.parse_args([*fixed['evaluation_arguments'],'--output',str(args.output/'raw')])
     command.preview_fixed=fixed
     with pytest.raises(RuntimeError,match='transformer boundary'):
-        evaluate.execute_evaluation(command)
+        evaluate.execute_evaluation(command, preview_tensor_validator=previews.verify_preview_tensors)
     assert seen==['transformer']
 
 

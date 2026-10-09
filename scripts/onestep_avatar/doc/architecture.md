@@ -442,6 +442,15 @@ with final paths. `__init__.py` joins `COMMON`, because it now defines the roots
 | `sigma_sweep_boundary_metrics` | `experiments/sigma_sweep.py` |
 | `saved_latent_metrics`, `measure_saved_probe` | `experiments/saved_probe_metrics.py` |
 
+`previews.py` imports the ordinary evaluator in one direction. A fixed preview
+passes its one public `verify_preview_tensors` checker through the typed,
+keyword-only `execute_evaluation(..., preview_tensor_validator=...)` API.
+The evaluator requires that callable whenever `preview_fixed` is present,
+before native handles, model loads or output writes. It invokes the checker
+once after execution tensors are assembled, at the original pre-transformer
+boundary. Evaluation software evidence binds the validator source owner.
+The evaluator does not import previews or discover a checker.
+
 `metrics.py` may load the LPIPS network. It never loads the transformer, text
 encoder or VAE.
 

@@ -13,6 +13,7 @@ from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.experiments import sigma_sweep_results
 from scripts.onestep_avatar.hashing import sha256
+from scripts.onestep_avatar import hashing, metrics as metrics_ops
 
 LEVELS = {0.421875: ("one_step", 1), 0.725: ("official", 2),
           0.909375: ("official", 3), 1.0: ("official", 8)}
@@ -110,7 +111,7 @@ def execute(spec_path: Path, output: Path, *, gpu_id: int) -> dict:
     d0, d1 = tensors["sigma1.000000_d0"], tensors["sigma1.000000_d1"]
     metrics = {"tag": spec["tag"], "decode_seed": 42, "boundaries": [17, 33, 49, 65, 81, 97, 113],
                "post_eviction": [81, 97, 113], "cells": cells,
-               "capture_motion_ref": float(evaluate.masked_rgb_transition_steps(reference, mask)[16:].mean()),
+               "capture_motion_ref": float(metrics_ops.masked_rgb_transition_steps(reference, mask)[16:].mean()),
                "sigma1_d0_equals_d1": torch.equal(d0, d1),
                "sigma1_d0_vs_d1_max_abs": float((d0.float() - d1.float()).abs().max())}
     if any(sha256(Path(path)) != digest for path, digest in {**inputs, **sources}.items()):
@@ -135,7 +136,7 @@ def execute(spec_path: Path, output: Path, *, gpu_id: int) -> dict:
             media.verify_saved_png(path, width, height)
             samples.append({"frame": index, "path": str(path.resolve()), "sha256": sha256(path)})
         rendered[name] = {"video": str(movie.resolve()), "sha256": sha256(movie), "samples": samples,
-                          "pixel_sha256": evaluate.tensor_sha256(pixels), "frames": 129, "fps": 30,
+                          "pixel_sha256": hashing.tensor_sha256(pixels), "frames": 129, "fps": 30,
                           "width": width, "height": height}
     metrics_path = output / "metrics.json"
     dataset.atomic_write(metrics_path,

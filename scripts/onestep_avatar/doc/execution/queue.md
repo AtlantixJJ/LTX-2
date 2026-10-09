@@ -258,7 +258,7 @@ The list has `schema_version: 1` and ordered `jobs`. Each job has a unique `id`,
 `kind` (`train`, `evaluate`, `decode`, `render`, or `experiment`), an `arguments` array of strings,
 `output`, `dependencies` (earlier job IDs), and `completion` evidence.
 Train jobs also specify `accelerate_config`, `processes` and `port`.
-The `render` kind owns saved-comparison VAE work through the package evaluation
+The `render` kind owns saved-comparison VAE work through the package comparisons
 CLI. It requires `--render-saved-comparisons`, explicit output and optional seed;
 it does not require a model-generation mode. Pin the spec's resolved path and
 file SHA in canonical job identity. Reject changed specs before child launch.
@@ -293,7 +293,8 @@ not. Distinct textual output paths that resolve to the same directory fail.
 Train/evaluate arguments require explicit mode. Reject duplicate output paths,
 unknown dependencies, dependency cycles, forbidden executor options, a mismatch
 between recorded and parsed output, or arbitrary executable/module names.
-Only `train`, `evaluate` and `decode_saved` package entry points are selectable.
+Ordinary commands select `train`, `evaluate`, `decode_saved` or `comparisons`;
+experiment commands use the explicit checked experiment owner.
 A list revision may append jobs; changing an existing job's canonical hash fails.
 
 The train command uses the current environment's Accelerate executable with
@@ -686,3 +687,10 @@ These fields bind numerical kernel settings, not new scientific inputs or limits
 CPU controls verify the exact environment and strict readers for both schemas.
 Both original four-rank numerical comparisons pass. Complete workflow and
 final-source acceptance remain separate; see the active handoff.
+
+### Saved comparison command owner
+
+The `render` kind launches `scripts.onestep_avatar.comparisons` with the saved
+specification, exact seed/output and child-visible GPU index. Preparation and
+completion call that same owner directly; ordinary evaluation retains its own
+module. The decoder and preview owners stay separate explicit commands.

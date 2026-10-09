@@ -12,6 +12,7 @@ from scripts.onestep_avatar.experiments import continuation_check as check
 from scripts.onestep_avatar.model import causal, common
 from scripts.onestep_avatar.tests.test_causal_core import CHANNELS, DEVICE, EDGE, FPS, SCALE, _context, _model
 from scripts.onestep_avatar.training.config import CausalSettings
+from scripts.onestep_avatar import hashing
 
 
 def inputs() -> tuple:
@@ -116,8 +117,8 @@ def test_observer_reads_real_post_normalization_and_rope_kernel_inputs(tmp_path:
     ):
         row = next(row for row in observations if row["phase"] == phase and row["layer"] == 0)
         prefix = snapshot["prefix_tokens"]
-        assert row["k"]["reference_sha256"] == evaluate.tensor_sha256(k[:, :prefix])
-        assert row["v"]["reference_sha256"] == evaluate.tensor_sha256(v[:, :prefix])
+        assert row["k"]["reference_sha256"] == hashing.tensor_sha256(k[:, :prefix])
+        assert row["v"]["reference_sha256"] == hashing.tensor_sha256(v[:, :prefix])
         assert not torch.equal(k[:, :prefix], projection[:, :prefix])
         assert not torch.equal(k[:, :prefix], norm[:, :prefix])
         assert torch.equal(v[:, :prefix], v_projection[:, :prefix])
@@ -178,8 +179,8 @@ def test_chunk_metrics_hash_full_values_with_bounded_buffers() -> None:
     left[:, 750:, :4] += 0.125
     result = check.compare_chunks(left, right)
     delta = left.double() - right.double()
-    assert result["cached_sha256"] == evaluate.tensor_sha256(left)
-    assert result["reference_sha256"] == evaluate.tensor_sha256(right)
+    assert result["cached_sha256"] == hashing.tensor_sha256(left)
+    assert result["reference_sha256"] == hashing.tensor_sha256(right)
     assert result["rms_delta"] == pytest.approx(float(delta.square().mean().sqrt()))
     assert result["relative_l2"] == pytest.approx(float(delta.norm() / right.double().norm()))
     assert result["max_abs_delta"] == float(delta.abs().max())

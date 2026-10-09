@@ -27,6 +27,7 @@ from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import causal, common
 from scripts.onestep_avatar.training.resources import Phase
+from scripts.onestep_avatar import hashing
 
 TARGETS = (("before", (3, 5)), ("after", (11, 13)))
 CHUNK_ELEMENTS = 131072
@@ -58,7 +59,7 @@ def checked_path(root: Path, record: dict) -> Path:
 
 def tensor_record(value: torch.Tensor) -> dict:
     return {"shape": list(value.shape), "dtype": str(value.dtype),
-            "sha256": evaluate.tensor_sha256(value)}
+            "sha256": hashing.tensor_sha256(value)}
 
 
 def compare_chunks(left: torch.Tensor, right: torch.Tensor) -> dict:
@@ -433,20 +434,20 @@ def prepare(args: argparse.Namespace) -> dict:  # noqa: PLR0912, PLR0915 -- orde
                     "first_image": capture[:, :video.z_y.shape[2] * video.z_y.shape[3]], "text": context}
     keys = {"capture": "capture_sha256", "guide": "guide_sha256", "noise": "noise_sha256",
             "first_image": "c0_sha256", "text": "text_sha256"}
-    if any(evaluate.tensor_sha256(value) != baseline[keys[name]] for name, value in fixed_values.items()):
+    if any(hashing.tensor_sha256(value) != baseline[keys[name]] for name, value in fixed_values.items()):
         raise ValueError("fixed E3 capture, guide, c0, noise or saved text changed")
-    if evaluate.tensor_sha256(options.saved_noise) != protocol["noise"]["tensor_sha256"]:
+    if hashing.tensor_sha256(options.saved_noise) != protocol["noise"]["tensor_sha256"]:
         raise ValueError("saved E3 noise tensor differs from the frozen protocol")
     paths = {"capture": dataset.capture_bundle_name("white"), "guide": dataset.guide_bundle_name("white")}
     directory = Path(membership["corpus_root"]) / video.source
     fixed_paths = {name: directory / filename for name, filename in paths.items()}
     fixed_paths.update(first_image=fixed_paths["capture"], noise=options.noise_file, text=context_path)
     fixed = {"input_files": {name: {"path": str(path.resolve()), "sha256": sha256(path),
-                                    "tensor_sha256": evaluate.tensor_sha256(fixed_values[name])}
+                                    "tensor_sha256": hashing.tensor_sha256(fixed_values[name])}
                               for name, path in fixed_paths.items()}}
     changed_noise = None if options.changed_noise_file is None else {
         "path": str(options.changed_noise_file.resolve()), "sha256": sha256(options.changed_noise_file),
-        "tensor_sha256": evaluate.tensor_sha256(options.changed_noise), "boundary": options.future_noise_start}
+        "tensor_sha256": hashing.tensor_sha256(options.changed_noise), "boundary": options.future_noise_start}
     # This reuses the shared fixed-input consumer; it does not fabricate a preview job.
     options.preview_fixed = fixed
     profile = software.capture("evaluation", "causal", extra_sources=EXTRA_SOURCES)

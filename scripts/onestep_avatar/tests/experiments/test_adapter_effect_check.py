@@ -27,6 +27,7 @@ from scripts.onestep_avatar.model import adapters
 from scripts.onestep_avatar.tests.test_causal_core import _geometry, _grid, _model
 from scripts.onestep_avatar.tests.test_checkpoint_contract import _contract
 from scripts.onestep_avatar.training import checkpoints, config, numerics, resources
+from scripts.onestep_avatar import hashing
 
 
 @pytest.mark.parametrize("defect", [None, "evaluation_digest", "shape", "dtype", "changed_bytes"])
@@ -40,9 +41,9 @@ def test_actual_training_context_uses_its_producer_raw_bf16_digest(tmp_path, def
     digest = hashlib.sha256(context.view(torch.uint8).numpy().tobytes()).hexdigest()
     record = {"path": str(path.resolve()), "sha256": sha256(path), "shape": list(context.shape),
               "dtype": str(context.dtype), "tensor_sha256": digest}
-    assert digest != evaluate.tensor_sha256(context)
+    assert digest != hashing.tensor_sha256(context)
     if defect == "evaluation_digest":
-        record["tensor_sha256"] = evaluate.tensor_sha256(context)
+        record["tensor_sha256"] = hashing.tensor_sha256(context)
     elif defect == "shape":
         record["shape"] = [1, 6, 4]
     elif defect == "dtype":
@@ -493,7 +494,7 @@ def prepared_image(tmp_path: Path) -> tuple:
         vae_fingerprint=sha256(vae_path))
     bundle.update(input_role="supplied_image", software=producer,
                   preparation={"input_sha256": identities,
-                               "prepared_pixels_sha256": evaluate.tensor_sha256(torch.from_numpy(pixels)),
+                               "prepared_pixels_sha256": hashing.tensor_sha256(torch.from_numpy(pixels)),
                                "encoder": {"dtype": "bfloat16", "method": "tiled_encode", "tiling": None}})
     torch.save(bundle, image_path)
     record = {"kind": "onestep_avatar.supplied_image_preparation", "schema_version": 1,

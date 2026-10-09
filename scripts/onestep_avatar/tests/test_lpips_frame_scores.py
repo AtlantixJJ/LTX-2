@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar import metrics
 
 
 def model(left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:
@@ -23,7 +24,7 @@ def test_historical_per_frame_lists_and_c0_excluded_means_match_exactly(frames: 
             left = prediction[start:start + 16].permute(0, 3, 1, 2) * 2 - 1
             right = capture[start:start + 16].permute(0, 3, 1, 2) * 2 - 1
             expected += model(left, right).flatten().tolist()
-    actual = evaluate.lpips_frame_scores(
+    actual = metrics.lpips_frame_scores(
         model, prediction.permute(0, 3, 1, 2), capture.permute(0, 3, 1, 2), torch.device("cpu"))
     assert actual == expected
     assert len(actual) == frames
@@ -41,7 +42,7 @@ def test_order_short_batch_and_explicit_c0_exclusion() -> None:
         assert torch.equal(right, torch.full_like(right, -1))
         return model(left, right)
 
-    actual = evaluate.lpips_frame_scores(checked, prediction, capture, torch.device("cpu"))
+    actual = metrics.lpips_frame_scores(checked, prediction, capture, torch.device("cpu"))
     assert sizes == [16, 3]
     assert actual[0] == 0
     assert actual[-1] == 4
@@ -53,7 +54,7 @@ def test_order_short_batch_and_explicit_c0_exclusion() -> None:
 def test_invalid_batch_refuses_before_model(batch: object) -> None:
     pixels = torch.zeros(2, 3, 2, 2)
     with pytest.raises(ValueError, match="positive integer"):
-        evaluate.lpips_frame_scores(lambda *_a: pytest.fail("invalid batch reached model"),
+        metrics.lpips_frame_scores(lambda *_a: pytest.fail("invalid batch reached model"),
                                     pixels, pixels, torch.device("cpu"), batch=batch)
 
 
@@ -70,7 +71,7 @@ def test_invalid_pixels_refuse_before_model(defect: str) -> None:
     else:
         reference = reference[:1]
     with pytest.raises(ValueError, match=r"RGB|floating|finite|matching|aligned"):
-        evaluate.lpips_frame_scores(lambda *_a: pytest.fail("invalid pixels reached model"),
+        metrics.lpips_frame_scores(lambda *_a: pytest.fail("invalid pixels reached model"),
                                     pixels, reference, torch.device("cpu"))
 
 
@@ -79,7 +80,7 @@ def test_invalid_model_outputs_refuse(defect: str) -> None:
     pixels = torch.zeros(2, 3, 2, 2)
     bad = torch.ones(3) if defect == "count" else torch.full((2,), float("nan")) if defect == "nan" else [0, 0]
     with pytest.raises(ValueError, match="one finite score per frame"):
-        evaluate.lpips_frame_scores(lambda *_a: bad, pixels, pixels, torch.device("cpu"))
+        metrics.lpips_frame_scores(lambda *_a: bad, pixels, pixels, torch.device("cpu"))
 
 
 def test_existing_scalar_preserves_native_batch_sum_rounding() -> None:
@@ -93,5 +94,5 @@ def test_existing_scalar_preserves_native_batch_sum_rounding() -> None:
         return values[start:start + len(left)]
 
     expected = (float(values[:8].sum()) + float(values[8:16].sum()) + float(values[16:].sum())) / 19
-    assert evaluate.lpips_distance(fixed, pixels, pixels, torch.device("cpu")) == expected
+    assert metrics.lpips_distance(fixed, pixels, pixels, torch.device("cpu")) == expected
     assert calls == [8, 8, 3]

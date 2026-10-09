@@ -12,6 +12,7 @@ from scripts.onestep_avatar import evaluate, media
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model.common import VideoLatentPatchifier
+from scripts.onestep_avatar import comparisons, hashing
 
 
 def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dict, list[int]]:
@@ -43,7 +44,7 @@ def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dict
         torch.save(latent, path)
         record = {"state": "complete", "source": "actor/view", "fps": 30, "frames": 2,
                   "capture_sha256": "d" * 64, "guide_sha256": "e" * 64,
-                  "c0_sha256": evaluate.tensor_sha256(VideoLatentPatchifier(patch_size=1).patchify(latent[:, :, :1])),
+                  "c0_sha256": hashing.tensor_sha256(VideoLatentPatchifier(patch_size=1).patchify(latent[:, :, :1])),
                   "noise_sha256": "f" * 64,
                   "text_sha256": "1" * 64, "mode": "causal", "mode_settings": {"teacher_forcing": False},
                   "guide_mode": "d1", "schedule": [1.0, 0], "history_mode": history, "kv_source": "refresh",
@@ -76,7 +77,7 @@ def test_saved_rgb_references_render_without_another_reference_decode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     spec, _comparison, calls = fixture(tmp_path, monkeypatch)
-    result = evaluate.render_saved_comparisons(spec, tmp_path / "out", gpu_id=0)
+    result = comparisons.render_saved_comparisons(spec, tmp_path / "out", gpu_id=0)
     row = result["comparisons"][0]
     assert calls == [42, 42]
     assert [item["role"] for item in row["rendering"]["panels"]] == [
@@ -86,7 +87,7 @@ def test_saved_rgb_references_render_without_another_reference_decode(
     assert [item["pixels_sha256"] for item in row["rendering"]["panels"][:3]] == [
         item["pixels_sha256"] for item in manifest["panels"]]
     monkeypatch.setattr(media, "open_decoder_session", lambda *_a, **_k: pytest.fail("completion opened VAE"))
-    assert evaluate.verify_saved_comparison_completion(spec, tmp_path / "out")
+    assert comparisons.verify_saved_comparison_completion(spec, tmp_path / "out")
     assert calls == [42, 42]
 
 
@@ -114,7 +115,7 @@ def test_reference_or_output_mismatch_refuses_before_decoder(  # noqa: PLR0912 -
         producer["decoder_settings"]["dtype"] = "float32"
     if changed == "missing_pixel":
         (tmp_path / "refs/guide.pt").unlink()
-        assert not evaluate.saved_comparison_inputs_ready(spec)
+        assert not comparisons.saved_comparison_inputs_ready(spec)
     refs_path.write_text(json.dumps(refs))
     result_path = tmp_path / "recompute.json"
     record = json.loads(result_path.read_text())
@@ -140,7 +141,7 @@ def test_reference_or_output_mismatch_refuses_before_decoder(  # noqa: PLR0912 -
     spec.write_text(json.dumps({"model": "2.5", "comparisons": [comparison]}))
     monkeypatch.setattr(media, "open_decoder_session", lambda *_a, **_k: pytest.fail("bad references opened VAE"))
     with pytest.raises((ValueError, FileNotFoundError)):
-        evaluate.render_saved_comparisons(spec, tmp_path / "out", gpu_id=0)
+        comparisons.render_saved_comparisons(spec, tmp_path / "out", gpu_id=0)
     assert not (tmp_path / "out").exists()
 
 
@@ -156,7 +157,7 @@ def test_changed_original_result_prevents_manifest_publication(
 
     monkeypatch.setattr(media, "decode", changed_result)
     with pytest.raises(ValueError, match="inputs changed before publication"):
-        evaluate.render_saved_comparisons(spec, tmp_path / "out", gpu_id=0)
+        comparisons.render_saved_comparisons(spec, tmp_path / "out", gpu_id=0)
     assert not (tmp_path / "out/render_manifest.json").exists()
 
 
@@ -165,7 +166,7 @@ def test_completion_rejects_changed_reference_and_result_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str
 ) -> None:
     spec, _comparison, _calls = fixture(tmp_path, monkeypatch)
-    evaluate.render_saved_comparisons(spec, tmp_path / "out", gpu_id=0)
+    comparisons.render_saved_comparisons(spec, tmp_path / "out", gpu_id=0)
     if changed == "reference":
         path = tmp_path / "refs/references.json"
         row = json.loads(path.read_text())
@@ -180,4 +181,4 @@ def test_completion_rejects_changed_reference_and_result_inputs(
         torch.save(torch.ones(9, 3, 64, 64), tmp_path / "refs/recorded.pt")
     monkeypatch.setattr(media, "open_decoder_session", lambda *_a, **_k: pytest.fail("completion opened VAE"))
     with pytest.raises(ValueError, match=r"input inventory differs|pixel file changed"):
-        evaluate.verify_saved_comparison_completion(spec, tmp_path / "out")
+        comparisons.verify_saved_comparison_completion(spec, tmp_path / "out")

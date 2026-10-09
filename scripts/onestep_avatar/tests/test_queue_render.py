@@ -27,7 +27,7 @@ def rendered(tmp_path, monkeypatch):
 
 def test_render_command_and_receipt_use_package_and_verified_manifest(rendered, tmp_path):
     command, environment=queue.job_command(rendered,(4,))
-    assert command[1:3]==['-m','scripts.onestep_avatar.evaluate']
+    assert command[1:3]==['-m','scripts.onestep_avatar.comparisons']
     assert command[-2:]==['--gpu-id','0'] and environment=={'CUDA_VISIBLE_DEVICES':'4'}
     assert queue.verify_completion(rendered)
     receipt=queue.completion_receipt(rendered)
@@ -149,7 +149,7 @@ def test_render_dispatch_claims_one_device_and_publishes_verified_receipt(render
         stdout='\n'.join(f'{gpu}, 0' for gpu in range(8))))
 
     def launch(command,**kwargs):
-        assert command[1:3]==['-m','scripts.onestep_avatar.evaluate']
+        assert command[1:3]==['-m','scripts.onestep_avatar.comparisons']
         assert command[-2:]==['--gpu-id','0'] and kwargs['env']['CUDA_VISIBLE_DEVICES']=='5'
         own=json.loads(ledger.read_text())['attempts'][kwargs['env']['ONESTEP_AVATAR_QUEUE_TOKEN']]
         assert own['job']=='saved_render' and own['gpus']==[5]

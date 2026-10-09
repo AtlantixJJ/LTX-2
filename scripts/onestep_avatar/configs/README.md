@@ -426,7 +426,7 @@ Training can pin `--preview-inputs <FIXED_PREVIEW_RECORD>`. A completed adapter
 save may enqueue a preview job. Its raw generation stage runs outside training:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.evaluate \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.previews \
   --preview-job <JOB_JSON> --gpu-id <GPU_ID>
 ```
 

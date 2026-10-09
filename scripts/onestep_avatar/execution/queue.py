@@ -519,8 +519,9 @@ def prepare_job(raw: dict, root: Path) -> dict:  # noqa: PLR0912, PLR0915 -- sha
         parser = selected.parse_args
     else:
         from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- selected ordinary owner
+        from scripts.onestep_avatar import comparisons  # noqa: PLC0415 -- render owner is selected lazily
 
-        parser = evaluate.parse_saved_comparison_args if job["kind"] == "render" else evaluate.parse_args
+        parser = comparisons.parse_saved_comparison_args if job["kind"] == "render" else evaluate.parse_args
     try:
         parsed = parser(arguments)
     except SystemExit as error:
@@ -723,6 +724,8 @@ def job_command(job: dict, gpus: tuple[int, ...]) -> tuple[list[str], dict[str, 
         if kind not in ("evaluate", "decode", "render", "experiment") or len(gpus) != 1:
             raise ValueError("queued evaluation/decoding requires one GPU and a package owner")
         module = "scripts.onestep_avatar.decode_saved" if kind == "decode" else "scripts.onestep_avatar.evaluate"
+        if kind == "render":
+            module = "scripts.onestep_avatar.comparisons"
         if kind == "experiment":
             module = experiment_entry(job["experiment"])
             from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- pinned experiment specification
@@ -815,13 +818,13 @@ def verify_completion(job: dict) -> bool:  # noqa: PLR0911, PLR0912, PLR0915 -- 
         selected.verify_completion(spec, root)
         return True
     if job["kind"] == "render":
-        from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- canonical rendering verifier
+        from scripts.onestep_avatar import comparisons  # noqa: PLC0415 -- canonical rendering verifier
 
         spec = Path(job["render_spec"])
         if not spec.is_file() or sha256(spec) != job["render_spec_sha256"]:
             raise ValueError("queue saved-comparison specification changed after preparation")
-        args = evaluate.parse_saved_comparison_args(job["arguments"])
-        return evaluate.verify_saved_comparison_completion(spec, root, seed=args.seed)
+        args = comparisons.parse_saved_comparison_args(job["arguments"])
+        return comparisons.verify_saved_comparison_completion(spec, root, seed=args.seed)
     if job["kind"] != "evaluate":
         raise ValueError("unsupported completion owner")
     records = completion.get("records")
@@ -1161,10 +1164,10 @@ def ready_jobs(jobs: list[dict], state: dict) -> list[dict]:
         if state["jobs"][job["id"]]["state"] == "pending" and set(job.get("dependencies", [])).issubset(verified)
     ]
     if any(job["kind"] == "render" for job in ready):
-        from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- saved-file readiness, no model session
+        from scripts.onestep_avatar import comparisons  # noqa: PLC0415 -- saved-file readiness, no model session
 
         ready = [job for job in ready if job["kind"] != "render"
-                 or evaluate.saved_comparison_inputs_ready(Path(job["render_spec"]))]
+                 or comparisons.saved_comparison_inputs_ready(Path(job["render_spec"]))]
     return sorted(ready, key=lambda job: job["kind"] == "train")
 
 

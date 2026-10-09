@@ -1,27 +1,6 @@
 # `evaluate.py` — compare generated videos
 
-Fixed preview inputs may include negative text when CFG uses it. Load that saved
-context and verify its tensor hash with all other fixed tensors before any
-transformer call. Never rebuild fixed negative context from the prompt cache.
-The shared reference checker also verifies non-tensor `producer_inputs` such as
-membership and frame-plan bytes pinned by the preparation command.
-
-Preview and saved-comparison decoder jobs capture the decoding software profile
-before preflight, check it before the VAE session and media publication, and save
-it in each rendering. Saved-comparison current completion compares the same
-shared manifest, including native video-VAE and preprocessing dependencies.
-
-Training preview rendering checks exact reference/output titles with
-`media.layout_geometry` before opening a decoder. Use the normal training
-layout when it fits, otherwise the existing compact planner. A no-fit result
-fails before decode and leaves the completed checkpoint intact. Both layouts
-keep the reference roles and adjacent output roles specified in `media.md`.
-For D1, a reference bundle with no guide is invalid even when a malformed
-guide bundle also omits its render fingerprint. Null values do not establish
-matching guide identity. Reject this before a decoder or transformer is opened.
-
-Status: **Implemented ordinary evaluation and preview execution; full acceptance
-and source separation remain incomplete.** Explicit modes, strict preflight,
+Status: **Implemented ordinary evaluation; full native acceptance remains incomplete.** Explicit modes, strict preflight,
 saved-noise sampling, guidance, raw saves, queued verification and automatic
 rendering from pinned references exist. `media` prepares reference RGB and
 `prepare_inputs` assembles complete fixed records. Read
@@ -85,105 +64,6 @@ The expr executor is removed after controlled orchestration tests and a real
 small-transformer check against the original grid/noise path; real-weight
 acceptance remains separate. Empty or nonfinite output tensors fail before
 ratio calculation and publication.
-
-`render_saved_comparisons` is the package owner for saved comparison rendering.
-[G10](known_gaps.md#g10--saved-comparisons-have-unreadable-titles-at-narrow-widths)
-is verified: saved output includes measured compact media for 480-pixel reading
-as well as the requested full presentation. Both reuse the same decoded pixels.
-Completion requires both formats; report readers never generate missing output.
-Every nonempty panel must carry a lowercase 64-character SHA-256 pixel digest.
-Check its type and syntax before comparing full and compact records. Two absent
-digests do not prove equal decoded pixels. For example, removing the digest from
-both copies of the capture panel must fail completion, even when media hashes
-and labels still match. Historical artifacts remain unchanged.
-
-It reads a JSON specification of saved latent paths, opens a decoder-only
-session, decodes every panel with one seed, calls the shared media layout and
-publishes a rendering manifest. Saved `capture:` and `guide:` references read
-the checked continuous master and use exactly the requested `span` (default 17).
-All panels must have the same encoded geometry; do not silently shorten them.
-Bundle fps must match playback fps. Validate files, tensor contents and names
-before opening a session or creating output. Record each input file hash.
-`parse_saved_comparison_args` serves both direct CLI and queue preparation.
-Schema-three manifests bind the full spec hash, decode seed, model/variant, current VAE
-path/hash and native decode settings, plus evaluation/media source hashes.
-Recheck spec/input bytes and VAE/software identity before publishing the manifest.
-A change leaves unaccepted partial outputs instead of a completion manifest.
-Raw saved panels must contain the
-declared encoded frame count; a shorter tensor cannot silently redefine coverage.
-`verify_saved_comparison_completion` reads those same identities without opening
-a model session. Require exact requested comparison fields and input inventories,
-the decoded frame count, synchronized source frames/fps, requested titles and
-layout, safe named media paths, and matching media hashes. The queue consumes
-this verifier. Historical manifests remain report evidence but cannot prove a
-new queued completion. File names or zero child exit alone are insufficient.
-The `comparison` layout preserves panel order with at most three columns and
-aspect-preserving padding. Keep the historical poster at frame 96 by default.
-Specs with `view` produce the historical `results` fields consumed by reports:
-frames, named video/poster, and panel PSNR/subject PSNR/LPIPS against panel zero.
-Metrics exclude RGB frame zero. LPIPS is loaded once and uses the shared checked
-metric owner. Preserve captions in the manifest; do not relabel old artifacts.
-Report code may read that manifest; it does not
-open a model session or recover missing outputs. An empty specification fails
-before model loading.
-
-### Prepared RGB references in saved comparisons
-
-A comparison may set `reference_bundle` to a checked `references.json` produced
-by `media --prepare-training-references`. A panel then selects `reference_role`
-(`recorded`, `decoded`, or `guide`) instead of `latent`. These are saved pixels:
-recorded RGB in the capture crop, the VAE reconstruction of the recording, and
-the recorded RGB motion guide. They do not pass through the decoder again.
-This form is for D1. All three roles are required, in that order, before the generated output panels.
-Use short presentation titles without changing their recorded roles.
-
-Each generated panel in this form must name its saved `result` JSON and `latent`.
-Preflight checks the result's output path/hash/shape, source, frame rate, encoded
-coverage, capture-master hash, guide-render hash, membership identity, objective and D1 choice
-against the reference producer. It checks the old result's software integrity,
-not current completion: historical model output remains attributed to its own
-producer. The new references and rendering use current decoding software.
-For two or more generated outputs, `changed_factor` names the one supported
-comparison difference and invokes `validate_comparison` before a decoder opens.
-It also hashes each output's first encoded frame against its recorded `c0`.
-The optional historical `view` metrics are unavailable in this form; they assume
-all panels were decoded float RGB. Use a separate checked RGB metric owner when
-needed, rather than mixing saved uint8 recording pixels with float output pixels.
-
-References must cover exactly the requested RGB frame mapping `0..(span-1)*8`
-at the requested rate, with the same VAE identity, decode seed and settings as
-the new output decoding. Their pixel dimensions must equal the output encoding
-dimensions multiplied by the selected VAE spatial factors. Reject missing
-pixels, changed reference files, a different crop/source producer, malformed
-values or a second changed factor before opening a session or creating output.
-Bind the reference manifest, all pixel files and each result JSON in the input
-inventory. Recheck those bytes before publication and in queued completion.
-Full and compact media share the exact same saved reference pixels and newly
-decoded output pixels. Ordinary latent-only specifications retain their schema
-and behavior.
-
-Worked E3 check: prepare 17 encoded frames for one source, giving 129 RGB frames
-at 30 fps. Select recorded, decoded and guide references, followed by cached and
-recomputed output results. Set `changed_factor="history_mode"` and fix schedule,
-source, c0, noise and text. Both results must bind the same continuous capture
-master and guide render as the references. A seven-frame reference bundle covers
-only 49 RGB frames and must fail before decoding. This reference check does not
-establish perceptual quality or layerwise K/V agreement.
-
-```mermaid
-flowchart LR
-  refs[(Prepared RGB reference bundle)] --> read[Check saved reference pixels]
-  outputs[(Saved output encodings and result records)] --> match[Check source and changed factor]
-  read --> match
-  match --> decode[Decode output encodings only]
-  read --> render[Render synchronized panels]
-  decode --> render
-  render --> media[(Full and compact media)]
-  classDef code fill:#dbe7ff,stroke:#3b5ea8,color:#10203f
-  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937
-  class read,match,decode,render code
-  class refs,outputs,media disk
-```
 
 Compare the base model and named adapters with one fixed input set.
 Select bidirectional or causal mode explicitly.
@@ -334,54 +214,6 @@ This uses the shared device preflight and a null text context. It does not
 prepare prompt embeddings or open a transformer. The general session factory
 is retained for model diagnostics that need text, not saved-only rendering.
 
-### Subject RGB and perceptual measurements
-
-`subject_mask` reads the optional saved lossless capture mask for RGB QA.
-Absent files return no mask. Require positive requested dimensions/count and
-enough uint8 F,H,W frames. Take the requested prefix, divide by 255, apply
-5x5 maximum pooling at stride one with two-pixel padding, resize with nearest
-neighbors to the actual RGB height/width, then threshold strictly above 0.5.
-This preserves the old renderer's two-cell dilation; it is a QA rule, not a
-training mask or new crop. A single interior foreground pixel selects 25 cells
-before resizing and 100 after a twofold resize in each direction.
-
-`rgb_metrics` also returns full-frame MSE and PSNR over all F,3,H,W values.
-Compute squared error once. Per-frame scores average C,H,W; the full-frame
-score averages F,C,H,W before the logarithm. Do not average per-frame PSNR.
-Zero aggregate MSE returns null PSNR and `all_exact_match=true`.
-
-`subject_rgb_metrics` accepts aligned floating F,3,H,W inputs in [0,1] and a
-boolean F,H,W subject mask. Check all shapes, values and nonempty selected
-pixels before measuring. Average squared error across RGB channels, then across
-selected pixels/frames. Return MSE, PSNR and exact-match status. Zero MSE has
-no finite PSNR (`null` plus exact-match), rather than the old renderer's 99-dB
-sentinel. The mask is supplied checked evidence; this function invents no crop,
-dilation or source alignment. A uniform 0.5 difference gives MSE 0.25 and
-PSNR 6.0206 dB regardless of selected area.
-
-`lpips_frame_scores` returns ordered Python floats, one per aligned frame,
-using an already-loaded perceptual model. Its default batch is sixteen,
-matching the historical full-resolution analyzer; it does not exclude c0 or
-average frames. The caller explicitly selects any excluded frames. One shared
-batch iterator owns RGB validation, [-1,1] conversion, model calls and output
-checks for this helper and `lpips_distance`. Neither loads or downloads weights.
-Require an integer positive batch, a tensor output with one finite score per
-frame and preserved order across the final short batch. The helper's per-frame
-list must match the historical FHWC-to-FCHW scoring path exactly on controlled
-pixels. That parity verifies measurement plumbing, not native VAE or identity.
-
-`lpips_distance` takes an already-loaded perceptual model and the same checked
-RGB inputs. Reject empty/nonfinite/out-of-range inputs or nonpositive batch
-size before calling the model. Convert each frame batch to [-1,1] on the stated
-device. Sum one model score per frame, then divide by total frame count. Require
-finite scores and exactly one score per frame, including a final short batch.
-It opens no model session and downloads no weights. Preserve its original
-per-batch tensor sums on the model device,
-rather than changing scalar rounding through a Python per-frame reduction.
-Record model identity at the caller. LPIPS measures perceptual difference, not correctness of motion or
-identity. Both helpers stay outside report code; historical rendering caller
-migration remains pending until layout/decoder execution also moves.
-
 ### Historical saved-encoding metrics
 
 `saved_latent_metrics(output, capture, guide, long=False)` preserves the study's
@@ -484,6 +316,8 @@ An invalid case records its failure; it must not become a shorter successful inp
 
 ### Measure the declared outputs
 
+Use [metrics](metrics.md) for reusable encoded, RGB, subject and LPIPS measurements.
+
 ### Future-noise causality diagnostic
 
 `--causality --checkpoint <ADAPTER> --view <VIEW> --sigma <SIGMA>
@@ -578,24 +412,6 @@ LPIPS, when enabled, uses its recorded model/version and expected normalization.
 Save per-frame values and sample count before any report-specific averaging.
 These metrics measure particular differences, not correct identity or action.
 Do not compute capture-reference metrics when capture is absent.
-
-### Request a readable comparison
-
-Pass the question, changed factor, exact variant values, panel roles, and source time mapping to media.
-[media's layout and text rules](media.md#visualization-layout) define the display.
-Do not construct titles from run directory names or put all configuration fields into the video.
-
-A training preview job also records its completed checkpoint step and fixed preview-input hashes.
-Use the same checks as ordinary evaluation.
-[media.md](media.md#training-previews) defines those previews.
-
-Bidirectional evaluation has no capture past-frame input.
-Causal evaluation labels capture-history and generated-history runs separately.
-Product-like evaluation uses generated history.
-
-Keep person/view, noise, text, frame dimensions, selected frame range, and playback rate fixed unless explicitly varied.
-Show the correct capture reference and label original RGB versus VAE-decoded video.
-Evaluation can use people excluded from training.
 
 ## Invariants
 
@@ -736,90 +552,14 @@ also permits the mode's derived attention/block settings, but no new inputs.
 Records must include both fixed identities and conditions; missing evidence is
 an error. This check does not turn latent scores into perceptual conclusions.
 
-### Preview verification and state changes
 
-An optional fixed `reference_bundle` pins an absolute manifest path and its
-full file hash. Load its checked pixel records during training/preview preflight.
-Require its capture-encoding hash to equal the fixed capture file hash and its
-source to equal the one explicit evaluation source. D1 additionally checks the
-guide RGB identity against the pinned guide bundle's encoding fingerprint.
-Reference pixels or a bundle from another source fail before generation.
-Older raw-only preview records can omit this field; they cannot claim complete
-reference/render integration from that omission.
+### Ordinary owner split
 
-`verify_preview_job` checks the job ID against checkpoint and fixed-record
-hashes, the completion marker, all fixed file hashes, and actual version-two
-adapter matrices/step. It performs no model or decoder operation.
-`set_preview_state` permits pending/failed to running and running to complete
-or failed. A live running owner cannot be replaced. Changes use a per-job file
-lock and an atomic JSON write. Checkpoint bytes and marker stay read-only.
-To mark complete, verify every saved result encoding and every rendered output
-against their records. Missing raw or rendered evidence fails completion.
-### Preview generation stage
-
-When fixed inputs include a reference bundle, raw generation continues into
-`render_preview_outputs` in the same owning process. Verify saved raw results,
-reference hashes, source/FPS/coverage, current native decoder settings and the native VAE hash before loading
-a decoder. Require exactly one pinned adapter result and at most one base
-result. Decode those saved encodings with the reference decode seed; no
-transformer is reopened. Show the checked three references above base/adapter
-outputs in the training layout. If no base result was requested, label that
-panel missing. A changed Torch version or decoder configuration fails before
-opening the decoder; prepare new references for that runtime. Save actual
-decoder identities and link raw-result records in rendering
-settings. Mark complete only through the existing completion gates. Rendering
-failure propagates to the generation stage's failed-job handler. Standalone
-render-owner recovery and real native full-preview acceptance remain pending.
-
-`generate_preview(job_path, gpu_id=...)` is the package-owned raw generation
-stage. Invoke it with `evaluate --preview-job <job.json> --gpu-id <ID>`;
-this route accepts no study-setting overrides. Verify the fixed files and completed adapter, claim the job under its
-state lock, and build evaluation arguments from the saved settings. The
-executor adds the pinned checkpoint and a new numbered attempt directory;
-it never changes training settings or overwrites an earlier failed attempt.
-Read the fixed text tensor directly instead of rebuilding text from a prompt.
-Before opening each transformer, compare actual capture, guide, first-image,
-text and saved-noise tensor hashes with the fixed record. A mismatch fails
-before any transformer call.
-
-After generation, verify saved raw records and their encoding hashes using the
-same completion gates. Record these results on the running job. Raw generation
-alone cannot mark the job complete: checked reference preparation and media
-rendering must still supply the final rendering evidence. Any ordinary failure
-records `failed` with its exception type/message, then propagates the error.
-An initial pinned-file verification failure records a failed pending job before
-claiming it. It does not change a job already owned by another process or a
-terminal job. The tensor checker requires all pinned tensor roles; omission
-does not bypass verification.
-Checkpoint and completion-marker bytes remain read-only. A second process
-cannot claim a running job owned by a live process. A failed job can retry in
-the next attempt directory. Automatic rendering with pinned references exists;
-standalone render recovery and full native preview acceptance remain pending.
-
-A failed-state update validates the immutable job identity but does not require
-unchanged input/output bytes: this lets the executor record an input-corruption
-failure. Running and complete transitions still verify all pinned files.
-`--noise-file` consumes one finite native-bf16 token tensor for one selected
-video. Preflight checks its shape. Execution uses the retained CPU tensor rather
-than rereading a file after opening weights or silently changing its dtype.
-
-### Saved comparison narrow presentation
-
-Before opening a decoder, use the shared metadata-only geometry owner to validate
-both the requested full presentation and a compact presentation at width 480.
-Reuse decoded RGB panels for both. Preserve original scientific specification,
-input hashes, seed, exact labels, values, metrics and source coverage.
-Publish `<name>_compact.mp4` and `<name>_compact_poster.png` with a separate
-rendering record under `<name>_compact/`. A new schema-three manifest binds both
-presentations; completion requires both. Validate compact layout, scaled font,
-canvas dimensions, synchronized source times, exact roles/labels and equal panel
-pixel hashes between formats, as well as media bytes and safe paths. Historical
-schema-two media remain evidence, never overwritten or relabeled as narrow
-acceptance. Report readers must expose the saved compact format.
-
-The saved-only stage-2 report reader exposes a full and a compact video entry for
-schema-three results. Require compact media, hashes, equal panel identities and
-frame mappings, and recorded readable geometry before any report write. Legacy
-results stay attributed as legacy; an absent compact asset never starts a decoder.
-
-After ordinary data preflight and before native handles, text encoding or output writes, recheck every requested adapter. Repeat immediately before each adapter model context: call public `checkpoints.recheck_adapter` with its preflight contract and file SHA-256. Pass the bound digest to the model loader; changed bytes fail before weight loading.
+Reusable measurements live in [metrics](metrics.md). Fixed preview validation,
+generation and rendering live in [previews](previews.md). Saved comparisons live
+in [comparisons](comparisons.md). This owner keeps ordinary preflight, matched
+sampling, publication and scientific completion.
+`execute_evaluation(..., preview_tensor_validator=...)` requires the typed
+validator for a fixed preview before native handles or writes and calls it after
+assembling actual execution tensors. It imports no previews owner. Tensor hashes
+use the stdlib-only-at-import hashing owner.

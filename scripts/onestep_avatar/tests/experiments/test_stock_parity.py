@@ -8,6 +8,7 @@ import torch
 from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar.experiments import stock_parity
 from scripts.onestep_avatar.model import common
+from scripts.onestep_avatar import hashing
 
 
 class Geometry:
@@ -104,7 +105,7 @@ def test_bad_fixed_text_fails_before_backbone_resolution(tmp_path, monkeypatch, 
     fixed = {'kind': 'onestep_avatar.preview_inputs', 'schema_version': 2,
              'software': stock_parity.software.capture('preparation', 'bidirectional'),
              'input_files': {'text': {'path': str(text_path), 'sha256': stock_parity.sha256(text_path),
-                                     'tensor_sha256': stock_parity.evaluate.tensor_sha256(context)}}}
+                                     'tensor_sha256': hashing.tensor_sha256(context)}}}
     if defect == 'file_hash':
         fixed['input_files']['text']['sha256'] = '0'*64
     fixed['sha256'] = stock_parity.subset.record_hash(fixed)
@@ -146,9 +147,9 @@ def reference_case(tmp_path):
     record = {'protocol':protocol, 'raw':stock_parity.compare_paths(outputs,traces),
               'decoded':{'stock_repeat':{'unequal_elements':0}},
               'output_files':{path.name:stock_parity.sha256(path) for path in tmp_path.glob('*.pt')},
-              'noise_tensor_sha256':stock_parity.evaluate.tensor_sha256(noise),
-              'image_tensor_sha256':stock_parity.evaluate.tensor_sha256(image),
-              'text_tensor_sha256':stock_parity.evaluate.tensor_sha256(context)}
+              'noise_tensor_sha256':hashing.tensor_sha256(noise),
+              'image_tensor_sha256':hashing.tensor_sha256(image),
+              'text_tensor_sha256':hashing.tensor_sha256(context)}
     (tmp_path/'result.json').write_text(json.dumps(record))
     return grid,image,context,levels,protocol,record
 

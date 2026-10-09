@@ -22,6 +22,7 @@ from scripts.onestep_avatar.experiments import training_update_check
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import bidirectional, causal, common
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources, runtime, update_state
+from scripts.onestep_avatar import hashing
 
 ENTRY = "scripts/onestep_avatar/experiments/training_slice_check.py"
 EXTRA_SOURCES = (ENTRY, 'scripts/onestep_avatar/experiments/__init__.py',
@@ -184,7 +185,7 @@ def execute(args: argparse.Namespace) -> dict:  # noqa: PLR0915 -- one bounded d
     phase = training_update_check.measured_phase
     with phase(args.output, device, "load", budget, measurements):
         transformer = engine.build_transformer(spec, settings, accelerator)
-        initial_values = {name: evaluate.tensor_sha256(parameter) for name, parameter in transformer.named_parameters()
+        initial_values = {name: hashing.tensor_sha256(parameter) for name, parameter in transformer.named_parameters()
                           if ".lora_" in name}
         (args.output / "initial_fp32.json").write_text(json.dumps(initial_values, indent=2) + "\n")
         parameters = [p for p in transformer.parameters() if p.requires_grad]

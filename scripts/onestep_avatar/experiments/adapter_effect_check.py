@@ -22,6 +22,7 @@ from scripts.onestep_avatar.execution import queue, software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, common
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources
+from scripts.onestep_avatar import hashing
 
 if TYPE_CHECKING:
     from scripts.prune.core.session import Session
@@ -177,7 +178,7 @@ def image_preparation_evidence(path: Path, image: Path) -> dict[str, str]:
     with Image.open(record["outputs"]["pixels"]["path"]) as image_pixels:
         if image_pixels.mode != "RGB":
             raise ValueError("prepared supplied-image pixels must be RGB")
-        pixels_hash = evaluate.tensor_sha256(torch.from_numpy(np.array(image_pixels)))
+        pixels_hash = hashing.tensor_sha256(torch.from_numpy(np.array(image_pixels)))
     if pixels_hash != bundle["preparation"].get("prepared_pixels_sha256"):
         raise ValueError("prepared image pixels differ from the independent encode record")
     identities = {str(path.resolve()): sha256(path), **record["inputs"]}

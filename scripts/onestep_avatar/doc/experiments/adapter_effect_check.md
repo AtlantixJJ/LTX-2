@@ -221,7 +221,7 @@ retain their declared boundaries; final warmed latency is a separate benchmark.
 
 The actual training context record binds raw contiguous bf16 bytes, shape and
 dtype separately. Verify its `tensor_sha256` with that producer's raw-byte rule.
-`evaluate.tensor_sha256` also includes shape and dtype in its digest and therefore
+`hashing.tensor_sha256` also includes shape and dtype in its digest and therefore
 cannot verify this training field. Do not rewrite the original context record or
 rebuild text to satisfy a different digest convention.
 

@@ -11,6 +11,7 @@ import torch
 from scripts.onestep_avatar import WORKSPACE_ROOT, evaluate
 from scripts.onestep_avatar.experiments import future_noise_study as study
 from scripts.onestep_avatar.hashing import sha256
+from scripts.onestep_avatar import hashing
 
 
 @pytest.fixture
@@ -209,7 +210,7 @@ def test_preparation_verification_refuses_changed_bytes_and_semantics(
         if defect == "noise_rehashed":
             tensor = torch.load(artifact, weights_only=True) + 1
             torch.save(tensor, artifact)
-            result["noise_tensor_sha256"]["A"] = evaluate.tensor_sha256(tensor)
+            result["noise_tensor_sha256"]["A"] = hashing.tensor_sha256(tensor)
         else:
             data = json.loads(artifact.read_text())
             if defect == "jobs_rehashed":

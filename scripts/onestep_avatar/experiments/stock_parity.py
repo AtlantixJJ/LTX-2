@@ -23,6 +23,7 @@ from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import backbone, bidirectional, common
 from scripts.prune.core.session import DEFAULT_PROMPT, DTYPE, Session
+from scripts.onestep_avatar import hashing
 
 ENTRY = "scripts/onestep_avatar/experiments/stock_parity.py"
 EXTRA_SOURCES = (ENTRY, 'scripts/onestep_avatar/experiments/__init__.py')
@@ -178,7 +179,7 @@ def load_reference(path, protocol, image, context, grid):
     if noise.shape != expected or noise.dtype != DTYPE or not torch.isfinite(noise).all():
         raise ValueError('stock reference saved noise differs from the grid')
     for name, value in (('noise', noise), ('image', image), ('text', context)):
-        if evaluate.tensor_sha256(value) != record[name+'_tensor_sha256']:
+        if hashing.tensor_sha256(value) != record[name+'_tensor_sha256']:
             raise ValueError(f'stock reference {name} tensor differs')
     actual = compare_paths(outputs, traces)
     if not actual['terminal_difference_only']:
@@ -214,7 +215,7 @@ def prepare(args):
     identities[str(text_path.resolve())] = text_file['sha256']
     context = torch.load(text_path, map_location='cpu', weights_only=True)
     if (not isinstance(context, torch.Tensor) or context.dtype != DTYPE or not torch.isfinite(context).all()
-            or evaluate.tensor_sha256(context) != text_file['tensor_sha256']):
+            or hashing.tensor_sha256(context) != text_file['tensor_sha256']):
         raise ValueError('fixed text tensor differs or is not native bf16')
     evaluation_args = evaluate.parse_args([*fixed['evaluation_arguments'], '--output', str(args.output)])
     prompt = DEFAULT_PROMPT if evaluation_args.prompt is None else evaluation_args.prompt
@@ -323,8 +324,8 @@ def execute(args):
     media.save_render(rendered, rendering, args.output/'comparison')
     check_current(identities, producer)
     record = {'protocol': protocol, 'execution': execution, 'raw': raw, 'decoded': decoded,
-              'noise_tensor_sha256': evaluate.tensor_sha256(noise), 'text_tensor_sha256': evaluate.tensor_sha256(context),
-              'image_tensor_sha256': evaluate.tensor_sha256(image),
+              'noise_tensor_sha256': hashing.tensor_sha256(noise), 'text_tensor_sha256': hashing.tensor_sha256(context),
+              'image_tensor_sha256': hashing.tensor_sha256(image),
               'output_files': {path.name: sha256(path) for path in args.output.glob('*.pt')},
               'acceptance': 'native evidence requires review; this record alone does not close E1'}
     dataset.atomic_write(args.output/'result.json', lambda path: path.write_text(json.dumps(record, indent=2)+'\n'))

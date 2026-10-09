@@ -19,6 +19,7 @@ from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import common
 from scripts.prune.core import ltx_adapter, model_registry, preflight
 from scripts.prune.core.session import DTYPE
+from scripts.onestep_avatar import hashing
 
 
 def single_image(path: Path, *, matte: bool = False) -> np.ndarray:
@@ -102,7 +103,7 @@ def encode_image(args: argparse.Namespace) -> dict:
     )
     bundle.update(input_role='supplied_image', software=producer_software,
                   preparation={'input_sha256': identities, 'original_canvas_hw': list(single_image(args.image).shape[:2]),
-                               'prepared_pixels_sha256': evaluate.tensor_sha256(torch.from_numpy(pixels)),
+                               'prepared_pixels_sha256': hashing.tensor_sha256(torch.from_numpy(pixels)),
                                'resize': 'opencv_INTER_AREA', 'matte': 'continuous_grayscale_255' if args.mask else None,
                                'encoder': {'dtype': 'bfloat16', 'method': 'tiled_encode', 'tiling': None}})
     decoded = None
@@ -259,7 +260,8 @@ def prepare_preview(args: argparse.Namespace) -> dict:
             path = args.output/(role+'.pt')
             cpu = tensor.detach().cpu()
             dataset.atomic_write(path, lambda temporary, cpu=cpu: torch.save(cpu, temporary))
-        files[role] = {'path': str(path.resolve()), 'sha256': sha256(path), 'tensor_sha256': evaluate.tensor_sha256(tensor)}
+        files[role] = {'path': str(path.resolve()), 'sha256': sha256(path),
+                       'tensor_sha256': hashing.tensor_sha256(tensor)}
     record = {'schema_version': 2, 'kind': 'onestep_avatar.preview_inputs', 'mode': evaluation.mode,
               'schedule': evaluation.schedule, 'input_files': files, 'software': producer_software,
               'producer_inputs': {path: {'path': path, 'sha256': digest} for path, digest in identities.items()},

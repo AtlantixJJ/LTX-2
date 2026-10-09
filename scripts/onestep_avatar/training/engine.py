@@ -1197,7 +1197,7 @@ def read_preview_inputs(path: Path, settings: RunSettings) -> dict:  # noqa: PLR
         raise ValueError("preview arguments must consume their pinned noise file")
     if args.schedule != record.get("schedule"):
         raise ValueError("preview arguments differ from the exact recorded schedule")
-    from scripts.onestep_avatar.evaluate import check_preview_reference_bundle  # noqa: PLC0415 -- saved pixels only
+    from scripts.onestep_avatar.previews import check_preview_reference_bundle  # noqa: PLC0415 -- saved pixels only
 
     check_preview_reference_bundle(record)
     record["sha256"] = video_lists.record_hash(record)

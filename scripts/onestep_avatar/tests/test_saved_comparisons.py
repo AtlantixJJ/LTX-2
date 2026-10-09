@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from scripts.onestep_avatar import evaluate, media
+from scripts.onestep_avatar import comparisons
 
 
 def test_saved_study_spec_renders_master_and_output_with_report_metrics(tmp_path, monkeypatch):
@@ -58,7 +59,7 @@ def test_saved_study_spec_renders_master_and_output_with_report_metrics(tmp_path
     monkeypatch.setattr(media, 'open_decoder_session', lambda *_args, **_kwargs: SimpleNamespace(
         device=torch.device('cpu'), decoder=lambda: nullcontext(None)))
     monkeypatch.setitem(sys.modules, 'lpips', SimpleNamespace(LPIPS=lambda **_kwargs: Perceptual()))
-    result = evaluate.render_saved_comparisons(spec, tmp_path / 'rendered', gpu_id=0, seed=99)
+    result = comparisons.render_saved_comparisons(spec, tmp_path / 'rendered', gpu_id=0, seed=99)
     row = result['results'][0]
     assert loaded == [tmp_path / 'capture.pt']
     assert decoded[0][0].shape == (1, 3, 2, 2, 2)
@@ -73,7 +74,7 @@ def test_saved_study_spec_renders_master_and_output_with_report_metrics(tmp_path
     assert len(row['inputs']) == 2 and all(record['sha256'] for record in row['inputs'])
     assert (tmp_path / 'rendered' / row['video']).is_file()
     assert (tmp_path / 'rendered' / row['poster']).is_file()
-    assert evaluate.verify_saved_comparison_completion(spec, tmp_path / 'rendered', seed=99)
+    assert comparisons.verify_saved_comparison_completion(spec, tmp_path / 'rendered', seed=99)
     from scripts.onestep_avatar.execution import software
 
     original = software.sha256
@@ -83,7 +84,7 @@ def test_saved_study_spec_renders_master_and_output_with_report_metrics(tmp_path
         changed_owner.setattr(software, 'sha256', lambda p: 'f'*64 if p == decoder_owner else original(p))
         software.validate(result['software'])
         with pytest.raises(ValueError, match='completion identity differs'):
-            evaluate.verify_saved_comparison_completion(spec, tmp_path / 'rendered', seed=99)
+            comparisons.verify_saved_comparison_completion(spec, tmp_path / 'rendered', seed=99)
 
 
 @pytest.mark.parametrize('name', ['../escape', '..', '/outside'])
@@ -91,7 +92,7 @@ def test_saved_comparison_names_cannot_escape_output(tmp_path, name):
     spec = tmp_path / 'spec.json'
     spec.write_text(json.dumps({'comparisons': [{'name': name, 'panels': []}]}))
     with pytest.raises(ValueError, match='safe path component'):
-        evaluate.render_saved_comparisons(spec, tmp_path / 'out', gpu_id=0)
+        comparisons.render_saved_comparisons(spec, tmp_path / 'out', gpu_id=0)
     assert not (tmp_path / 'out').exists()
 
 
@@ -106,7 +107,7 @@ def test_saved_comparison_rejects_mismatched_geometry_before_session(tmp_path, m
 
     monkeypatch.setattr(media, 'open_decoder_session', forbidden)
     with pytest.raises(ValueError, match='identical encoded geometry'):
-        evaluate.render_saved_comparisons(spec, tmp_path / 'out', gpu_id=0)
+        comparisons.render_saved_comparisons(spec, tmp_path / 'out', gpu_id=0)
     assert not (tmp_path / 'out').exists()
 
 
@@ -122,7 +123,7 @@ def test_master_input_refuses_wrong_coverage_fps_and_values(tmp_path, monkeypatc
     span = 5 if failure == 'short' else 2
     message = {'short': 'insufficient frame coverage', 'fps': 'fps differs', 'nonfinite': 'finite floating'}[failure]
     with pytest.raises(ValueError, match=message):
-        evaluate._saved_panel_input({'latent': 'capture:capture.pt'}, tmp_path, span, 30)
+        comparisons._saved_panel_input({'latent': 'capture:capture.pt'}, tmp_path, span, 30)
 
 
 def test_five_panel_comparison_preserves_order_and_replays_exactly():
@@ -174,7 +175,7 @@ def test_unreadable_saved_labels_fail_before_any_decoder_or_output(tmp_path,monk
         {'title':'x'*200,'latent':'sample.pt'}]}]}))
     monkeypatch.setattr(media,'open_decoder_session',lambda *_a,**_k: pytest.fail('unreadable text opened VAE'))
     with pytest.raises(ValueError,match='title does not fit|no readable compact layout'):
-        evaluate.render_saved_comparisons(spec,tmp_path/'out',gpu_id=0)
+        comparisons.render_saved_comparisons(spec,tmp_path/'out',gpu_id=0)
     assert not (tmp_path/'out').exists()
 
 
@@ -202,4 +203,4 @@ def test_compact_completion_is_required_and_bound_to_full_pixels(tmp_path,monkey
                 rendering['panels'][0]['pixels_sha256'] = invalid[changed]
     manifest['results']=manifest['comparisons']; path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError,match='compact|settings differ|readability|titles differ|hash or path differs|pixel hash'):
-        evaluate.verify_saved_comparison_completion(spec,destination,seed=99)
+        comparisons.verify_saved_comparison_completion(spec,destination,seed=99)

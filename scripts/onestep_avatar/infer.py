@@ -16,6 +16,7 @@ from scripts.onestep_avatar.model import backbone, bidirectional, causal, common
 from scripts.onestep_avatar.model.sampling import validate_schedule
 from scripts.onestep_avatar.training import checkpoints
 from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
+from scripts.onestep_avatar import hashing
 
 
 def check_inputs(guide: torch.Tensor, first_image: torch.Tensor, guide_record: dict, image_record: dict) -> None:
@@ -113,10 +114,10 @@ def generate(  # noqa: PLR0912, PLR0913 -- explicit product inputs and mode disp
         "schedule": levels,
         "seed": seed,
         "frames": frames,
-        "guide_sha256": evaluate.tensor_sha256(guide),
-        "c0_sha256": evaluate.tensor_sha256(first_image),
-        "noise_sha256": evaluate.tensor_sha256(epsilon),
-        "text_sha256": evaluate.tensor_sha256(context),
+        "guide_sha256": hashing.tensor_sha256(guide),
+        "c0_sha256": hashing.tensor_sha256(first_image),
+        "noise_sha256": hashing.tensor_sha256(epsilon),
+        "text_sha256": hashing.tensor_sha256(context),
         "call_counts": counts,
         "capture_reference": None,
     }
@@ -271,7 +272,7 @@ def render_review(
     ]
     decoded_inputs = {
         role: media.decode_key(
-            evaluate.tensor_sha256(latent), vae_hash, list(latent.shape), "native_decode_video", args.seed, settings
+            hashing.tensor_sha256(latent), vae_hash, list(latent.shape), "native_decode_video", args.seed, settings
         )
         for role, latent in (("first_image", image), ("guide", guide))
     }
