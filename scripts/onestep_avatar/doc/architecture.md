@@ -346,8 +346,7 @@ has a model-free completion check.
 import this policy; the queue's exported names are aliases, not another pool.
 `train` selects four free devices and keeps four processes. Single-GPU kinds
 pick one free device from the same ordered pool. Selections may be noncontiguous.
-The pool and every-kind supervision are implemented. Final G8 CPU verification
-remains pending until all group checks pass; native acceptance is separate.
+The pool and every-kind supervision are implemented; native acceptance is separate.
 
 **Experiment selection.** An `experiment` job carries `experiment` (a
 selector), `spec`, `spec_sha256` and `arguments`. The canonical job hash covers

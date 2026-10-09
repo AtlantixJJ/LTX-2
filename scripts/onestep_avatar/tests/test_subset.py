@@ -144,3 +144,38 @@ def test_clip_store_d0_reads_no_guide_and_checks_changed_masters(old_subset: dic
     capture_path.write_bytes(b"changed encoded input")
     with pytest.raises(ValueError, match="encoded content changed"):
         store.verify()
+
+
+def test_subset_sha256_covers_chains_and_splits() -> None:
+    """The full subset identity changes when only chains or splits change (G3)."""
+    base = {"objective": "white", "sources": [{"relative_dir": "a"}], "chains": [{"blocks": [0, 1]}],
+            "splits": {"train": ["1"], "validation": ["2"], "test": ["3"]}, "span_latent_frames": 17,
+            "clip_start_only": True, "chain_length": 2}
+    assert subset.subset_sha256(base) == subset.subset_sha256(dict(base))
+    assert subset.subset_sha256(base) != subset.subset_sha256({**base, "chains": [{"blocks": [1, 2]}]})
+    assert subset.subset_sha256(base) != subset.subset_sha256({**base, "splits": {"train": ["2"]}})
+
+
+LEGACY_UNICODE_SUBSET = {
+    "objective": "白",
+    "sources": [{"relative_dir": "演员/view", "capture_latent_sha256": "1" * 64}],
+    "chains": [{"blocks": [0, 1]}],
+    "splits": {"train": ["演员"]},
+    "span_latent_frames": 17,
+    "clip_start_only": True,
+    "chain_length": 2,
+    "geometry": {"ignored": True},
+}
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        ({}, "12f87424fac18e916b34cada39c402e662fb0d70904f0d675868d031ae85f7a4"),
+        (LEGACY_UNICODE_SUBSET, "c5001636e322d47946a16c37f3eac2d46eda80c75ad8c3cba6cb2e642167a71b"),
+    ],
+)
+def test_legacy_subset_hash_keeps_original_default_json_bytes(record: dict, expected: str) -> None:
+    assert subset.subset_sha256(record) == expected
+    assert subset.subset_sha256({**record, "geometry": {"different": True}}) == expected
+    assert subset.subset_sha256({**record, "unrelated": "extra"}) == expected

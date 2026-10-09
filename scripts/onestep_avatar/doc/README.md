@@ -162,7 +162,8 @@ Complete input production and native model acceptance remain pending.
 | `training/engine.py` | [training/engine.md](training/engine.md) | >100; setup, weight updates, logs, saves, preview jobs |
 | `training/runtime.py` | [training/runtime.md](training/runtime.md) | >100; actual Accelerator/FSDP policy capture, rank agreement and replay validation |
 | `training/resources.py` | [training/resources.md](training/resources.md) | >100; exact budget identity, synchronized local CUDA phase peaks/time and complete rank/phase validation |
-| `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | >100; save/read/check settings and derive checked legacy metadata |
+| `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | >100; save/read/check settings and shared digest/tensor validation |
+| `experiments/legacy_adapters.py` | [experiments/legacy_adapters.md](experiments/legacy_adapters.md) | >100; explicit checked legacy metadata conversion |
 | `corpus/subset.py` | [subset.md](corpus/subset.md) | >100; fixed videos, person groups, hashes |
 | `evaluate.py` | [evaluate.md](evaluate.md) | >100; ordinary matched evaluation; study branches moved to experiment owners in G7 |
 | `metrics.py` | [metrics.md](metrics.md) | >100; reusable encoded, RGB, subject and LPIPS measurements |
@@ -347,8 +348,8 @@ and [migration map](architecture.md#migration-map); that map wins over the
 | `decode_saved.py` | [decode_saved.md](decode_saved.md) | use media; apply final size rule |
 | `train.py` | source header | thin CLI implemented; [engine](training/engine.md) and [config](training/config.md) extracted; remaining owners pending |
 | `model/causal.py` | [model/causal.md](model/causal.md) | typed training/evaluation/product integrated; native quality/cost acceptance pending |
-| `windows.py` | [windows.md](windows.md) | move the legacy subset hash rule to `corpus/subset.py`, then delete |
-| `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | version-two records and tensor preflight stay; legacy conversion moves to `experiments/legacy_adapters.py` |
+| `windows.py` | [windows.md](windows.md) | legacy subset digest moved to `corpus/subset.py`; remaining runtime retires in G11 |
+| `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | version-two records and tensor preflight stay; legacy conversion is in `experiments/legacy_adapters.py` |
 | removed `onestep_core.py` | [infer.md](infer.md) | explicit-mode product CLI/API and shared model/media owners |
 | `visualize_d0.py` | [visualize_d0.md](visualize_d0.md) | retarget needed checks to final owners, then delete |
 | `visualize_d1.py` | [visualize_d1.md](visualize_d1.md) | move the `--whole-clip` pruning producer to `scripts/prune/`, then delete |

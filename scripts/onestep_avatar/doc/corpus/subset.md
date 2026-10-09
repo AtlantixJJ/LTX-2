@@ -128,6 +128,18 @@ Membership hashes exclude `corpus_root` so relocation does not change membership
 The CLI refuses used destinations and writes only new versioned JSON files.
 No conversion re-encodes a master, changes a split, or infers adapter mode.
 
+### Original subset digest
+
+`subset_sha256` preserves the exact historical seven-key rule: `objective`,
+`sources`, `chains`, `splits`, `span_latent_frames`, `clip_start_only`, and
+`chain_length`, each selected with `get`. Hash
+`json.dumps(payload, sort_keys=True).encode()` with default spacing and Unicode
+escaping. Missing keys serialize as null. Geometry and extra fields are excluded.
+The modern `record_hash` deliberately uses another payload and compact spacing.
+The transitional engine stamps this digest until G11; explicit legacy conversion
+calls the same corpus owner. Saved `canonical_rule: "windows.subset_sha256"`
+continues to name the original historical rule, not its current code path.
+
 ## Invariants
 
 - One person and all views belong to one data group.
@@ -146,7 +158,8 @@ The same video list does not prove the same selected frames.
 ## Tests
 
 [V8](../verification.md) defines unchanged people, videos, and encoded data.
-`tests/test_subset.py` checks exact old people, pins and frame ranges, changed
+`tests/test_subset.py` checks original seven-key digest values and JSON bytes,
+exact old people, pins and frame ranges, changed
 producer bytes or coverage, duplicate groups, D0 without guides, and CLI
 preservation/refusal behavior. Preserve those controls through source migration.
 Compare two frame-selection rules over one fixed list.

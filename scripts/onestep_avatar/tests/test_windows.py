@@ -143,16 +143,6 @@ def test_verify_reports_an_unpinned_subset_rather_than_passing_it() -> None:
     assert "skip-hash" in problems[0]
 
 
-def test_subset_sha256_covers_chains_and_splits() -> None:
-    """The full subset identity changes when only chains or splits change (G3)."""
-    base = {"objective": "white", "sources": [{"relative_dir": "a"}], "chains": [{"blocks": [0, 1]}],
-            "splits": {"train": ["1"], "validation": ["2"], "test": ["3"]}, "span_latent_frames": 17,
-            "clip_start_only": True, "chain_length": 2}
-    assert windows.subset_sha256(base) == windows.subset_sha256(dict(base))
-    assert windows.subset_sha256(base) != windows.subset_sha256({**base, "chains": [{"blocks": [1, 2]}]})
-    assert windows.subset_sha256(base) != windows.subset_sha256({**base, "splits": {"train": ["2"]}})
-
-
 def test_a_17_frame_span_plans_exactly_eight_blocks() -> None:
     """The study's common span: 17 latent / 129 pixel frames = blocks [0,3) ... [15,17)."""
     blocks = windows.plan_blocks(17)

@@ -284,7 +284,7 @@ Legacy adapter conversion uses a reviewed version-two contract and exact
 original records. It copies tensors unchanged into a new derived file:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.training.checkpoints \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.legacy_adapters \
   --source <OLD_ADAPTER> --output <NEW_DERIVED_ADAPTER> --contract <REVIEWED_CONTRACT_JSON> \
   --original-config <ORIGINAL_CONFIG> --original-subset <OLD_SUBSET> \
   --membership <NEW_V2_SUBSET> --frame-plan <REPRODUCTION_PLAN> --base <BASE_CHECKPOINT>

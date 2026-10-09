@@ -25,7 +25,6 @@ from accelerate.utils import DistributedType
 from peft.utils.other import fsdp_auto_wrap_policy
 
 from ltx_trainer.model_loader import load_transformer
-from scripts.onestep_avatar import windows
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.corpus import subset as video_lists
 from scripts.onestep_avatar.execution import software
@@ -614,7 +613,7 @@ def checkpoint_metadata(
         "onestep_avatar_base_transformer_fingerprint": base["base_transformer_fingerprint"],
         # How history K/V are computed: the cached clean refresh at global sigma zero (G7).
         "onestep_avatar_history_computation": "cached_refresh_global_sigma0",
-        "onestep_avatar_subset_full_sha256": windows.subset_sha256(subset),
+        "onestep_avatar_subset_full_sha256": video_lists.subset_sha256(subset),
         "onestep_avatar_noise_policy": args.noise_policy,
         "onestep_avatar_init_seed": str(args.init_seed),
         "onestep_avatar_data_seed": str(args.data_seed),
@@ -816,7 +815,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                     "sigma0": args.sigma0,
                     "sigma_levels": list(sigmas),
                     "base": args.base_identity,
-                    "subset_full_sha256": windows.subset_sha256(subset),
+                    "subset_full_sha256": video_lists.subset_sha256(subset),
                     "noise_policy": args.noise_policy,
                     "seeds": {"init": args.init_seed, "data": args.data_seed, "noise": args.noise_seed},
                     "lora": {"rank": args.lora_rank, "alpha": args.lora_alpha, "target": args.lora_target},
@@ -926,7 +925,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                     "causal_geometry": geometry.as_dict(),
                     "loss": FULL_FRAME_X0_MSE,
                     "sigma_sampling": SIGMA_SAMPLING,
-                    "subset_full_sha256": windows.subset_sha256(subset),
+                    "subset_full_sha256": video_lists.subset_sha256(subset),
                     "lora_modules": len(lora_modules),
                     "lora_target_counts": target_counts,
                     "trainable_params": trainable_total,

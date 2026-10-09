@@ -8,8 +8,8 @@ import pytest
 import torch
 from safetensors.torch import load_file, save_file
 
-from scripts.onestep_avatar import windows
 from scripts.onestep_avatar.corpus import dataset, subset
+from scripts.onestep_avatar.experiments import legacy_adapters
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import backbone
 from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
@@ -70,14 +70,14 @@ def inputs(tmp_path, old_subset, mode='bidirectional', guide_mode='d0', random_w
     record['data'] = {'membership_sha256': membership['sha256'], 'frame_plan_sha256': plan['sha256'],
                       'coverage': [{'source': sample['source'], 'ranges': sample['ranges']}
                                    for sample in plan['samples'] if sample['split'] == 'train']}
-    config = {'split': 'train', 'subset_full_sha256': windows.subset_sha256(old), 'skip_subset_check': False,
+    config = {'split': 'train', 'subset_full_sha256': subset.subset_sha256(old), 'skip_subset_check': False,
               'init_adapter': None, 'model': '2.5', 'variant': 'dev', 'base_identity': identity,
               'lora_rank': 2, 'lora_alpha': 2, 'lora_target': 'attn', 'teacher_forcing': False,
               'sigma_levels': record['training']['sigma_levels'], 'anchor_weight': 0.0}
     config.update({key: old['geometry'][key] for key in ('block_latent_frames', 'context_latent_frames')})
     metadata = {'step': '0', 'lora_rank': '2', 'lora_alpha': '2', 'lora_target': 'attn',
                 'model_key': '2.5', 'onestep_avatar_base_variant': 'dev', 'onestep_avatar_teacher_forcing': 'False',
-                'onestep_avatar_subset_full_sha256': windows.subset_sha256(old),
+                'onestep_avatar_subset_full_sha256': subset.subset_sha256(old),
                 'onestep_avatar_chain_length': str(len(blocks)), 'onestep_avatar_anchor_weight': '0.0',
                 'onestep_avatar_sigma_levels': ','.join(repr(v) for v in config['sigma_levels'])}
     for key in ('guide_mode', 'objective', 'loss', 'first_frame_conditioning'):
@@ -128,7 +128,7 @@ def test_checked_conversion_preserves_every_tensor_byte_and_original(tmp_path, o
     source, record, evidence = inputs(tmp_path, old_subset, mode, guide_mode)
     original_bytes = source.read_bytes()
     output = tmp_path / 'derived.safetensors'
-    converted = checkpoints.convert_legacy_adapter(source, output, record, **evidence)
+    converted = legacy_adapters.convert_legacy_adapter(source, output, record, **evidence)
     assert source.read_bytes() == original_bytes
     assert payload(output) == payload(source)
     assert all(torch.equal(value, load_file(output)[key]) for key, value in load_file(source).items())
@@ -138,8 +138,9 @@ def test_checked_conversion_preserves_every_tensor_byte_and_original(tmp_path, o
     assert checkpoints.CONTRACT_KEY not in checkpoints.read_adapter_metadata(source)
     identities = converted['conversion']['original_subset_identity']
     assert identities['file_sha256'] == sha256(evidence['subset_path'])
-    assert identities['canonical_sha256'] == windows.subset_sha256(json.loads(evidence['subset_path'].read_text()))
+    assert identities['canonical_sha256'] == subset.subset_sha256(json.loads(evidence['subset_path'].read_text()))
     assert identities['canonical_sha256'] != identities['file_sha256']
+    assert identities['canonical_rule'] == 'windows.subset_sha256'
 
 
 @pytest.mark.parametrize('defect', ['sigma', 'subset', 'random', 'parent', 'shape', 'mapping', 'history', 'forcing'])
@@ -164,7 +165,7 @@ def test_unproven_or_different_conditions_refuse_conversion(tmp_path, old_subset
         record['data']['frame_plan_sha256'] = plan['sha256']
     original = source.read_bytes()
     with pytest.raises(ValueError):
-        checkpoints.convert_legacy_adapter(source, tmp_path / 'derived.safetensors', record, **evidence)
+        legacy_adapters.convert_legacy_adapter(source, tmp_path / 'derived.safetensors', record, **evidence)
     assert source.read_bytes() == original and not (tmp_path / 'derived.safetensors').exists()
 
 
@@ -173,7 +174,7 @@ def test_existing_derived_result_is_preserved(tmp_path, old_subset):
     output = tmp_path / 'derived.safetensors'
     output.write_bytes(b'original derived evidence')
     with pytest.raises(ValueError, match='fresh derived'):
-        checkpoints.convert_legacy_adapter(source, output, record, **evidence)
+        legacy_adapters.convert_legacy_adapter(source, output, record, **evidence)
     assert output.read_bytes() == b'original derived evidence'
 
 
@@ -190,7 +191,7 @@ def test_random_conversion_preserves_window_rule_and_g9(tmp_path, old_subset, mo
     source, record, evidence = inputs(tmp_path, old_subset, mode, guide_mode, random_window=True)
     before = source.read_bytes()
     output = tmp_path / 'derived.safetensors'
-    converted = checkpoints.convert_legacy_adapter(source,output,record,**evidence)
+    converted = legacy_adapters.convert_legacy_adapter(source,output,record,**evidence)
     assert source.read_bytes() == before and payload(source) == payload(output)
     selection = converted['data']['segment_selection']
     assert selection['coverage_role'] == 'window_templates'
@@ -225,7 +226,7 @@ def test_random_conversion_refuses_different_original_draws(tmp_path, old_subset
     evidence['frame_plan_path'].write_text(json.dumps(plan))
     record['data']['frame_plan_sha256'] = plan['sha256']
     with pytest.raises(ValueError):
-        checkpoints.convert_legacy_adapter(source,tmp_path/'derived.safetensors',record,**evidence)
+        legacy_adapters.convert_legacy_adapter(source,tmp_path/'derived.safetensors',record,**evidence)
     assert not (tmp_path/'derived.safetensors').exists()
 
 
@@ -251,7 +252,7 @@ def test_missing_or_changed_execution_stamps_fail_before_base_hash(tmp_path, old
     monkeypatch.setattr(hashing, 'sha256', checked_hash)
     destination = tmp_path / 'fresh' / 'derived.safetensors'
     with pytest.raises(ValueError, match=field.replace('_', ' ' if field == 'sigma_sampling' else '_')):
-        checkpoints.convert_legacy_adapter(source, destination, record, **evidence)
+        legacy_adapters.convert_legacy_adapter(source, destination, record, **evidence)
     assert source.read_bytes() == original and not destination.parent.exists()
 
 
@@ -261,7 +262,7 @@ def test_original_config_must_stamp_same_sigma_draw_rule(tmp_path, old_subset):
     config.pop('sigma_sampling')
     evidence['config_path'].write_text(json.dumps(config))
     with pytest.raises(ValueError, match='sigma sampling'):
-        checkpoints.convert_legacy_adapter(source, tmp_path / 'derived.safetensors', record, **evidence)
+        legacy_adapters.convert_legacy_adapter(source, tmp_path / 'derived.safetensors', record, **evidence)
 
 
 def test_changed_clip_start_evidence_refuses_classification(tmp_path, old_subset):
@@ -272,7 +273,7 @@ def test_changed_clip_start_evidence_refuses_classification(tmp_path, old_subset
     evidence['frame_plan_path'].write_text(json.dumps(plan))
     record['data']['frame_plan_sha256'] = plan['sha256']
     with pytest.raises(ValueError, match='chain mapping differs'):
-        checkpoints.convert_legacy_adapter(source, tmp_path / 'derived.safetensors', record, **evidence)
+        legacy_adapters.convert_legacy_adapter(source, tmp_path / 'derived.safetensors', record, **evidence)
 
 
 def test_public_conversion_cli(tmp_path, old_subset):
@@ -284,7 +285,7 @@ def test_public_conversion_cli(tmp_path, old_subset):
     for option, key in [('original-config', 'config_path'), ('original-subset', 'subset_path'),
                         ('membership', 'membership_path'), ('frame-plan', 'frame_plan_path'), ('base', 'base_path')]:
         args += [f'--{option}', str(evidence[key])]
-    assert checkpoints.main(args) == 0
+    assert legacy_adapters.main(args) == 0
     assert payload(source) == payload(output)
 
 
@@ -301,7 +302,7 @@ def test_exclusive_publication_preserves_competing_result(tmp_path, old_subset, 
 
     monkeypatch.setattr(os, 'link', publish)
     with pytest.raises(FileExistsError):
-        checkpoints.convert_legacy_adapter(source, output, record, **evidence)
+        legacy_adapters.convert_legacy_adapter(source, output, record, **evidence)
     assert output.read_bytes() == b'competing result'
     assert sorted(path.name for path in tmp_path.glob('*.safetensors')) == [
         'base.safetensors', 'derived.safetensors', 'original.safetensors']
@@ -321,5 +322,5 @@ def test_conversion_cannot_invent_global_sigma_precision(tmp_path, old_subset, m
         save_file(load_file(source), source, metadata=metadata)
     output = tmp_path / "derived.safetensors"
     with pytest.raises(ValueError, match="global_sigma_dtype differs"):
-        checkpoints.convert_legacy_adapter(source, output, record, **evidence)
+        legacy_adapters.convert_legacy_adapter(source, output, record, **evidence)
     assert not output.exists()

@@ -393,3 +393,13 @@ The policy changes no data, seed, sigma, budget, optimizer or tolerance.
 Focused CPU controls verify the current path. Original four-rank/serial
 numerical comparison passes in both modes. The active handoff records complete
 workflow and final-source requirements separately.
+
+## Historical subset identity owner
+
+The transitional metadata/config stamps call public
+`corpus.subset.subset_sha256`, which preserves the original seven-key/default-JSON
+digest. The engine does not own a copy. Its original runtime remains until G11;
+G9 changes neither that runtime nor any saved canonical_rule attribution.
+Those three stamps were the engine's last use of `windows`, so the eager
+`windows` import is removed. Error messages still name `windows.py` as the
+historical producer of old window-chain subsets.

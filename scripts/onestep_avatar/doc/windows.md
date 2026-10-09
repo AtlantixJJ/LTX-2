@@ -88,7 +88,7 @@ old-format subset so the legacy engine and probe read them rather than re-derivi
 
 Hashing now also pins `capture_latent_sha256`, `guide_latent_sha256` and
 `guide_sidecar_sha256` (the masters the trainer actually reads), and `--verify` re-checks
-them. `subset_sha256(subset)` is the historical whole subset identity (objective,
+them. `corpus.subset.subset_sha256(subset)` owns the historical whole subset identity (objective,
 sources, chains, splits, span, clip-start flag, `K`); the legacy engine stamps it as
 `onestep_avatar_subset_full_sha256`.
 
@@ -145,9 +145,10 @@ read bundles the freeze never saw.
 
 ## Tests
 
-`tests/test_windows.py` — the split, the chaining, the content pin, the full-subset hash,
+`tests/test_windows.py` — the split, the chaining and the content pin,
 the 17-frame span, and a **golden** test on
-exact block bounds for every clip length the corpus has. Golden rather than a comparison
+exact block bounds for every clip length the corpus has. The retained full-subset
+hash controls now live in `tests/test_subset.py`. Golden rather than a comparison
 against `model.causal`, which would now be tautological: a frozen subset indexes blocks that
 the legacy engine slices out of a master latent, so shifting the plan would silently re-point every
 chain in every subset already on disk.

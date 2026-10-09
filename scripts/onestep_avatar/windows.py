@@ -431,18 +431,6 @@ def build(
     }
 
 
-def subset_sha256(subset: dict) -> str:
-    """The identity of a whole frozen subset: sources, chains, splits, span and objective.
-
-    ``train.checkpoint_metadata`` used to hash ``subset['sources']`` only, so two subsets with
-    different chains or splits shared one "identity" (G3). This is the one spelling of the
-    full digest; training stamps it and the probe can compare it.
-    """
-    keys = ("objective", "sources", "chains", "splits", "span_latent_frames", "clip_start_only", "chain_length")
-    payload = {key: subset.get(key) for key in keys}
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-
-
 def _hash_survivors(
     survivors: list[tuple[ClipRef, SourceRecord]], root: Path, workers: int, objective: str,
     latents_only: bool = False,

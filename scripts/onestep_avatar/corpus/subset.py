@@ -22,6 +22,18 @@ KIND = "onestep_avatar_membership"
 FRAME_PLAN_KIND = "onestep_avatar_frame_plan"
 
 
+def subset_sha256(subset: dict) -> str:
+    """Reproduce the original seven-key subset identity with its exact JSON bytes.
+
+    Keep missing keys as null and default JSON spacing/Unicode escaping. Geometry
+    is outside this historical digest. New record_hash uses a separate rule.
+    Saved canonical_rule attribution remains windows.subset_sha256.
+    """
+    keys = ("objective", "sources", "chains", "splits", "span_latent_frames", "clip_start_only", "chain_length")
+    payload = {key: subset.get(key) for key in keys}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
 def record_hash(record: dict) -> str:
     """Hash exact JSON content, excluding the saved digest itself."""
     payload = {key: value for key, value in record.items() if key != "sha256"}
