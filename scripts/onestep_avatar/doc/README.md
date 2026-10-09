@@ -148,7 +148,7 @@ Complete input production and native model acceptance remain pending.
 |---|---|---|
 | `model/common.py` | [model/common.md](model/common.md) | >100; token layout, noise, first-image input, output conversion |
 | `model/adapters.py` | [model/adapters.md](model/adapters.md) | >100; shared unmerged fp32 PEFT configuration/loading, x0 inference wrapper and explicit fusion diagnostic |
-| `software.py` | [software.md](software.md) | >100; explicit worktree owner hashes/runtime versions, current verification and historical integrity reading |
+| `execution/software.py` | [software.md](execution/software.md) | >100; explicit worktree owner hashes/runtime versions, current verification and historical integrity reading |
 | `prepare_inputs.py` | [prepare_inputs.md](prepare_inputs.md) | >100; fixed preview assembly/pinned text-noise-image tensors and actual one-RGB supplied-image VAE preparation |
 | `stock_parity.py` | [stock_parity.md](stock_parity.md) | >100; actual stock video sampling components, repeated controls, checked-reference precision comparison and decoded traces; native acceptance open |
 | `model/bidirectional.py` | [model/bidirectional.md](model/bidirectional.md) | >100; segment training and generation |
@@ -237,7 +237,7 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
   Publish a fresh JSON job list; never open models or start a queue. Tests check
   row coverage, source order, schedules, checkpoint paths and completion paths.
 
-- **`queue_protocol.py` (implemented):** small constant owner for queue token/job
+- **`execution/queue_protocol.py` (implemented):** small constant owner for queue token/job
   environment names and the startup-event prefix. Import no model libraries.
   `training/startup.py` retains its public imported names for existing consumers.
 - **`training_slice_check.py` (bounded numerical localization controls pass):**
@@ -259,18 +259,18 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
   CPU preflight and tiny-native controls do not prove full-weight or seven-frame
   pilot acceptance. The owner moves during Stage D before final-source native
   experiments; ordinary runtime must not import it.
-- **`process_registry.py` (implemented, native launch evidence in progress):**
-  [Own-process tracking](process_registry.md) in one shared JSON file, direct GPU
+- **`execution/process_registry.py` (implemented, native launch evidence in progress):**
+  [Own-process tracking](execution/process_registry.md) in one shared JSON file, direct GPU
   queries and exact targeted descendant identities. No privilege or unrelated
   environment scans. Closed attempt history remains immutable.
-- **`supervision.py` (implemented, native acceptance in progress):**
-  [Bounded observation](supervision.md) of registered children, rank phases and
+- **`execution/supervision.py` (implemented, native acceptance in progress):**
+  [Bounded observation](execution/supervision.md) of registered children, rank phases and
   exact descendant shutdown. Resource journals own allocator measurements.
 - **`training/consumer_trace.py` (implemented, native comparison in progress):**
   [Consumer observations](training/consumer_trace.md) record actual transformed
   conditioning, adapter storage and forward compute separately. Failed runs keep
   incomplete observations; trace hashes alone do not prove gradient agreement.
-- **`queue_launch.py` (implemented and integrated with persistent dispatch):** launch gate, with [queue_launch.md](queue_launch.md).
+- **`execution/queue_launch.py` (implemented and integrated with persistent dispatch):** launch gate, with [queue_launch.md](execution/queue_launch.md).
   A child registers its stable process identity, waits for a journal-bound grant,
   then replaces itself with the exact recorded command. Import no models.
   Persistent dispatch saves registration before approval and checks command transitions.
@@ -361,7 +361,7 @@ Transfer required module explanations into source-mirrored package docs or small
 Remove old `expr/code/doc/` pages for deleted model executors.
 Retained report code keeps only its own report-generation explanation.
 If a required queue needs a new package executor, establish its design doc before source changes.
-The package executor is specified in [queue](queue.md). Execution requires
+The package executor is specified in [queue](execution/queue.md). Execution requires
 `--execute`, exactly one of `--once` or `--loop`, and
 `--process-ledger <SHARED_PROCESS_LEDGER.json>`. Current attempts share
 `expr/onestep_avatar/processes.json`, query `nvidia-smi` directly and record only

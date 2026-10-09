@@ -1,4 +1,4 @@
-# `supervision.py` — bounded observation of registered package children
+# `execution/supervision.py` — bounded observation of registered package children
 
 ## Objective
 

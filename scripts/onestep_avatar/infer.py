@@ -303,7 +303,7 @@ def render_review(
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    from scripts.onestep_avatar import software  # noqa: PLC0415
+    from scripts.onestep_avatar.execution import software  # noqa: PLC0415
 
     producer_software = software.capture("inference", args.mode, decoder=args.decode)
     specification, guide, image, fps, requested, checked = prepare_product(args)

@@ -17,7 +17,7 @@ import torch
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar import software
+from scripts.onestep_avatar.execution import software
 
 if TYPE_CHECKING:
     from scripts.prune.core.session import Session

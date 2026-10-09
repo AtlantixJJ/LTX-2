@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import sys
 
-from scripts.onestep_avatar.queue_protocol import LAUNCH_ENV
+from scripts.onestep_avatar.execution.queue_protocol import LAUNCH_ENV
 from scripts.onestep_avatar.training import numerics
 
 

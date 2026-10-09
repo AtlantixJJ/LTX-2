@@ -82,7 +82,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     record = convert(args.study)
-    from scripts.onestep_avatar.queue import validate_job_list  # noqa: PLC0415 -- data validation only
+    from scripts.onestep_avatar.execution.queue import validate_job_list  # noqa: PLC0415 -- data validation only
 
     validate_job_list(record)
     with args.output.open("x") as stream:

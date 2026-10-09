@@ -1,4 +1,4 @@
-# `software.py` — bind the actual producer computation
+# `execution/software.py` — bind the actual producer computation
 
 ## Objective
 
@@ -32,6 +32,11 @@ store it in their records, recheck it before model work and before publication.
 Current completion verifiers require the same current profile manifest.
 
 ## Organization logic
+
+Every profile binds `execution/__init__.py`, the empty marker imported
+before an execution owner. It joins `COMMON` with the root package marker.
+Changing either marker invalidates a current manifest; historical integrity
+reading preserves its recorded owner list.
 
 Import `LTX_ROOT` from the package marker for every source path. `COMMON`
 includes that marker because its bytes define repository roots. A move into a

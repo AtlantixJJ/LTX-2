@@ -1,24 +1,50 @@
 """Historical generation conversion preserves literal conditions and saved noise without execution."""
 
 import json
+import subprocess
+from hashlib import sha256 as bytes_sha256
 from pathlib import Path
 
 import pytest
 import torch
 
-from scripts.onestep_avatar import WORKSPACE_ROOT, dataset, evaluate, queue, sigma_sweep_jobs, subset
+from scripts.onestep_avatar import LTX_ROOT, WORKSPACE_ROOT, dataset, evaluate, sigma_sweep_jobs, subset
+from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.hashing import sha256
 
 EVIDENCE = WORKSPACE_ROOT / "expr/onestep_avatar/two_mode_restructure_20261005"
 STUDY = WORKSPACE_ROOT / "expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926"
 
 
-def test_actual_prepared_jobs_preserve_all_historical_inputs_and_schedules() -> None:  # noqa: PLR0915 -- full case inventory
+@pytest.mark.parametrize("preparation_kind", ["historical", "current"])
+def test_actual_prepared_jobs_preserve_all_historical_inputs_and_schedules(  # noqa: PLR0915 -- full case inventory
+    tmp_path: Path, preparation_kind: str,
+) -> None:
     cases = json.loads((STUDY / "configs/generation_cases.json").read_text())["cases"]
-    prepared = EVIDENCE / "sigma_sweep_generation_v4"
-    provenance = json.loads((prepared / "preparation.json").read_text())
+    historical = EVIDENCE / "sigma_sweep_generation_v4"
+    original_record = historical / "preparation.json"
+    original_record_bytes = original_record.read_bytes()
+    historical_provenance = json.loads(original_record_bytes)
+    if preparation_kind == "historical":
+        prepared = historical
+        provenance = historical_provenance
+        # The recorded producer predates owner moves; bind its preserved bytes.
+        original_source = subprocess.run(
+            ["git", "show", "44b72f1539bd98009c69ef25c0604280b677235c:scripts/onestep_avatar/sigma_sweep_jobs.py"],
+            cwd=LTX_ROOT, capture_output=True, check=True, timeout=5,
+        ).stdout
+        assert provenance["producer_sha256"] == bytes_sha256(original_source).hexdigest()
+    else:
+        prepared = tmp_path / "current_preparation"
+        jobs_record = sigma_sweep_jobs.prepare(STUDY / "configs/generation_cases.json", prepared)
+        assert jobs_record == json.loads((prepared / "jobs.json").read_text())
+        provenance = json.loads((prepared / "preparation.json").read_text())
+        assert provenance["producer_sha256"] == sha256(Path(sigma_sweep_jobs.__file__))
+        assert provenance["source_hashes"] == {
+            "subset.py": sha256(Path(subset.__file__)), "evaluate.py": sha256(Path(evaluate.__file__)),
+        }
+        assert provenance["input_file_hashes"] == historical_provenance["input_file_hashes"]
     assert provenance["schema_version"] == 2
-    assert provenance["producer_sha256"] == sha256(Path(sigma_sweep_jobs.__file__))
     assert len(provenance["derived_file_hashes"]) == 13
     for name, digest in provenance["derived_file_hashes"].items():
         assert sha256(prepared / name) == digest
@@ -75,6 +101,7 @@ def test_actual_prepared_jobs_preserve_all_historical_inputs_and_schedules() -> 
             row = next(row for row in manifest["videos"] if row["sigma"] == args.schedule[0])
             assert args.schedule == row["schedule"]
             assert job["completion"]["records"] == [str(args.output / "case_0000/variant_000/result.json")]
+    assert original_record.read_bytes() == original_record_bytes
 
 
 def test_existing_generation_output_is_refused_before_input_read(tmp_path: Path) -> None:

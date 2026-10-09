@@ -1,6 +1,6 @@
-# `queue_launch.py` — register the child before model execution
+# `execution/queue_launch.py` — register the child before model execution
 
-Status: **Persistent dispatch uses the launch gate. Real CPU-process dispatch and guarded recovery checks pass; full native integration remains separate; read [current acceptance](known_gaps.md#current-acceptance-and-next-step).**
+Status: **Persistent dispatch uses the launch gate. Real CPU-process dispatch and guarded recovery checks pass; full native integration remains separate; read [current acceptance](../known_gaps.md#current-acceptance-and-next-step).**
 Transient internal calls without a journal are outside the persisted protocol.
 
 ## Objective
@@ -109,7 +109,7 @@ inventory refuse without writing the ledger.
 
 Use the existing registry lock/read/write implementation as an internal
 compatibility interface for this one recovery transaction; do not implement a
-second ledger format or writer. Keep `process_registry.py` and `supervision.py`
+second ledger format or writer. Keep `execution/process_registry.py` and `execution/supervision.py`
 bytes unchanged during original source-bound native replay. This scoped route
 does not alter their scientific producer manifests or relax source verification.
 

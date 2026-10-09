@@ -9,7 +9,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import evaluate, process_registry, queue
+from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar.execution import process_registry, queue
 
 
 def controlled_terminal_child(monkeypatch):

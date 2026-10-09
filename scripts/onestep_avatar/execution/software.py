@@ -1,4 +1,4 @@
-"""Explicit current source/runtime identity; see doc/software.md."""
+"""Explicit current source/runtime identity; see doc/execution/software.md."""
 from __future__ import annotations
 
 import hashlib
@@ -18,14 +18,14 @@ PROFILES = ('training', 'evaluation', 'inference', 'decoding', 'preparation')
 DISTRIBUTIONS = ('torch', 'peft', 'safetensors', 'accelerate', 'transformers',
                  'ltx-core', 'ltx-pipelines', 'ltx-trainer', 'triton', 'flash-attn', 'natten',
                  'numpy', 'Pillow', 'opencv-python', 'imageio', 'imageio-ffmpeg', 'lpips')
-COMMON = ('__init__.py', 'software.py', 'hashing.py', 'dataset.py', 'subset.py', 'precompute.py',
-          'geometry.py', 'mask_video.py', 'training/config.py',
-          'training/checkpoints.py', 'model/common.py', 'model/sampling.py', 'model/backbone.py',
-          'model/adapters.py')
+COMMON = ('__init__.py', 'execution/__init__.py', 'execution/software.py', 'hashing.py', 'dataset.py', 'subset.py',
+          'precompute.py', 'geometry.py', 'mask_video.py', 'training/config.py', 'training/checkpoints.py',
+          'model/common.py', 'model/sampling.py', 'model/backbone.py', 'model/adapters.py')
 ENTRIES = {'training': ('train.py', 'training/engine.py', 'training/startup.py', 'training/update_state.py',
                         'training/resources.py', 'training/runtime.py', 'training/consumer_trace.py',
                         'training/numerics.py',
-                        'supervision.py', 'process_registry.py', 'queue.py', 'queue_protocol.py'),
+                        'execution/supervision.py', 'execution/process_registry.py', 'execution/queue.py',
+                        'execution/queue_protocol.py'),
            'evaluation': ('evaluate.py', 'stock_parity.py'), 'inference': ('infer.py', 'evaluate.py'),
            'decoding': ('media.py', 'evaluate.py', 'decode_saved.py', 'sigma_sweep.py', 'sigma_sweep_results.py'),
            'preparation': ('prepare_inputs.py', 'media.py', 'evaluate.py', 'training/engine.py')}

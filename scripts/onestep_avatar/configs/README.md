@@ -558,7 +558,7 @@ Native previews/product and perceptual quality are separate acceptance gates.
 Review a normalized package queue without starting children:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.queue \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
   --jobs <QUEUE_JSON> --state <STATE_JSON> --dry-run
 ```
 
@@ -587,7 +587,7 @@ not start a campaign or replace historical media.
 Dispatch normalized jobs with direct GPU queries and one shared process ledger:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.queue \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
   --jobs <QUEUE_JSON> --state <STATE_JSON> --execute --loop \
   --process-ledger <SHARED_PROCESS_LEDGER.json> --poll-seconds 30
 ```
@@ -602,7 +602,7 @@ only after verified completion. Failed or running journal entries stop the
 loop. Explicit recovery checks terminated child handles and saved outputs:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.queue \
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
   --jobs <QUEUE_JSON> --state <STATE_JSON> --recover
 ```
 
@@ -614,7 +614,7 @@ and logs preserved under `superseded_startup_contention/`. A token-bound
 CUDA OOM or typed port-in-use event must precede every rank's update boundary;
 surviving workers and any numeric update forbid retry. Other failures stop.
 `--once` returns 2 when a preserved retry is pending and starts no second child.
-See [retry evidence](../doc/queue.md#startup-contention-retries). Historical text
+See [retry evidence](../doc/execution/queue.md#startup-contention-retries). Historical text
 job lists and mode-less jobs need conversion before these commands can execute
 them. These recipes do not restart an existing queue or start a campaign.
 

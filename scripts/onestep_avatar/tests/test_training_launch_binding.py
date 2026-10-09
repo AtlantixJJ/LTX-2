@@ -10,8 +10,8 @@ import pytest
 import torch
 from accelerate.utils import DistributedType
 
-from scripts.onestep_avatar import queue
 from scripts.onestep_avatar import training_update_check as check
+from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.training import numerics, resources
 
@@ -430,7 +430,7 @@ def test_input_change_during_serial_accelerator_setup_refuses_before_models_or_o
 def test_engine_actual_accelerator_refuses_checked_queued_launch_before_models_or_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, defect: str
 ) -> None:
-    from scripts.onestep_avatar.queue_protocol import LAUNCH_ENV
+    from scripts.onestep_avatar.execution.queue_protocol import LAUNCH_ENV
 
     raw, _, _, _, _, _ = original_job(tmp_path)
     output = tmp_path / "fresh_training"

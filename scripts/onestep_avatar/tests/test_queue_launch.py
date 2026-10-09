@@ -8,15 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from scripts.onestep_avatar import process_registry, queue, queue_launch as launch, supervision
-from scripts.onestep_avatar.queue_protocol import JOB_ENV, LAUNCH_PROTOCOL, TOKEN_ENV
+from scripts.onestep_avatar.execution import process_registry, queue, queue_launch as launch, supervision
+from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, LAUNCH_PROTOCOL, TOKEN_ENV
 
 
 def request_for(tmp_path, *, owner=None):
     executed = tmp_path / 'executed.json'
     command = [sys.executable, '-c',
         'import os,json; from pathlib import Path; '
-        'from scripts.onestep_avatar.queue import process_identity; '
+        'from scripts.onestep_avatar.execution.queue import process_identity; '
         f'Path({str(executed)!r}).write_text(json.dumps(process_identity(os.getpid())))']
     path = launch.prepare_request(tmp_path / 'launch', token='b' * 32, job_sha256='a' * 64,
         owner_identity=queue.process_identity(os.getpid()) if owner is None else owner,
@@ -25,7 +25,7 @@ def request_for(tmp_path, *, owner=None):
 
 
 def start_guard(path, log, *, timeout=5, environment=None):
-    return subprocess.Popen([sys.executable, '-m', 'scripts.onestep_avatar.queue_launch',
+    return subprocess.Popen([sys.executable, '-m', 'scripts.onestep_avatar.execution.queue_launch',
         '--request', str(path), '--timeout', str(timeout), '--poll-seconds', '0.01'],
         env={**os.environ, TOKEN_ENV:'b' * 32, JOB_ENV:'a' * 64, **(environment or {})},
         stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -276,7 +276,7 @@ def test_registered_nontraining_recovery_refuses_ambiguous_evidence(tmp_path, mo
         command = child['identity']['command']
         if failure == 'train': command[2] = 'scripts.onestep_avatar.train'
         elif failure == 'accelerate': command[2] = 'accelerate.commands.launch'
-        elif failure == 'unsupported_module': command[2] = 'scripts.onestep_avatar.queue'
+        elif failure == 'unsupported_module': command[2] = 'scripts.onestep_avatar.execution.queue'
         else: command.append('--supervise')
         saved_launch['command'] = command
     elif failure == 'multiple_gpus': owned['gpus'] = [0, 1]
@@ -342,7 +342,7 @@ def test_registered_recovery_covers_ended_real_package_child(tmp_path, monkeypat
     ledger = tmp_path / 'real-processes.json'; identity_file = tmp_path / 'token.json'
     owner_source = (
         'import json, subprocess, sys\nfrom pathlib import Path\n'
-        'from scripts.onestep_avatar.process_registry import ProcessRegistry\n'
+        'from scripts.onestep_avatar.execution.process_registry import ProcessRegistry\n'
         f'owner=ProcessRegistry(Path({str(ledger)!r}),inventory=lambda:{{gpu:0 for gpu in range(6)}})\n'
         'assert owner.acquire((0,),job="real-direct-media")\n'
         'child=subprocess.Popen([sys.executable,"-m","scripts.onestep_avatar.media","--help"],'
@@ -534,12 +534,18 @@ def test_owner_may_exit_after_durable_approval_without_revoking_registered_child
     script = '''
 import json,os,subprocess,sys,time
 from pathlib import Path
-from scripts.onestep_avatar import queue,queue_launch as launch
-from scripts.onestep_avatar.queue_protocol import TOKEN_ENV,JOB_ENV,LAUNCH_PROTOCOL
+from scripts.onestep_avatar.execution import queue, queue_launch as launch
+from scripts.onestep_avatar.execution.queue_protocol import TOKEN_ENV,JOB_ENV,LAUNCH_PROTOCOL
 root=Path(sys.argv[1])
-command=[sys.executable,'-c',"import os,json; from pathlib import Path; from scripts.onestep_avatar.queue import process_identity; Path("+repr(str(root/'executed.json'))+").write_text(json.dumps(process_identity(os.getpid())))"]
+command=[
+    sys.executable,'-c',
+    "import os,json; from pathlib import Path; "
+    "from scripts.onestep_avatar.execution.queue import process_identity; Path("
+    +repr(str(root/'executed.json'))+
+    ").write_text(json.dumps(process_identity(os.getpid())))"
+]
 path=launch.prepare_request(root/'launch',token='b'*32,job_sha256='a'*64,owner_identity=queue.process_identity(os.getpid()),job_id='case',journal=root/'journal.json',command=command)
-child=subprocess.Popen([sys.executable,'-m','scripts.onestep_avatar.queue_launch','--request',str(path),'--timeout','5'],env={**os.environ,TOKEN_ENV:'b'*32,JOB_ENV:'a'*64},start_new_session=True)
+child=subprocess.Popen([sys.executable,'-m','scripts.onestep_avatar.execution.queue_launch','--request',str(path),'--timeout','5'],env={**os.environ,TOKEN_ENV:'b'*32,JOB_ENV:'a'*64},start_new_session=True)
 deadline=time.monotonic()+5
 while not (path.parent/'bootstrap.json').exists():
  if time.monotonic()>deadline: raise RuntimeError('missing bootstrap')
@@ -601,7 +607,7 @@ def test_real_dispatch_registers_before_grant_and_observes_approved_transition(t
     executed, release = tmp_path/'executed.json', tmp_path/'release'
     command = [sys.executable, '-c',
         'import os,json,time; from pathlib import Path; '
-        'from scripts.onestep_avatar.queue import process_identity; '
+        'from scripts.onestep_avatar.execution.queue import process_identity; '
         f'Path({str(executed)!r}).write_text(json.dumps(process_identity(os.getpid()))); '
         f'release=Path({str(release)!r}); '
         '\nwhile not release.exists(): time.sleep(.01)']

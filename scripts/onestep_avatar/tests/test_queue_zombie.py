@@ -12,8 +12,8 @@ from typing import TypeVar
 
 import pytest
 
-from scripts.onestep_avatar import queue
-from scripts.onestep_avatar.queue_protocol import TOKEN_ENV
+from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution.queue_protocol import TOKEN_ENV
 
 T = TypeVar("T")
 
@@ -35,7 +35,7 @@ def test_unreaped_real_child_recovers_only_after_all_owned_workers_exit(  # noqa
     ready, release, worker_file = tmp_path / "ready", tmp_path / "release", tmp_path / "worker.json"
     code = """import os,sys,time,json,subprocess
 from pathlib import Path
-from scripts.onestep_avatar.queue import process_identity
+from scripts.onestep_avatar.execution.queue import process_identity
 root=Path(sys.argv[1])
 if sys.argv[2]=='yes':
     worker=subprocess.Popen(

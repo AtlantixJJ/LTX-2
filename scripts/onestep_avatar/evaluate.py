@@ -18,8 +18,9 @@ from pathlib import Path
 import torch
 
 from ltx_core.components.patchifiers import VideoLatentPatchifier
-from scripts.onestep_avatar import dataset, software, subset
+from scripts.onestep_avatar import dataset, subset
 from scripts.onestep_avatar.dataset import atomic_write
+from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters as adapter_loader
 from scripts.onestep_avatar.model import backbone, bidirectional, causal, common

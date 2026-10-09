@@ -9,8 +9,8 @@ import pytest
 import torch
 from accelerate.utils import DistributedType
 
-from scripts.onestep_avatar import software
 from scripts.onestep_avatar import training_update_check as check
+from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.training import config, update_state
 
 

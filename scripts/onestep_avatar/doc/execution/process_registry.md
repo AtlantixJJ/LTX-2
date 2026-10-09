@@ -1,4 +1,4 @@
-# `process_registry.py` — shared records of our own package processes
+# `execution/process_registry.py` — shared records of our own package processes
 
 ## Objective
 

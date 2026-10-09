@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import evaluate, queue
+from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.tests.test_saved_comparisons import (
     test_saved_study_spec_renders_master_and_output_with_report_metrics as render_fixture,
 )
@@ -130,7 +131,7 @@ def test_only_one_render_spec_and_no_gpu_override_are_accepted(rendered,tmp_path
 
 
 def test_render_dispatch_claims_one_device_and_publishes_verified_receipt(rendered,tmp_path,monkeypatch, controlled_queue_launch):
-    from scripts.onestep_avatar import process_registry
+    from scripts.onestep_avatar.execution import process_registry
     output=tmp_path/'rendered'
     prepared=tmp_path/'held_render'
     output.rename(prepared)

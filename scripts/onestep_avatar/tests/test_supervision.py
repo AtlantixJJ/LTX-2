@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from scripts.onestep_avatar import process_registry, queue, supervision
-from scripts.onestep_avatar.queue_protocol import JOB_ENV, TOKEN_ENV
+from scripts.onestep_avatar.execution import process_registry, queue, supervision
+from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
 
 TOKEN = "1" * 32
 JOB = "2" * 64
@@ -175,7 +175,7 @@ def test_real_ignored_term_has_finite_kill_and_retains_claims(tmp_path):
 def test_complete_rank_phase_notifications_pass(tmp_path):
     path, env = contract(tmp_path, ["load", "export"])
     child, command, identity = spawn(tmp_path,
-        "from scripts.onestep_avatar.supervision import notify_phase\n"
+        "from scripts.onestep_avatar.execution.supervision import notify_phase\n"
         "Path(READY).write_text('ready')\ntime.sleep(.05)\n"
         f"notify_phase('load', 'begin', 0, budget_sha256={BUDGET!r})\n"
         f"notify_phase('load', 'end', 0, budget_sha256={BUDGET!r})\n"
@@ -199,7 +199,7 @@ def test_complete_rank_phase_notifications_pass(tmp_path):
 def test_phase_and_gap_deadlines_are_finite(tmp_path, code, error):
     path, env = contract(tmp_path, ["load", "export"])
     child, command, identity = spawn(tmp_path,
-        "from scripts.onestep_avatar.supervision import notify_phase\n"
+        "from scripts.onestep_avatar.execution.supervision import notify_phase\n"
         "Path(READY).write_text('ready')\ntime.sleep(.05)\n" + code + "time.sleep(20)\n", env)
     try:
         result = run(tmp_path, child, command, identity, path)

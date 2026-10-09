@@ -10,9 +10,9 @@ import torch
 from scripts.onestep_avatar import subset
 from scripts.onestep_avatar.dataset import atomic_write
 from scripts.onestep_avatar.evaluate import tensor_sha256
+from scripts.onestep_avatar.execution.queue import validate_job_list
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model.sampling import validate_schedule
-from scripts.onestep_avatar.queue import validate_job_list
 
 
 def full_noise(manifest: dict, noises: dict, blocks: dict) -> dict[str, torch.Tensor]:

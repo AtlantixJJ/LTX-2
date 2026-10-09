@@ -8,7 +8,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from scripts.onestep_avatar import dataset, evaluate, media, sigma_sweep_results, software
+from scripts.onestep_avatar import dataset, evaluate, media, sigma_sweep_results
+from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 
 LEVELS = {0.421875: ("one_step", 1), 0.725: ("official", 2),

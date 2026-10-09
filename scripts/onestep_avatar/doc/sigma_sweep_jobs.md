@@ -88,5 +88,9 @@ bytes/hashes are preserved as provenance text; native parity remains separate.
 Check exact eight-job coverage, arms, source, geometry, prompt, seed, schedules,
 shared saved noise and result paths. Reject changed manifests, raw noise,
 conflicting paired inputs, wrong forcing/guidance, wrong weights and existing
-output. Real read-only preparation verifies the four historical cases; native
-model and queue execution remain separate acceptance requirements.
+output. Check the saved historical preparation against its original producer
+bytes in Git. Run the current model-free producer into a fresh test directory,
+bind its current producer/source hashes, and check the same original input
+hashes, memberships, noise and schedules in both preparations. Never replace a
+historical record's producer hash with the current source hash. Native model
+and queue execution remain separate acceptance requirements.

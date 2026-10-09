@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.onestep_avatar import queue_launch
+from scripts.onestep_avatar.execution import queue_launch
 
 
 @pytest.fixture

@@ -3,7 +3,7 @@ from copy import deepcopy
 
 import pytest
 
-from scripts.onestep_avatar import software
+from scripts.onestep_avatar.execution import software
 
 
 @pytest.mark.parametrize('profile', software.PROFILES)
@@ -11,6 +11,7 @@ def test_declared_real_owner_inventory_and_runtime(profile):
     mode = None if profile == 'decoding' else 'causal'
     record = software.capture(profile, mode)
     software.check_current(record)
+    assert 'scripts/onestep_avatar/execution/__init__.py' in record['sources']
     assert 'scripts/onestep_avatar/model/common.py' in record['sources']
     assert 'scripts/onestep_avatar/model/adapters.py' in record['sources']
     assert 'scripts/onestep_avatar/precompute.py' in record['sources']
@@ -25,7 +26,8 @@ def test_declared_real_owner_inventory_and_runtime(profile):
 
 
 @pytest.mark.parametrize('owner', [
-    '__init__.py', 'model/common.py', 'model/causal.py', 'model/sampling.py', 'model/adapters.py', 'precompute.py',
+    '__init__.py', 'execution/__init__.py',
+    'model/common.py', 'model/causal.py', 'model/sampling.py', 'model/adapters.py', 'precompute.py',
 ])
 def test_changed_owner_fails_current_check_and_history_stays_readable(monkeypatch, owner):
     record = software.capture('evaluation', 'causal')

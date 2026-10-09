@@ -1,4 +1,4 @@
-"""Track our exact child processes in one ledger; see doc/process_registry.md."""
+"""Track our exact child processes in one ledger; see doc/execution/process_registry.md."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 def _identity(pid: int) -> dict | None:
-    from scripts.onestep_avatar.queue import process_identity  # noqa: PLC0415 -- single stable identity owner
+    from scripts.onestep_avatar.execution.queue import process_identity  # noqa: PLC0415 -- single stable identity owner
 
     return process_identity(pid)
 
@@ -48,7 +48,7 @@ def gpu_memory(*, timeout: float = 5) -> dict[int, int]:
         ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
         check=True, capture_output=True, text=True, timeout=timeout,
     )
-    from scripts.onestep_avatar.queue import parse_gpu_memory  # noqa: PLC0415 -- existing inventory contract
+    from scripts.onestep_avatar.execution.queue import parse_gpu_memory  # noqa: PLC0415 -- existing inventory contract
 
     return parse_gpu_memory(result.stdout)
 
@@ -152,7 +152,7 @@ class ProcessRegistry:
             previous["commands"].append(identity["command"])
 
     def choose(self, memory: dict[int, int], *, training: bool) -> tuple[int, ...] | None:
-        from scripts.onestep_avatar.queue import (  # noqa: PLC0415 -- preserve existing GPU selection
+        from scripts.onestep_avatar.execution.queue import (  # noqa: PLC0415 -- preserve existing GPU selection
             ALLOWED_GPUS,
             EVALUATION_PREFERENCE,
             TRAIN_GPUS,
@@ -169,7 +169,7 @@ class ProcessRegistry:
         return next(((gpu,) for gpu in EVALUATION_PREFERENCE if gpu in free), None)
 
     def acquire(self, gpus: tuple[int, ...], *, job: str) -> bool:
-        from scripts.onestep_avatar.queue import ALLOWED_GPUS  # noqa: PLC0415 -- existing device restriction
+        from scripts.onestep_avatar.execution.queue import ALLOWED_GPUS  # noqa: PLC0415 -- existing device restriction
 
         if self.owned or not gpus or len(set(gpus)) != len(gpus) or not set(gpus).issubset(ALLOWED_GPUS):
             raise ValueError("own process start requires unique allowed GPUs and a fresh attempt")

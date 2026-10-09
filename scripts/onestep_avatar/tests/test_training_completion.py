@@ -7,7 +7,7 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from scripts.onestep_avatar import queue
+from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_applied_runtime import inventory
 from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B

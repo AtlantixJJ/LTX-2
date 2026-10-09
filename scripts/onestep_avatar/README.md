@@ -244,7 +244,7 @@ The product pilot starts at clip zero; seven-frame training does not certify
 17-frame output or longer causal coverage. Random-start product support is outside
 this acceptance scope. Product has no capture target or GT history.
 
-`software.py` records actual source bytes and installed runtime versions for each
+`execution/software.py` records actual source bytes and installed runtime versions for each
 producer. Launch, publication and current completion check the saved manifest;
 historical validation preserves recorded evidence without restamping it.
 

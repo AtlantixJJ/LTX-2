@@ -17,7 +17,7 @@ from types import TracebackType
 
 import torch
 
-from scripts.onestep_avatar.queue_protocol import JOB_ENV, PREFIX, TOKEN_ENV
+from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, PREFIX, TOKEN_ENV
 
 
 class StartupEvents:

@@ -67,7 +67,7 @@ When a checked supervision contract is present, publish token/job/rank/budget-bo
 phase begin before the initial synchronize and phase end after measurement.
 Notification failure fails the measurement while preserving an original operation
 error. Without this contract the hooks do nothing. The shared
-`supervision.py` observer uses these events to time an in-progress phase; its
+`execution/supervision.py` observer uses these events to time an in-progress phase; its
 separate startup and transition guards cover intervals outside a local phase.
 Historical supervisor text remains preserved and is not a current executor.
 The local `load` phase starts after Accelerator setup; a separate startup guard

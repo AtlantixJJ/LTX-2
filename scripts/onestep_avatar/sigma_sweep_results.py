@@ -12,7 +12,8 @@ final publication; schema-one historical tensor specs bypass this helper.
 import json
 from pathlib import Path
 
-from scripts.onestep_avatar import dataset, evaluate, queue
+from scripts.onestep_avatar import dataset, evaluate
+from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.hashing import sha256
 
 

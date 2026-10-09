@@ -27,7 +27,8 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedType
 from safetensors.torch import load_file
 
-from scripts.onestep_avatar import LTX_ROOT, dataset, queue, software
+from scripts.onestep_avatar import LTX_ROOT, dataset
+from scripts.onestep_avatar.execution import queue, software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, bidirectional, causal, common
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources, runtime, update_state
@@ -410,7 +411,9 @@ def _execute(  # noqa: PLR0915 -- bounded replay
                          lambda path: path.write_text(json.dumps(protocol, indent=2) + "\n"))
     trace = None
     if consumer_trace or settings.consumer_trace:
-        from scripts.onestep_avatar.queue_protocol import TOKEN_ENV  # noqa: PLC0415 -- serial attempt identity
+        from scripts.onestep_avatar.execution.queue_protocol import (  # noqa: PLC0415 -- serial attempt identity
+            TOKEN_ENV,
+        )
         from scripts.onestep_avatar.training.consumer_trace import Trace  # noqa: PLC0415 -- selected diagnostic
         trace = lifecycle.enter_context(Trace(transformer, {"rank": 0, "world_size": 1,
                                    "queue_job_sha256": launch["sha256"],
@@ -521,9 +524,9 @@ def _execute(  # noqa: PLR0915 -- bounded replay
 
 def supervised_reference(job_path: Path, output: Path, world: int, ledger: Path, *, trace: bool = False) -> dict:
     """Launch this exact diagnostic with direct GPU inventory and own-process tracking."""
-    from scripts.onestep_avatar import supervision  # noqa: PLC0415 -- shared bounded observer
-    from scripts.onestep_avatar.process_registry import ProcessRegistry, gpu_memory  # noqa: PLC0415
-    from scripts.onestep_avatar.queue_protocol import JOB_ENV, TOKEN_ENV  # noqa: PLC0415
+    from scripts.onestep_avatar.execution import supervision  # noqa: PLC0415 -- shared bounded observer
+    from scripts.onestep_avatar.execution.process_registry import ProcessRegistry, gpu_memory  # noqa: PLC0415
+    from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV  # noqa: PLC0415
 
     if output.exists():
         raise ValueError("serial reference requires a fresh output directory")

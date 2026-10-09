@@ -21,7 +21,8 @@ from pathlib import Path
 import torch
 
 from ltx_core.model.transformer.modality import Modality
-from scripts.onestep_avatar import LTX_ROOT, dataset, evaluate, software
+from scripts.onestep_avatar import LTX_ROOT, dataset, evaluate
+from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import causal, common
 from scripts.onestep_avatar.training.resources import Phase
@@ -30,7 +31,7 @@ TARGETS = (("before", (3, 5)), ("after", (11, 13)))
 CHUNK_ELEMENTS = 131072
 EXTRA_SOURCES = ("scripts/onestep_avatar/continuation_check.py",
                  "scripts/onestep_avatar/training/resources.py",
-                 "scripts/onestep_avatar/supervision.py")
+                 "scripts/onestep_avatar/execution/supervision.py")
 IMPORTED_OWNER_SHA256 = sha256(Path(__file__))
 
 
@@ -634,7 +635,7 @@ def scientific_binding(prepared: dict) -> dict:
 
 def check_launch_record(path: Path, prepared: dict, args: argparse.Namespace) -> None:
     record = json.loads(path.read_text())
-    from scripts.onestep_avatar.queue_protocol import JOB_ENV, TOKEN_ENV  # noqa: PLC0415 -- shared names
+    from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV  # noqa: PLC0415 -- shared names
 
     if (sha256(path) != os.environ.get(JOB_ENV) or not os.environ.get(TOKEN_ENV)
             or record.get("binding") != scientific_binding(prepared)
@@ -646,9 +647,12 @@ def check_launch_record(path: Path, prepared: dict, args: argparse.Namespace) ->
 
 def supervised_run(args: argparse.Namespace, prepared: dict) -> dict:
     """Use the existing own registry and supervisor, with the exact original bounds."""
-    from scripts.onestep_avatar import queue, supervision  # noqa: PLC0415 -- existing model-free process owners
-    from scripts.onestep_avatar.process_registry import ProcessRegistry, gpu_memory  # noqa: PLC0415
-    from scripts.onestep_avatar.queue_protocol import JOB_ENV, TOKEN_ENV  # noqa: PLC0415
+    from scripts.onestep_avatar.execution import (  # noqa: PLC0415 -- existing model-free process owners
+        queue,
+        supervision,
+    )
+    from scripts.onestep_avatar.execution.process_registry import ProcessRegistry, gpu_memory  # noqa: PLC0415
+    from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV  # noqa: PLC0415
 
     registry = ProcessRegistry(args.process_ledger)
     gpus = registry.choose(gpu_memory(), training=False)

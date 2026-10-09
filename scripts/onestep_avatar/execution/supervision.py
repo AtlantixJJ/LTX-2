@@ -1,4 +1,4 @@
-"""Bound registered children and retain own process records; see doc/supervision.md."""
+"""Bound registered children and retain own process records; see doc/execution/supervision.md."""
 
 from __future__ import annotations
 
@@ -17,10 +17,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from scripts.onestep_avatar.queue_protocol import JOB_ENV, TOKEN_ENV
+from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
 
 if TYPE_CHECKING:
-    from scripts.onestep_avatar.process_registry import ProcessRegistry
+    from scripts.onestep_avatar.execution.process_registry import ProcessRegistry
 
 SUPERVISION_ENV = "ONESTEP_AVATAR_SUPERVISION"
 SUPERVISION_SHA_ENV = "ONESTEP_AVATAR_SUPERVISION_SHA256"
@@ -93,7 +93,9 @@ def notify_phase(phase: str, event: str, rank: int, *, budget_sha256: str | None
             or type(rank) is not int or not 0 <= rank < contract["world"]
             or phase not in contract["phases"] or event not in ("begin", "end")):
         raise ValueError("phase notification differs from its bound attempt/rank/phase")
-    from scripts.onestep_avatar.queue import process_identity  # noqa: PLC0415 -- one model-free identity owner
+    from scripts.onestep_avatar.execution.queue import (  # noqa: PLC0415 -- one model-free identity owner
+        process_identity,
+    )
 
     index = contract["phases"].index(phase)
     identity = process_identity(os.getpid())
@@ -112,7 +114,7 @@ def _positive(value: float, name: str) -> None:
 
 
 def _observe(identity: dict, command: list[str], worker_record: dict) -> dict | None:
-    from scripts.onestep_avatar.queue import process_identity  # noqa: PLC0415 -- existing identity authority
+    from scripts.onestep_avatar.execution.queue import process_identity  # noqa: PLC0415 -- existing identity authority
 
     current = process_identity(identity["pid"])
     if current is None:
@@ -120,7 +122,7 @@ def _observe(identity: dict, command: list[str], worker_record: dict) -> dict | 
     if any(current[key] != identity[key] for key in ("pid", "start_ticks")):
         raise ValueError("registered child PID/start identity changed")
     if not current["terminal"] and current["command"] != identity["command"]:
-        from scripts.onestep_avatar.queue_launch import verify_command_transition  # noqa: PLC0415
+        from scripts.onestep_avatar.execution.queue_launch import verify_command_transition  # noqa: PLC0415
 
         verify_command_transition(worker_record, current)
     if not current["terminal"] and current["command"] not in (identity["command"], command):
@@ -185,7 +187,7 @@ def _gpu_inventory(gpus: tuple[int, ...], timeout: float) -> dict[int, int]:
         ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
         capture_output=True, text=True, timeout=timeout, check=True,
     )
-    from scripts.onestep_avatar.queue import parse_gpu_memory  # noqa: PLC0415 -- shared inventory validation
+    from scripts.onestep_avatar.execution.queue import parse_gpu_memory  # noqa: PLC0415 -- shared inventory validation
 
     rows = parse_gpu_memory(result.stdout)
     if not set(gpus).issubset(rows):
@@ -422,7 +424,7 @@ def supervise(  # noqa: PLR0912, PLR0913, PLR0915 -- one finite lifecycle, expli
                 except (OSError, ValueError):
                     # Linux may clear cmdline just before the terminal stat appears.
                     # Only this exact Popen child's reaped exit can resolve that race.
-                    from scripts.onestep_avatar.queue import process_identity  # noqa: PLC0415
+                    from scripts.onestep_avatar.execution.queue import process_identity  # noqa: PLC0415
                     latest = process_identity(child.pid)
                     empty_owned_command = (latest is not None and not latest["command"]
                                            and all(latest[key] == identity[key] for key in ("pid", "start_ticks")))

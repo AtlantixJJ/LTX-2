@@ -1,4 +1,4 @@
-# `queue.py` — run saved package jobs
+# `execution/queue.py` — run saved package jobs
 
 Current saved-decoder completion requires each decoded row and comparison to
 pass the shared software manifest checker. Missing or stale software cannot
@@ -42,7 +42,7 @@ whose directory now contains `processes.json`, not new GPU reservation files.
 The launch owner enables child-subreaper tracking before dispatch. Exact targeted
 descendant observations include orphan ranks in new sessions without SSH scans.
 
-Budgeted training dispatch uses the shared `supervision.py` observer. Before
+Budgeted training dispatch uses the shared `execution/supervision.py` observer. Before
 launch it freezes the per-rank load/update/export notification contract beside
 the launch records. The existing budget's per-phase wall limit also supplies
 explicitly named startup and between-phase guards; these are distinct observed
@@ -198,12 +198,12 @@ PID/start ticks. Guarded recovery can mark an interrupted unapproved launch
 failed after proving its original owner is gone, approval is absent and saved
 bindings match. Token inspection alone cannot prove death between fork and exec.
 Old unguarded entries remain conservative; recovery never grants or retries work.
-Protocol names now come from `queue_protocol.py`, which imports no model library;
+Protocol names now come from `execution/queue_protocol.py`, which imports no model library;
 training.startup keeps its imported constant names for existing consumers.
 
 ### Interface and settings
 
-The CLI is `python -m scripts.onestep_avatar.queue --jobs <JSON> --state <JSON>`.
+The CLI is `python -m scripts.onestep_avatar.execution.queue --jobs <JSON> --state <JSON>`.
 `--loop` rereads and validates the append-only job list and state before each
 dispatch, verifies completed dependency receipts, selects evaluation/decode
 before training, and queries GPU memory directly each time. Run one child at a

@@ -7,7 +7,9 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import dataset, evaluate, queue, subset
+from scripts.onestep_avatar import dataset, evaluate
+from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar import subset
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- fixture dependency
 from scripts.onestep_avatar.tests.test_training_preflight import checked_settings  # noqa: F401
@@ -428,7 +430,7 @@ def test_evaluation_releases_each_resident_model_before_the_next_case(completed,
 
 
 def test_model_owner_change_blocks_current_completion_without_entry_change(completed, monkeypatch):
-    from scripts.onestep_avatar import software
+    from scripts.onestep_avatar.execution import software
     execute, _, _, _, _ = completed
     job, paths = execute()
     record = json.loads(paths[0].read_text())
@@ -442,7 +444,7 @@ def test_model_owner_change_blocks_current_completion_without_entry_change(compl
 
 
 def test_changed_model_owner_during_sampling_prevents_publication(completed, monkeypatch):
-    from scripts.onestep_avatar import software
+    from scripts.onestep_avatar.execution import software
     execute, _, settings, _, _ = completed
     original_hash = software.sha256
     original_sample = evaluate.sample_case

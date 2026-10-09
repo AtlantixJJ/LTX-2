@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.onestep_avatar import software
+from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.decode_saved import reusable
 from scripts.onestep_avatar.hashing import sha256
 

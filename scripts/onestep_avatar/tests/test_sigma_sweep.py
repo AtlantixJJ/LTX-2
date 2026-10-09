@@ -9,7 +9,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import WORKSPACE_ROOT, media, queue, sigma_sweep
+from scripts.onestep_avatar import WORKSPACE_ROOT, media, sigma_sweep
+from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.hashing import sha256
 from scripts.prune.core import model_registry as registry
 

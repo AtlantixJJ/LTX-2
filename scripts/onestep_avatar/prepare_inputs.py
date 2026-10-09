@@ -12,7 +12,8 @@ import numpy as np
 import torch
 from PIL import Image
 
-from scripts.onestep_avatar import dataset, evaluate, geometry, media, precompute, software
+from scripts.onestep_avatar import dataset, evaluate, geometry, media, precompute
+from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.prune.core import ltx_adapter, model_registry, preflight
 from scripts.prune.core.session import DTYPE

@@ -25,8 +25,9 @@ from accelerate.utils import DistributedType
 from peft.utils.other import fsdp_auto_wrap_policy
 
 from ltx_trainer.model_loader import load_transformer
-from scripts.onestep_avatar import dataset, software, windows
+from scripts.onestep_avatar import dataset, windows
 from scripts.onestep_avatar import subset as video_lists
+from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, backbone, bidirectional, common
 from scripts.onestep_avatar.model import causal as causal_core
@@ -56,8 +57,8 @@ LOGGER = logging.getLogger("onestep_avatar.train")
 
 def _launch_evidence(settings: RunSettings, job_digest: str | None) -> tuple[dict | None, Path | None]:
     """Read dispatch authority before model setup; never infer a missing launch."""
-    from scripts.onestep_avatar import queue  # noqa: PLC0415 -- public canonical launch authority
-    from scripts.onestep_avatar.queue_protocol import LAUNCH_ENV  # noqa: PLC0415 -- model-free protocol
+    from scripts.onestep_avatar.execution import queue  # noqa: PLC0415 -- public canonical launch authority
+    from scripts.onestep_avatar.execution.queue_protocol import LAUNCH_ENV  # noqa: PLC0415 -- model-free protocol
     from scripts.onestep_avatar.training.config import parse_settings  # noqa: PLC0415
 
     path = os.environ.get(LAUNCH_ENV)
@@ -86,7 +87,7 @@ def _launch_evidence(settings: RunSettings, job_digest: str | None) -> tuple[dic
 
 def _check_launch_current(launch: dict | None, path: Path | None) -> None:
     if launch is not None:
-        from scripts.onestep_avatar import queue  # noqa: PLC0415 -- same preflight/publication authority
+        from scripts.onestep_avatar.execution import queue  # noqa: PLC0415 -- same preflight/publication authority
         if queue.read_training_launch(path) != launch:
             raise ValueError("original dispatch launch changed during training")
 
@@ -1328,7 +1329,7 @@ def verify_training_conditions(job: dict, checkpoint: Path, contract: dict) -> N
     config_path, plan_path = settings.output / "config.json", settings.output / "frame_plan.json"
     resolved = json.loads(config_path.read_text())
     software.check_current(resolved.get("software"))
-    from scripts.onestep_avatar import queue  # noqa: PLC0415 -- current launch authority
+    from scripts.onestep_avatar.execution import queue  # noqa: PLC0415 -- current launch authority
     launch = resolved.get("queue_launch")
     queue.verify_training_launch(launch, job)
     runtime.validate(resolved.get("runtime"), settings.world_size, _launch_precision(launch), native=True,

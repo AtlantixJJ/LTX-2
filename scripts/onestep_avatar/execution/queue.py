@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from scripts.onestep_avatar import LTX_ROOT
-from scripts.onestep_avatar.queue_protocol import LAUNCH_PROTOCOL
+from scripts.onestep_avatar.execution.queue_protocol import LAUNCH_PROTOCOL
 
 ALLOWED_GPUS = frozenset(range(6))
 TRAIN_GPUS = (0, 1, 2, 3)
@@ -50,7 +50,7 @@ def live_attempt_processes(  # noqa: PLR0912 -- stable handle and token observat
     token: str, *, started_ticks: int | None = None, proc_root: Path = Path("/proc")
 ) -> list[int]:
     """Find token-bound workers even when Torch Elastic gives ranks new sessions."""
-    from scripts.onestep_avatar.queue_protocol import TOKEN_ENV  # noqa: PLC0415
+    from scripts.onestep_avatar.execution.queue_protocol import TOKEN_ENV  # noqa: PLC0415
 
     if not isinstance(token, str) or len(token) != 32 or any(c not in "0123456789abcdef" for c in token):
         raise ValueError("worker inspection requires an exact attempt token")
@@ -94,11 +94,15 @@ def live_attempt_processes(  # noqa: PLR0912 -- stable handle and token observat
 
 def owned_workers_live(row: dict) -> bool:
     """A session leader is insufficient to prove distributed child termination."""
-    from scripts.onestep_avatar.queue_protocol import TOKEN_ENV  # noqa: PLC0415 -- canonical environment field
+    from scripts.onestep_avatar.execution.queue_protocol import (  # noqa: PLC0415 -- canonical environment field
+        TOKEN_ENV,
+    )
 
     token = row.get("environment_changes", {}).get(TOKEN_ENV)
     if row.get("process_ledger") is not None:
-        from scripts.onestep_avatar.process_registry import inspect_record  # noqa: PLC0415 -- targeted own tree
+        from scripts.onestep_avatar.execution.process_registry import (  # noqa: PLC0415 -- targeted own tree
+            inspect_record,
+        )
         observed = inspect_record(Path(row["process_ledger"]), token)
         return not observed["complete"] or observed["workers_live"]
     return bool(
@@ -182,13 +186,13 @@ def inspect_child(row: dict) -> str:
     """Classify a saved child without adopting a reused or unidentified live PID."""
     pid = row.get("child_pid")
     if pid is None:
-        from scripts.onestep_avatar.queue_launch import inspect_unapproved_launch  # noqa: PLC0415
+        from scripts.onestep_avatar.execution.queue_launch import inspect_unapproved_launch  # noqa: PLC0415
 
         inspect_unapproved_launch(row)
         return "unapproved"
     saved = row.get("child_identity")
     if saved is None and row.get("launch_protocol") == LAUNCH_PROTOCOL:
-        from scripts.onestep_avatar.queue_launch import inspect_unapproved_launch  # noqa: PLC0415
+        from scripts.onestep_avatar.execution.queue_launch import inspect_unapproved_launch  # noqa: PLC0415
 
         inspect_unapproved_launch(row)
         return "unapproved"
@@ -205,7 +209,7 @@ def inspect_child(row: dict) -> str:
         raise ValueError("queue child identity differs; recovery is required")
     # Linux clears cmdline after exit while an unreaped zombie retains its PID/ticks.
     if current["command"] != saved.get("command") and not (current["terminal"] and current["command"] == []):
-        from scripts.onestep_avatar.queue_launch import verify_command_transition  # noqa: PLC0415
+        from scripts.onestep_avatar.execution.queue_launch import verify_command_transition  # noqa: PLC0415
 
         verify_command_transition(row, current)
     if owned_workers_live(row):
@@ -861,7 +865,9 @@ def queue_state(path: Path, jobs: list[dict], *, recover: bool = False):  # noqa
                     if row.get("child_pid") is None or (
                         row.get("child_identity") is None and row.get("launch_protocol")
                     ):
-                        from scripts.onestep_avatar.queue_launch import inspect_unapproved_launch  # noqa: PLC0415
+                        from scripts.onestep_avatar.execution.queue_launch import (  # noqa: PLC0415
+                            inspect_unapproved_launch,
+                        )
 
                         unapproved[job["id"]] = inspect_unapproved_launch(row)
                     elif inspect_child(row) == "live":
@@ -910,6 +916,8 @@ def verify_decoder_completion(job: dict) -> bool:  # noqa: PLR0912, PLR0915 -- e
     from scripts.onestep_avatar import (  # noqa: PLC0415 -- saved decoder and canonical identity owners
         decode_saved,
         media,
+    )
+    from scripts.onestep_avatar.execution import (  # noqa: PLC0415 -- saved decoder and canonical identity owners
         software,
     )
     from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- artifact hashes
@@ -1115,7 +1123,7 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
     """Run one claimed package child with optional persistent attempt records."""
     import subprocess  # noqa: PLC0415 -- package-only subprocess execution
 
-    from scripts.onestep_avatar import queue_launch  # noqa: PLC0415 -- model-free registered launch
+    from scripts.onestep_avatar.execution import queue_launch  # noqa: PLC0415 -- model-free registered launch
 
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("child polling interval must be finite and positive")
@@ -1133,14 +1141,16 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
             raise ValueError("queue child requires a fresh output directory")
         command, changes = job_command(job, tuple(sorted(claims.owned)))
         if job.get("sha256") is not None:
-            from scripts.onestep_avatar.queue_protocol import JOB_ENV, TOKEN_ENV  # noqa: PLC0415
+            from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV  # noqa: PLC0415
 
             changes.update({TOKEN_ENV: claims.token, JOB_ENV: job["sha256"]})
         claims.refresh()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         launch_binding = None
         if job["kind"] == "train":
-            from scripts.onestep_avatar.queue_protocol import LAUNCH_ENV  # noqa: PLC0415 -- exact launch evidence
+            from scripts.onestep_avatar.execution.queue_protocol import (  # noqa: PLC0415 -- exact launch evidence
+                LAUNCH_ENV,
+            )
 
             launch_record = training_launch_record(job, tuple(sorted(claims.owned)))
             if command != launch_record["command"]:
@@ -1155,7 +1165,7 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
             settings = config.parse_settings(job["arguments"])
             budget = resources.read_budget(settings.resource_budget)
             if budget is not None:
-                from scripts.onestep_avatar import supervision  # noqa: PLC0415 -- optional bounded observer
+                from scripts.onestep_avatar.execution import supervision  # noqa: PLC0415 -- optional bounded observer
                 notifications = log_path.with_name(f"{log_path.stem}.{claims.token}.phases.json").resolve()
                 changes.update(supervision.prepare_notifications(
                     notifications, token=claims.token, job_sha256=job["sha256"],
@@ -1308,8 +1318,8 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
 
 def startup_retry_evidence(job: dict, row: dict) -> dict | None:  # noqa: PLR0911 -- conservative ordered retry gates
     """Authorize proven startup contention with no surviving workers or update evidence."""
+    from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, PREFIX, TOKEN_ENV  # noqa: PLC0415
     from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415
-    from scripts.onestep_avatar.queue_protocol import JOB_ENV, PREFIX, TOKEN_ENV  # noqa: PLC0415
 
     attempts = row.get("attempts", [])
     if job["kind"] != "train" or row.get("state") != "failed" or not attempts or len(attempts) >= 4:
@@ -1427,7 +1437,7 @@ def dispatch_ready(jobs: list[dict], state: dict, state_path: Path, claims_dir: 
 
     memory = inventory()
     for job in ready:
-        from scripts.onestep_avatar.process_registry import ProcessRegistry  # noqa: PLC0415 -- current policy
+        from scripts.onestep_avatar.execution.process_registry import ProcessRegistry  # noqa: PLC0415 -- current policy
         claims = ProcessRegistry(claims_dir)
         gpus = claims.choose(memory, training=job["kind"] == "train")
         if gpus is None or not claims.acquire(gpus, job=job["id"]):

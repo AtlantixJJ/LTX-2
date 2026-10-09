@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from scripts.onestep_avatar import WORKSPACE_ROOT, convert_progress_jobs, queue
+from scripts.onestep_avatar import WORKSPACE_ROOT, convert_progress_jobs
+from scripts.onestep_avatar.execution import queue
 
 EXPR = WORKSPACE_ROOT / "expr/onestep_avatar/dev_training_20261001"
 
@@ -41,7 +42,7 @@ def test_converted_training_jobs_cover_each_active_legacy_row_exactly_once() -> 
 def test_training_execution_has_no_expr_launcher_or_forwarding_wrapper() -> None:
     assert not (EXPR / "code/train_queue.py").exists()
     assert not (EXPR / "code/train_job.sh").exists()
-    assert (WORKSPACE_ROOT / "LTX-2/scripts/onestep_avatar/queue.py").is_file()
+    assert (WORKSPACE_ROOT / "LTX-2/scripts/onestep_avatar/execution/queue.py").is_file()
     assert (WORKSPACE_ROOT / "LTX-2/scripts/onestep_avatar/configs/fsdp_forward_prefetch.yaml").is_file()
 
 

@@ -4,7 +4,7 @@ import os
 import subprocess
 import time
 import pytest
-from scripts.onestep_avatar import queue
+from scripts.onestep_avatar.execution import queue
 
 
 def test_inventory_requires_all_allowed_devices():
@@ -479,7 +479,7 @@ def test_queue_dry_run_is_read_only_and_reports_planned_commands(tmp_path, capsy
 
 @pytest.mark.parametrize('path_alias', [False, True])
 def test_queue_execute_once_uses_shared_own_ledger_and_preserves_old_reservations(monkeypatch, tmp_path, path_alias):
-    from scripts.onestep_avatar.process_registry import ProcessRegistry
+    from scripts.onestep_avatar.execution.process_registry import ProcessRegistry
     job = {'id': 'case', 'kind': 'evaluate', 'output': str(tmp_path / 'result'), 'sha256': 'a' * 64}
     state = {'jobs': {'case': {'state': 'pending', 'attempts': []}}}
     seen = {}

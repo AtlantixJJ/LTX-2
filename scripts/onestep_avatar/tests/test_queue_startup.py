@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import queue
+from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.training import startup
 
@@ -146,7 +146,7 @@ def test_nonqueued_startup_failure_has_no_protocol(monkeypatch, capsys):
 
 @pytest.mark.parametrize('success_after', [None, 2])
 def test_loop_retries_at_most_three_times_with_new_claims_and_preserved_attempts(tmp_path, monkeypatch, success_after, controlled_queue_launch):
-    from scripts.onestep_avatar import process_registry
+    from scripts.onestep_avatar.execution import process_registry
     job = {'id': 'training', 'kind': 'train', 'sha256': 'a' * 64, 'dependencies': [],
            'output': str(tmp_path / 'runs/training'),
            'arguments': ['--mode', 'causal', '--subset', str(tmp_path / 'membership.json'),
@@ -201,7 +201,7 @@ def test_loop_retries_at_most_three_times_with_new_claims_and_preserved_attempts
 
 @pytest.mark.parametrize('new_session', [False, True])
 def test_surviving_own_worker_keeps_ledger_and_refuses_adoption_after_leader_exit(tmp_path, monkeypatch, new_session):
-    from scripts.onestep_avatar import process_registry, supervision
+    from scripts.onestep_avatar.execution import process_registry, supervision
     pid_file = tmp_path / 'worker.pid'
     code = (
         'import subprocess,sys; from pathlib import Path; '

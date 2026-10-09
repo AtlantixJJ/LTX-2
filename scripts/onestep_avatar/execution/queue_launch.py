@@ -1,4 +1,4 @@
-"""Register a waiting child before its recorded command can execute; see doc/queue_launch.md."""
+"""Register a waiting child before its recorded command can execute; see doc/execution/queue_launch.md."""
 from __future__ import annotations
 
 import argparse
@@ -15,8 +15,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from scripts.onestep_avatar.queue import process_identity
-from scripts.onestep_avatar.queue_protocol import JOB_ENV, LAUNCH_PROTOCOL, TOKEN_ENV
+from scripts.onestep_avatar.execution.queue import process_identity
+from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, LAUNCH_PROTOCOL, TOKEN_ENV
 
 if TYPE_CHECKING:
     import subprocess
@@ -29,7 +29,7 @@ REGISTERED_RECOVERY_MODULES = frozenset({
 
 def guard_command(path: Path) -> list[str]:
     """Use the current conda interpreter; no model command runs at process creation."""
-    return [sys.executable, '-m', 'scripts.onestep_avatar.queue_launch', '--request', str(path.resolve())]
+    return [sys.executable, '-m', 'scripts.onestep_avatar.execution.queue_launch', '--request', str(path.resolve())]
 
 
 def wait_registration(path: Path, child: subprocess.Popen, command: list[str], refresh: Callable[[], None],
@@ -82,7 +82,7 @@ def verify_command_transition(row: dict, current: dict) -> None:
 
 def inspect_unapproved_launch(row: dict) -> dict:  # noqa: PLR0912, PLR0915 -- ordered ownership and evidence gates
     """Prove that an interrupted guard can never receive authority to run a model."""
-    from scripts.onestep_avatar.queue import owned_workers_live  # noqa: PLC0415 -- avoid import cycle
+    from scripts.onestep_avatar.execution.queue import owned_workers_live  # noqa: PLC0415 -- avoid import cycle
 
     if row.get('launch_protocol') != LAUNCH_PROTOCOL or row.get('child_identity') is not None:
         raise ValueError('queue child has no recorded PID; launch recovery is required')
@@ -349,7 +349,7 @@ def read_completed_notifications(
     path: Path, *, contract_sha256: str, token: str, job_sha256: str, world: int, timeout: float = 5,
 ) -> dict:
     """Check saved rank events with existing supervisor rules; infer no live timing."""
-    from scripts.onestep_avatar import supervision  # noqa: PLC0415 -- scoped recovery compatibility
+    from scripts.onestep_avatar.execution import supervision  # noqa: PLC0415 -- scoped recovery compatibility
 
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError('owned recovery timeout must be finite and positive')
@@ -418,8 +418,8 @@ def recover_registered_attempt(  # noqa: PLR0912, PLR0913, PLR0915 -- explicit b
     expected_launch_sha256: str, timeout: float = 10,
 ) -> dict:
     """Close ended registered non-training handles; certify no unknown workers or result."""
-    from scripts.onestep_avatar import process_registry  # noqa: PLC0415 -- one existing ledger transaction
-    from scripts.onestep_avatar.queue import ALLOWED_GPUS  # noqa: PLC0415 -- existing dispatch device scope
+    from scripts.onestep_avatar.execution import process_registry  # noqa: PLC0415 -- one existing ledger transaction
+    from scripts.onestep_avatar.execution.queue import ALLOWED_GPUS  # noqa: PLC0415 -- existing dispatch device scope
 
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError('registered bookkeeping recovery timeout must be finite and positive')
@@ -526,7 +526,7 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
     process_ledger: Path, request_path: Path, *, timeout: float = 10,
 ) -> dict:
     """Close an ended approved registered workload; preserve lost-supervision scope."""
-    from scripts.onestep_avatar import process_registry, supervision  # noqa: PLC0415 -- operational owners
+    from scripts.onestep_avatar.execution import process_registry, supervision  # noqa: PLC0415 -- operational owners
 
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError('owned recovery timeout must be finite and positive')

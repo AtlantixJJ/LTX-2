@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from scripts.onestep_avatar import queue
-from scripts.onestep_avatar.queue_protocol import TOKEN_ENV
+from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution.queue_protocol import TOKEN_ENV
 
 
 def stat_text(state: str = "S", tick: int = 200) -> str:

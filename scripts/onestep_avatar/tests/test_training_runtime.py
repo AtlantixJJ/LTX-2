@@ -122,7 +122,7 @@ def test_one_bounded_update_saves_real_zero_and_updated_lora(
     resource_check: str, consumer_trace: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     if queued:
-        from scripts.onestep_avatar.queue_protocol import JOB_ENV, TOKEN_ENV
+        from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
         monkeypatch.setenv(JOB_ENV, "a" * 64)
         monkeypatch.setenv(TOKEN_ENV, "b" * 32)
     view = tmp_path / "corpus" / "actor" / "view"

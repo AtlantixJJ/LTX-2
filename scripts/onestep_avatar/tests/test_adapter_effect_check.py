@@ -19,7 +19,8 @@ from safetensors.torch import save_file
 from ltx_core.model.transformer.model import X0Model
 from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar import adapter_effect_check as effect
-from scripts.onestep_avatar import dataset, evaluate, precompute, software, subset
+from scripts.onestep_avatar import dataset, evaluate, precompute, subset
+from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters
 from scripts.onestep_avatar.tests.test_causal_core import _geometry, _grid, _model

@@ -65,7 +65,9 @@ class Phase:
         if self.device.type != "cuda" and self.budget is not None:
             raise ValueError("native resource budget requires CUDA allocated-memory measurements")
         self.started = time.monotonic()
-        from scripts.onestep_avatar.supervision import notify_phase  # noqa: PLC0415 -- optional bound observer
+        from scripts.onestep_avatar.execution.supervision import (  # noqa: PLC0415 -- optional bound observer
+            notify_phase,
+        )
         notify_phase(self.phase, "begin", self.rank,
                      budget_sha256=None if self.budget is None else self.budget["sha256"])
         if self.device.type == "cuda":
@@ -96,7 +98,9 @@ class Phase:
             if allocated is not None and allocated > self.budget["memory_limit_allocated_bytes"]:
                 error = error or "resource phase exceeded allocated-memory limit"
         try:
-            from scripts.onestep_avatar.supervision import notify_phase  # noqa: PLC0415 -- optional bound observer
+            from scripts.onestep_avatar.execution.supervision import (  # noqa: PLC0415 -- optional bound observer
+                notify_phase,
+            )
             notify_phase(self.phase, "end", self.rank,
                          budget_sha256=None if self.budget is None else self.budget["sha256"])
         except Exception as notification_error:

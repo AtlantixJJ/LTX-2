@@ -12,8 +12,9 @@ from pathlib import Path
 import pytest
 import torch
 
-from scripts.onestep_avatar import LTX_ROOT, queue
+from scripts.onestep_avatar import LTX_ROOT
 from scripts.onestep_avatar import training_update_check as replay
+from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.tests.test_applied_runtime import inventory
 from scripts.onestep_avatar.tests.test_training_launch_binding import original_job
 from scripts.onestep_avatar.training import numerics, runtime

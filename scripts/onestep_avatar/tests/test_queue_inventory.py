@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.onestep_avatar import queue
+from scripts.onestep_avatar.execution import queue
 
 
 def inventory(**usage):

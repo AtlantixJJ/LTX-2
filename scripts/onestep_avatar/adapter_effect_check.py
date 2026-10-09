@@ -16,7 +16,8 @@ import torch
 from PIL import Image
 from safetensors.torch import load_file
 
-from scripts.onestep_avatar import dataset, evaluate, infer, media, queue, software
+from scripts.onestep_avatar import dataset, evaluate, infer, media
+from scripts.onestep_avatar.execution import queue, software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, common
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources

@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from scripts.onestep_avatar import queue, queue_launch
+from scripts.onestep_avatar.execution import queue, queue_launch
 
 OWNER = '''import os,sys,subprocess
 from pathlib import Path
-from scripts.onestep_avatar import queue,queue_launch
+from scripts.onestep_avatar.execution import queue, queue_launch
 root=Path(sys.argv[1]); phase=sys.argv[2]
 command=[sys.executable,'-c',"from pathlib import Path; Path("+repr(str(root/'model_executed'))+").write_text('forbidden')"]
 job={'id':'case','sha256':'a'*64,'kind':'evaluate','dependencies':[],

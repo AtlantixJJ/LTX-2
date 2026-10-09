@@ -14,15 +14,18 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedType
 from safetensors.torch import load_file
 
-from scripts.onestep_avatar import dataset, evaluate, queue, software, training_update_check
+from scripts.onestep_avatar import dataset, evaluate, training_update_check
+from scripts.onestep_avatar.execution import queue, software
+from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import bidirectional, causal, common
-from scripts.onestep_avatar.queue_protocol import JOB_ENV, TOKEN_ENV
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources, runtime, update_state
 
 ENTRY = "scripts/onestep_avatar/training_slice_check.py"
-SUPPORT_CHANGES = {"scripts/onestep_avatar/supervision.py", "scripts/onestep_avatar/training/consumer_trace.py",
-                   "scripts/onestep_avatar/training/checkpoints.py"}
+SUPPORT_CHANGES = {
+    "scripts/onestep_avatar/execution/supervision.py", "scripts/onestep_avatar/training/consumer_trace.py",
+    "scripts/onestep_avatar/training/checkpoints.py",
+}
 
 
 def _original_context(settings: config.RunSettings, saved: dict) -> torch.Tensor:

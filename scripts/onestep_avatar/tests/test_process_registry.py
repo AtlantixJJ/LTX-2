@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from scripts.onestep_avatar import process_registry, supervision
+from scripts.onestep_avatar.execution import process_registry, supervision
 
 
 def free():

@@ -74,7 +74,7 @@ def test_saved_study_spec_renders_master_and_output_with_report_metrics(tmp_path
     assert (tmp_path / 'rendered' / row['video']).is_file()
     assert (tmp_path / 'rendered' / row['poster']).is_file()
     assert evaluate.verify_saved_comparison_completion(spec, tmp_path / 'rendered', seed=99)
-    from scripts.onestep_avatar import software
+    from scripts.onestep_avatar.execution import software
 
     original = software.sha256
     decoder_owner = software.LTX_ROOT / 'packages/ltx-core/src/ltx_core/model/video_vae/conv_video_decoder.py'

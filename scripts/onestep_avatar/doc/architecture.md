@@ -309,10 +309,9 @@ WORKSPACE_ROOT = LTX_ROOT.parent                 # .../VideoDiffusionModels
 Package code and tests use these names. No module calculates a repository root
 from `__file__`. Child processes use `cwd=LTX_ROOT`. Hashing a module's own
 bytes with `sha256(Path(__file__))` is file identity, not a root calculation,
-and stays. Worked check: today `dataset.py` gives
-`Path(dataset.py).parents[3]` = `.../VideoDiffusionModels` and
-`software.py` gives `parents[2]` = `.../LTX-2`. The constants must give the same
-two paths from any file location.
+and stays. Before the moves, `Path(dataset.py).parents[3]` gave
+`.../VideoDiffusionModels` and `Path(software.py).parents[2]` gave
+`.../LTX-2`. The constants preserve those two paths from every module location.
 
 ### Queue kinds and experiment dispatch
 
@@ -460,7 +459,7 @@ docs and recipes in the same change.
 | Current file | Final path | Notes |
 |---|---|---|
 | `dataset.py`, `subset.py`, `precompute.py`, `build_guidance.py`, `geometry.py`, `motion.py`, `mask_video.py`, `qa.py` | `corpus/<same name>` | `build_guidance` runs as `conda run -n argavatar python -m scripts.onestep_avatar.corpus.build_guidance`. `subset.py` gains the legacy subset hash rule from `windows.py`. |
-| `queue.py`, `queue_launch.py`, `queue_protocol.py`, `process_registry.py`, `supervision.py`, `software.py` | `execution/<same name>` | `queue.py` gets the `experiment`, `preview`, `product` and `bench` kinds, one GPU pool, supervision and deadlines for every kind. |
+| `execution/queue.py`, `execution/queue_launch.py`, `execution/queue_protocol.py`, `execution/process_registry.py`, `execution/supervision.py`, `execution/software.py` | `execution/<same name>` | `execution/queue.py` gets the `experiment`, `preview`, `product` and `bench` kinds, one GPU pool, supervision and deadlines for every kind. |
 | `hashing.py` | stays at the root | Gains `tensor_sha256` from `evaluate.py`. |
 | `training_update_check.py`, `training_slice_check.py` | `experiments/<same name>` | E4 replay and one-rank localization. Update `ENTRY` and `extra_sources`. The serial reference becomes its own queue job. |
 | `adapter_effect_check.py` | `experiments/adapter_effect_check.py` | E2; includes the fused diagnostic. |

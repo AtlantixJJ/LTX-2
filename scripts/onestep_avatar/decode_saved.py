@@ -11,7 +11,7 @@ import torch
 from PIL import Image
 
 from ltx_trainer.video_utils import save_video
-from scripts.onestep_avatar import software
+from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.media import decode, decode_key, frame, native_decoder_settings, open_decoder_session
 from scripts.prune.core.session import add_model_args
