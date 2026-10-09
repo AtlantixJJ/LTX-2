@@ -4,8 +4,8 @@ Status: **Version-two conversion, saved-probe membership and typed runtime integ
 `convert_legacy` creates membership and reproduction records from an old subset.
 `from_saved_probe` creates one-view membership from original paired evidence.
 Typed training and ordinary evaluation use these version-two records.
-`windows.py` still owns the legacy corpus survey. A direct version-two survey
-producer and legacy caller retirement remain incomplete.
+The legacy survey tool `windows.py` retired in refactor group G11. A direct
+version-two survey producer remains unimplemented (see below).
 
 ## Objective
 
@@ -48,7 +48,7 @@ group. No current conversion reselects or surveys the corpus.
 The following procedure defines the eventual version-two survey producer.
 The current module has no `survey_sources`, `split_actors` or `pin_content`
 functions. Until this producer exists, use checked conversion or saved-probe
-membership. Do not describe the old `windows.py` survey as a new schema producer.
+membership. The retired `windows.py` survey was never a version-two producer.
 
 1. Discover relative video/view paths in stable order and read the saved crop/master records.
 2. Apply the current crop, completeness, and guide/provenance checks.
@@ -136,8 +136,8 @@ No conversion re-encodes a master, changes a split, or infers adapter mode.
 `json.dumps(payload, sort_keys=True).encode()` with default spacing and Unicode
 escaping. Missing keys serialize as null. Geometry and extra fields are excluded.
 The modern `record_hash` deliberately uses another payload and compact spacing.
-The transitional engine stamps this digest until G11; explicit legacy conversion
-calls the same corpus owner. Saved `canonical_rule: "windows.subset_sha256"`
+The retired mode-less engine stamped this digest into legacy adapter metadata;
+explicit legacy conversion is its only current caller. Saved `canonical_rule: "windows.subset_sha256"`
 continues to name the original historical rule, not its current code path.
 
 ## Invariants

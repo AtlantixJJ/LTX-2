@@ -1,7 +1,7 @@
-"""Parse training options and preserve seeded sigma/noise selection.
+"""Parse typed training settings and preserve seeded sigma/noise selection.
 
-See doc/training/config.md for checks and mode ownership. The initial extraction
-retains the old parser while explicit mode and membership integration proceeds.
+See doc/training/config.md for checks and mode ownership. ``parse_settings`` is the only
+training parser; the mode-less ``parse_args`` retired in refactor group G11.
 """
 
 from __future__ import annotations
@@ -24,17 +24,14 @@ SIGMA_SAMPLING = "iid_uniform_v1"
 DEFAULT_SIGMA0 = 0.725
 
 
-
-
 def training_sigmas(args: argparse.Namespace) -> tuple[float, ...]:
     """Resolve the fixed or per-rank noise schedule once, with strict bounds.
 
     ``sigma=0.0`` is refused: it noises nothing, so the "denoised" target IS the input
     (identity) and the loss/gradient are both exactly zero (measured: the multilevel D0 run's
     sigma=0.0 quarter sat at 0.0 mse for all 200 steps). A rank assigned that level would train
-    on nothing for the whole run, which is a training bug, not a sanity arm -- the ceiling
-    measurement that wants sigma=0.0 is ``visualize_d0.py``'s fixed evaluation-time probe grid,
-    not something this loop should ever spend a rank optimizing.
+    on nothing for the whole run, which is a training bug, not a sanity arm -- an evaluation
+    that wants sigma=0.0 measures it outside training, not by spending a rank optimizing it.
     """
     values = (args.sigma0,) if args.sigma_levels is None else tuple(args.sigma_levels)
     if not values or any(not 0.0 < sigma <= 1.0 for sigma in values):
@@ -48,7 +45,7 @@ def training_sigmas(args: argparse.Namespace) -> tuple[float, ...]:
 
 
 def training_noise_seed(args: argparse.Namespace, *, step: int, rank: int, slot: int, chain_index: int) -> int:
-    """The base seed of one chain visit's epsilon; ``train_chain`` adds the block index.
+    """The base seed of one sample visit's epsilon; the mode adds the block index.
 
     ``fresh``: a function of (noise seed, update, rank, accumulation slot) only -- so a chain
     revisited in a later epoch gets new noise, and two candidates launched with the same seeds
@@ -74,192 +71,6 @@ def sigma_for_rank(sigmas: tuple[float, ...], rank: int, step: int, seed: int) -
         return sigmas[0]
     rng = random.Random(f"onestep_avatar.sigma:{seed}:{step}:{rank}")
     return sigmas[rng.randrange(len(sigmas))]
-
-
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--subset", type=Path, required=True, help="windows.py's frozen subset JSON")
-    p.add_argument(
-        "--corpus-root",
-        type=Path,
-        default=None,
-        help="Corpus root holding the per-view master latents. Defaults to the subset's own "
-        "`corpus_root`, which is where precompute.py wrote them -- pass this only to read a "
-        "relocated copy.",
-    )
-    p.add_argument("--output", type=Path, required=True)
-    p.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Relaunch into a --output that already holds a run: the whole prior directory "
-        "(metrics, checkpoints, config.json, everything) is moved aside into an "
-        "'archived_<timestamp>/' subdirectory before this run creates anything, rather than "
-        "being deleted or left to coexist under one step numbering. There is no resume -- step "
-        "always restarts at 0 -- so a used --output is otherwise refused outright.",
-    )
-    p.add_argument("--model", choices=model_registry.SUPPORTED_MODELS, default="2.5")
-    p.add_argument(
-        "--variant",
-        choices=backbone.VARIANTS,
-        default=backbone.DEFAULT_VARIANT,
-        help="Backbone weights: the distilled transformer (default, the historical recipes) or "
-        "dev. Resolved by backbone.py and stamped by file fingerprint, so a dev adapter is "
-        "refused on distilled weights at probe time.",
-    )
-    p.add_argument("--sigma0", type=float, default=DEFAULT_SIGMA0)
-    p.add_argument(
-        "--sigma-levels",
-        type=float,
-        nargs="+",
-        default=None,
-        help="Train across these levels: each rank draws one level per update i.i.d. uniformly "
-        "(seeded by --noise-seed, update and rank). Overrides --sigma0. sigma=0.0 is refused "
-        "-- it trains on nothing (see training_sigmas).",
-    )
-    p.add_argument(
-        "--random-window-latent-frames",
-        type=int,
-        default=None,
-        help="Train each sample on this many latent frames starting at a random latent frame "
-        "(uniform, seeded by --noise-seed, update, rank and slot); the window's frame 0 becomes c0. "
-        "Default: the clip from its start. Every source must have at least this many frames.",
-    )
-    p.add_argument(
-        "--block-latent-frames",
-        type=int,
-        default=causal_core.BLOCK_LATENT_FRAMES,
-        help="Latent frames denoised per causal block (SS4.4). The default is the deployed "
-        "16-pixel-frame stride; changing it changes what a trained adapter finalizes per step.",
-    )
-    p.add_argument(
-        "--context-latent-frames",
-        type=int,
-        default=causal_core.CONTEXT_LATENT_FRAMES,
-        help=f"Clean latent frames kept in the K/V cache BESIDES the pinned frame-0 sink, up "
-        f"to {causal_core.MAX_CONTEXT_LATENT_FRAMES}. The default "
-        f"{causal_core.CONTEXT_LATENT_FRAMES} is a retained history of "
-        f"{causal_core.CONTEXT_LATENT_FRAMES + causal_core.SINK_LATENT_FRAMES} latent frames "
-        f"(c0 plus clean frames 1-{causal_core.CONTEXT_LATENT_FRAMES}). Each one costs ~0.8 GB "
-        f"per rank at the 22B geometry and lengthens every block's attention, so this is the "
-        f"compute/quality knob of the scheme. Past roughly the chain's own reach the cache "
-        f"stops evicting and simply ACCUMULATES the whole rollout's history -- at the default "
-        f"depth a K=3, 2-frame-block chain never evicts at all. Recorded in the checkpoint "
-        f"metadata: an adapter trained at one depth is a different function at another.",
-    )
-    p.add_argument("--split", choices=("train", "held_out", "validation", "test"), default="train")
-    p.add_argument("--lora-rank", type=int, default=8, help="2-3 GPU preliminary runs drop this, never K")
-    p.add_argument("--lora-alpha", type=int, default=None, help="default: equal to --lora-rank")
-    p.add_argument("--lora-target", choices=sorted(adapters.LORA_TARGETS), default="attn")
-    p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--warmup-steps", type=int, default=20)
-    p.add_argument("--steps", type=int, default=200)
-    p.add_argument("--seed", type=int, default=42, help="default for the three seeds below")
-    p.add_argument("--init-seed", type=int, default=None, help="LoRA initialization seed (default --seed)")
-    p.add_argument("--data-seed", type=int, default=None, help="chain-order seed (default --seed)")
-    p.add_argument("--noise-seed", type=int, default=None, help="training-epsilon stream seed (default --seed)")
-    p.add_argument(
-        "--noise-policy",
-        choices=("fresh", "fixed_per_chain"),
-        default="fresh",
-        help="fresh (default): epsilon depends on (noise seed, update, rank, slot), so a chain "
-        "revisited in a later epoch gets new noise and matched candidates share one stream. "
-        "fixed_per_chain: the historical rule -- every visit to a chain reuses one epsilon; "
-        "kept only as the overfit debug control.",
-    )
-    p.add_argument(
-        "--chains-per-rank",
-        type=int,
-        default=1,
-        help="Chains each rank accumulates into one optimizer update (chains per update = this x "
-        "world size). Lets a 2-GPU run match a 4-chain update without changing K.",
-    )
-    p.add_argument(
-        "--init-adapter",
-        type=Path,
-        default=None,
-        help="Start a NEW stage from this adapter's LoRA weights (fresh optimizer/scheduler/RNG, "
-        "parent recorded). Not a resume.",
-    )
-    p.add_argument(
-        "--objective",
-        choices=dataset.OBJECTIVES,
-        default=dataset.DEFAULT_OBJECTIVE,
-        help="SS1.2. bg (default): the product -- guide composited over the clip's real first "
-        "frame, target the unmatted capture. white: both sides on white, which isolates the "
-        "subject-texture gap from the background question. Selects which pair of bundles is "
-        "read; must match the objective the subset was frozen against.",
-    )
-    p.add_argument(
-        "--guide-mode",
-        choices=("d0", "d1"),
-        default="d1",
-        help="SS4.1. d1: the plan's D1a -- the guide reaches the model only as the noised "
-        "init. Cheapest, what the causal rollout deploys today, and the control every other "
-        "arm has to beat. d0: SANITY ONLY, not deployable -- noises the capture z_y instead "
-        "of the guide, reducing to ordinary flow-matching on real video (SS3 identity 1). "
-        "Measures the architecture's capacity ceiling at sigma_0, to compare against the "
-        "measured r; the product infer CLI refuses this mode because there is no "
-        "z_y at inference. (The old `d2` extra-token hybrid is gone: it was dropped as an arm "
-        "2026-09-13 for costing 1.05x k2, and its clean reference tokens have no place in a "
-        "causal sequence -- they would be future context.)",
-    )
-    p.add_argument(
-        "--teacher-forcing",
-        action="store_true",
-        help="Ablation arm: the cache refresh is fed the ground-truth capture latent instead "
-        "of this block's own generation. Isolates exposure-bias drift from everything else "
-        "the AR loop changes; NOT the production setting (deployment always carries the "
-        "model's own output).",
-    )
-    p.add_argument("--save-every", type=int, default=100)
-    p.add_argument(
-        "--save-initial",
-        action="store_true",
-        help="Save checkpoints at step 0 and step 1, independent of --save-every. Step 0 is "
-        "the untrained, LoRA-injected model; `init_lora_weights=True` zero-inits B, so it "
-        "must decode identically to the frozen base. Step 1 is the first optimizer update. "
-        "Off by default: normal runs do not need these extra checkpoint writes.",
-    )
-    p.add_argument("--log-every", type=int, default=1)
-    p.add_argument(
-        "--timing",
-        action="store_true",
-        help="log a per-phase breakdown of every step (chain load, prime, per-block denoise/"
-        "backward/refresh, optimizer). Startup stages are always timed; this is the "
-        "per-step detail, and it is per-block, so it is off by default.",
-    )
-    p.add_argument("--max-grad-norm", type=float, default=1.0)
-    p.add_argument(
-        "--wandb-project",
-        default="onestep-avatar",
-        help="Enable online W&B logging to this project (default: 'onestep-avatar'). "
-        "Pass --no-wandb, set --wandb-mode disabled, or pass an empty string to disable.",
-    )
-    p.add_argument("--wandb-entity", default=None)
-    p.add_argument("--wandb-run-name", default=None)
-    p.add_argument("--wandb-mode", choices=("online", "offline", "disabled"), default="online")
-    p.add_argument("--no-wandb", action="store_true", help="Disable W&B logging.")
-    p.add_argument("--no-gradient-checkpointing", action="store_true")
-    p.add_argument("--init-device", default="cuda", help="'cuda' (default, avoids host-RAM staging) or 'cpu'")
-    p.add_argument(
-        "--skip-subset-check",
-        action="store_true",
-        help="Skip the startup check that each source's master latent holds the number of "
-        "frames the subset was frozen against. That check reads one ~6 MB bundle per distinct "
-        "source -- negligible for a review tier, disk-bound at full-corpus scale. Skipping it "
-        "does not make a stale subset trainable; it moves failures to chain loading, after "
-        "the 42 GB checkpoint load.",
-    )
-    p.add_argument(
-        "--reserve-gpu-gib",
-        type=float,
-        default=0.0,
-        help="Operational: reserve this much GPU memory per rank at start-up (allocate+free into the "
-        "caching allocator) so a shared machine's other schedulers do not claim the card during load. "
-        "Requires PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, or the reservation fragments the allocator.",
-    )
-    p.add_argument("--dry-run", action="store_true", help="report the plan and the data shapes, load no model")
-    return p.parse_args(argv)
 
 
 @dataclass(frozen=True)

@@ -28,7 +28,7 @@ flowchart LR
 This diagram is Proposed.
 Current `load_master` reads schema-two continuous masters.
 `dataset.load_training_master` checks arrays and frame rate.
-`ChainStore` checks capture/guide pairs.
+`ClipStore` checks capture/guide pairs against the membership pins.
 
 ## Organization logic
 
@@ -107,7 +107,7 @@ Do not replace a stored frame with a new image encoding silently.
 ## Tests
 
 Current tests include `tests/test_dataset.py`, `test_geometry.py`, `test_mask_video.py`,
-and master/pair checks in `tests/test_train.py`.
+and membership-pinned master/pair startup checks in `tests/test_training_helpers.py`.
 After extraction, keep useful array/frame-rate and atomic-write tests here.
 Check that this file imports no training code.
 [V8](../verification.md) checks that conversion preserves videos and master hashes.

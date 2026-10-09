@@ -12,22 +12,21 @@ non-tensor preparation inputs. The producer is `prepare_inputs.py preview`;
 training consumes its checked record and does not prepare text/reference pixels
 inside FSDP.
 
-Status: **Typed two-mode runtime, version-two data/adapters, numeric logs, completed-checkpoint markers and scientific queued-completion checks implemented. CPU checks cover full settings, data/parent provenance, config/plan bytes and small-model update markers. Native numerical updates pass in both modes; complete workflows, caller migration and old-path deletion remain pending. Preview scheduling is implemented. Read [current acceptance](../known_gaps.md#current-acceptance-and-next-step).**
+Status: **Typed two-mode runtime, version-two data/adapters, numeric logs, completed-checkpoint markers and scientific queued-completion checks implemented. CPU checks cover full settings, data/parent provenance, config/plan bytes and small-model update markers. Native numerical updates pass in both modes; complete workflows remain pending. The mode-less runtime retired in refactor group G11. Preview scheduling is implemented. Read [current acceptance](../known_gaps.md#current-acceptance-and-next-step).**
 The training body moves from `train.py` into this owner. The CLI delegates to it.
 Typed preflight compares every checked capture/guide encoding VAE fingerprint
 with the selected base's VAE, using the producer's file identity rule. Missing
 or mismatched identities fail before transformer hashing, model setup or output
 archiving. D0 checks capture only; D1 checks both. Shape equality and parent
 adapter compatibility do not replace this input-provenance check.
-Initial extraction retains old sample/checkpoint interfaces for matched baseline
-checks; these are transitional, not the completed two-mode design.
 
-The extracted body still has `Chain`, `ChainStore`, `clip_grid_for`, and
-`train_chain`. Required data/model facts keep shared owners; the transitional
-interfaces and duplicate loop retire after caller/data and CPU checks. The
-current handoff orders this structural refactor before new native experiments
-on the final owners. Preserve original scientific results and issue fresh
-affected acceptance afterward; directory changes do not establish native parity.
+The mode-less chain runtime (`Chain`, `ChainStore`, `clip_grid_for`,
+`train_chain`, its subset readers, flat checkpoint metadata and old `main`)
+retired in refactor group G11. `train_chain` only wrapped
+`model.causal.train_sample`; its behavior tests now call that owner directly
+(`tests/test_causal_train_sample.py`). Preserve original scientific results and
+issue fresh affected acceptance on the final source; deletion does not
+establish native parity.
 The original trainer module doc is removed because the CLI is under 100 physical lines.
 Its conditioning/loss/cache explanations remain in the common and mode docs.
 The checkpoint and startup rules remain here and in the config/checkpoint docs.
@@ -36,9 +35,8 @@ The checkpoint and startup rules remain here and in the config/checkpoint docs.
 actual selected input bytes, base-supported sigma levels, frame dimensions,
 and the full base hash. It checks parent records and tensor shapes before model
 loading. It returns the checked store, plan, base specification, and archive decision.
-`run_settings` uses those records for explicit-mode CLI commands. Mode-less
-commands temporarily use the old runtime until supported callers move or receive
-a truthful retirement disposition.
+`run_settings` is the only training entry point; `train.py` refuses a command
+without `--mode` before any environment change or write.
 The new runtime saves the checked frame plan and settings before the first update.
 Every update writes a numeric JSONL record. `log_every` controls external logging, not numeric evidence.
 
@@ -218,8 +216,8 @@ forward weights despite fp32 storage outside forward; the first-update B gap
 remained above 2% after global-conditioning repair. `CustomPolicy` changes only
 the selected trainable leaves' mixed precision, not their wrapping membership.
 Applied runtime and consumer traces must verify this on native weights.
-No mixed-precision policy means there is no root cast to disable. The transitional
-legacy namespace path retains its original policy for historical reproduction.
+No mixed-precision policy means there is no root cast to disable. Every caller
+passes typed `RunSettings`; the old namespace path without this policy retired in G11.
 For sigma 0.725, the typed model must observe float32 0.7250000238418579 rather
 than bf16 0.7265625. Tests exercise the shared builder's actual policy and the
 installed root-casting function; native distributed acceptance remains required.
@@ -343,13 +341,12 @@ Inspect the curves and synchronized preview panels.
 Check launch commands and required queue execution live in LTX-2.
 Rebuild a report from saved logs/media with training and preview executors disabled.
 
-### Temporary CLI routing while old queues run
+### Explicit mode only
 
-New commands with an explicit `--mode` use `parse_settings` and `run_settings`.
-The already-running queue still starts mode-less commands through the old
-engine entry path. This routing is temporary and preserves live job behavior.
-It must be removed when queue migration finishes: final commands require mode.
-No setting or adapter from an old command is silently classified as bidirectional.
+Every command uses `parse_settings` and `run_settings`. A command without
+`--mode` exits non-zero before any write (`tests/test_training_helpers.py`). The
+queue already requires `--mode` in training jobs. No setting or adapter from an
+old command is silently classified as bidirectional.
 
 ### Fixed preview record interface
 
@@ -388,18 +385,16 @@ Queued execution requires the exact workspace from a version-two launch record.
 Apply the shared strict deterministic policy before reserved CUDA buffers,
 Accelerator, prompt or model work. Record actual flags through runtime schema
 two and require the supported policy across ranks. Recheck observed flags before
-updates, exports and publication. The mode-less historical engine is unchanged.
+updates, exports and publication.
 The policy changes no data, seed, sigma, budget, optimizer or tolerance.
 Focused CPU controls verify the current path. Original four-rank/serial
 numerical comparison passes in both modes. The active handoff records complete
 workflow and final-source requirements separately.
 
-## Historical subset identity owner
+## Historical subset identity
 
-The transitional metadata/config stamps call public
-`corpus.subset.subset_sha256`, which preserves the original seven-key/default-JSON
-digest. The engine does not own a copy. Its original runtime remains until G11;
-G9 changes neither that runtime nor any saved canonical_rule attribution.
-Those three stamps were the engine's last use of `windows`, so the eager
-`windows` import is removed. Error messages still name `windows.py` as the
-historical producer of old window-chain subsets.
+The retired mode-less runtime stamped `corpus.subset.subset_sha256` into flat
+adapter metadata and run config. G11 removed those stamps with that runtime;
+typed adapters record version-two membership and frame-plan hashes instead.
+Explicit legacy conversion (`experiments/legacy_adapters.py`) is the digest's
+only current caller, and saved `canonical_rule` attribution is unchanged.

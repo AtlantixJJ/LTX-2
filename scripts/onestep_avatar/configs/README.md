@@ -1,8 +1,8 @@
 # Package launch configuration and current commands
 
 Explicit bidirectional and causal training use the typed runtime. New launches
-use the shared `fsdp.yaml` and an explicit process count. The old mode-less
-entry is temporary for live queues and is not a new-run recipe.
+use the shared `fsdp.yaml` and an explicit process count. `train` refuses a
+command without `--mode`; the mode-less entry retired in refactor group G11.
 
 Use the `ltx` environment from the LTX-2 root. Only guide rendering uses
 `argavatar`. Query `nvidia-smi` directly and register starts in the single
@@ -646,8 +646,8 @@ CUDA OOM or typed port-in-use event must precede every rank's update boundary;
 surviving workers and any numeric update forbid retry. Other failures stop.
 `--once` returns 2 when a preserved retry is pending and starts no second child.
 See [retry evidence](../doc/execution/queue.md#startup-contention-retries). Historical text
-job lists and mode-less jobs need conversion before these commands can execute
-them. These recipes do not restart an existing queue or start a campaign.
+job lists and mode-less training jobs are records only; a rerun uses fresh typed
+jobs. These recipes do not restart an existing queue or start a campaign.
 
 The old GPU-count YAML copies were removed after their training caller moved.
 Live training uses its own recorded forward-prefetch setting. Do not silently

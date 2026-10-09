@@ -218,7 +218,7 @@ This checks extraction fidelity; it does not measure real-weight fusion error.
 
 [V4–V6](../verification.md) check frame ranges, cache removal, priming, and GPU-process call counts.
 Current functions include `CausalGeometry.plan`, `BlockCache.evict`, `prime_cache`,
-`refresh_block`, and `train_chain`.
+`refresh_block`, and `train_sample`.
 
 After implementation, compare old and new outputs, losses, and gradients on the same inputs.
 Check cache writes when gradient checkpointing repeats a model call.

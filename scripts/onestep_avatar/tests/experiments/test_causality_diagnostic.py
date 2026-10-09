@@ -7,11 +7,39 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.onestep_avatar import visualize_d0, visualize_d1
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.experiments import causality as evaluate
-from scripts.onestep_avatar.model import causal
-from scripts.onestep_avatar.training import engine
+from scripts.onestep_avatar.model import causal, common
+from scripts.prune.core.session import DTYPE
+
+
+def _global_epsilons(source: torch.Tensor, grid: common.ClipGrid, plan: list[tuple[int, int]],
+                     seed: int) -> list[torch.Tensor]:
+    """One epsilon over every token, sliced by block: the saved full-master noise rule."""
+    epsilon = common.epsilon_block(source, seed)
+    return [epsilon[:, slice(*grid.token_span(*span))] for span in plan]
+
+
+def _original_rollout(model: torch.nn.Module, context: torch.Tensor, grid: common.ClipGrid,
+                      geometry: causal.CausalGeometry, capture: torch.Tensor, guide: torch.Tensor, sigma: float, *,
+                      seed: int, epsilons: list[torch.Tensor], blocks: list[tuple[int, int]]) -> torch.Tensor:
+    """The historical cached D1 rollout, called through the model owner exactly as before.
+
+    The retired visualizer's ``run_chain`` made this one ``causal.rollout`` call with a fresh
+    deployed cache, capture ``c0`` and the guide as noising source.
+    """
+    base = common.base_model(model)
+    cache = causal.BlockCache.allocate(grid, geometry, num_layers=len(base.transformer_blocks),
+                                       inner_dim=base.inner_dim, device=torch.device('cpu'), dtype=DTYPE)
+    capture_tokens = grid.patchify(capture.unsqueeze(0).to(dtype=DTYPE))
+    source = grid.patchify(guide.unsqueeze(0).to(dtype=DTYPE))
+    c0 = capture_tokens[:, :grid.tokens_per_latent_frame]
+    tokens, _ = causal.rollout(common.denoised_from_x0_model(model), grid, geometry, cache, source, context, sigma,
+                               seed=seed, blocks=blocks, teacher_forcing=False, teacher_tokens=None, schedule=None,
+                               kv_source='refresh', first_frame_condition=c0, block_epsilons=epsilons,
+                               history_mode='cache')
+    covered = blocks[-1][1]
+    return grid.unpatchify_block(tokens[:, :covered * grid.tokens_per_latent_frame], covered)
 
 
 @pytest.mark.parametrize('frames', [17, 21])
@@ -25,19 +53,18 @@ def test_matches_original_two_rollouts_and_actual_call_counts(frames, monkeypatc
     guide = torch.randn(CHANNELS, frames, 2, 2, generator=torch.Generator().manual_seed(9))
     session = SimpleNamespace(device=torch.device('cpu'), context=_context().to(dtype=DTYPE),
                               model=SimpleNamespace(scale_factors=SCALE, caps=SimpleNamespace(latent_channels=CHANNELS)))
-    chain = SimpleNamespace(z_y=capture, z_g=guide, fps=30)
     geometry = causal.deployed_geometry(SCALE)
-    grid = engine.clip_grid_for(chain, geometry, device=session.device, latent_channels=CHANNELS)
+    grid = common.ClipGrid.build(frames, 64, 64, 30, geometry, device=session.device, dtype=DTYPE,
+                                 latent_channels=CHANNELS)
     plan = geometry.plan(frames)[:8]
     target = grid.patchify(capture.unsqueeze(0).to(dtype=DTYPE))
-    _, eps_a = visualize_d1.global_epsilons(target, grid, plan, 42)
-    _, eps_b = visualize_d1.global_epsilons(target, grid, plan, 99)
+    eps_a = _global_epsilons(target, grid, plan, 42)
+    eps_b = _global_epsilons(target, grid, plan, 99)
     expected = []
     with torch.no_grad():
         for epsilon in (eps_a, eps_a[:4] + eps_b[4:]):
-            _, output = visualize_d0.run_chain(model, session.context, chain, geometry, 0.421875,
-                device=session.device, latent_channels=CHANNELS, seed=42, guide_mode='d1',
-                block_epsilons=epsilon, max_blocks=8)
+            output = _original_rollout(model, session.context, grid, geometry, capture, guide, 0.421875,
+                                       seed=42, epsilons=epsilon, blocks=plan)
             expected.append(output.float())
     original_sample = causal.sample
     actual = []

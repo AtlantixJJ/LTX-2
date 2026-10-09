@@ -207,7 +207,7 @@ at them.
 - **One branch per figure.** Two regimes that differ structurally (teacher vs self forcing) get
   two figures differing by one edge, not one figure with both drawn. A branch that only changes
   *which tensor* flows down an existing edge (D0 vs D1) is an edge label.
-- **Labels are names.** A node is the callable or file (`refresh_block`, `windows.py`, with the
+- **Labels are names.** A node is the callable or file (`refresh_block`, `corpus/subset.py`, with the
   arg when it selects a pass); an edge is the distinction it makes. Everything else goes in the
   prose under the figure, where it does not compete with the layout.
 - **Do not depend on layout hints.** A subgraph's `direction` is ignored once its nodes have
@@ -250,7 +250,7 @@ at them.
    product contract, implemented as `clean_c0_v1`
    ([G1](doc/known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition), verified
    2026-09-19). Cache-parity tests do not cover it; the dedicated conditioning tests in
-   `tests/test_train.py` do.
+   `tests/test_causal_train_sample.py` and `tests/test_bidirectional.py` do.
 1. **Current:** `model/common.py` owns shared conditioning/noise/loss helpers;
    `model/bidirectional.py` and `model/causal.py` own their mode calculations.
    Training and generation remain different operations; extraction alone does
@@ -258,8 +258,7 @@ at them.
 2. **One producer per artifact.** The crop box comes from `precompute.py --process_gt_latent`'s
    manifest; `z_y` from the capture pass; the guide and its alpha from `corpus/build_guidance.py`;
    current membership from `corpus/subset.py` and frame selection from the selected mode.
-   `windows.py` is a remaining historical caller. Readers never recompute and
-   never "reconstruct if missing" —
+   Readers never recompute and never "reconstruct if missing" —
    they raise with a pointed error.
 3. **Shared knowledge has exactly one spelling.** Artifact names live in `corpus/dataset.py`, the
    crop box in `corpus/geometry.py`, the block plan in `model/causal.py`, the mask codec in

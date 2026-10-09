@@ -14,7 +14,6 @@ from scripts.onestep_avatar.experiments import fusion_parity as evaluate
 def test_package_block_matches_original_grid_and_noise_on_real_transformer():
     from scripts.onestep_avatar.model import causal, common
     from scripts.onestep_avatar.tests.test_causal_core import CHANNELS, SCALE, _context, _model
-    from scripts.onestep_avatar.training import engine
     from scripts.prune.core.session import DTYPE
 
     model = _model().to(dtype=DTYPE)
@@ -23,8 +22,7 @@ def test_package_block_matches_original_grid_and_noise_on_real_transformer():
     session = SimpleNamespace(device=torch.device('cpu'), context=_context().to(dtype=DTYPE),
                               model=SimpleNamespace(scale_factors=SCALE, caps=SimpleNamespace(latent_channels=CHANNELS)))
     geometry = causal.deployed_geometry(SCALE)
-    chain = SimpleNamespace(z_y=capture, fps=30)
-    grid = engine.clip_grid_for(chain, geometry, device=session.device, latent_channels=CHANNELS)
+    grid = common.ClipGrid.build(7, 64, 64, 30, geometry, device=session.device, dtype=DTYPE, latent_channels=CHANNELS)
     span = geometry.plan(grid.latent_frames)[0]
     lo, hi = grid.token_span(*span)
     target = grid.patchify(capture.unsqueeze(0).to(dtype=DTYPE))

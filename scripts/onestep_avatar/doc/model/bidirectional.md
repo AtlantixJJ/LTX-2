@@ -1,8 +1,8 @@
 # `model/bidirectional.py` — process a video segment together
 
 Status: **Training and generation functions, typed engine, and explicit-mode training/evaluation CLI integration implemented. Product inference and final real-weight checks remain pending.**
-Current reference: `training.engine.train_chain` with one block starting at frame zero, and
-the pruning producer `scripts.prune.evaluate.whole_clip_baseline`.
+Matched reference: `model.causal.train_sample` with one block starting at frame zero
+(`tests/test_bidirectional.py`), and the pruning producer `scripts.prune.evaluate.whole_clip_baseline`.
 
 ## Objective
 

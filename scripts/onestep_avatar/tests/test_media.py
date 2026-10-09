@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from scripts.onestep_avatar.media import Panel, decode_key, render_from_record, render_panels
+from scripts.onestep_avatar.media import Panel, as_fchw, decode_key, render_from_record, render_panels
 
 
 def panels():
@@ -459,3 +459,9 @@ def test_reference_helper_requires_d1_guide_before_decode(reference_cli_inputs, 
     monkeypatch.setattr(media, 'decode', lambda *a: pytest.fail('missing required guide reached VAE'))
     with pytest.raises(ValueError, match='D1 preview requires a checked guide'):
         media.prepare_training_references(session, None, source, view.parents[1], 'white', 2, 42)
+
+
+def test_decoder_output_is_normalized_to_frame_major_video() -> None:
+    """Moved from the retired visualizer tests: both decoder layouts become F,C,H,W."""
+    assert as_fchw(torch.zeros(1, 3, 5, 8, 9)).shape == (5, 3, 8, 9)
+    assert as_fchw(torch.zeros(5, 8, 9, 3)).shape == (5, 3, 8, 9)

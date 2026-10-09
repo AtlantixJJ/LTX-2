@@ -4,16 +4,16 @@ The unsupported `--anchor-weight` option is removed from both explicit-mode and
 transitional parsing. Old saved configurations remain historical input records;
 they do not authorize restoring the deleted offline-teacher path.
 
-Status: **Typed settings, mode plans, and explicit-mode CLI integration implemented. Fixed preview settings and execution are implemented; complete native workflow acceptance and removal of transitional parsing remain pending. Read [current acceptance](../known_gaps.md#current-acceptance-and-next-step).**
-`parse_args`, `training_sigmas`, `training_noise_seed`, and `sigma_for_rank`
-are extracted without changing their calculations. The engine imports them.
-The transitional mode-less route still accepts old subset settings.
+Status: **Typed settings, mode plans, and explicit-mode CLI integration implemented. Fixed preview settings and execution are implemented; complete native workflow acceptance remains pending. Read [current acceptance](../known_gaps.md#current-acceptance-and-next-step).**
+`training_sigmas`, `training_noise_seed`, and `sigma_for_rank` keep their
+original calculations. The engine imports them. The mode-less `parse_args`
+and its old subset settings retired in refactor group G11.
 
 `parse_settings` produces `RunSettings` with a `BidirectionalSettings` or
-`CausalSettings` value. The old parser remains temporarily until its supported
-callers move or receive a truthful retirement disposition. The current handoff
+`CausalSettings` value. It is the only training parser; `train.py` refuses a
+command without `--mode` before any write. The current handoff
 orders this structural refactor and CPU/caller checks before new native
-experiments on final owners; explicit-mode commands already use the typed
+experiments on final owners; explicit-mode commands use the typed
 public CLI. Keep all scientific settings and original evidence unchanged.
 `--frame-plan` can select a saved reproduction plan. The reader checks its hash,
 membership hash, mode, geometry, and sample lengths before model loading.

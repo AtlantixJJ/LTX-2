@@ -1,9 +1,9 @@
-"""CPU tests for prompt selection and the whole-clip geometry.
+"""CPU tests for prompt selection, dev schedules and guidance passes.
 
 Prompt selection must default to ``REFINE_PROMPT`` so every saved run reproduces, and the
-hash recorded in a manifest must be the hash of the text actually encoded. Whole-clip mode
-must give exactly one block ``[0, T)`` -- a tail dropped by ``CausalGeometry.plan`` would
-silently shorten the bidirectional reference every AR run is compared against.
+hash recorded in a manifest must be the hash of the text actually encoded. The whole-clip
+producer's one-block plan and option checks moved with it to
+``scripts/prune/tests/test_whole_clip_baseline.py`` (refactor group G10).
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ import argparse
 
 import pytest
 
-from scripts.onestep_avatar import visualize_d1
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.model import common
 from scripts.onestep_avatar.model import sampling as model_sampling
@@ -41,25 +40,6 @@ def test_prompt_text_and_file(tmp_path) -> None:  # noqa: ANN001
 def test_prompt_flags_are_exclusive(tmp_path) -> None:  # noqa: ANN001
     with pytest.raises(SystemExit):
         _parse(["--prompt", "x", "--prompt-file", str(tmp_path / "p.txt")])
-
-
-@pytest.mark.parametrize("latent_frames", [2, 9, 18])
-def test_whole_clip_is_one_block(latent_frames: int) -> None:
-    block = visualize_d1.whole_clip_block([latent_frames, latent_frames])
-    geometry = causal_core.deployed_geometry(SCALE, block_latent_frames=block)
-    assert geometry.plan(latent_frames) == [(0, latent_frames)]
-
-
-def test_whole_clip_rejects_mixed_lengths() -> None:
-    with pytest.raises(SystemExit):
-        visualize_d1.whole_clip_block([18, 17])
-
-
-def test_whole_clip_rejects_conflicting_flags() -> None:
-    with pytest.raises(SystemExit):
-        visualize_d1.parse_args(["--view", "v", "--output", "o", "--whole-clip", "--history-mode", "joint"])
-    args = visualize_d1.parse_args(["--view", "v", "--output", "o", "--whole-clip", "--prompt", ""])
-    assert args.whole_clip and args.prompt == ""
 
 
 # --- dev model: rescaled schedule and guidance passes -------------------------------------
@@ -147,15 +127,6 @@ def test_unguided_is_one_conditional_pass() -> None:
     guider = MultiModalGuider(MultiModalGuiderParams())
     out = common.guided_denoised_from_x0_model(model, guider)(_modality(torch.ones(1, 2, 8)))
     assert model.calls == ["cond"] and torch.allclose(out, torch.full_like(out, 5.0))
-
-
-def test_dev_flag_validation() -> None:
-    with pytest.raises(SystemExit):
-        visualize_d1.parse_args(["--view", "v", "--output", "o", "--variant", "dev"])
-    with pytest.raises(SystemExit):
-        visualize_d1.parse_args(["--view", "v", "--output", "o", "--steps", "8"])
-    args = visualize_d1.parse_args(["--view", "v", "--output", "o", "--variant", "dev", "--steps", "8", "--cfg", "3"])
-    assert visualize_d1._suffix(args) == "dev_n8_cfg3_stg0"
 
 
 @pytest.mark.parametrize("steps", [1, 2, 8, 30])

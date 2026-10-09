@@ -132,7 +132,7 @@ Record its start frame. Changing position labels does not remove that difference
 After implementation, test token conversion, frame-rate-dependent positions, and output conversion.
 Inspect the actual input to the model. Test missing guides and invalid shapes.
 
-Current tests are in `tests/test_train.py` and `tests/test_causal_core.py`.
+Current tests are in `tests/test_causal_train_sample.py` and `tests/test_causal_core.py`.
 Precision tests inspect both modes' actual modalities, including clean first-image
 and cache calls. Explicit diagnostic overrides do not change the ordinary contract.
 

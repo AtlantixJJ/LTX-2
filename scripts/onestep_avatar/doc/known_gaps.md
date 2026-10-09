@@ -67,8 +67,8 @@ it is not an observed pilot outcome or a substitute for final-source validation.
 
 ## G1 — the supplied first frame is not a model condition
 
-**Verified historical defect, fixed 2026-09-19.** The legacy `training.engine.train_chain`
-and shared `model.causal.rollout` assemble clean capture/supplied-image `c0` before
+**Verified historical defect, fixed 2026-09-19.** Shared `model.causal.train_sample`
+and `model.causal.rollout` assemble clean capture/supplied-image `c0` before
 the model at token timestep zero. Both typed modes use `model.common.with_clean_prefix`
 and `block_modality`. They preserve the first image in predictions; causal refresh
 retains it as the sink. Dedicated conditioning tests and the recorded
@@ -100,9 +100,8 @@ global-sigma precision. Ordinary evaluation and product use
 loading. Checked data readers enforce encode/VAE provenance for selected inputs.
 Evaluation research changes use the existing recorded override; product permits
 none. Unknown historical precision fails execution even with an override.
-Legacy `visualize_d1.py` still uses `check_adapter_conditions` through its
-historical interface. `visualize_d0.py` does not provide the full typed gate.
-Their replacement acceptance and retirement remain open.
+The old visualizers retired in refactor group G11. `check_adapter_conditions`
+remains only for the historical causality study's flat-metadata adapters.
 
 **Impact.** A context-16 checkpoint is probed at context 2; a D1 adapter is accepted by the D0
 probe; a fixed-σ adapter is probed at other σ without being labelled off-condition. Every one of
@@ -141,14 +140,13 @@ source-bound receipts; the pilot's explicit span-seven lineage stays separate.
 
 **Required.** A checkpoint from the deployable arm can be decoded and inspected.
 
-**Current.** `visualize_d0 --guide-mode d1` exists and shares its rollout with D0.
-`visualize_d1 --arms d1 --checkpoint` provides paired evaluation. The existing 2026-10-02
-record reports real dev D1 adapters exercised via `visualize_d1` in the dev-training study.
-Claims that no D1 probe or D1 adapter exists are obsolete.
+**Current.** Ordinary evaluation and training previews decode D1 outputs through the
+typed contract checks. The 2026-10-02 dev-training record exercised real dev D1 adapters
+through the old `visualize_d1` path, which retired in refactor group G11; that record
+keeps its original attribution. Claims that no D1 probe or D1 adapter exists are obsolete.
 
-**Status.** In progress: the recorded real-adapter path is `visualize_d1`; direct
-`visualize_d0` end-to-end D1 verification is not established here, and its complete adapter
-condition enforcement remains G3. This documentation phase supplies no new GPU evidence.
+**Status.** In progress: real-adapter D1 inspection through ordinary evaluation is part of
+the post-refactor E2/E5 evidence. This documentation change supplies no new GPU evidence.
 
 **Acceptance.** Preserve the existing verified D1 behavior in unified evaluation, exercise
 its real-adapter path and use the common condition reader for every consumer.

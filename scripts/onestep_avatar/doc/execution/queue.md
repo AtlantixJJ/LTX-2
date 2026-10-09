@@ -634,8 +634,9 @@ child ownership have been verified; this design is not evidence of that handoff.
 ## Gotchas
 
 The old queue's `metrics.json` and `.stage2_report_complete` flags combine model
-work with reporting. Separate them during migration. Existing mode-less jobs
-and version-one adapters need conversion before this executor can run them.
+work with reporting. Separate them during migration. Mode-less training jobs
+cannot run, because `train` requires `--mode`; version-one adapters need
+conversion before this executor can run them.
 Saved-result report rebuilds must fail on missing inputs, not enqueue recovery.
 A GPU-count override does not authorize changing a recorded FSDP configuration.
 

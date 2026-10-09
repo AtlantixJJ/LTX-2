@@ -85,8 +85,8 @@ flowchart LR
 
 Training and evaluation also read the fixed list's checked masters.
 The shared checker binds mode, geometry, noising, first image, history, and adapter
-application before weights load. `visualize_d0.py`, `visualize_d1.py`, `windows.py`
-and mode-less training remain historical migration callers, not new-run entrypoints.
+application before weights load. The mode-less trainer, `windows.py` and both old
+visualizers retired in refactor group G11.
 `decode_saved.py` reads saved encoded outputs through a jobs JSON and creates videos.
 It does not run the transformer again.
 Evaluation can also use the base model without an adapter.
@@ -251,8 +251,8 @@ historical validation preserves recorded evidence without restamping it.
 **New commands require an explicit `--mode` switch.**
 Bidirectional training uses its own segment function with no cache or discarded
 priming call. Causal training uses immediate per-block backward and its existing
-cache calculations. The mode-less training path and old visualizers remain
-transitional callers until required behavior and callers move to the typed owners.
+cache calculations. The mode-less training path and old visualizers retired in
+refactor group G11 after their behavior checks moved to the typed owners.
 Fresh affected native checks follow validation of the final source.
 See [current commands](configs/README.md) and the
 [configuration](doc/training/config.md), [bidirectional](doc/model/bidirectional.md),

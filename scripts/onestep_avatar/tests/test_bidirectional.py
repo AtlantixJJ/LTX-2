@@ -1,9 +1,9 @@
-"""Matched direct-mode checks against the original one-block training path."""
+"""Matched direct-mode checks against the causal mode's one-block training call."""
 
 from __future__ import annotations
 
 import copy
-from types import SimpleNamespace
+import random
 
 import pytest
 import torch
@@ -12,7 +12,7 @@ from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar.model import bidirectional, common, sampling
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.tests.test_causal_core import _model
-from scripts.onestep_avatar.training import engine as train
+from scripts.onestep_avatar.training import config
 
 
 @pytest.mark.parametrize("guide_mode", ["d0", "d1"])
@@ -30,26 +30,25 @@ def test_same_inputs_match_original_prediction_loss_and_gradient(guide_mode, sig
     context = torch.randn(1, 3, 16, generator=rng).bfloat16()
     original = _model().bfloat16()
     current = copy.deepcopy(original)
-    chain = train.window_chain(
-        train.Chain("fixture", "train", "actor", True, [0], guide_master, capture_master, 30), start, 3
-    )
+    # A segment is a clip of its own: its frame 0 (the future c0) is master frame ``start``.
     capture = capture_master[:, start:start+3].contiguous()
     guide = guide_master[:, start:start+3].contiguous()
-    assert torch.equal(chain.z_y, capture) and torch.equal(chain.z_g, guide)
     assert torch.equal(capture[:, 0], capture_master[:, start])
     cache = causal_core.BlockCache.allocate(
         grid, geometry, num_layers=2, inner_dim=8, device=torch.device("cpu"), dtype=torch.bfloat16
     )
-    old = train.train_chain(
+    old = causal_core.train_sample(
         original,
         context,
-        chain,
+        grid,
+        grid.patchify(capture.unsqueeze(0)),
+        grid.patchify(guide.unsqueeze(0)),
         geometry,
-        cache,
-        SimpleNamespace(device=torch.device("cpu"), backward=lambda loss: loss.backward()),
-        sigma0=sigma,
+        [0],
+        lambda loss: loss.backward(),
+        sigma=sigma,
         seed=19,
-        latent_channels=8,
+        cache=cache,
         guide_mode=guide_mode,
         accumulation=3,
     )
@@ -111,9 +110,10 @@ def test_same_inputs_match_original_prediction_loss_and_gradient(guide_mode, sig
 
 
 def test_random_frame_selection_preserves_the_original_seed_keys():
+    key = config.window_start_draw(42)["key"]
     for step in range(5):
         for rank in range(2):
-            expected = train.window_start_for(42, step=step, rank=rank, slot=1, latent_frames=28, window=17)
+            expected = random.Random(key.format(seed=42, step=step, rank=rank, slot=1)).randrange(28 - 17 + 1)
             assert bidirectional.plan_samples(
                 28, span_latent_frames=17, start_policy="random", seed=42, step=step, rank=rank, slot=1
             ) == (expected, expected + 17)

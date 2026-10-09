@@ -21,7 +21,7 @@ Torch version. Reference assembly records this identity. Preview rendering
 requires the reference settings to equal this current identity before opening
 a decoder. For example, references prepared under another Torch version fail
 instead of labeling new decoded pixels with that older runtime.
-`visualize_d0` and `decode_saved` now use the public decoder. Historical presentation helpers remain until evaluation callers move.
+`decode_saved` uses the public decoder. Historical presentation helpers remain until evaluation callers move.
 
 `open_decoder_session(model, gpu_id, script)` owns saved-only session setup.
 Call the shared CUDA/model preflight, which checks device headroom and sets the

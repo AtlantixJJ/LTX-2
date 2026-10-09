@@ -18,6 +18,7 @@ The rest pin the properties a wrong number would otherwise be blamed on the mode
 
 from __future__ import annotations
 
+import itertools
 from typing import Any
 
 import pytest
@@ -26,13 +27,11 @@ import torch
 from ltx_core.components.noisers import GaussianNoiser
 from ltx_core.model.transformer.model import LTXModel, LTXModelType
 from ltx_core.types import LatentState, SpatioTemporalScaleFactors
-from scripts.onestep_avatar import visualize_d1
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.model import common
 from scripts.onestep_avatar.model import sampling as model_sampling
 from scripts.onestep_avatar.model.causal import BlockCache, CausalGeometry
 from scripts.onestep_avatar.model.common import ClipGrid
-from scripts.onestep_avatar.training import engine as train
 
 SCALE = SpatioTemporalScaleFactors(time=8, height=32, width=32)
 CHANNELS = 8
@@ -214,7 +213,8 @@ def test_global_probe_noise_is_independent_of_block_geometry() -> None:
         geometry = CausalGeometry(SCALE, block_latent_frames=block_frames, context_latent_frames=8)
         grid = _grid(geometry, latent_frames=9)
         source = torch.zeros(1, grid.latent_frames * grid.tokens_per_latent_frame, CHANNELS)
-        global_noise, blocks = visualize_d1.global_epsilons(source, grid, geometry.plan(9), 42)
+        global_noise = common.epsilon_block(source, 42)
+        blocks = [global_noise[:, slice(*grid.token_span(*span))] for span in geometry.plan(9)]
         assembled = torch.cat(blocks, dim=1)
         torch.testing.assert_close(assembled, global_noise[:, : assembled.shape[1]], rtol=0, atol=0)
         masters.append(global_noise)
@@ -495,6 +495,32 @@ def test_block_plan_absorbs_the_keyframe_into_block_zero() -> None:
     assert geometry.plan(2) == []
 
 
+@pytest.mark.parametrize(
+    ("latent_frames", "n_blocks", "last_block"),
+    [
+        (4, 1, (0, 3)),  # exactly one block: the keyframe block alone
+        (5, 2, (3, 5)),
+        (17, 8, (15, 17)),  # the 17-frame / 129-RGB span
+        (18, 8, (15, 17)),  # the corpus's short tier -- frame 17 is dropped
+        (19, 9, (17, 19)),
+        (29, 14, (27, 29)),  # the corpus's long tier
+        (125, 62, (123, 125)),
+    ],
+)
+def test_the_deployed_block_plan_is_pinned_to_exact_bounds(
+    latent_frames: int, n_blocks: int, last_block: tuple[int, int]
+) -> None:
+    """Golden bounds over the encoded lengths the corpus has (moved from the retired subset
+    builder's tests). Saved frame plans index blocks sliced out of one master encode, so a
+    moved bound would silently re-point every saved range."""
+    blocks = causal_core.deployed_geometry(SCALE).plan(latent_frames)
+    assert len(blocks) == n_blocks
+    assert blocks[0] == (0, 1 + causal_core.BLOCK_LATENT_FRAMES)
+    assert blocks[-1] == last_block
+    assert all(a[1] == b[0] for a, b in itertools.pairwise(blocks))
+    assert causal_core.deployed_geometry(SCALE).plan(2) == []
+
+
 def test_eviction_keeps_the_pinned_sink_and_the_newest_context() -> None:
     geometry = CausalGeometry(scale_factors=SCALE, block_latent_frames=2, context_latent_frames=2)
     grid = _grid(geometry, latent_frames=9)
@@ -701,55 +727,30 @@ def test_rope_range_is_enforced_rather_than_extrapolated() -> None:
         )
 
 
-def test_the_real_training_loop_runs_a_chain_against_a_real_transformer() -> None:
-    """One end-to-end pass of ``train.train_chain``: real model, real cache, real priming.
+def test_the_real_training_loop_runs_a_sample_against_a_real_transformer() -> None:
+    """One end-to-end pass of ``causal_core.train_sample``: real model, real cache, real priming.
 
-    Everything else in this file tests ``causal_core`` in isolation and everything in
-    ``test_train.py`` tests the loop against a stub. This is the join: it is the only place
-    the cache's ``kv_start`` bookkeeping, the clip grid's slicing and the loop's ordering are
-    exercised together against a transformer that actually reads the cache. A shape or dtype
-    mismatch between the three would otherwise first appear on a 22B model on a GPU.
+    Everything else in this file tests ``causal_core`` pieces in isolation, and
+    ``test_causal_train_sample.py`` tests the loop against a stub. This is the join: the
+    cache's ``kv_start`` bookkeeping, the clip grid's slicing and the loop's ordering run
+    together against a transformer that actually reads the cache. A shape or dtype mismatch
+    between the three would otherwise first appear on a 22B model on a GPU.
     """
-    model = _model().to(train.DTYPE)
+    model = _model().to(torch.bfloat16)
     geometry = CausalGeometry(scale_factors=SCALE, block_latent_frames=2, context_latent_frames=2)
-    chain = train.Chain(
-        source="stub/view00",
-        split="train",
-        actor="stub",
-        # Mid-clip on purpose: this is the path that primes the cache from the GT prefix.
-        seed_is_clip_start=False,
-        blocks=[1, 2],
-        z_g=torch.randn(CHANNELS, LATENT_FRAMES, 2, 2),
-        z_y=torch.randn(CHANNELS, LATENT_FRAMES, 2, 2),
-        fps=FPS,
+    grid = ClipGrid.build(
+        LATENT_FRAMES, EDGE, EDGE, FPS, geometry, device=DEVICE, dtype=torch.bfloat16, latent_channels=CHANNELS
     )
-
-    class _Accelerator:
-        device = DEVICE
-
-        @staticmethod
-        def backward(loss: torch.Tensor) -> None:
-            loss.backward()
-
-    grid = train.clip_grid_for(chain, geometry, device=DEVICE, latent_channels=CHANNELS)
+    capture = grid.patchify(torch.randn(1, CHANNELS, LATENT_FRAMES, 2, 2).to(torch.bfloat16))
+    guide = grid.patchify(torch.randn(1, CHANNELS, LATENT_FRAMES, 2, 2).to(torch.bfloat16))
     cache = BlockCache.allocate(
-        grid,
-        geometry,
-        num_layers=len(model.transformer_blocks),
-        inner_dim=model.inner_dim,
-        device=DEVICE,
-        dtype=train.DTYPE,
+        grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
+        device=DEVICE, dtype=torch.bfloat16,
     )
-    totals = train.train_chain(
-        model,
-        torch.randn(1, CONTEXT_TOKENS, CONTEXT_DIM, dtype=train.DTYPE),
-        chain,
-        geometry,
-        cache,
-        _Accelerator(),
-        sigma0=SIGMA0,
-        seed=0,
-        latent_channels=CHANNELS,
+    totals = causal_core.train_sample(
+        model, torch.randn(1, CONTEXT_TOKENS, CONTEXT_DIM, dtype=torch.bfloat16), grid, capture, guide, geometry,
+        # Mid-clip on purpose: this is the path that primes the cache from the capture prefix.
+        [1, 2], lambda loss: loss.backward(), sigma=SIGMA0, seed=0, cache=cache,
     )
 
     assert [entry["block_index"] for entry in totals["per_block"]] == [1, 2]

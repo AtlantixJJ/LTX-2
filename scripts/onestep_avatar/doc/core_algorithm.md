@@ -3,8 +3,8 @@
 Status: **Shared helpers, both mode functions and typed training implemented;
 full acceptance and legacy migration incomplete.** Read
 [current acceptance](known_gaps.md#current-acceptance-and-next-step) for scope.
-The training CLI supports explicit modes. The extracted mode-less loop remains
-transitional for callers that still need migration.
+The training CLI requires an explicit mode. The mode-less loop retired in
+refactor group G11.
 Start with the [design index](README.md).
 Required means an agreed rule. Current means inspected code. Proposed means planned code.
 
@@ -57,9 +57,8 @@ Reserve room for the current write before removing old entries.
 Typed [bidirectional](model/bidirectional.md) training processes one segment
 directly with full attention. It has no cache, prime or refresh call.
 Typed [causal](model/causal.md) training uses the block/cache calculations above.
-The transitional mode-less engine is a legacy execution path awaiting removal;
-it does not define typed mode behavior. The pruning whole-clip producer is
-`scripts.prune.evaluate.whole_clip_baseline`.
+The mode-less engine retired in refactor group G11. The pruning whole-clip
+producer is `scripts.prune.evaluate.whole_clip_baseline`.
 Select the mode explicitly. D0/D1 and dev/distilled remain separate choices.
 Joint attention over past frames and a current block is a diagnostic, not a third training mode.
 

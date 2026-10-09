@@ -346,13 +346,10 @@ and [migration map](architecture.md#migration-map); that map wins over the
 | `experiments/stats.py` | [stats.md](experiments/stats.md) | implemented at `experiments/stats.py` (A1/B1c study code; no other consumer) |
 | `plot_training.py` | [plot_training.md](plot_training.md) | keep training plots; remove old readers after log conversion |
 | `decode_saved.py` | [decode_saved.md](decode_saved.md) | use media; apply final size rule |
-| `train.py` | source header | thin CLI implemented; [engine](training/engine.md) and [config](training/config.md) extracted; remaining owners pending |
+| `train.py` | source header | thin CLI; requires `--mode`; [engine](training/engine.md) and [config](training/config.md) are the typed owners |
 | `model/causal.py` | [model/causal.md](model/causal.md) | typed training/evaluation/product integrated; native quality/cost acceptance pending |
-| `windows.py` | [windows.md](windows.md) | legacy subset digest moved to `corpus/subset.py`; remaining runtime retires in G11 |
 | `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | version-two records and tensor preflight stay; legacy conversion is in `experiments/legacy_adapters.py` |
 | removed `onestep_core.py` | [infer.md](infer.md) | explicit-mode product CLI/API and shared model/media owners |
-| `visualize_d0.py` | [visualize_d0.md](visualize_d0.md) | retarget needed checks to final owners, then delete |
-| `visualize_d1.py` | [visualize_d1.md](visualize_d1.md) | pruning producer moved to `scripts.prune.evaluate.whole_clip_baseline`; delete in G11 |
 | `bench.py` | [bench.md](bench.md) | causal-operation diagnostic and explicit-mode whole-generation CLI implemented; native measurement pending |
 | `model/backbone.py` | [source docstrings](../model/backbone.py) | moved; keep the weight-identity description |
 | `hashing.py` | [source docstrings](../hashing.py) | stays at the root as a leaf utility; gains `tensor_sha256` |

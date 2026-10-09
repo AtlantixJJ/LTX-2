@@ -28,7 +28,7 @@ LOGGER = logging.getLogger("onestep_avatar.checkpoints")
 
 
 def read_adapter_metadata(path) -> dict[str, str]:  # noqa: ANN001 -- str | Path
-    """The safetensors metadata ``training.engine.checkpoint_metadata`` stamped, without loading tensors."""
+    """Flat safetensors metadata (legacy adapters' only record), without loading tensors."""
     from safetensors import safe_open  # noqa: PLC0415
 
     with safe_open(str(path), framework="pt") as handle:

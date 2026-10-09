@@ -513,6 +513,14 @@ keys, `json.dumps(sort_keys=True)` and unchanged spacing.
 | `visualize_d0.py`, `visualize_d1.py` | The prune producer moved; needed condition, cache and K/V checks retargeted to `evaluate.py`, `model/causal.py` or experiment tests. |
 | Alpha `.npy` reading and `--migrate-alpha`; unrefined pose fallback; `per_window` log readers in `plot_training.py`; remaining anchor fields and flags | The selected-data inventory proves no selected input needs them, or the existing bit-exact conversion has written checked derived records. Never rerender guides or delete source media. |
 
+**Implemented (G11):** the code rows above are deleted. `train.py` refuses a
+command without `--mode` before any write; `training/engine.py` keeps only the
+typed closure of `run_settings`, `prepare_run`, `verify_training_conditions`,
+`tokens_for_sample`, preview helpers and `build_transformer`. Behavior checks of
+the deleted wrappers moved to their shared owners (`model/causal.py`,
+`model/common.py`, `training/config.py`, `training/checkpoints.py`). The data
+fallbacks row is G12.
+
 Keep both FSDP configurations: `configs/fsdp.yaml` and
 `configs/fsdp_forward_prefetch.yaml` are distinct checked choices.
 

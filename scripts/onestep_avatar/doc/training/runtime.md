@@ -103,7 +103,7 @@ Refuse late workspace configuration after CUDA initialization. Native backend
 detection can initialize CUDA before training; flags can be applied after that
 detection only when the required workspace was already inherited correctly.
 Apply before reserved CUDA buffers, Accelerator, prompt/model sessions or
-cuBLAS work. Leave the transitional mode-less engine unchanged.
+cuBLAS work.
 
 Runtime capture produces schema version two and adds observed numerical
 flags to every rank. Validate exact field types, full rank agreement and the
