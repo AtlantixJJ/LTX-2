@@ -107,6 +107,19 @@ noise and first-image inputs match. Diagnose source, input, precision and
 backend-policy differences with one-factor controls; never fit a tolerance to a
 failed result.
 
+**Saved pruning reference.** The saved whole-clip D0 reference
+`expr/refiner_prune/2.5/recheck_20260930/baseline` was made with a BF16 global
+sigma and PyTorch default numerical settings, under which scaled-dot-product
+attention runs the cuDNN kernel. The current producer passes a float32 global
+sigma (per-token timesteps are float32 in both), and the deterministic policy
+(`torch.use_deterministic_algorithms(True)`) makes attention run the Flash
+kernel. `experiments/prune_reproduction.py` reproduces the reference
+bit-for-bit with default settings and a BF16 global sigma; the dense mask, cuDNN
+determinism and BF16 reduction change nothing. Current outputs therefore differ
+from that reference at every sigma. Pruning comparisons stay within one
+producer setting until a baseline is rebuilt or the reference's settings are
+adopted.
+
 ## Related
 
 [Core algorithm](core_algorithm.md) defines required calculations.

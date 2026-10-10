@@ -51,9 +51,9 @@ reads saved inputs and cannot run models, decoding, or queue work.
 | `decode_saved.py` | [decode_saved.md](decode_saved.md) | 192 |
 | `evaluate.py` | [evaluate.md](evaluate.md) | 740 |
 | `execution/devices.py` | source header | 50 |
-| `execution/process_registry.py` | [execution/process_registry.md](execution/process_registry.md) | 353 |
+| `execution/process_registry.py` | [execution/process_registry.md](execution/process_registry.md) | 357 |
 | `execution/queue.py` | [execution/queue.md](execution/queue.md) | 2015 |
-| `execution/queue_launch.py` | [execution/queue_launch.md](execution/queue_launch.md) | 1045 |
+| `execution/queue_launch.py` | [execution/queue_launch.md](execution/queue_launch.md) | 1060 |
 | `execution/queue_protocol.py` | source header | 11 |
 | `execution/runtime.py` | [execution/runtime.md](execution/runtime.md) | 173 |
 | `execution/software.py` | [execution/software.md](execution/software.md) | 195 |

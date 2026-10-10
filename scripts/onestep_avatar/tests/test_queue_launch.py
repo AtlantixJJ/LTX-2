@@ -216,6 +216,55 @@ def test_ended_owned_recovery_preserves_original_evidence_and_states_scope(
     assert all(path.read_bytes() == data for path, data in original_files.items())
 
 
+def test_interrupted_recovery_releases_devices_without_claiming_the_workload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger, request, owned, _ranks, notifications = ended_owned_attempt(tmp_path, monkeypatch)
+    # The workload stopped during startup: no rank reported its phases.
+    notifications.write_bytes(b"")
+    with pytest.raises(ValueError, match="Expecting value"):
+        launch.recover_owned_attempt(ledger, request, timeout=2)
+    assert json.loads(ledger.read_bytes())["attempts"]["b" * 32]["state"] == "active"
+    result = launch.recover_owned_attempt(ledger, request, timeout=2, interrupted=True)
+    assert result["basis"] == "bounded_interrupted_owner_recovery"
+    assert result["workload_complete"] is False
+    assert result["notifications"] is None
+    assert result["registered_workers_absent"] is True
+    assert result["containment_complete"] is False
+    changed = json.loads(ledger.read_bytes())["attempts"]["b" * 32]
+    assert changed["state"] == "closed"
+    assert {key: value for key, value in changed.items() if key not in ("state", "recovery")} == {
+        key: value for key, value in owned.items() if key != "state"
+    }
+    observed = process_registry.inspect_record(ledger, "b" * 32)
+    assert observed["basis"] == "recovered_interrupted_handles_ended"
+    assert observed["workload_complete"] is False
+    assert observed["workers_live"] is False
+
+
+def test_interrupted_recovery_keeps_live_handle_busy_gpu_and_running_journal_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger, request, _owned, ranks, _notifications = ended_owned_attempt(tmp_path, monkeypatch)
+    original = ledger.read_bytes()
+    monkeypatch.setattr(launch, "process_identity", lambda pid: ranks[0] if pid == ranks[0]["pid"] else None)
+    with pytest.raises(ValueError, match="registered handle remains live"):
+        launch.recover_owned_attempt(ledger, request, timeout=2, interrupted=True)
+    monkeypatch.setattr(launch, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(process_registry, "gpu_memory", lambda **_kwargs: {**dict.fromkeys(range(8), 0), 1: 4096})
+    with pytest.raises(ValueError, match="idle selected GPU"):
+        launch.recover_owned_attempt(ledger, request, timeout=2, interrupted=True)
+    assert ledger.read_bytes() == original
+    journal = Path(json.loads(request.read_bytes())["journal"])
+    state = json.loads(journal.read_bytes())
+    state["jobs"]["case"]["state"] = "failed"
+    journal.write_text(json.dumps(state))
+    monkeypatch.setattr(process_registry, "gpu_memory", lambda **_kwargs: dict.fromkeys(range(8), 0))
+    with pytest.raises(ValueError, match="journal does not bind"):
+        launch.recover_owned_attempt(ledger, request, timeout=2, interrupted=True)
+    assert ledger.read_bytes() == original
+
+
 @pytest.mark.parametrize(
     "failure",
     [

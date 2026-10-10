@@ -785,8 +785,16 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
     request_path: Path,
     *,
     timeout: float = 10,
+    interrupted: bool = False,
 ) -> dict:
-    """Close an ended approved registered workload; preserve lost-supervision scope."""
+    """Close an ended approved registered workload; preserve lost-supervision scope.
+
+    ``interrupted`` closes an attempt whose owner and workload ended before every rank
+    reported every phase. It keeps all binding, containment, absence and idle-GPU checks;
+    the journal binding already requires the attempt to be still running. It records that
+    the workload is not complete. Without it, a stopped attempt would hold its GPUs in the
+    ledger forever.
+    """
     from scripts.onestep_avatar.execution import process_registry, supervision  # noqa: PLC0415 -- operational owners
 
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
@@ -853,7 +861,8 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
     command = request["command"]
     direct_binding = None
     if command[1:3] != ["-m", "accelerate.commands.launch"]:
-        direct_binding = _direct_recovery_binding(request, row, original_bytes, deadline)
+        # An interrupted direct child has no complete runtime binding to check.
+        direct_binding = None if interrupted else _direct_recovery_binding(request, row, original_bytes, deadline)
         world = 1
     else:
         if command.count("--num_processes") != 1:
@@ -863,7 +872,7 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
         except (IndexError, ValueError) as error:
             raise ValueError("owned recovery original rank count is invalid") from error
     remaining = deadline - time.monotonic()
-    notifications = read_completed_notifications(
+    notifications = None if interrupted else read_completed_notifications(
         notification_path,
         contract_sha256=environment[supervision.SUPERVISION_SHA_ENV],
         token=request["token"],
@@ -891,7 +900,7 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
         if not isinstance(processes, dict) or not processes or len(processes) > 4096:
             raise ValueError("owned recovery registered descendant inventory is invalid")
         identities = [item["identity"] for item in processes.values()]
-        for item in notifications["rank_identities"]:
+        for item in [] if notifications is None else notifications["rank_identities"]:
             identity = item["identity"]
             saved = processes.get(str(identity["pid"]))
             if saved is None or saved["identity"] != identity:
@@ -904,7 +913,7 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
             or child["identity"]["command"] != command
         ):
             raise ValueError("owned recovery original launch child differs")
-        if direct_binding is not None and notifications["rank_identities"] != [
+        if direct_binding is not None and notifications is not None and notifications["rank_identities"] != [
             {"rank": 0, "identity": child["identity"]}
         ]:
             raise ValueError("owned direct recovery rank zero is not the exact approved child")
@@ -939,7 +948,7 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
         for path, data in original_bytes.items():
             if data != _bounded_bytes(path, deadline, limit=8 * 1024 * 1024 if path == journal else 65536):
                 raise ValueError("owned recovery original launch or journal bytes changed")
-        if notifications != read_completed_notifications(
+        if notifications is not None and notifications != read_completed_notifications(
             notification_path,
             contract_sha256=notifications["contract_sha256"],
             token=request["token"],
@@ -950,7 +959,7 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
             raise ValueError("owned recovery saved notification evidence changed")
         result = {
             "schema_version": 1,
-            "basis": "bounded_dead_owner_recovery",
+            "basis": "bounded_interrupted_owner_recovery" if interrupted else "bounded_dead_owner_recovery",
             "token": request["token"],
             "job_sha256": request["job_sha256"],
             "request": str(request_path),
@@ -966,6 +975,7 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
             "handle_observations": [before, after],
             "sampled_gpu_memory_mib": {str(gpu): memory[gpu] for gpu in gpus},
             "registered_workers_absent": True,
+            "workload_complete": not interrupted,
             "continuous_supervision": False,
             "containment_complete": False,
             "unknown_descendants_unproven": True,
@@ -988,6 +998,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--request", type=Path)
     recovery = parser.add_mutually_exclusive_group()
     recovery.add_argument("--recover-owned", action="store_true", help="close an ended approved own attempt")
+    recovery.add_argument(
+        "--recover-interrupted", action="store_true",
+        help="close an approved own attempt whose owner and workload ended before completion",
+    )
     recovery.add_argument(
         "--recover-registered-owned", action="store_true", help="close ended direct non-training handles"
     )
@@ -1026,18 +1040,19 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("registered recovery options require --recover-registered-owned")
     elif args.request is None:
         parser.error("ordinary launch and approved recovery require --request")
-    elif args.recover_owned:
+    elif args.recover_owned or args.recover_interrupted:
         if args.process_ledger is None:
-            parser.error("--recover-owned requires --process-ledger")
+            parser.error("--recover-owned and --recover-interrupted require --process-ledger")
         print(  # noqa: T201 -- explicit operational recovery evidence
             json.dumps(
-                recover_owned_attempt(args.process_ledger, args.request, timeout=args.timeout),
+                recover_owned_attempt(args.process_ledger, args.request, timeout=args.timeout,
+                                      interrupted=args.recover_interrupted),
                 indent=2,
             )
         )
     else:
         if args.process_ledger is not None:
-            parser.error("--process-ledger requires --recover-owned")
+            parser.error("--process-ledger requires --recover-owned or --recover-interrupted")
         run_guard(args.request, timeout=args.timeout, poll_seconds=args.poll_seconds)
 
 

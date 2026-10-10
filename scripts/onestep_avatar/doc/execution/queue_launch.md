@@ -35,7 +35,11 @@ request and the shared process ledger. It does not enter `run_guard` or launch
 anything. It adds a separately attributed operational closure record only after
 checking bound complete rank notifications, ended exact registered handles and
 current direct GPU inventory. Its source identity is recorded separately from
-the unchanged original training producer.
+the unchanged original training producer. The `--recover-interrupted` variant
+closes an attempt whose owner and workload both ended before every rank reported
+every phase (for example, a run stopped during startup). It skips only the
+complete-notification requirement and records `workload_complete: false`; without
+it, such an attempt would hold its devices in the ledger forever.
 
 ## Organization logic
 
@@ -96,6 +100,15 @@ notification hash and exact process-ledger path. Copy bounded notification bytes
 to a private snapshot and apply the unchanged supervision `_contract`/`_consume`
 rules. All expected ranks and phases must be complete. Recheck original event
 and journal hashes before publication. No external phase timing is inferred.
+
+With `interrupted=True` the notification inventory is not read, so no rank
+identity is matched to it and a direct child needs no complete runtime binding.
+Every other check stays: the request, approval and unchanged running journal,
+the active original ledger row, an earlier complete observation that contains
+every registered handle, two absence passes around one direct GPU inventory and
+idle selected devices. The record has basis `bounded_interrupted_owner_recovery`,
+`notifications: null` and `workload_complete: false`. It releases devices only;
+the queue's `--recover` then records the job as failed from its saved outputs.
 
 Under the ledger's stable lock, require an active original subreaper attempt,
 matching owner/launch child/GPU list and previously complete containment covering

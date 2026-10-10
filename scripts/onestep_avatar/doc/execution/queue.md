@@ -340,7 +340,8 @@ attempt uses a new job ID and output.
   and an unknown launch window refuses takeover.
 - **Missing supervision.** An approved attempt whose owner ended before it
   published a supervisor result can be recorded as failed before its deadline,
-  after the matching bounded `queue_launch --recover-owned` closure. That closure
+  after the matching bounded `queue_launch --recover-owned` closure (or
+  `--recover-interrupted` when the workload stopped before it finished). That closure
   certifies only exact registered handles, not unknown descendants or continuous
   supervision. Recovery rechecks the request, approval, unchanged journal,
   original owned-row hash and ended handles, sets reason `missing_supervision`,

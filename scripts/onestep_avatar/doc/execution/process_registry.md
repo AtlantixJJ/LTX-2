@@ -106,7 +106,9 @@ can subsequently verify scientific completion against those original results.
 `release` reports basis `saved_complete_empty_containment`. A row closed by recovery
 (it carries a `recovery` record) reports basis `recovered_registered_handles_ended`
 with `containment_complete=false` and `continuous_supervision=false`; it never reads
-as complete saved containment. Both report no live workers.
+as complete saved containment. A row closed by interrupted recovery reports basis
+`recovered_interrupted_handles_ended` and also `workload_complete=false`. All three
+report no live workers.
 
 `observe_workers` returns whether any tracked descendant remains live, the
 complete/incomplete scope, and exact identities. `release` marks this attempt

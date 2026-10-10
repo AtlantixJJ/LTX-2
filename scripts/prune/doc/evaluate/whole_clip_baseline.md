@@ -93,6 +93,10 @@ the avatar training contract checks, which prune must not import.
 - `c0` is the clean capture frame in both arms; the guide's frame 0 is never
   a condition. Sigma and per-token timesteps stay float32 inside the model
   owner; BF16 applies to weights and latents.
+- The numerical policy selects the attention kernel. Under the deterministic
+  policy, attention runs the Flash kernel; with PyTorch defaults it runs the
+  cuDNN kernel. Their rounding differs, so compare baselines only within one
+  policy.
 - The output directory must be new or empty. The command never overwrites a
   saved run.
 - This module imports public `corpus.dataset` readers and `model/` owners

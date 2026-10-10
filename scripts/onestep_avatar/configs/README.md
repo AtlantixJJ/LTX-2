@@ -102,7 +102,19 @@ queue stops the job's processes and records reason `overall_deadline`.
 
 # After an owner ended: check ended children and saved outputs; starts nothing.
 "$PY" -m scripts.onestep_avatar.execution.queue --jobs <JOBS.json> --state <STATE.json> --recover
+
+# If --recover reports a surviving child but every process of that attempt has
+# ended, close its ledger row first. <TOKEN> is the attempt's folder under
+# <STATE dir>/launches/. Use --recover-owned when every rank finished every
+# phase, --recover-interrupted when the run stopped early.
+"$PY" -m scripts.onestep_avatar.execution.queue_launch \
+  --request <STATE dir>/launches/<TOKEN>/request.json --recover-interrupted \
+  --process-ledger ../expr/onestep_avatar/processes.json
 ```
+
+Never stop a queue owner while it has a child: check `pgrep -P <owner PID>`
+first. An attempt without its owner keeps its GPUs in the ledger until the
+closure above runs, and its result is recorded as failed.
 
 How the queue behaves:
 
