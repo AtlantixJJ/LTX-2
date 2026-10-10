@@ -16,9 +16,11 @@ import subprocess
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import ModuleType
 
 import torch
 
+from ltx_core.components.patchifiers import VideoLatentPatchifier
 from ltx_core.model.transformer.modality import Modality
 from scripts.onestep_avatar import evaluate, hashing
 from scripts.onestep_avatar.corpus import dataset
@@ -435,7 +437,7 @@ def prepare(args: argparse.Namespace, *, completion: bool = False) -> dict:  # n
             or requested["model"] != baseline["conditions"]["model"]
             or requested["task"] != baseline["conditions"]["task"]):
         raise ValueError("current source, base weights or preprocessing differs from the original baseline")
-    patch = evaluate.VideoLatentPatchifier(1)
+    patch = VideoLatentPatchifier(1)
     capture = patch.patchify(video.z_y[:, :frames].unsqueeze(0).to(torch.bfloat16))
     guide = patch.patchify(video.z_g[:, :frames].unsqueeze(0).to(torch.bfloat16))
     context_path = (old_output / "text.pt" if snapshot is None else
@@ -642,7 +644,19 @@ def control_results(prepared: dict) -> list[dict]:
     return rows
 
 
+def _short_owner() -> ModuleType:
+    """Load extra scientific owners only for the phase that binds their source bytes."""
+    from scripts.onestep_avatar.experiments import short_causal_check  # noqa: PLC0415 -- short-phase source closure
+
+    return short_causal_check
+
+
 def scientific_args(argv: list[str]) -> argparse.Namespace:
+    phase_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    phase_parser.add_argument("--phase")
+    phase, _remaining = phase_parser.parse_known_args(argv)
+    if phase.phase == "short_controls":
+        return _short_owner().scientific_args(argv)
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--phase", choices=("capture", "reference", "control"), required=True)
     parser.add_argument("--protocol", type=Path)
@@ -687,11 +701,14 @@ def read_spec(spec: Path, root: Path) -> argparse.Namespace:
 
 
 def resource_phases(spec: Path) -> list[str]:
-    read_spec(spec, spec.parent / "unused_output")
-    return ["continuation-case"]
+    args = read_spec(spec, spec.parent / "unused_output")
+    return list(_short_owner().PHASES) if args.phase == "short_controls" else ["continuation-case"]
 
 
 def runtime_profile(spec: Path) -> dict:
+    args = read_spec(spec, spec.parent / "unused_output")
+    if args.phase == "short_controls":
+        return _short_owner().runtime_profile(args)
     return {
         "generic_phase": False,
         "phases": resource_phases(spec),
@@ -702,6 +719,8 @@ def runtime_profile(spec: Path) -> dict:
 
 def dependency_outputs(spec: Path) -> list[Path]:
     args = read_spec(spec, spec.parent / "unused_output")
+    if args.phase == "short_controls":
+        return _short_owner().dependency_outputs(args)
     return [] if args.snapshot is None else [args.snapshot.parent.resolve()]
 
 
@@ -709,6 +728,8 @@ def verify_completion(spec: Path, root: Path) -> dict:  # noqa: PLR0912, PLR0915
     """Check complete actual observations without native model/decoder calls."""
     args = read_spec(spec, root)
     manifest = spec_protocol.inspect(args, "continuation_check")
+    if args.phase == "short_controls":
+        return _short_owner().verify_saved(args, manifest)
     prepared = prepare(args, completion=True)
     _check_prepared(prepared)
     result = json.loads((root / "continuation.json").read_text())
@@ -867,6 +888,15 @@ def main(argv: list[str] | None = None) -> int:
     args = spec_protocol.read_spec(outer, "continuation_check", scientific_args)
     if args.output.exists() or args.output.is_symlink() or not args.output.parent.is_dir():
         raise ValueError("use a fresh output under an existing parent")
+    if args.phase == "short_controls":
+        owner = _short_owner()
+        prepared = owner.prepare(args)
+        if args.dry_run:
+            print(json.dumps(owner.protocol(prepared), indent=2))  # noqa: T201 -- CLI preflight
+            return 0
+        owner.execute(args, prepared)
+        spec_protocol.publish(read_spec(args.spec, args.output), "continuation_check")
+        return 0
     prepared = prepare(args)
     _check_prepared(prepared)
     if args.dry_run:

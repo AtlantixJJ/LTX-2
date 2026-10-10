@@ -156,6 +156,7 @@ Complete input production and native model acceptance remain pending.
 | `experiments/stock_parity.py` | [stock_parity.md](experiments/stock_parity.md) | >100; actual stock video sampling components, repeated controls, checked-reference precision comparison and decoded traces; native acceptance open |
 | `experiments/spec_protocol.py` | [experiments/spec_protocol.md](experiments/spec_protocol.md) | >100; pinned data-only checker specifications, artifact manifests and saved completion inventory |
 | `experiments/prune_baseline.py` | [experiments/prune_baseline.md](experiments/prune_baseline.md) | >100; queued one-case pruning reproduction through the public prune producer, pinned inputs/software and saved completion |
+| `experiments/short_causal_check.py` | [experiments/short_causal_check.md](experiments/short_causal_check.md) | >100; repeated short causal evaluation/product, supplied-image and future-noise controls through shared numerical owners |
 | `model/bidirectional.py` | [model/bidirectional.md](model/bidirectional.md) | >100; segment training and generation |
 | `model/causal.py` | [model/causal.md](model/causal.md) | >100; block and cache operations |
 | `model/sampling.py` | [model/sampling.md](model/sampling.md) | >100; exact denoising levels and steps |

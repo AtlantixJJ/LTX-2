@@ -614,6 +614,27 @@ Actual replay compares gradients, norms, loss, export and distributed step-one
 reload. A failed comparison exits 2 and retains measured failed evidence.
 Native previews/product and perceptual quality are separate acceptance gates.
 
+### Short causal controls
+
+Use the `continuation_check` experiment selector with `--phase short_controls`.
+Its pinned schema-one spec declares the accepted causal E4 training job,
+the serial reference `result.json`, fixed E2 inputs, zero/step-one checkpoints,
+and the saved changed-noise tensors for encoded-frame boundaries three and five.
+Use absolute scientific paths and a fresh output directory. The queue supplies
+the output path, local GPU, runtime budget and bounded supervision.
+
+```json
+{"schema_version":1,"protocol":"continuation_check","arguments":["--phase","short_controls","--job","/absolute/causal_training_job.json","--inputs","/absolute/fixed_inputs.json","--update-check","/absolute/serial_reference/result.json","--checkpoints","/absolute/checkpoint_zero.safetensors","/absolute/checkpoint_one.safetensors","--changed-noise-3","/absolute/noise_changed_3.pt","--changed-noise-5","/absolute/noise_changed_5.pt"]}
+```
+
+Declare a dependency on the accepted causal E4 comparison. Review the queue
+with the dry-run command below. After E4 completes, the checker's direct
+`--spec <SPEC_JSON> --output <FRESH_OUTPUT> --dry-run` validates its calibrated
+inputs without loading weights. Execution compares nine raw outputs from the
+shared evaluation, product and future-noise APIs. The fixed seven-frame check
+has no cache eviction and does not establish video quality. See
+[the design](../doc/experiments/short_causal_check.md) for the exact controls.
+
 Review a normalized package queue without starting children:
 
 ```bash

@@ -14,6 +14,12 @@ same cached trajectory's clean history. Keep ordinary model owners unchanged.
 Observe native self-attention keys after normalization and RoPE, and native
 values. Do not implement another forward, cache, noise or eviction algorithm.
 
+The same experiment selector accepts `--phase short_controls` for nine exact
+seven-frame controls after the one-update causal adapter. Its scientific parser,
+eight resource phases, execution and CPU saved-array verifier delegate to
+[`short_causal_check`](short_causal_check.md). The 17-frame capture, reference
+and control phases retain their own original protocol and acceptance meanings.
+
 ## Data flow
 
 ```mermaid
@@ -46,6 +52,10 @@ current masters and saved text against the original tensor/file identities
 before weights. Use the existing checked `execute_evaluation` input path and
 `sample_case` runner. Capture a current software profile with this diagnostic
 and resource owner included. Never restamp the historical producer manifest.
+The native `ltx_core.components.patchifiers.VideoLatentPatchifier` converts
+capture and guide arrays to tokens. Import it from its owner; the evaluator
+does not publish that class. Check these converted values against the saved
+baseline hashes before any model call.
 
 Capture and reference use separate queue experiment jobs. Their strict pinned
 specifications keep the original scientific arguments. Scientific paths must be
@@ -62,6 +72,17 @@ absolute. The output and local GPU options come from the queue:
 The reference job depends on the capture receipt. CPU `--dry-run` uses
 `--spec /absolute/spec.json --output /absolute/fresh_output` with
 `CUDA_VISIBLE_DEVICES=''`. It performs preparation only.
+
+The short-controls specification uses protocol `continuation_check` and the
+default `run` operation. Its scientific arguments are `--phase short_controls`,
+`--job`, `--inputs`, `--update-check`, two `--checkpoints`, and
+`--changed-noise-3`/`--changed-noise-5`, all with absolute paths. The update-check
+is the passed serial update producer result. The job depends on that producer;
+the accepted queue plan also depends on the matching four-rank comparison.
+Its queue runtime adopts the unchanged explicit E4 budget and reports all eight
+phase names. Completion dispatches before the 17-frame preparation and reads
+the nine raw arrays without constructing a model. No ordinary software profile
+or experiment selector table changes for this route.
 
 The `control` phase consumes one ID from the existing data-only 12-control plan:
 
