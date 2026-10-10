@@ -395,7 +395,7 @@ def load_training_references(path: Path) -> tuple[list[Panel], dict]:
     return panels, manifest["producer"]
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915 -- ordered reference preflight, decode and publication
     """Prepare checked fixed preview references with a decoder-only session."""
     from scripts.onestep_avatar.corpus import dataset, precompute  # noqa: PLC0415 -- checked input owners
     from scripts.onestep_avatar.model import backbone  # noqa: PLC0415 -- model registry only

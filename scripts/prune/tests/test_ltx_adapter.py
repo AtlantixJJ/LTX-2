@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 
-def test_no_module_but_the_adapter_imports_ltx_privates():
+def test_no_module_but_the_adapter_imports_ltx_privates() -> None:
     """Every underscore-prefixed ltx_core/ltx_pipelines symbol lives in exactly
     one place -- when the LTX-2 pin moves, ltx_adapter.py is the one file
     that needs to be re-checked.
@@ -24,7 +24,7 @@ def test_no_module_but_the_adapter_imports_ltx_privates():
     assert offenders == set()
 
 
-def test_adapter_docstring_names_a_resolvable_pinned_commit():
+def test_adapter_docstring_names_a_resolvable_pinned_commit() -> None:
     """A pin recorded but never checked is worse than no pin: assert it names a
     real commit in this history, not a stale/typo'd placeholder.
 

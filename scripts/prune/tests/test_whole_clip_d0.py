@@ -31,13 +31,18 @@ def test_direction_uses_noisy_input_and_excludes_clean_keyframe() -> None:
 
 def test_rejects_non_bidirectional_or_unmatched_noise_setup() -> None:
     manifest = {
-        "whole_clip": True, "objective": "white", "sigmas": [0.5], "seed": 42,
-        "trajectory_only": False, "geometry": {"block_latent_frames": 1},
-        "attention": "full_bidirectional", "latent_dtype": "torch.bfloat16",
+        "whole_clip": True,
+        "objective": "white",
+        "sigmas": [0.5],
+        "seed": 42,
+        "trajectory_only": False,
+        "geometry": {"block_latent_frames": 1},
+        "attention": "full_bidirectional",
+        "latent_dtype": "torch.bfloat16",
         "text_context": {"sha256": "x"},
         "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1},
-        "model": {"model_key": "2.5", "video_vae_fingerprint": "vae",
-                  "transformer_fingerprint": "a"}, "videos": [],
+        "model": {"model_key": "2.5", "video_vae_fingerprint": "vae", "transformer_fingerprint": "a"},
+        "videos": [],
     }
     candidate = {**manifest, "model": {**manifest["model"], "transformer_fingerprint": "b"}}
     _verify_pair(manifest, candidate)
@@ -51,10 +56,17 @@ def test_rejects_non_bidirectional_or_unmatched_noise_setup() -> None:
 
 def test_saved_d0_manifest_rejects_wrong_schedule_and_duplicate_rows() -> None:
     row = {"view": "capture/view00", "sigma": 0.5, "schedule": [0.5, 0.0]}
-    manifest = {"whole_clip": True, "trajectory_only": False, "attention": "full_bidirectional",
-                "objective": "white", "sigmas": [0.5], "videos": [row], "seed": 42,
-                "latent_dtype": "torch.bfloat16",
-                "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1}}
+    manifest = {
+        "whole_clip": True,
+        "trajectory_only": False,
+        "attention": "full_bidirectional",
+        "objective": "white",
+        "sigmas": [0.5],
+        "videos": [row],
+        "seed": 42,
+        "latent_dtype": "torch.bfloat16",
+        "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1},
+    }
     whole_clip.validate_manifest(manifest)
     with pytest.raises(ValueError, match="one-step"):
         whole_clip.validate_manifest({**manifest, "videos": [{**row, "schedule": [0.5, 0.25, 0.0]}]})
@@ -64,10 +76,17 @@ def test_saved_d0_manifest_rejects_wrong_schedule_and_duplicate_rows() -> None:
 
 @pytest.mark.parametrize("change", ["cfg", "stg", "rescale", "passes", "lora", "dtype", "sigma"])
 def test_unsupported_reconstruction_rejected(change: str) -> None:
-    manifest = {"whole_clip": True, "trajectory_only": False, "attention": "full_bidirectional",
-                "objective": "white", "sigmas": [0.5], "videos": [], "seed": 42,
-                "latent_dtype": "torch.bfloat16",
-                "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1}}
+    manifest = {
+        "whole_clip": True,
+        "trajectory_only": False,
+        "attention": "full_bidirectional",
+        "objective": "white",
+        "sigmas": [0.5],
+        "videos": [],
+        "seed": 42,
+        "latent_dtype": "torch.bfloat16",
+        "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1},
+    }
     if change in ("cfg", "stg", "rescale"):
         manifest["guidance"][change] = 3
     elif change == "passes":
@@ -96,25 +115,63 @@ def test_candidate_rejects_cross_task_export(tmp_path: Path) -> None:
     mask = tmp_path / "historical.json"
     source = tmp_path / "source.safetensors"
     prefix = "model.diffusion_model.transformer_blocks.0"
-    save_file({f"{prefix}.attn1.to_q.weight": torch.zeros(4, 3),
-               f"{prefix}.attn2.to_q.weight": torch.zeros(4, 3),
-               f"{prefix}.ff.net.0.proj.weight": torch.zeros(3, 3)}, str(source),
-              metadata={"config": json.dumps({"transformer": {"num_layers": 1, "attention_head_dim": 2}})})
+    save_file(
+        {
+            f"{prefix}.attn1.to_q.weight": torch.zeros(4, 3),
+            f"{prefix}.attn2.to_q.weight": torch.zeros(4, 3),
+            f"{prefix}.ff.net.0.proj.weight": torch.zeros(3, 3),
+        },
+        str(source),
+        metadata={"config": json.dumps({"transformer": {"num_layers": 1, "attention_head_dim": 2}})},
+    )
     fingerprint = provenance.checkpoint_fingerprint(source)
-    mask.write_text(json.dumps({"provenance": {"model_key": "2.5", "transformer_fingerprint": fingerprint},
-                               "masks": {"0.attn1": [1, 0], "0.attn2": [0, 1]}}))
+    mask.write_text(
+        json.dumps(
+            {
+                "provenance": {"model_key": "2.5", "transformer_fingerprint": fingerprint},
+                "masks": {"0.attn1": [1, 0], "0.attn2": [0, 1]},
+            }
+        )
+    )
     checkpoint = tmp_path / "candidate.safetensors"
-    stamp = {"task": "historical_k2", "model_key": "2.5", "source_transformer_fingerprint": fingerprint,
-             "masks": str(mask), "mask_sha256": provenance.file_sha256(mask)}
-    save_file({"weight": torch.zeros(1)}, str(checkpoint),
-              metadata={"config": json.dumps({"transformer": {"pruning": stamp}})})
-    base = {"whole_clip": True, "objective": "white", "sigmas": [.5], "seed": 42,
-            "trajectory_only": False, "geometry": {}, "attention": "full_bidirectional",
-            "latent_dtype": "torch.bfloat16", "text_context": {}, "videos": [],
-            "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1},
-            "model": {"model_key": "2.5", "video_vae_fingerprint": "vae", "transformer_fingerprint": fingerprint,
-                      "transformer_path": str(source)}}
-    candidate = {**base, "model": {**base["model"], "transformer_path": str(checkpoint),
-                                   "transformer_fingerprint": provenance.checkpoint_fingerprint(checkpoint)}}
+    stamp = {
+        "task": "historical_k2",
+        "model_key": "2.5",
+        "source_transformer_fingerprint": fingerprint,
+        "masks": str(mask),
+        "mask_sha256": provenance.file_sha256(mask),
+    }
+    save_file(
+        {"weight": torch.zeros(1)},
+        str(checkpoint),
+        metadata={"config": json.dumps({"transformer": {"pruning": stamp}})},
+    )
+    base = {
+        "whole_clip": True,
+        "objective": "white",
+        "sigmas": [0.5],
+        "seed": 42,
+        "trajectory_only": False,
+        "geometry": {},
+        "attention": "full_bidirectional",
+        "latent_dtype": "torch.bfloat16",
+        "text_context": {},
+        "videos": [],
+        "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1},
+        "model": {
+            "model_key": "2.5",
+            "video_vae_fingerprint": "vae",
+            "transformer_fingerprint": fingerprint,
+            "transformer_path": str(source),
+        },
+    }
+    candidate = {
+        **base,
+        "model": {
+            **base["model"],
+            "transformer_path": str(checkpoint),
+            "transformer_fingerprint": provenance.checkpoint_fingerprint(checkpoint),
+        },
+    }
     with pytest.raises(ValueError, match="native whole-clip D0"):
         whole_clip.verify_candidate(base, candidate)

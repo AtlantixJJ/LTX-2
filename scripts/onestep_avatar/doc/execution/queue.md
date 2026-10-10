@@ -44,7 +44,7 @@ pass the shared software manifest checker. Missing or stale software cannot
 produce a current receipt. The checker preserves historical artifacts and does
 not restamp them; a decoder rerun uses a fresh destination.
 
-Status: **Implemented; final G8 CPU verification pending.** GPU inventory parsing, selection and shared
+Status: **Implemented; the final code gate and fresh affected native acceptance remain open.** GPU inventory parsing, selection and shared
 own-process tracking, initial job-list schema checks, package argument parsing, canonical job
 identities, command construction, initial checkpoint/raw-result/decoder checks and
 state identity/transaction primitives and decoder reuse-identity checks exist.
@@ -105,6 +105,12 @@ Do not execute Python or shell implementations from `expr/`.
 
 The `experiment` kind reads one literal `EXPERIMENTS` table. Its first selector,
 `sigma_sweep`, names `scripts.onestep_avatar.experiments.sigma_sweep`.
+The `prune_baseline` selector calls the pruning-owned raw baseline through
+`experiments/prune_baseline.py`, using the same generic one-rank bounded phase.
+It accepts one view and one seed because checker specs retain their repeated
+option refusal. The direct prune CLI keeps its broader options. Its original
+manifest stays in `baseline/`; root completion pins inputs and software, checks
+the saved producer outputs and inventories all local evidence.
 Ordinary kinds never read that table or import an experiment. An unknown
 selector fails the model-free job schema before input reads, claims, state
 writes or children. There is no discovery or registration API.

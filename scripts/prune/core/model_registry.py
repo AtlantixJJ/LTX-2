@@ -161,7 +161,9 @@ def resolve(
         paths = ModelPaths.from_monolith(transformer, text_encoder, video_vae_path=video_vae)
     else:
         video_vae = str(video_vae_path) if video_vae_path is not None else str(defaults["video_vae"])
-        paths = ModelPaths.from_split(transformer_path=transformer, text_encoder_path=text_encoder, video_vae_path=video_vae)
+        paths = ModelPaths.from_split(
+            transformer_path=transformer, text_encoder_path=text_encoder, video_vae_path=video_vae
+        )
 
     _require_files(key, paths)
     probed = geometry.probe_scale_factors(paths.video_vae(), paths.transformer())

@@ -100,9 +100,7 @@ def test_guide_bundle_path_is_bound_to_each_pair() -> None:
     second = Pair("b", "/corpus/b/argavatar_render.mp4", "b.pt", "g", "b")
     assert guide_bundle_path(first) == Path("/corpus/a/argavatar_ltx_vae_latent.pt")
     assert guide_bundle_path(second) == Path("/corpus/b/argavatar_ltx_vae_latent.pt")
-    assert guide_bundle_path(first, "white") == Path(
-        "/corpus/a/argavatar_ltx_vae_latent_white.pt"
-    )
+    assert guide_bundle_path(first, "white") == Path("/corpus/a/argavatar_ltx_vae_latent_white.pt")
 
 
 def test_capture_mask_qa_is_limited_to_view0_of_each_parts_first_five_subjects(tmp_path: Path) -> None:
@@ -110,6 +108,7 @@ def test_capture_mask_qa_is_limited_to_view0_of_each_parts_first_five_subjects(t
     subjects = [part / f"{index:04d}_01" for index in range(6)]
     for subject in subjects:
         (subject / "views" / "view00_cam51").mkdir(parents=True)
+
     def source(subject: Path, view: str = "view00_cam51") -> CaptureSource:
         view_dir = subject / "views" / view
         mask = view_dir / "mask.mp4"
@@ -131,24 +130,18 @@ def test_capture_mask_qa_is_limited_to_view0_of_each_parts_first_five_subjects(t
     assert write_capture_mask_qa(source(subjects[5]), (0, 0, 16, 16), overwrite=False) is None
 
     (subjects[0] / "views" / "view01_cam52").mkdir()
-    assert write_capture_mask_qa(
-        source(subjects[0], "view01_cam52"), (0, 0, 16, 16), overwrite=False
-    ) is None
+    assert write_capture_mask_qa(source(subjects[0], "view01_cam52"), (0, 0, 16, 16), overwrite=False) is None
 
 
 def _write_render(view: Path, frames: int = 25, *, box: list[float] | None = None, sidecar: bool = True) -> None:
     """A guide render plus the sidecar recording which box it was rendered into."""
-    writer = cv2.VideoWriter(
-        str(view / "argavatar_render.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), 30, (32, 32)
-    )
+    writer = cv2.VideoWriter(str(view / "argavatar_render.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), 30, (32, 32))
     assert writer.isOpened()
     for _ in range(frames):
         writer.write(np.full((32, 32, 3), (0, 255, 0), dtype=np.uint8))
     writer.release()
     if sidecar:
-        (view / "argavatar_render.json").write_text(
-            json.dumps({"crop_box_xyxy": BOX if box is None else box})
-        )
+        (view / "argavatar_render.json").write_text(json.dumps({"crop_box_xyxy": BOX if box is None else box}))
 
 
 def _write_manifest(root: Path, views: list[Path], *, box: list[float] | None = None) -> None:
@@ -171,7 +164,7 @@ def _write_manifest(root: Path, views: list[Path], *, box: list[float] | None = 
                         "box_xyxy": BOX if box is None else box,
                     }
                     for view in views
-                ]
+                ],
             }
         )
     )
@@ -259,7 +252,11 @@ def test_pair_alignment_rejects_a_guide_shorter_than_its_capture(tmp_path: Path)
 
 
 def _write_capture_source(
-    view: Path, *, frames: int = 25, fps: float = 30.0, bbox_xyxy: tuple[float, float, float, float] = (10.0, 5.0, 40.0, 35.0)
+    view: Path,
+    *,
+    frames: int = 25,
+    fps: float = 30.0,
+    bbox_xyxy: tuple[float, float, float, float] = (10.0, 5.0, 40.0, 35.0),
 ) -> CaptureSource:
     """A raw rgb.mp4 + bbox.npy pair, real enough for plan_source to open and decode."""
     view.mkdir(parents=True, exist_ok=True)
@@ -276,7 +273,9 @@ def _write_capture_source(
     )
     rgb_stat, bbox_stat = rgb.stat(), bbox.stat()
     return CaptureSource(
-        relative_dir=str(view.name), rgb=str(rgb), bbox=str(bbox),
+        relative_dir=str(view.name),
+        rgb=str(rgb),
+        bbox=str(bbox),
         rgb_fingerprint=f"size={rgb_stat.st_size};mtime_ns={rgb_stat.st_mtime_ns}",
         bbox_fingerprint=f"size={bbox_stat.st_size};mtime_ns={bbox_stat.st_mtime_ns}",
     )
@@ -338,7 +337,9 @@ def test_enumerate_capture_jobs_replans_a_bbox_change_with_rgb_untouched(tmp_pat
     )
     bbox_stat = (view / "bbox.npy").stat()
     moved_bbox = CaptureSource(
-        relative_dir=source.relative_dir, rgb=source.rgb, bbox=source.bbox,
+        relative_dir=source.relative_dir,
+        rgb=source.rgb,
+        bbox=source.bbox,
         rgb_fingerprint=source.rgb_fingerprint,
         bbox_fingerprint=f"size={bbox_stat.st_size};mtime_ns={bbox_stat.st_mtime_ns}",
     )
@@ -352,11 +353,19 @@ def test_enumerate_capture_jobs_replans_a_bbox_change_with_rgb_untouched(tmp_pat
 _GEOM_DICT = _GEOMETRY.as_dict()
 
 
-def _manifest(*, views: list[int], sources: list[dict], windows: list[dict], edge: int = 1024, pad_factor: float = 1.2) -> dict:
+def _manifest(
+    *, views: list[int], sources: list[dict], windows: list[dict], edge: int = 1024, pad_factor: float = 1.2
+) -> dict:
     return {
-        "schema_version": 1, "kind": "one_step_raw_capture_target_latents",
-        "model": {"key": "m"}, "geometry": _GEOM_DICT, "edge": edge, "pad_factor": pad_factor,
-        "views": views, "sources": sources, "windows": windows,
+        "schema_version": 1,
+        "kind": "one_step_raw_capture_target_latents",
+        "model": {"key": "m"},
+        "geometry": _GEOM_DICT,
+        "edge": edge,
+        "pad_factor": pad_factor,
+        "views": views,
+        "sources": sources,
+        "windows": windows,
     }
 
 
@@ -459,7 +468,7 @@ def test_manifest_root_defaults_to_corpus_root() -> None:
 
 
 @pytest.mark.parametrize(("frames", "coverage"), [(0, []), (1, [(0, 1)]), (150, [(0, 145)]), (153, [(0, 153)])])
-def test_capture_geometry_keeps_the_complete_vae_aligned_prefix(frames, coverage) -> None:
+def test_capture_geometry_keeps_the_complete_vae_aligned_prefix(frames: int, coverage: list[tuple[int, int]]) -> None:
     assert _GEOMETRY.plan(frames) == coverage
 
 

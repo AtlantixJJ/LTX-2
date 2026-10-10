@@ -24,7 +24,7 @@ def gate(key: str, name: str) -> Path:
 
 def run_dir(key: str, prefix: str, *, script: str, argv: list[str]) -> Path:
     """Create an attributable run directory and append it to ``runs/index.jsonl``."""
-    from scripts.prune.core import provenance
+    from scripts.prune.core import provenance  # noqa: PLC0415 -- provenance imports this path owner
 
     path = root(key) / provenance.run_id(prefix)
     suffix = 1

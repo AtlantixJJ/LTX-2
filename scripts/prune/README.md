@@ -44,6 +44,30 @@ native whole-clip provenance.
 
 ## Validation and design
 
+The avatar handoff's required baseline reproduction uses the package queue.
+Its fixed `prune_baseline` experiment selector calls this producer for one
+recorded view and seed, white distilled one-step unguided raw outputs. Put
+the unchanged scientific flags in a pinned specification; the queue supplies
+the GPU and fresh output. The producer's original manifest and tensor files
+remain under `<job-output>/baseline/`. Full input/software pins and saved
+completion are separate job-root records. This numerical check compares the
+saved epsilon and D0 tensors; decoded quality remains separate.
+
+From `LTX-2`, validate and execute the job list in `ltx`:
+
+```bash
+conda run -n ltx python -m scripts.onestep_avatar.execution.queue \
+  --jobs <queue-jobs.json> --state <state.json> --dry-run
+conda run -n ltx python -m scripts.onestep_avatar.execution.queue \
+  --jobs <queue-jobs.json> --state <state.json> --execute --once \
+  --process-ledger ../expr/onestep_avatar/processes.json
+```
+
+See the [protocol design](../onestep_avatar/doc/experiments/prune_baseline.md)
+and [avatar queue recipes](../onestep_avatar/configs/README.md). The underlying
+producer's broader multi-view/dev/decoded interface remains available to the
+standalone pruning workflow; the handoff does not launch it directly.
+
 Read [methods](doc/METHODS.md), [architecture](doc/ARCHITECTURE.md),
 [validation](doc/VALIDATION.md), [module docs](doc/README.md) and
 [working rules](CLAUDE.md).

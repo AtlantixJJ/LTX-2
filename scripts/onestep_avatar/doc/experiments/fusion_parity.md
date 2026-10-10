@@ -17,7 +17,7 @@ table. Ordinary evaluation has no fusion-study parser.
 ## Data flow
 
 ```mermaid
-flowchart TB
+flowchart LR
   S[("pinned spec and run config")] --> P["check adapters and masters"]
   P --> F["three fused x0 cases"] --> U["two unmerged velocity cases"]
   U --> O("five raw block outputs") --> M["adapter-effect calculation"]

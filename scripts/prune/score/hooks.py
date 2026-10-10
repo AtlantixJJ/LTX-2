@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import torch
@@ -18,9 +18,15 @@ import torch
 from scripts.prune.data import whole_clip
 
 
-def read_mask_artifact(path: str | Path, *, model_key: str, fingerprint: str,
-                       widths: dict[str, int], expected_task: str = whole_clip.TASK,
-                       baseline: dict | None = None) -> tuple[dict[str, list[float]], str]:
+def read_mask_artifact(
+    path: str | Path,
+    *,
+    model_key: str,
+    fingerprint: str,
+    widths: dict[str, int],
+    expected_task: str = whole_clip.TASK,
+    baseline: dict | None = None,
+) -> tuple[dict[str, list[float]], str]:
     """Validate a score report before applying its mask to a checkpoint.
 
     A report may contain all attention masks, all FFN masks, or both. Omitted
@@ -29,8 +35,10 @@ def read_mask_artifact(path: str | Path, *, model_key: str, fingerprint: str,
     raw = Path(path).read_bytes()
     report = json.loads(raw)
     provenance = report.get("provenance")
-    if not isinstance(provenance, dict) or provenance.get("model_key") != model_key or (
-        provenance.get("transformer_fingerprint") != fingerprint
+    if (
+        not isinstance(provenance, dict)
+        or provenance.get("model_key") != model_key
+        or (provenance.get("transformer_fingerprint") != fingerprint)
     ):
         raise ValueError(f"{path}: mask model key or transformer fingerprint differs from the active checkpoint")
     if expected_task != whole_clip.TASK or provenance.get("task") != whole_clip.TASK:
@@ -38,18 +46,23 @@ def read_mask_artifact(path: str | Path, *, model_key: str, fingerprint: str,
     if expected_task == "whole_clip_d0":
         views = provenance.get("calibration_views")
         sigmas = provenance.get("sigmas")
-        if (report.get("candidate_format") != "whole_clip_d0_mask_v1" or
-                provenance.get("attention") != "full_bidirectional" or
-                provenance.get("objective") != "white" or
-                provenance.get("conditioning") != "clean_capture_frame_0" or
-                not isinstance(views, list) or not views or
-                any(not isinstance(view, str) or not view for view in views) or
-                not isinstance(sigmas, list) or not sigmas or
-                any(type(sigma) not in (int, float) or not math.isfinite(sigma) or not 0 < sigma <= 1
-                    for sigma in sigmas) or
-                not isinstance(provenance.get("baseline_manifest"), str) or
-                not provenance.get("baseline_manifest") or
-                not isinstance(provenance.get("text_context"), dict)):
+        if (
+            report.get("candidate_format") != "whole_clip_d0_mask_v1"
+            or provenance.get("attention") != "full_bidirectional"
+            or provenance.get("objective") != "white"
+            or provenance.get("conditioning") != "clean_capture_frame_0"
+            or not isinstance(views, list)
+            or not views
+            or any(not isinstance(view, str) or not view for view in views)
+            or not isinstance(sigmas, list)
+            or not sigmas
+            or any(
+                type(sigma) not in (int, float) or not math.isfinite(sigma) or not 0 < sigma <= 1 for sigma in sigmas
+            )
+            or not isinstance(provenance.get("baseline_manifest"), str)
+            or not provenance.get("baseline_manifest")
+            or not isinstance(provenance.get("text_context"), dict)
+        ):
             raise ValueError(f"{path}: incomplete native D0 mask provenance")
         whole_clip.validate_native_provenance(provenance, baseline)
     masks = report.get("masks")
@@ -72,8 +85,9 @@ def read_mask_artifact(path: str | Path, *, model_key: str, fingerprint: str,
     return masks, hashlib.sha256(raw).hexdigest()
 
 
-def require_native_heldout_scope(path: str | Path, *, view: str, sigmas: list[float],
-                                 baseline: dict | None = None) -> None:
+def require_native_heldout_scope(
+    path: str | Path, *, view: str, sigmas: list[float], baseline: dict | None = None
+) -> None:
     """Reject calibration-subject reuse and sigma substitution in D0 validation."""
     provenance = json.loads(Path(path).read_text())["provenance"]
     if provenance.get("task") != "whole_clip_d0":
@@ -82,8 +96,9 @@ def require_native_heldout_scope(path: str | Path, *, view: str, sigmas: list[fl
         raise ValueError("held-out actor was used to calibrate this mask")
     manifest = baseline or whole_clip.load_manifest(Path(provenance["baseline_manifest"]).parent)
     calibration_sources = {item["capture_sha256"] for item in provenance["calibration_inputs"]}
-    if any(row["view"] == view and row["artifacts"]["capture_sha256"] in calibration_sources
-           for row in manifest["videos"]):
+    if any(
+        row["view"] == view and row["artifacts"]["capture_sha256"] in calibration_sources for row in manifest["videos"]
+    ):
         raise ValueError("held-out capture source was used to calibrate this mask")
     if any(sigma not in provenance["sigmas"] for sigma in sigmas):
         raise ValueError("held-out sigma was not included in mask calibration")
@@ -108,19 +123,19 @@ class MaskAttachments(dict[str, torch.Tensor]):
         self.detach_all()
 
 
-def _core(model):
+def _core(model: torch.nn.Module) -> torch.nn.Module:
     """Accept either ``X0Model`` or its underlying LTX model."""
     return getattr(model, "velocity_model", model)
 
 
-def iter_video_attention(model) -> Iterator[tuple[str, object]]:
+def iter_video_attention(model: torch.nn.Module) -> Iterator[tuple[str, torch.nn.Module]]:
     core = _core(model)
     for layer, block in enumerate(core.transformer_blocks):
         for kind in ("attn1", "attn2"):
             yield f"{layer}.{kind}", getattr(block, kind)
 
 
-def iter_video_ffn(model) -> Iterator[tuple[str, object]]:
+def iter_video_ffn(model: torch.nn.Module) -> Iterator[tuple[str, torch.nn.Module]]:
     core = _core(model)
     for layer, block in enumerate(core.transformer_blocks):
         yield f"{layer}.ff", block.ff
@@ -132,7 +147,9 @@ def detach_all(attachments: MaskAttachments | None) -> None:
         attachments.detach_all()
 
 
-def attach_head_masks(model, initial: dict[str, torch.Tensor] | None = None, *, requires_grad: bool = True) -> MaskAttachments:
+def attach_head_masks(
+    model: torch.nn.Module, initial: dict[str, torch.Tensor] | None = None, *, requires_grad: bool = True
+) -> MaskAttachments:
     """Attach one multiplicative ``(heads,)`` mask before every attention output projection."""
     attached = MaskAttachments()
     for name, attn in iter_video_attention(model):
@@ -144,7 +161,13 @@ def attach_head_masks(model, initial: dict[str, torch.Tensor] | None = None, *, 
             value.copy_(source)
         mask = value.requires_grad_(requires_grad)
 
-        def hook(_mod, args, *, mask=mask, attn=attn):
+        def hook(
+            _mod: torch.nn.Module,
+            args: tuple[torch.Tensor, ...],
+            *,
+            mask: torch.Tensor = mask,
+            attn: torch.nn.Module = attn,
+        ) -> tuple[torch.Tensor]:
             (x,) = args
             b, t, width = x.shape
             expected = attn.heads * attn.dim_head
@@ -158,7 +181,9 @@ def attach_head_masks(model, initial: dict[str, torch.Tensor] | None = None, *, 
     return attached
 
 
-def attach_ffn_masks(model, initial: dict[str, torch.Tensor] | None = None, *, requires_grad: bool = True) -> MaskAttachments:
+def attach_ffn_masks(
+    model: torch.nn.Module, initial: dict[str, torch.Tensor] | None = None, *, requires_grad: bool = True
+) -> MaskAttachments:
     """Attach one multiplicative intermediate-channel mask before every FFN output projection."""
     attached = MaskAttachments()
     for name, ff in iter_video_ffn(model):
@@ -171,7 +196,9 @@ def attach_ffn_masks(model, initial: dict[str, torch.Tensor] | None = None, *, r
             value.copy_(source)
         mask = value.requires_grad_(requires_grad)
 
-        def hook(_mod, args, *, mask=mask):
+        def hook(
+            _mod: torch.nn.Module, args: tuple[torch.Tensor, ...], *, mask: torch.Tensor = mask
+        ) -> tuple[torch.Tensor]:
             (x,) = args
             if x.shape[-1] != mask.numel():
                 raise ValueError(f"FFN activation width {x.shape[-1]} != mask width {mask.numel()}")
@@ -182,7 +209,9 @@ def attach_ffn_masks(model, initial: dict[str, torch.Tensor] | None = None, *, r
     return attached
 
 
-def collect_activations(model, which: str, callback) -> MaskAttachments:
+def collect_activations(
+    model: torch.nn.Module, which: str, callback: Callable[[str, torch.Tensor, torch.nn.Module], None]
+) -> MaskAttachments:
     """Call ``callback(name, activation, module)`` at the specified prune boundary."""
     if which not in {"head", "ffn"}:
         raise ValueError("which must be 'head' or 'ffn'")
@@ -191,7 +220,9 @@ def collect_activations(model, which: str, callback) -> MaskAttachments:
     for name, module in iterator:
         boundary = module.to_out[0] if which == "head" else module.net[2]
 
-        def hook(_mod, args, *, name=name, module=module):
+        def hook(
+            _mod: torch.nn.Module, args: tuple[torch.Tensor, ...], *, name: str = name, module: torch.nn.Module = module
+        ) -> None:
             callback(name, args[0], module)
 
         attached.handles.append(boundary.register_forward_pre_hook(hook))

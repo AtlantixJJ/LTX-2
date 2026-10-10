@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import weakref
+from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict
 from pathlib import Path
@@ -30,7 +31,7 @@ from scripts.onestep_avatar.training import checkpoints, config, numerics, resou
 
 
 @pytest.mark.parametrize("defect", [None, "evaluation_digest", "shape", "dtype", "changed_bytes"])
-def test_actual_training_context_uses_its_producer_raw_bf16_digest(tmp_path, defect):
+def test_actual_training_context_uses_its_producer_raw_bf16_digest(tmp_path: Path, defect: str | None) -> None:
     output = tmp_path / "training"
     path = output / "update_states/text.pt"
     path.parent.mkdir(parents=True)
@@ -38,8 +39,13 @@ def test_actual_training_context_uses_its_producer_raw_bf16_digest(tmp_path, def
     torch.save(context, path)
     # The trainer stores raw bytes; evaluation separately prefixes shape/dtype.
     digest = hashlib.sha256(context.view(torch.uint8).numpy().tobytes()).hexdigest()
-    record = {"path": str(path.resolve()), "sha256": sha256(path), "shape": list(context.shape),
-              "dtype": str(context.dtype), "tensor_sha256": digest}
+    record = {
+        "path": str(path.resolve()),
+        "sha256": sha256(path),
+        "shape": list(context.shape),
+        "dtype": str(context.dtype),
+        "tensor_sha256": digest,
+    }
     assert digest != hashing.tensor_sha256(context)
     if defect == "evaluation_digest":
         record["tensor_sha256"] = hashing.tensor_sha256(context)
@@ -58,11 +64,13 @@ def test_actual_training_context_uses_its_producer_raw_bf16_digest(tmp_path, def
             effect._context(settings, {"update_text": record})
 
 
-def test_repeated_arms_release_cyclic_model_before_the_next_load(tmp_path, monkeypatch):
+def test_repeated_arms_release_cyclic_model_before_the_next_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     models = []
 
     @contextmanager
-    def open_model(*_args, **_kwargs):
+    def open_model(*_args, **_kwargs) -> Iterator[torch.nn.Linear]:
         assert all(reference() is None for reference in models)
         model = torch.nn.Linear(2, 2)
         model.__dict__["_cycle"] = model
@@ -76,9 +84,16 @@ def test_repeated_arms_release_cyclic_model_before_the_next_load(tmp_path, monke
     monkeypatch.setattr(numerics, "validate", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(effect, "run_sample", lambda *_args, **_kwargs: (image.clone(), {}))
     monkeypatch.setattr(evaluate, "save_case", lambda _output, record, _path: record)
-    prepared = {"numerics": {}, "context": torch.zeros(1), "settings": SimpleNamespace(),
-                "schedule": [0.725, 0], "seed": 42, "software": {}, "pins": {}}
-    case = {name: image for name in ("capture", "guide", "image", "noise")}
+    prepared = {
+        "numerics": {},
+        "context": torch.zeros(1),
+        "settings": SimpleNamespace(),
+        "schedule": [0.725, 0],
+        "seed": 42,
+        "software": {},
+        "pins": {},
+    }
+    case = dict.fromkeys(("capture", "guide", "image", "noise"), image)
     case.update(source="actor/view", coverage={}, fps=30, requested={})
     session = SimpleNamespace(device=torch.device("cpu"))
     grid = SimpleNamespace(patchify=lambda tensor: tensor)
@@ -108,8 +123,10 @@ def test_actual_loaded_velocity_evaluation_and_product_preserve_saved_correction
         if ".lora_B." in name:
             with torch.no_grad():
                 parameter.fill_(0.125)
-    exported = {name.replace("base_model.model.", "diffusion_model.", 1): value.to(torch.bfloat16).contiguous()
-                for name, value in get_peft_model_state_dict(trained).items()}
+    exported = {
+        name.replace("base_model.model.", "diffusion_model.", 1): value.to(torch.bfloat16).contiguous()
+        for name, value in get_peft_model_state_dict(trained).items()
+    }
     selected_settings = config.BidirectionalSettings(7) if mode == "bidirectional" else config.CausalSettings()
     contracts, paths = {}, {}
     states = effect.STATES if steps == (0, 1) else effect.PILOT_STATES
@@ -130,9 +147,11 @@ def test_actual_loaded_velocity_evaluation_and_product_preserve_saved_correction
         path = tmp_path / f"{state}.safetensors"
         save_file(values, path, metadata={checkpoints.CONTRACT_KEY: json.dumps(contract)})
         contracts[state], paths[state] = contract, path
-    session = SimpleNamespace(device=torch.device("cpu"), model=SimpleNamespace(
-        paths=SimpleNamespace(transformer=lambda: "checked-tiny-base")),
-        transformer=lambda **_kwargs: nullcontext(X0Model(load()).eval()))
+    session = SimpleNamespace(
+        device=torch.device("cpu"),
+        model=SimpleNamespace(paths=SimpleNamespace(transformer=lambda: "checked-tiny-base")),
+        transformer=lambda **_kwargs: nullcontext(X0Model(load()).eval()),
+    )
     settings = config.RunSettings(mode, tmp_path / "unused", tmp_path / "unused_output", selected_settings)
     grid = _grid(_geometry(8))
     generator = torch.Generator().manual_seed(26)
@@ -149,21 +168,42 @@ def test_actual_loaded_velocity_evaluation_and_product_preserve_saved_correction
             checkpoint = None if state == "base" else paths[state]
             contract = None if state == "base" else contracts[state]
             if checkpoint is not None:
-                requested = {"application_method": adapters.UNMERGED, "global_sigma_dtype": "float32",
-                             "mode": mode, "mode_settings": asdict(selected_settings), "model": contract["model"],
-                             "task": contract["task"], "shape": {"channels": 8, "height": 2, "width": 2, "frames": 7},
-                             "schedule": [0.725, 0.0]}
+                requested = {
+                    "application_method": adapters.UNMERGED,
+                    "global_sigma_dtype": "float32",
+                    "mode": mode,
+                    "mode_settings": asdict(selected_settings),
+                    "model": contract["model"],
+                    "task": contract["task"],
+                    "shape": {"channels": 8, "height": 2, "width": 2, "frames": 7},
+                    "schedule": [0.725, 0.0],
+                }
                 if mode == "causal":
                     requested.update(history_mode="cache", kv_source="refresh")
                 evaluate.check_adapter(checkpoint, requested, product=True)
-            opener = (effect.reference_transformer(session, checkpoint, contract,
-                adapter_sha256=None if checkpoint is None else sha256(checkpoint)) if path == "reference" else
-                      adapters.inference_transformer(session, checkpoint, contract,
-                adapter_sha256=None if checkpoint is None else sha256(checkpoint)))
+            opener = (
+                effect.reference_transformer(
+                    session, checkpoint, contract, adapter_sha256=None if checkpoint is None else sha256(checkpoint)
+                )
+                if path == "reference"
+                else adapters.inference_transformer(
+                    session, checkpoint, contract, adapter_sha256=None if checkpoint is None else sha256(checkpoint)
+                )
+            )
             with opener as model:
                 generated, record = effect.run_sample(
-                    model, context, grid, capture, guide, image, noise, path=path, settings=settings,
-                    schedule=[0.725, 0], seed=42)
+                    model,
+                    context,
+                    grid,
+                    capture,
+                    guide,
+                    image,
+                    noise,
+                    path=path,
+                    settings=settings,
+                    schedule=[0.725, 0],
+                    seed=42,
+                )
                 outputs[path][state] = generated
                 counts.append(record["call_counts"])
                 assert torch.equal(grid.patchify(generated)[:, :4], image)
@@ -180,15 +220,15 @@ def test_actual_loaded_velocity_evaluation_and_product_preserve_saved_correction
 def matched_outputs(effect_size: float = 1e-3) -> dict:
     base = torch.full((1, 8), 100.0, dtype=torch.float64)
     trained = base + effect_size
-    return {name: {"base": base.clone(), "zero": base.clone(), "step1": trained.clone()}
-            for name in effect.PATHS}
+    return {name: {"base": base.clone(), "zero": base.clone(), "step1": trained.clone()} for name in effect.PATHS}
 
 
 def pilot_outputs() -> dict:
     rows = matched_outputs()
-    return {path: {"base": row["base"], "zero": row["zero"],
-                   "step20": row["step1"], "step60": row["base"] + 0.01}
-            for path, row in rows.items()}
+    return {
+        path: {"base": row["base"], "zero": row["zero"], "step20": row["step1"], "step60": row["base"] + 0.01}
+        for path, row in rows.items()
+    }
 
 
 @pytest.mark.parametrize("defect", [None, "boundary20", "boundary60", "swap", "near_zero", "zero", "missing"])
@@ -200,7 +240,9 @@ def test_pilot_compares_each_trained_step_against_its_own_reference(defect: str 
         outputs["product"][state] = outputs["product"]["base"] + correction * 1.051
     elif defect == "swap":
         outputs["evaluation"]["step20"], outputs["evaluation"]["step60"] = (
-            outputs["evaluation"]["step60"], outputs["evaluation"]["step20"])
+            outputs["evaluation"]["step60"],
+            outputs["evaluation"]["step20"],
+        )
     elif defect == "near_zero":
         for row in outputs.values():
             row["step20"] = row["base"].clone()
@@ -238,10 +280,21 @@ def test_pilot_media_keeps_trained_steps_separate_and_decodes_shared_references_
     outputs = pilot_outputs()
     if fused:
         outputs["fused"] = copy.deepcopy(outputs["reference"])
-    prepared = {"states": effect.PILOT_STATES, "seed": 42, "schedule": [0.725, 0], "pins": {}, "software": {},
-                "contracts": {state: {"adapter": {"step": step}} for state, step in (("step20", 20), ("step60", 60))}}
-    case = {"capture": torch.full((1, 8), 1.), "guide": torch.full((1, 8), 2.),
-            "source_frames": [0], "source": "actor/views/view01_cam57", "fps": 30}
+    prepared = {
+        "states": effect.PILOT_STATES,
+        "seed": 42,
+        "schedule": [0.725, 0],
+        "pins": {},
+        "software": {},
+        "contracts": {state: {"adapter": {"step": step}} for state, step in (("step20", 20), ("step60", 60))},
+    }
+    case = {
+        "capture": torch.full((1, 8), 1.0),
+        "guide": torch.full((1, 8), 2.0),
+        "source_frames": [0],
+        "source": "actor/views/view01_cam57",
+        "fps": 30,
+    }
     decoded, decoders, rendered = [], [], []
 
     def decoder() -> object:
@@ -268,8 +321,13 @@ def test_pilot_media_keeps_trained_steps_separate_and_decodes_shared_references_
     assert sum(tensor is case["guide"] for tensor in decoded) == 1
     assert len(decoded) == 2 + 2 * len(outputs)
     for state, step in (("step20", 20), ("step60", 60)):
-        expected = ["Capture VAE", "Guide VAE", f"Reference step {step}",
-                    f"Evaluation step {step}", f"Product step {step}"]
+        expected = [
+            "Capture VAE",
+            "Guide VAE",
+            f"Reference step {step}",
+            f"Evaluation step {step}",
+            f"Product step {step}",
+        ]
         selected = [row for row in saved if f"/media/{state}/" in row["path"]]
         assert len(selected) == (3 if fused else 2)
         for name in ("full", "compact"):
@@ -299,8 +357,10 @@ def test_checkpoint_selection_checks_real_steps_matrices_and_common_lineage(
                 contract["adapter"]["step"] = 21
             elif defect == "lineage":
                 contract["data"]["membership_sha256"] = "b" * 64
-        values = {name: torch.zeros(shape, dtype=torch.bfloat16)
-                  for name, shape in contract["adapter"]["tensor_shapes"].items()}
+        values = {
+            name: torch.zeros(shape, dtype=torch.bfloat16)
+            for name, shape in contract["adapter"]["tensor_shapes"].items()
+        }
         if defect == "shape" and index == len(steps) - 1:
             values[next(iter(values))] = torch.zeros(1, 1, dtype=torch.bfloat16)
         path = tmp_path / f"step_{step}.safetensors"
@@ -345,20 +405,28 @@ def test_pilot_retains_its_own_lineage_with_the_original_e4_function(defect: str
             effect.check_calibration_contract(selected, original)
 
 
-@pytest.mark.parametrize("defect", [None, "span", "frame_counts", "later_start", "random", "cache", "history",
-                                  "precision", "shape", "base"])
-def test_real_causal_contracts_allow_only_the_prescribed_seven_frame_pilot_restriction(
+@pytest.mark.parametrize(
+    "defect", [None, "span", "frame_counts", "later_start", "random", "cache", "history", "precision", "shape", "base"]
+)
+def test_real_causal_contracts_allow_only_the_prescribed_seven_frame_pilot_restriction(  # noqa: PLR0915 -- one complete fixture lifecycle with all assertions and cleanup
     tmp_path: Path, defect: str | None
 ) -> None:
     membership = evaluation_membership(tmp_path, ["actor/views/view01_cam57"])
     membership["splits"] = {"train": ["actor"]}
     membership["sources"][0].update(split="train", n_latent_frames=18, shape=[128, 18, 2, 2])
     membership["sha256"] = subset.membership_hash(membership)
-    original_settings = config.RunSettings("causal", tmp_path / "subset.json", tmp_path / "e4",
-                                          config.CausalSettings(), variant="dev", objective="white",
-                                          steps=1, lora_rank=2, lora_alpha=2)
-    original_settings.base_identity = {"base_transformer_file": "base.safetensors",
-                                       "base_transformer_sha256": "a" * 64}
+    original_settings = config.RunSettings(
+        "causal",
+        tmp_path / "subset.json",
+        tmp_path / "e4",
+        config.CausalSettings(),
+        variant="dev",
+        objective="white",
+        steps=1,
+        lora_rank=2,
+        lora_alpha=2,
+    )
+    original_settings.base_identity = {"base_transformer_file": "base.safetensors", "base_transformer_sha256": "a" * 64}
     pilot_settings = copy.deepcopy(original_settings)
     pilot_settings.output, pilot_settings.steps = tmp_path / "pilot", 60
     pilot_settings.mode_settings = config.CausalSettings(span_latent_frames=7)
@@ -368,9 +436,14 @@ def test_real_causal_contracts_allow_only_the_prescribed_seven_frame_pilot_restr
         contract = checkpoints.make_contract(settings, membership, plan, settings.steps)
         contract["adapter"]["tensor_shapes"] = _contract("causal")["adapter"]["tensor_shapes"]
         checkpoint = tmp_path / f"{label}.safetensors"
-        save_file({name: torch.zeros(shape, dtype=torch.bfloat16)
-                   for name, shape in contract["adapter"]["tensor_shapes"].items()}, checkpoint,
-                  metadata={checkpoints.CONTRACT_KEY: json.dumps(contract)})
+        save_file(
+            {
+                name: torch.zeros(shape, dtype=torch.bfloat16)
+                for name, shape in contract["adapter"]["tensor_shapes"].items()
+            },
+            checkpoint,
+            metadata={checkpoints.CONTRACT_KEY: json.dumps(contract)},
+        )
         contracts[label], paths[label] = checkpoints.read_contract(checkpoint), checkpoint
     original, selected = contracts["original"], contracts["pilot"]
     assert original["shape"]["frame_counts"] == [6, 7]
@@ -404,15 +477,26 @@ def test_real_causal_contracts_allow_only_the_prescribed_seven_frame_pilot_restr
     assert binding["relationship"] == "causal_clip_start_seven_frames"
     assert binding["original"] == {field: original[field] for field in ("shape", "mode_settings", "data")}
     assert binding["selected"] == {field: selected[field] for field in ("shape", "mode_settings", "data")}
-    requests = {label: {"application_method": adapters.UNMERGED, "global_sigma_dtype": "float32", "mode": "causal",
-                        "mode_settings": contract["mode_settings"], "model": contract["model"], "task": contract["task"],
-                        "shape": {"channels": 128, "height": 2, "width": 2, "frames": 7}, "schedule": [0.725, 0],
-                        "history_mode": "cache", "kv_source": "refresh"} for label, contract in contracts.items()}
-    for label in paths:
-        evaluate.check_adapter(paths[label], requests[label], product=True)
+    requests = {
+        label: {
+            "application_method": adapters.UNMERGED,
+            "global_sigma_dtype": "float32",
+            "mode": "causal",
+            "mode_settings": contract["mode_settings"],
+            "model": contract["model"],
+            "task": contract["task"],
+            "shape": {"channels": 128, "height": 2, "width": 2, "frames": 7},
+            "schedule": [0.725, 0],
+            "history_mode": "cache",
+            "kv_source": "refresh",
+        }
+        for label, contract in contracts.items()
+    }
+    for label, path in paths.items():
+        evaluate.check_adapter(path, requests[label], product=True)
         other = "pilot" if label == "original" else "original"
         with pytest.raises(ValueError, match="incompatible adapter conditions"):
-            evaluate.check_adapter(paths[label], requests[other], product=True)
+            evaluate.check_adapter(path, requests[other], product=True)
 
 
 def test_small_raw_error_cannot_hide_large_correction_error() -> None:
@@ -488,18 +572,37 @@ def prepared_image(tmp_path: Path) -> tuple:
     guide_path.write_bytes(b"checked guide source")
     identities = {str(path.resolve()): sha256(path) for path in (source_path, vae_path, guide_path)}
     bundle = precompute.master_record(
-        torch.zeros(1, 8, 1, 2, 2), source=str(source_path.resolve()), fps=30, pixel_frames=1,
-        box_xyxy=(0, 0, 64, 64), edge=64, objective="bg", input_fingerprint=sha256(source_path),
-        vae_fingerprint=sha256(vae_path))
-    bundle.update(input_role="supplied_image", software=producer,
-                  preparation={"input_sha256": identities,
-                               "prepared_pixels_sha256": hashing.tensor_sha256(torch.from_numpy(pixels)),
-                               "encoder": {"dtype": "bfloat16", "method": "tiled_encode", "tiling": None}})
+        torch.zeros(1, 8, 1, 2, 2),
+        source=str(source_path.resolve()),
+        fps=30,
+        pixel_frames=1,
+        box_xyxy=(0, 0, 64, 64),
+        edge=64,
+        objective="bg",
+        input_fingerprint=sha256(source_path),
+        vae_fingerprint=sha256(vae_path),
+    )
+    bundle.update(
+        input_role="supplied_image",
+        software=producer,
+        preparation={
+            "input_sha256": identities,
+            "prepared_pixels_sha256": hashing.tensor_sha256(torch.from_numpy(pixels)),
+            "encoder": {"dtype": "bfloat16", "method": "tiled_encode", "tiling": None},
+        },
+    )
     torch.save(bundle, image_path)
-    record = {"kind": "onestep_avatar.supplied_image_preparation", "schema_version": 1,
-              "software": producer, "inputs": identities, "image_latent_shape": list(bundle["master"].shape),
-              "outputs": {name: {"path": str(path.resolve()), "sha256": sha256(path)}
-                          for name, path in (("bundle", image_path), ("pixels", pixels_path))}}
+    record = {
+        "kind": "onestep_avatar.supplied_image_preparation",
+        "schema_version": 1,
+        "software": producer,
+        "inputs": identities,
+        "image_latent_shape": list(bundle["master"].shape),
+        "outputs": {
+            name: {"path": str(path.resolve()), "sha256": sha256(path)}
+            for name, path in (("bundle", image_path), ("pixels", pixels_path))
+        },
+    }
     path = tmp_path / "preparation.json"
     path.write_text(json.dumps(record))
     return path, image_path, pixels_path, source_path, bundle, record
@@ -536,8 +639,11 @@ def test_changed_or_video_derived_c0_refused(prepared_image: tuple, defect: str)
 def test_failed_or_unrelated_e4_is_rejected_before_source_or_model_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str
 ) -> None:
-    record = {"state": "passed", "comparison": {"passed": True, "actual_step_one_reload_exact": True},
-              "protocol": {"queue_job_sha256": "original", "world_size": 4, "resource_budget": {"budget": 1}}}
+    record = {
+        "state": "passed",
+        "comparison": {"passed": True, "actual_step_one_reload_exact": True},
+        "protocol": {"queue_job_sha256": "original", "world_size": 4, "resource_budget": {"budget": 1}},
+    }
     if defect == "failed":
         record["comparison"]["passed"] = False
     elif defect == "reload":
@@ -585,14 +691,23 @@ def test_passed_e4_gate_binds_exact_real_files(tmp_path: Path, defect: str | Non
         del identities[str(paths["zero"].resolve())]
     elif defect == "late_input":
         torch.save(torch.ones(1), noise)
-    record = {"state": "passed", "comparison": {"passed": True, "actual_step_one_reload_exact": True},
-              "protocol": {"queue_job_sha256": "original", "world_size": 4, "resource_budget": {"budget": 1},
-                           "software": software.capture("training", "bidirectional"), "input_files": identities}}
+    record = {
+        "state": "passed",
+        "comparison": {"passed": True, "actual_step_one_reload_exact": True},
+        "protocol": {
+            "queue_job_sha256": "original",
+            "world_size": 4,
+            "resource_budget": {"budget": 1},
+            "software": software.capture("training", "bidirectional"),
+            "input_files": identities,
+        },
+    }
     path = tmp_path / "passed_update.json"
     path.write_text(json.dumps(record))
     if defect is None:
-        assert effect.validate_update_result(path, {"sha256": "original", "processes": 4},
-                                             paths, {"budget": 1}) == record
+        assert (
+            effect.validate_update_result(path, {"sha256": "original", "processes": 4}, paths, {"budget": 1}) == record
+        )
     else:
         with pytest.raises(ValueError, match=r"exact|changed"):
             effect.validate_update_result(path, {"sha256": "original", "processes": 4}, paths, {"budget": 1})
@@ -619,10 +734,25 @@ def test_original_policy_is_explicit_and_identical_across_native_ranks(defect: s
 
 
 def evaluation_membership(root: Path, sources: list[str], *, objective: str = "white") -> dict:
-    record = {"schema_version": 2, "kind": subset.KIND, "objective": objective, "corpus_root": str(root),
-              "splits": {"test": ["actor"]}, "excluded": {},
-              "sources": [{"relative_dir": source, "actor": "actor", "split": "test", "fps": 30,
-                           "shape": [128, 7, 2, 2], "n_latent_frames": 7} for source in sources]}
+    record = {
+        "schema_version": 2,
+        "kind": subset.KIND,
+        "objective": objective,
+        "corpus_root": str(root),
+        "splits": {"test": ["actor"]},
+        "excluded": {},
+        "sources": [
+            {
+                "relative_dir": source,
+                "actor": "actor",
+                "split": "test",
+                "fps": 30,
+                "shape": [128, 7, 2, 2],
+                "n_latent_frames": 7,
+            }
+            for source in sources
+        ],
+    }
     record["sha256"] = subset.membership_hash(record)
     return record
 
@@ -637,18 +767,31 @@ def test_intermediate_pilot_export_requires_its_own_run_marker_and_native_snapsh
     membership["sources"][0]["split"] = "train"
     membership["sha256"] = subset.membership_hash(membership)
     store = dataset.ClipStore(membership)
-    settings = config.RunSettings("bidirectional", tmp_path / "subset.json", tmp_path / "pilot",
-                                  config.BidirectionalSettings(7), variant="dev", objective="white", steps=60,
-                                  lora_rank=2, lora_alpha=2, save_initial=True, save_every=20)
+    settings = config.RunSettings(
+        "bidirectional",
+        tmp_path / "subset.json",
+        tmp_path / "pilot",
+        config.BidirectionalSettings(7),
+        variant="dev",
+        objective="white",
+        steps=60,
+        lora_rank=2,
+        lora_alpha=2,
+        save_initial=True,
+        save_every=20,
+    )
     settings.base_identity = {"base_transformer_file": "base.safetensors", "base_transformer_sha256": "a" * 64}
     plan = config.build_frame_plan(settings, membership, SpatioTemporalScaleFactors(8, 32, 32))
     settings.output.mkdir()
     budget_path = tmp_path / "budget.json"
-    budget_path.write_text(json.dumps({"wall_seconds_per_phase": 1800,
-                                       "memory_limit_allocated_bytes": 48_000_000_000}))
+    budget_path.write_text(json.dumps({"wall_seconds_per_phase": 1800, "memory_limit_allocated_bytes": 48_000_000_000}))
     budget = resources.read_budget(budget_path)
-    saved = {"software": software.capture("training", "bidirectional"), "producer_source_sha256": "b" * 64,
-             "queue_launch": {"controlled_launch": True}, "runtime": {"controlled_policy": True}}
+    saved = {
+        "software": software.capture("training", "bidirectional"),
+        "producer_source_sha256": "b" * 64,
+        "queue_launch": {"controlled_launch": True},
+        "runtime": {"controlled_policy": True},
+    }
     (settings.output / "config.json").write_text(json.dumps(saved))
     (settings.output / "frame_plan.json").write_text(json.dumps(plan))
     job = {"sha256": "original-pilot", "processes": 1}
@@ -658,21 +801,47 @@ def test_intermediate_pilot_export_requires_its_own_run_marker_and_native_snapsh
         contract["adapter"]["tensor_shapes"] = _contract()["adapter"]["tensor_shapes"]
         checkpoint = settings.output / "checkpoints" / f"lora_weights_step_{step:05d}.safetensors"
         checkpoint.parent.mkdir(exist_ok=True)
-        save_file({name: torch.zeros(shape, dtype=torch.bfloat16)
-                   for name, shape in contract["adapter"]["tensor_shapes"].items()}, checkpoint,
-                  metadata={checkpoints.CONTRACT_KEY: json.dumps(contract)})
+        save_file(
+            {
+                name: torch.zeros(shape, dtype=torch.bfloat16)
+                for name, shape in contract["adapter"]["tensor_shapes"].items()
+            },
+            checkpoint,
+            metadata={checkpoints.CONTRACT_KEY: json.dumps(contract)},
+        )
         journal = settings.output / "resource_snapshots" / f"step_{step:05d}" / "resources_rank0.jsonl"
         journal.parent.mkdir(parents=True)
-        measurements = [{"schema_version": 1, "phase": phase, "rank": 0, "device": "cuda:0", "elapsed_s": 0.1,
-                         "peak_allocated_bytes": 1, "peak_reserved_bytes": 1,
-                         "budget_sha256": budget["sha256"], "state": "passed", "error": None}
-                        for phase in resources.training_phases(settings, step=step)]
+        measurements = [
+            {
+                "schema_version": 1,
+                "phase": phase,
+                "rank": 0,
+                "device": "cuda:0",
+                "elapsed_s": 0.1,
+                "peak_allocated_bytes": 1,
+                "peak_reserved_bytes": 1,
+                "budget_sha256": budget["sha256"],
+                "state": "passed",
+                "error": None,
+            }
+            for phase in resources.training_phases(settings, step=step)
+        ]
         journal.write_text("".join(json.dumps(row) + "\n" for row in measurements))
-        marker = {"schema_version": 2, "state": "complete", "step": step, "path": str(checkpoint),
-                  "sha256": sha256(checkpoint), "queue_job_sha256": job["sha256"], **saved,
-                  "resource_budget": budget, "resource_evidence": {str(journal.resolve()): sha256(journal)},
-                  "training_record": {"config_sha256": sha256(settings.output / "config.json"),
-                                      "frame_plan_sha256": sha256(settings.output / "frame_plan.json")}}
+        marker = {
+            "schema_version": 2,
+            "state": "complete",
+            "step": step,
+            "path": str(checkpoint),
+            "sha256": sha256(checkpoint),
+            "queue_job_sha256": job["sha256"],
+            **saved,
+            "resource_budget": budget,
+            "resource_evidence": {str(journal.resolve()): sha256(journal)},
+            "training_record": {
+                "config_sha256": sha256(settings.output / "config.json"),
+                "frame_plan_sha256": sha256(settings.output / "frame_plan.json"),
+            },
+        }
         if step == 20:
             if defect == "job":
                 marker["queue_job_sha256"] = "foreign-run"
@@ -749,8 +918,10 @@ def saved_effect(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch: py
     for state, step in zip(states[1:], steps, strict=True):
         contract = _contract()
         contract["adapter"]["step"] = step
-        values = {name: torch.ones(shape, dtype=torch.bfloat16)
-                  for name, shape in contract["adapter"]["tensor_shapes"].items()}
+        values = {
+            name: torch.ones(shape, dtype=torch.bfloat16)
+            for name, shape in contract["adapter"]["tensor_shapes"].items()
+        }
         for name, value in values.items():
             if ".lora_B." in name:
                 value.fill_(0 if step == 0 else 0.125)
@@ -763,18 +934,31 @@ def saved_effect(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch: py
     membership = evaluation_membership(tmp_path, [source])
     membership_path = tmp_path / "evaluation.json"
     membership_path.write_text(json.dumps(membership))
-    membership_identity = {"path": str(membership_path), "sha256": sha256(membership_path),
-                           "membership_sha256": membership["sha256"]}
-    pins = {str(path): sha256(path) for path in (budget_path, noise_path, membership_path,
-            *(Path(item["path"]) for item in selected.values()))}
+    membership_identity = {
+        "path": str(membership_path),
+        "sha256": sha256(membership_path),
+        "membership_sha256": membership["sha256"],
+    }
+    pins = {
+        str(path): sha256(path)
+        for path in (budget_path, noise_path, membership_path, *(Path(item["path"]) for item in selected.values()))
+    }
     policy = {**numerics.POLICY, "cudnn_allow_tf32": True}
     producer = software.capture("evaluation", "bidirectional", extra_sources=effect.EXTRA_SOURCES)
-    protocol = {"kind": "onestep_avatar.adapter_effect_check", "schema_version": 1,
-                "scope": "shared_API_adapter_correction", "software": producer,
-                "input_files": pins, "resource_budget": budget, "checkpoints": selected,
-                "evaluation_membership": membership_identity,
-                "tolerance": effect.TOLERANCE, "schedule": [0.725, 0.0], "seed": 42,
-                "runtime": {"world_size": 1, "device": "cuda:0", "numerics": policy}}
+    protocol = {
+        "kind": "onestep_avatar.adapter_effect_check",
+        "schema_version": 1,
+        "scope": "shared_API_adapter_correction",
+        "software": producer,
+        "input_files": pins,
+        "resource_budget": budget,
+        "checkpoints": selected,
+        "evaluation_membership": membership_identity,
+        "tolerance": effect.TOLERANCE,
+        "schedule": [0.725, 0.0],
+        "seed": 42,
+        "runtime": {"world_size": 1, "device": "cuda:0", "numerics": policy},
+    }
     if pilot:
         # This fixture tests the saved array/journal reader. Actual producer lineage has separate controls.
         def check_protocol(_protocol: dict, _prepared: dict, paths: dict, contracts: dict) -> None:
@@ -783,42 +967,85 @@ def saved_effect(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch: py
 
         monkeypatch.setattr(effect, "_verify_pilot_protocol", check_protocol)
     (directory / "protocol.json").write_text(json.dumps(protocol))
-    conditions = {"application_method": adapters.UNMERGED, "global_sigma_dtype": "float32",
-                  "mode": "bidirectional", "mode_settings": asdict(config.BidirectionalSettings(7)),
-                  "model": contract["model"], "task": contract["task"],
-                  "shape": {"channels": 128, "height": 2, "width": 2, "frames": 7},
-                  "schedule": [0.725, 0.0]}
+    conditions = {
+        "application_method": adapters.UNMERGED,
+        "global_sigma_dtype": "float32",
+        "mode": "bidirectional",
+        "mode_settings": asdict(config.BidirectionalSettings(7)),
+        "model": contract["model"],
+        "task": contract["task"],
+        "shape": {"channels": 128, "height": 2, "width": 2, "frames": 7},
+        "schedule": [0.725, 0.0],
+    }
     base = torch.zeros(1, 128, 7, 2, 2, dtype=torch.bfloat16)
     trained = base.clone()
     trained[:, :, 1:] = 0.001
-    outputs = {path: {"base": base.clone(), "zero": base.clone(),
-                      **{state: trained.clone() * (2 if state == "step60" else 1) for state in states[2:]}}
-               for path in effect.PATHS}
+    outputs = {
+        path: {
+            "base": base.clone(),
+            "zero": base.clone(),
+            **{state: trained.clone() * (2 if state == "step60" else 1) for state in states[2:]},
+        }
+        for path in effect.PATHS
+    }
     raw, journals = {}, []
     for path in effect.PATHS:
         raw[path] = {}
         for state in states:
-            record = {"path": path, "adapter_state": state, "source": source, "source_coverage": [0, 7],
-                      "fps": 30, "seed": 42, "software": producer, "input_files": pins, "numerics": policy,
-                      "conditions": conditions, "checkpoint": None if state == "base" else selected[state]["path"],
-                      "application_method": "base" if state == "base" else adapters.UNMERGED,
-                      "call_counts": {"model_calls": 1},
-                      **dict.fromkeys(("guide_sha256", "c0_sha256", "noise_sha256", "text_sha256"), "1" * 64)}
+            record = {
+                "path": path,
+                "adapter_state": state,
+                "source": source,
+                "source_coverage": [0, 7],
+                "fps": 30,
+                "seed": 42,
+                "software": producer,
+                "input_files": pins,
+                "numerics": policy,
+                "conditions": conditions,
+                "checkpoint": None if state == "base" else selected[state]["path"],
+                "application_method": "base" if state == "base" else adapters.UNMERGED,
+                "call_counts": {"model_calls": 1},
+                **dict.fromkeys(("guide_sha256", "c0_sha256", "noise_sha256", "text_sha256"), "1" * 64),
+            }
             raw[path][state] = evaluate.save_case(outputs[path][state], record, directory / "case_00" / path / state)
             for operation in ("load", "sample"):
-                journals.append({"schema_version": 1, "phase": f"{operation}:{source}:{path}:{state}",
-                                 "rank": 0, "device": "cuda:0", "elapsed_s": 0.1,
-                                 "peak_allocated_bytes": 1, "peak_reserved_bytes": 1,
-                                 "budget_sha256": budget["sha256"], "state": "passed", "error": None})
+                journals.append(
+                    {
+                        "schema_version": 1,
+                        "phase": f"{operation}:{source}:{path}:{state}",
+                        "rank": 0,
+                        "device": "cuda:0",
+                        "elapsed_s": 0.1,
+                        "peak_allocated_bytes": 1,
+                        "peak_reserved_bytes": 1,
+                        "budget_sha256": budget["sha256"],
+                        "state": "passed",
+                        "error": None,
+                    }
+                )
     journal = directory / "case_00/resources_rank0.jsonl"
     journal.write_text("".join(json.dumps(item) + "\n" for item in journals))
-    result = {"schema_version": 1, "protocol": protocol, "state": "passed", "e2_complete": False,
-              "coverage": {"sources": 1, "views": 1, "camera_labels": ["cam57"],
-                           "checkpoint_steps": steps, "decoded": False},
-              "cases": [{"source": source, "source_coverage": [0, 7], "comparison": effect.compare_paths(outputs),
-                         "raw_records": raw, "renderings": []}], "resource_measurements": journals,
-              "output_files": {str(path.relative_to(directory)): sha256(path)
-                               for path in directory.rglob("*") if path.is_file()}}
+    result = {
+        "schema_version": 1,
+        "protocol": protocol,
+        "state": "passed",
+        "e2_complete": False,
+        "coverage": {"sources": 1, "views": 1, "camera_labels": ["cam57"], "checkpoint_steps": steps, "decoded": False},
+        "cases": [
+            {
+                "source": source,
+                "source_coverage": [0, 7],
+                "comparison": effect.compare_paths(outputs),
+                "raw_records": raw,
+                "renderings": [],
+            }
+        ],
+        "resource_measurements": journals,
+        "output_files": {
+            str(path.relative_to(directory)): sha256(path) for path in directory.rglob("*") if path.is_file()
+        },
+    }
     (directory / "result.json").write_text(json.dumps(result))
     return directory, result, noise_path
 
@@ -857,8 +1084,23 @@ def test_saved_near_zero_match_preserves_failed_learned_effect_scope(saved_effec
     assert {str(path): sha256(path) for path in directory.rglob("*") if path.is_file()} == before
 
 
-@pytest.mark.parametrize("defect", ["array", "missing", "redirect", "summary", "input", "calls", "resource",
-                                  "complete", "policy", "checkpoint", "dtype", "coverage"])
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "array",
+        "missing",
+        "redirect",
+        "summary",
+        "input",
+        "calls",
+        "resource",
+        "complete",
+        "policy",
+        "checkpoint",
+        "dtype",
+        "coverage",
+    ],
+)
 def test_saved_reader_rejects_changed_evidence_even_if_summary_is_restated(  # noqa: PLR0912 -- independent corruptions
     saved_effect: tuple, defect: str
 ) -> None:

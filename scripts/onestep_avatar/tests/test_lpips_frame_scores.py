@@ -20,11 +20,12 @@ def test_historical_per_frame_lists_and_c0_excluded_means_match_exactly(frames: 
     expected = []
     with torch.no_grad():
         for start in range(0, frames, 16):
-            left = prediction[start:start + 16].permute(0, 3, 1, 2) * 2 - 1
-            right = capture[start:start + 16].permute(0, 3, 1, 2) * 2 - 1
+            left = prediction[start : start + 16].permute(0, 3, 1, 2) * 2 - 1
+            right = capture[start : start + 16].permute(0, 3, 1, 2) * 2 - 1
             expected += model(left, right).flatten().tolist()
     actual = metrics.lpips_frame_scores(
-        model, prediction.permute(0, 3, 1, 2), capture.permute(0, 3, 1, 2), torch.device("cpu"))
+        model, prediction.permute(0, 3, 1, 2), capture.permute(0, 3, 1, 2), torch.device("cpu")
+    )
     assert actual == expected
     assert len(actual) == frames
     if frames > 1:
@@ -53,8 +54,9 @@ def test_order_short_batch_and_explicit_c0_exclusion() -> None:
 def test_invalid_batch_refuses_before_model(batch: object) -> None:
     pixels = torch.zeros(2, 3, 2, 2)
     with pytest.raises(ValueError, match="positive integer"):
-        metrics.lpips_frame_scores(lambda *_a: pytest.fail("invalid batch reached model"),
-                                    pixels, pixels, torch.device("cpu"), batch=batch)
+        metrics.lpips_frame_scores(
+            lambda *_a: pytest.fail("invalid batch reached model"), pixels, pixels, torch.device("cpu"), batch=batch
+        )
 
 
 @pytest.mark.parametrize("defect", ["empty", "nan", "range", "shape"])
@@ -70,8 +72,9 @@ def test_invalid_pixels_refuse_before_model(defect: str) -> None:
     else:
         reference = reference[:1]
     with pytest.raises(ValueError, match=r"RGB|floating|finite|matching|aligned"):
-        metrics.lpips_frame_scores(lambda *_a: pytest.fail("invalid pixels reached model"),
-                                    pixels, reference, torch.device("cpu"))
+        metrics.lpips_frame_scores(
+            lambda *_a: pytest.fail("invalid pixels reached model"), pixels, reference, torch.device("cpu")
+        )
 
 
 @pytest.mark.parametrize("defect", ["count", "nan", "type"])
@@ -90,7 +93,7 @@ def test_existing_scalar_preserves_native_batch_sum_rounding() -> None:
     def fixed(left: torch.Tensor, _right: torch.Tensor) -> torch.Tensor:
         start = sum(calls)
         calls.append(len(left))
-        return values[start:start + len(left)]
+        return values[start : start + len(left)]
 
     expected = (float(values[:8].sum()) + float(values[8:16].sum()) + float(values[16:].sum())) / 19
     assert metrics.lpips_distance(fixed, pixels, pixels, torch.device("cpu")) == expected

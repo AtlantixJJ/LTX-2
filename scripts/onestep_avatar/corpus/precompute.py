@@ -264,7 +264,7 @@ def atomic_json_save(value: object, destination: Path) -> None:
     dataset.atomic_write(destination, lambda temp: temp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n"))
 
 
-def is_capture_manifest_valid(
+def is_capture_manifest_valid(  # noqa: PLR0911 -- ordered fail-fast manifest checks
     manifest: dict | None,
     *,
     geometry: CaptureGeometry,
@@ -297,10 +297,7 @@ def is_capture_manifest_valid(
         if "kind" in manifest and manifest["kind"] != "one_step_raw_capture_target_latents":
             return False
 
-        if not isinstance(manifest.get("sources", []), list) or not isinstance(manifest.get("windows", []), list):
-            return False
-
-        return True
+        return isinstance(manifest.get("sources", []), list) and isinstance(manifest.get("windows", []), list)
     except (ValueError, TypeError, KeyError):
         return False
 

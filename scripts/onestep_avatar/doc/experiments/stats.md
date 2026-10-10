@@ -14,7 +14,7 @@ Four numbers, each of which decides something the design would otherwise be gues
 ## Data flow
 
 ```mermaid
-flowchart TD
+flowchart LR
   PAIRS[("--pairs &lt;corpus root&gt;<br/>master z_g / z_y per view")]
   MODEL[("model + guide latents")]
   RATIO["r_full, r_subject, moments<br/>--no-gpu"]

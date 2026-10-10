@@ -55,8 +55,7 @@ def test_composite_guide_frame_is_render_where_opaque_and_background_where_trans
     fully_transparent_render = _renderer_white_composite(200.0, 0.0)
     partial_render = _renderer_white_composite(200.0, 128 / 255)
     render = np.array(
-        [[[fully_opaque_render] * 3, [fully_transparent_render] * 3],
-         [[partial_render] * 3, [partial_render] * 3]],
+        [[[fully_opaque_render] * 3, [fully_transparent_render] * 3], [[partial_render] * 3, [partial_render] * 3]],
         dtype=np.uint8,
     )
     background = np.full((2, 2, 3), 50, dtype=np.uint8)
@@ -108,9 +107,7 @@ def _complete(tmp_path: Path, objective: str, metadata: dict) -> bool:
     output = tmp_path / dataset.render_name(objective)
     metadata_path = tmp_path / dataset.render_metadata_name(objective)
     _write_video(output, frames=5, size=(32, 32))
-    mask_video.write_mask_video(
-        np.zeros((5, ALPHA_GRID, ALPHA_GRID), dtype=np.uint8), tmp_path / ALPHA_NAME
-    )
+    mask_video.write_mask_video(np.zeros((5, ALPHA_GRID, ALPHA_GRID), dtype=np.uint8), tmp_path / ALPHA_NAME)
     metadata_path.write_text(json.dumps({"n_frames": 5, "alpha_grid": ALPHA_GRID, **metadata}))
     return _render_is_complete(output, metadata_path, 5, 32, objective)
 
@@ -152,9 +149,7 @@ def test_legacy_only_alpha_is_not_a_supported_complete_render(tmp_path: Path) ->
     metadata_path = tmp_path / dataset.render_metadata_name("bg")
     _write_video(output, frames=5, size=(32, 32))
     np.save(tmp_path / f"{dataset.ALPHA_STEM}.npy", np.zeros((5, 8, 8), dtype=np.uint8))
-    metadata_path.write_text(
-        json.dumps({"n_frames": 5, "alpha_grid": ALPHA_GRID, "objective": "bg", **_V2})
-    )
+    metadata_path.write_text(json.dumps({"n_frames": 5, "alpha_grid": ALPHA_GRID, "objective": "bg", **_V2}))
     assert _render_is_complete(output, metadata_path, 5, 32, "bg") is False
 
 
@@ -169,4 +164,3 @@ def test_a_pre_objective_sidecar_infers_bg_but_still_needs_a_current_compositing
     assert _complete(tmp_path, "bg", {"composited": True, **_V2}) is True
     assert _complete(tmp_path, "bg", {"composited": True}) is False
     assert _complete(tmp_path, "bg", {}) is False
-

@@ -52,6 +52,7 @@ def _git_rev() -> str:
         out = subprocess.run(
             ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
             capture_output=True,
+            check=False,
             text=True,
             timeout=10,
         )
@@ -60,7 +61,11 @@ def _git_rev() -> str:
         return "unknown"
     try:
         dirty = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "status", "--porcelain"], capture_output=True, text=True, timeout=20
+            ["git", "-C", str(REPO_ROOT), "status", "--porcelain"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=20,
         )
         if dirty.stdout.strip():
             rev += "-dirty"
@@ -86,7 +91,7 @@ def run_id(prefix: str = "") -> str:
     return f"{stamp}-{prefix}" if prefix else stamp
 
 
-def stamp(model, device: torch.device | None = None, **extra: object) -> dict:
+def stamp(model: object, device: torch.device | None = None, **extra: object) -> dict:
     """Provenance block to embed in every artifact JSON.
 
     ``model`` is a :class:`model_registry.RefinerModel`; passed untyped to keep

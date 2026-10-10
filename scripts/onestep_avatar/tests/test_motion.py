@@ -5,12 +5,15 @@ from __future__ import annotations
 import unittest
 
 import numpy as np
+import pytest
 import torch
 
 from scripts.onestep_avatar.corpus import motion
 
 
-def _fake_pose3d(n_frames: int, valid: np.ndarray | None = None, raw_size_hw: tuple[float, float] = (4096.0, 3000.0)):
+def _fake_pose3d(
+    n_frames: int, valid: np.ndarray | None = None, raw_size_hw: tuple[float, float] = (4096.0, 3000.0)
+) -> dict:
     """A minimal pose3d dict with every key `convert_frame`/`build_motion` touch."""
     if valid is None:
         valid = np.ones(n_frames, dtype=bool)
@@ -45,7 +48,7 @@ def _fake_pose3d(n_frames: int, valid: np.ndarray | None = None, raw_size_hw: tu
     return pose3d
 
 
-def _fake_bbox(n_frames: int, valid: np.ndarray | None = None, nan_at: tuple[int, ...] = ()):
+def _fake_bbox(n_frames: int, valid: np.ndarray | None = None, nan_at: tuple[int, ...] = ()) -> dict[str, np.ndarray]:
     if valid is None:
         valid = np.ones(n_frames, dtype=bool)
     xyxy = np.zeros((n_frames, 4), dtype=np.float32)
@@ -55,42 +58,42 @@ def _fake_bbox(n_frames: int, valid: np.ndarray | None = None, nan_at: tuple[int
 
 
 class TestConvertFrame(unittest.TestCase):
-    def test_raw_size_is_swapped_to_h_w(self):
+    def test_raw_size_is_swapped_to_h_w(self) -> None:
         pose3d = _fake_pose3d(3, raw_size_hw=(4096.0, 3000.0))  # data stores [W,H] = [3000,4096]
         entry = motion.convert_frame(pose3d, 0)
         torch.testing.assert_close(entry["raw_size"], torch.tensor([4096.0, 3000.0]))
 
-    def test_bg_color_is_white(self):
+    def test_bg_color_is_white(self) -> None:
         pose3d = _fake_pose3d(1)
         entry = motion.convert_frame(pose3d, 0)
         torch.testing.assert_close(entry["bg_color"], torch.ones(3))
 
-    def test_person_valid_matches_dataset_valid(self):
+    def test_person_valid_matches_dataset_valid(self) -> None:
         valid = np.array([True, False, True])
         pose3d = _fake_pose3d(3, valid=valid)
-        self.assertEqual(motion.convert_frame(pose3d, 1)["person_valid"], False)
-        self.assertEqual(motion.convert_frame(pose3d, 0)["person_valid"], True)
+        assert motion.convert_frame(pose3d, 1)["person_valid"] is False
+        assert motion.convert_frame(pose3d, 0)["person_valid"] is True
 
-    def test_pose_keys_carried_through(self):
+    def test_pose_keys_carried_through(self) -> None:
         pose3d = _fake_pose3d(1)
         entry = motion.convert_frame(pose3d, 0)
         for key in motion.POSE_KEEP_KEYS + motion.CACHE_KEYS:
-            self.assertIn(key, entry)
+            assert key in entry
 
 
 class TestAssertRawSizeMatchesFrame(unittest.TestCase):
-    def test_passes_when_consistent(self):
+    def test_passes_when_consistent(self) -> None:
         pose3d = _fake_pose3d(1, raw_size_hw=(4096.0, 3000.0))
         motion.assert_raw_size_matches_frame(pose3d, frame_height=4096)
 
-    def test_raises_on_a_transposed_convention(self):
+    def test_raises_on_a_transposed_convention(self) -> None:
         pose3d = _fake_pose3d(1, raw_size_hw=(4096.0, 3000.0))
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError, match="raw_size convention has changed"):
             motion.assert_raw_size_matches_frame(pose3d, frame_height=3000)
 
 
 class TestValidFrameMask(unittest.TestCase):
-    def test_requires_both_pose_and_bbox_valid(self):
+    def test_requires_both_pose_and_bbox_valid(self) -> None:
         pose3d = _fake_pose3d(4, valid=np.array([True, True, False, True]))
         bbox = _fake_bbox(4, valid=np.array([True, False, True, True]), nan_at=(3,))
         mask = motion.valid_frame_mask(pose3d, bbox)
@@ -98,55 +101,55 @@ class TestValidFrameMask(unittest.TestCase):
 
 
 class TestFillGaps(unittest.TestCase):
-    def test_no_gaps_is_identity(self):
+    def test_no_gaps_is_identity(self) -> None:
         valid = np.array([True, True, True])
         np.testing.assert_array_equal(motion._fill_gaps(valid, max_gap=3), [0, 1, 2])
 
-    def test_interior_gap_holds_the_frame_before_it(self):
+    def test_interior_gap_holds_the_frame_before_it(self) -> None:
         valid = np.array([True, False, False, True])
         np.testing.assert_array_equal(motion._fill_gaps(valid, max_gap=3), [0, 0, 0, 3])
 
-    def test_leading_gap_holds_forward_from_first_valid(self):
+    def test_leading_gap_holds_forward_from_first_valid(self) -> None:
         valid = np.array([False, False, True, True])
         np.testing.assert_array_equal(motion._fill_gaps(valid, max_gap=3), [2, 2, 2, 3])
 
-    def test_trailing_gap_holds_backward_from_last_valid(self):
+    def test_trailing_gap_holds_backward_from_last_valid(self) -> None:
         valid = np.array([True, True, False, False])
         np.testing.assert_array_equal(motion._fill_gaps(valid, max_gap=3), [0, 1, 1, 1])
 
-    def test_raises_when_gap_exceeds_max(self):
+    def test_raises_when_gap_exceeds_max(self) -> None:
         valid = np.array([True, False, False, False, False, True])
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError, match="exceeds max_gap"):
             motion._fill_gaps(valid, max_gap=3)
 
-    def test_all_invalid_raises(self):
+    def test_all_invalid_raises(self) -> None:
         valid = np.array([False, False, False])
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError, match="every frame"):
             motion._fill_gaps(valid, max_gap=3)
 
 
 class TestBuildMotion(unittest.TestCase):
-    def test_keys_are_zero_padded_and_sorted(self):
+    def test_keys_are_zero_padded_and_sorted(self) -> None:
         pose3d = _fake_pose3d(3)
         bbox = _fake_bbox(3)
         sam3db = motion.build_motion(pose3d, bbox, frame_height=4096)
-        self.assertEqual(sorted(sam3db.keys()), ["frames/000000.png", "frames/000001.png", "frames/000002.png"])
+        assert sorted(sam3db.keys()) == ["frames/000000.png", "frames/000001.png", "frames/000002.png"]
 
-    def test_one_entry_per_frame(self):
+    def test_one_entry_per_frame(self) -> None:
         pose3d = _fake_pose3d(5)
         bbox = _fake_bbox(5)
         sam3db = motion.build_motion(pose3d, bbox, frame_height=4096)
-        self.assertEqual(len(sam3db), 5)
+        assert len(sam3db) == 5
 
-    def test_raises_when_no_valid_frames(self):
+    def test_raises_when_no_valid_frames(self) -> None:
         pose3d = _fake_pose3d(2, valid=np.array([False, False]))
         bbox = _fake_bbox(2)
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError, match="no valid frames"):
             motion.build_motion(pose3d, bbox, frame_height=4096)
 
 
 class TestMergeMultiviewRefinement(unittest.TestCase):
-    def test_replaces_only_body_trajectory_and_keeps_view_camera(self):
+    def test_replaces_only_body_trajectory_and_keeps_view_camera(self) -> None:
         view = _fake_pose3d(2)
         refinement = {key: np.asarray(view[key]).copy() for key in motion.REFINED_KEYS}
         refinement["pred_pose_raw"] += 7
@@ -159,17 +162,17 @@ class TestMergeMultiviewRefinement(unittest.TestCase):
         assert merged["K_raw"] is view["K_raw"]
         assert merged["cam_rot"] is view["cam_rot"]
 
-    def test_rejects_a_differently_timed_refinement(self):
+    def test_rejects_a_differently_timed_refinement(self) -> None:
         view = _fake_pose3d(2)
         refinement = {key: np.asarray(view[key]).copy() for key in motion.REFINED_KEYS}
         refinement["shape"] = refinement["shape"][:1]
 
-        with self.assertRaisesRegex(ValueError, "shape"):
+        with pytest.raises(ValueError, match="shape"):
             motion.merge_multiview_refinement(view, refinement)
 
 
 class TestRepairViewCameraGaps(unittest.TestCase):
-    def test_repairs_only_missing_rows_from_the_nearest_valid_view_row(self):
+    def test_repairs_only_missing_rows_from_the_nearest_valid_view_row(self) -> None:
         pose = _fake_pose3d(4)
         pose["K_raw"][:, 0, 0] = [1, 2, np.nan, 4]
         bbox = _fake_bbox(4, valid=np.array([True, True, False, True]), nan_at=(2,))
@@ -179,15 +182,13 @@ class TestRepairViewCameraGaps(unittest.TestCase):
         np.testing.assert_array_equal(repaired["K_raw"][:, 0, 0], [1, 2, 2, 4])
         np.testing.assert_array_equal(repaired["pred_pose_raw"][0], pose["pred_pose_raw"][0])
 
-    def test_multiview_validity_can_drive_motion_after_camera_repair(self):
+    def test_multiview_validity_can_drive_motion_after_camera_repair(self) -> None:
         pose = _fake_pose3d(4)
         pose["K_raw"][2] = np.nan
         bbox = _fake_bbox(4, valid=np.array([True, True, False, True]), nan_at=(2,))
         repaired = motion.repair_view_camera_gaps(pose, bbox)
 
-        sam3db = motion.build_motion(
-            repaired, bbox, frame_height=4096, valid=np.ones(4, dtype=bool)
-        )
+        sam3db = motion.build_motion(repaired, bbox, frame_height=4096, valid=np.ones(4, dtype=bool))
 
         assert len(sam3db) == 4
         assert torch.isfinite(sam3db["frames/000002.png"]["K_raw"]).all()

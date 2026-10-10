@@ -22,8 +22,6 @@ from scripts.onestep_avatar.tests.test_evaluation_completion import completed as
 from scripts.onestep_avatar.tests.test_infer import product_files as native_product_files
 from scripts.onestep_avatar.tests.test_prepare_preview import preview_case as prepared_preview_case
 from scripts.onestep_avatar.tests.test_previews import _completed, _fixed_inputs
-from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401
-from scripts.onestep_avatar.tests.test_training_preflight import checked_settings  # noqa: F401
 from scripts.onestep_avatar.training import checkpoints, config, engine
 from scripts.prune.core import preflight
 from scripts.prune.core import session as sessions

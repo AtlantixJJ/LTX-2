@@ -6,6 +6,7 @@ import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Never
 
 import pytest
 import torch
@@ -106,7 +107,9 @@ def test_random_causal_adapter_cannot_claim_multiple_blocks() -> None:
 def test_random_full_master_templates_have_only_zero_start() -> None:
     selection = checkpoints.random_segment_selection(
         [{"source": "a", "ranges": [[0, 5]]}, {"source": "b", "ranges": [[0, 9]]}],
-        {"a": 5, "b": 9}, None, 42,
+        {"a": 5, "b": 9},
+        None,
+        42,
     )
     assert selection["start_bounds_inclusive"] == {"a": [0, 0], "b": [0, 0]}
     assert selection["window_latent_frames"] is None
@@ -173,13 +176,14 @@ def test_generated_history_is_a_recorded_change_for_capture_history_adapter() ->
     request["mode_settings"]["teacher_forcing"] = False
     differences = checkpoints.check_contract(record, request, override=True)
     assert any("mode_settings" in difference for difference in differences)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="incompatible adapter conditions"):
         checkpoints.check_contract(record, request, product=True)
 
 
-@pytest.mark.parametrize("field,value", [("history_mode", "recompute"), ("history_mode", "joint"),
-                                         ("kv_source", "denoise")])
-def test_changed_causal_computation_requires_override(field, value):
+@pytest.mark.parametrize(
+    ("field", "value"), [("history_mode", "recompute"), ("history_mode", "joint"), ("kv_source", "denoise")]
+)
+def test_changed_causal_computation_requires_override(field: str, value: str) -> None:
     record = _contract("causal")
     request = _request(record)
     assert checkpoints.check_contract(record, request, product=True) == []
@@ -188,7 +192,8 @@ def test_changed_causal_computation_requires_override(field, value):
         checkpoints.check_contract(record, request)
     differences = checkpoints.check_contract(record, request, override=True)
     assert len(differences) == 1
-    assert field in differences[0] and repr(value) in differences[0]
+    assert field in differences[0]
+    assert repr(value) in differences[0]
     assert "cached_refresh_global_sigma0" in differences[0]
     with pytest.raises(ValueError, match="incompatible.*" + field):
         checkpoints.check_contract(record, request, override=True, product=True)
@@ -196,7 +201,7 @@ def test_changed_causal_computation_requires_override(field, value):
 
 @pytest.mark.parametrize("field", ["history_mode", "kv_source"])
 @pytest.mark.parametrize("value", [None, "unsupported", 1, [], {}])
-def test_malformed_causal_computation_cannot_be_overridden(field, value):
+def test_malformed_causal_computation_cannot_be_overridden(field: str, value: object) -> None:
     record = _contract("causal")
     request = _request(record)
     request[field] = value
@@ -207,8 +212,8 @@ def test_malformed_causal_computation_cannot_be_overridden(field, value):
         checkpoints.check_contract(record, request, override=True)
 
 
-@pytest.mark.parametrize("history,teacher", [("recompute", False), ("joint", False), ("cache", True)])
-def test_invalid_denoise_history_pair_cannot_be_overridden(history, teacher):
+@pytest.mark.parametrize(("history", "teacher"), [("recompute", False), ("joint", False), ("cache", True)])
+def test_invalid_denoise_history_pair_cannot_be_overridden(history: str, teacher: bool) -> None:
     record = _contract("causal", teacher=teacher)
     request = _request(record)
     request.update(history_mode=history, kv_source="denoise")
@@ -216,7 +221,7 @@ def test_invalid_denoise_history_pair_cannot_be_overridden(history, teacher):
         checkpoints.check_contract(record, request, override=True)
 
 
-def test_bidirectional_request_cannot_add_history_with_override():
+def test_bidirectional_request_cannot_add_history_with_override() -> None:
     record = _contract()
     request = _request(record)
     request.update(history_mode="cache", kv_source="refresh")
@@ -224,18 +229,20 @@ def test_bidirectional_request_cannot_add_history_with_override():
         checkpoints.check_contract(record, request, override=True)
 
 
-def test_fused_application_requires_recorded_override_and_product_refuses_it():
+def test_fused_application_requires_recorded_override_and_product_refuses_it() -> None:
     record = _contract()
     request = _request(record)
-    request['application_method'] = 'fused_bf16'
-    with pytest.raises(ValueError, match='incompatible.*application_method'):
+    request["application_method"] = "fused_bf16"
+    with pytest.raises(ValueError, match=r"incompatible.*application_method"):
         checkpoints.check_contract(record, request)
     differences = checkpoints.check_contract(record, request, override=True)
-    assert len(differences) == 1 and 'peft_unmerged_fp32' in differences[0] and 'fused_bf16' in differences[0]
-    with pytest.raises(ValueError, match='incompatible.*application_method'):
+    assert len(differences) == 1
+    assert "peft_unmerged_fp32" in differences[0]
+    assert "fused_bf16" in differences[0]
+    with pytest.raises(ValueError, match=r"incompatible.*application_method"):
         checkpoints.check_contract(record, request, override=True, product=True)
-    del request['application_method']
-    with pytest.raises(ValueError, match='missing or unsupported'):
+    del request["application_method"]
+    with pytest.raises(ValueError, match="missing or unsupported"):
         checkpoints.check_contract(record, request, override=True)
 
 
@@ -279,7 +286,7 @@ def test_incomplete_or_unsupported_records_fail(defect: str) -> None:
         record["data"].pop("membership_sha256")
     else:
         record["causal"] = {}
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError):  # noqa: PT011 -- mutation controls check refusal type and preserved bytes across different validators
         checkpoints.validate_contract(record)
 
 
@@ -309,12 +316,12 @@ def test_atomic_save_records_actual_shapes_and_preserves_destination_on_failure(
     }
     accelerator = SimpleNamespace(
         wait_for_everyone=lambda: None,
-        get_state_dict=lambda model: state,
+        get_state_dict=lambda _model: state,
         is_main_process=True,
-        unwrap_model=lambda model, **kw: model,
+        unwrap_model=lambda model, **_kw: model,
         distributed_type=DistributedType.NO,
     )
-    monkeypatch.setattr(checkpoints, "get_peft_model_state_dict", lambda *args, **kwargs: state)
+    monkeypatch.setattr(checkpoints, "get_peft_model_state_dict", lambda *_args, **_kwargs: state)
     record = _contract()
     record["adapter"]["tensor_shapes"] = {}
     metadata = {checkpoints.CONTRACT_KEY: json.dumps(record)}
@@ -324,7 +331,8 @@ def test_atomic_save_records_actual_shapes_and_preserves_destination_on_failure(
     checkpoints.validate_adapter_tensors(path, read)
     before = path.read_bytes()
 
-    def fail_after_write(tensors, path, metadata):
+    def fail_after_write(tensors: dict[str, torch.Tensor], path: Path, metadata: dict[str, str]) -> Never:
+        del metadata, tensors
         Path(path).write_bytes(b"partial")
         raise RuntimeError("save failed")
 
@@ -336,7 +344,7 @@ def test_atomic_save_records_actual_shapes_and_preserves_destination_on_failure(
 
 
 @pytest.mark.parametrize("mode", ["bidirectional", "causal"])
-def test_sigma_precision_contract_preserves_history_but_requires_known_execution(mode):
+def test_sigma_precision_contract_preserves_history_but_requires_known_execution(mode: str) -> None:
     record = _contract(mode)
     assert record["training"]["global_sigma_dtype"] == "float32"
     requested = _request(record)
@@ -349,11 +357,12 @@ def test_sigma_precision_contract_preserves_history_but_requires_known_execution
             checkpoints.check_contract(historical, requested, override=override)
     calibrated = copy.deepcopy(record)
     calibrated["training"]["global_sigma_dtype"] = "bfloat16"
-    with pytest.raises(ValueError, match="incompatible.*global_sigma_dtype"):
+    with pytest.raises(ValueError, match=r"incompatible.*global_sigma_dtype"):
         checkpoints.check_contract(calibrated, requested)
     differences = checkpoints.check_contract(calibrated, requested, override=True)
-    assert len(differences) == 1 and "global_sigma_dtype" in differences[0]
-    with pytest.raises(ValueError, match="incompatible.*global_sigma_dtype"):
+    assert len(differences) == 1
+    assert "global_sigma_dtype" in differences[0]
+    with pytest.raises(ValueError, match=r"incompatible.*global_sigma_dtype"):
         checkpoints.check_contract(calibrated, requested, override=True, product=True)
     for value in (None, "float16", "", 32):
         requested["global_sigma_dtype"] = value

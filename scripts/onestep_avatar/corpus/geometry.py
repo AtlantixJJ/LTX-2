@@ -111,9 +111,7 @@ def crop_from_canvas(frame: np.ndarray, box_xyxy: XYXY) -> np.ndarray:
     return frame[y0:y1, x0:x1]
 
 
-def crop_with_padding(
-    frame: np.ndarray, box_xyxy: XYXY, pad_value: int | float = 255
-) -> np.ndarray:
+def crop_with_padding(frame: np.ndarray, box_xyxy: XYXY, pad_value: int | float = 255) -> np.ndarray:
     """Crop ``frame`` (``H x W`` or ``H x W x C``) to ``box_xyxy``, padding out-of-frame
     regions with ``pad_value``.
 
@@ -122,7 +120,7 @@ def crop_with_padding(
     Pass ``pad_value=255`` for an RGB frame composited onto white (matching the render's own
     white background) and ``pad_value=0`` for a mask/alpha channel (no subject off-frame).
     """
-    x0, y0, x1, y1 = (int(round(v)) for v in box_xyxy)
+    x0, y0, x1, y1 = (round(v) for v in box_xyxy)
     out_w, out_h = x1 - x0, y1 - y0
     h, w = frame.shape[:2]
     out = np.full((out_h, out_w, *frame.shape[2:]), pad_value, dtype=frame.dtype)

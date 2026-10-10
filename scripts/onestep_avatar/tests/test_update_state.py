@@ -1,6 +1,7 @@
 """Analytic Adam evidence and fixed rank/slot replay controls."""
 
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -22,7 +23,7 @@ def _states() -> dict:
     }
 
 
-def test_actual_adam_moments_reconstruct_gradient(tmp_path):
+def test_actual_adam_moments_reconstruct_gradient(tmp_path: Path) -> None:
     class Model(torch.nn.Module):
         def __init__(self):
             super().__init__()
@@ -47,13 +48,13 @@ def test_actual_adam_moments_reconstruct_gradient(tmp_path):
     torch.testing.assert_close(states[name]["exp_avg_sq"], gradient.square() * 0.001)
 
 
-def test_fsdp_nonmain_empty_rank_zero_only_result(monkeypatch):
+def test_fsdp_nonmain_empty_rank_zero_only_result(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
     monkeypatch.setattr(
         update_state,
         "FSDP",
         SimpleNamespace(
-            state_dict_type=lambda *args: nullcontext(), optim_state_dict=lambda *args: calls.append("collect") or {}
+            state_dict_type=lambda *_args: nullcontext(), optim_state_dict=lambda *_args: calls.append("collect") or {}
         ),
     )
     accelerator = SimpleNamespace(distributed_type=DistributedType.FSDP, is_main_process=False)
@@ -62,7 +63,7 @@ def test_fsdp_nonmain_empty_rank_zero_only_result(monkeypatch):
 
 
 @pytest.mark.parametrize("defect", ["step", "dtype", "nan", "negative_second", "base", "extra_field"])
-def test_invalid_moments_refused(defect):
+def test_invalid_moments_refused(defect: str) -> None:
     states = _states()
     name = next(iter(states))
     if defect == "step":
@@ -81,13 +82,7 @@ def test_invalid_moments_refused(defect):
         update_state.validate_moments(states, 1)
 
 
-
-
-
-
-
-
 @pytest.mark.parametrize("name", ["../outside.py", "/absolute.py", "missing.py", "README.md"])
-def test_extra_owner_paths_refused(name):
+def test_extra_owner_paths_refused(name: str) -> None:
     with pytest.raises(ValueError, match="contained"):
         software.capture("training", "causal", extra_sources=(name,))

@@ -30,13 +30,30 @@ import torch
 # `build_sam3db_entry`'s `cache_map` (minus `raw_size`/`person_valid`/`bg_color`, handled
 # separately below because they need a fix rather than a straight copy).
 POSE_KEEP_KEYS = (
-    "pred_pose_raw", "shape", "scale", "hand", "face", "pred_cam",
-    "pred_keypoints_2d", "pred_keypoints_3d", "pred_joint_coords",
-    "mhr_model_params", "pred_cam_t", "cam_rot", "cam_trans",
+    "pred_pose_raw",
+    "shape",
+    "scale",
+    "hand",
+    "face",
+    "pred_cam",
+    "pred_keypoints_2d",
+    "pred_keypoints_3d",
+    "pred_joint_coords",
+    "mhr_model_params",
+    "pred_cam_t",
+    "cam_rot",
+    "cam_trans",
 )
 CACHE_KEYS = (
-    "crop_bbox", "K_raw", "K_proc", "bbox_center", "bbox_scale",
-    "img_size", "ori_img_size", "affine_trans", "mask_score",
+    "crop_bbox",
+    "K_raw",
+    "K_proc",
+    "bbox_center",
+    "bbox_scale",
+    "img_size",
+    "ori_img_size",
+    "affine_trans",
+    "mask_score",
 )
 
 # The clip-level multiview solve deliberately owns only these camera-independent
@@ -87,7 +104,7 @@ def assert_raw_size_matches_frame(pose3d: dict, frame_height: int, frame_idx: in
     check it against ffprobe/decord's own report of the height, never trust the source array.
     """
     w, h = (float(v) for v in np.asarray(pose3d["raw_size"][frame_idx]))
-    if int(round(h)) != int(frame_height):
+    if round(h) != int(frame_height):
         raise ValueError(
             f"pose3d['raw_size'][{frame_idx}] = [{w}, {h}] (assumed [W, H]) implies a height "
             f"of {h}, but the video's own decoded height is {frame_height} -- the raw_size "
@@ -143,15 +160,14 @@ def _fill_gaps(valid: np.ndarray, max_gap: int | None) -> np.ndarray:
     n = len(valid)
     source_idx = np.arange(n)
     run_start = None
-    for i in list(range(n)) + [n]:
+    for i in [*range(n), n]:
         frame_valid = valid[i] if i < n else True  # sentinel to flush a trailing run
         if frame_valid:
             if run_start is not None:
                 run_len = i - run_start
                 if max_gap is not None and run_len > max_gap:
                     raise ValueError(
-                        f"invalid-frame run of {run_len} frames at [{run_start}, {i}) exceeds "
-                        f"max_gap={max_gap}"
+                        f"invalid-frame run of {run_len} frames at [{run_start}, {i}) exceeds max_gap={max_gap}"
                     )
                 hold = run_start - 1 if run_start > 0 else i if i < n else None
                 if hold is None:
@@ -164,7 +180,11 @@ def _fill_gaps(valid: np.ndarray, max_gap: int | None) -> np.ndarray:
 
 
 def build_motion(
-    pose3d: dict, bbox: dict, frame_height: int, max_gap: int = 3, valid: np.ndarray | None = None,
+    pose3d: dict,
+    bbox: dict,
+    frame_height: int,
+    max_gap: int = 3,
+    valid: np.ndarray | None = None,
 ) -> dict:
     """The full-clip ``sam3db`` dict, keyed ``f"frames/{i:06d}.png"`` (``load_driving_motion``
     consumes ``sorted(sam3db.keys())``, so zero-padding is load-bearing), one entry per frame.
@@ -174,7 +194,4 @@ def build_motion(
     if not usable.any():
         raise ValueError("no valid frames in this clip/view -- nothing to build a motion file from")
     source_idx = _fill_gaps(usable, max_gap)
-    return {
-        f"frames/{i:06d}.png": convert_frame(pose3d, int(source_idx[i]))
-        for i in range(len(usable))
-    }
+    return {f"frames/{i:06d}.png": convert_frame(pose3d, int(source_idx[i])) for i in range(len(usable))}

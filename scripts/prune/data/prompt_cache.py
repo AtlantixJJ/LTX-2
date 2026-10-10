@@ -90,7 +90,7 @@ def main() -> int:
     model = preflight.check(args.model, gpu_id=args.gpu_id)
     device = torch.device(f"cuda:{args.gpu_id}")
 
-    from scripts.prune.core.session import DEFAULT_PROMPT, DTYPE
+    from scripts.prune.core.session import DEFAULT_PROMPT, DTYPE  # noqa: PLC0415 -- session imports this cache owner
 
     ctx = get_or_build(model, DEFAULT_PROMPT, DTYPE, device)
     print(f"prompt context {tuple(ctx.shape)} {ctx.dtype} -> {cache_path(model.key, DEFAULT_PROMPT)}")

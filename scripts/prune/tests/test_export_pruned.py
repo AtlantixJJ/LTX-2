@@ -44,8 +44,13 @@ def test_shape_faithful_linear_preserves_original_gemm_and_gradients(axis: int) 
 def test_shape_faithful_export_stores_compact_tensors_with_original_execution_geometry(tmp_path: Path) -> None:
     source, output = tmp_path / "source.safetensors", tmp_path / "faithful.safetensors"
     _checkpoint(source)
-    export_pruned.export(source, {"0.attn1": [1, 0], "0.attn2": [0, 1], "0.ff": [1, 0, 1]},
-                         output, model_key="2.5", mode="compact_faithful")
+    export_pruned.export(
+        source,
+        {"0.attn1": [1, 0], "0.attn2": [0, 1], "0.ff": [1, 0, 1]},
+        output,
+        model_key="2.5",
+        mode="compact_faithful",
+    )
     with safe_open(output, framework="pt") as handle:
         config = json.loads(handle.metadata()["config"])["transformer"]
         assert config["video_pruning_shape_faithful"] is True
@@ -67,7 +72,7 @@ def test_shape_faithful_linear_materializes_from_meta() -> None:
     assert torch.equal(from_meta(x), resident(x))
 
 
-def _checkpoint(path):
+def _checkpoint(path: Path) -> None:
     prefix = export_pruned.PREFIX + ".0"
     tensors = {}
     for kind in ("attn1", "attn2"):
@@ -79,15 +84,18 @@ def _checkpoint(path):
         tensors[f"{base}.to_out.0.weight"] = torch.arange(12.0).reshape(3, 4).contiguous()
     tensors[f"{prefix}.ff.net.0.proj.weight"] = torch.arange(9.0).reshape(3, 3).contiguous()
     tensors[f"{prefix}.ff.net.2.weight"] = torch.arange(9.0).reshape(3, 3).contiguous()
-    save_file(tensors, str(path), metadata={"config": json.dumps({"transformer": {"num_layers": 1,
-                                                                                  "attention_head_dim": 2}})})
+    save_file(
+        tensors, str(path), metadata={"config": json.dumps({"transformer": {"num_layers": 1, "attention_head_dim": 2}})}
+    )
 
 
-def test_structural_export_slices_and_records_original_head_ids(tmp_path):
+def test_structural_export_slices_and_records_original_head_ids(tmp_path: Path) -> None:
     source, output = tmp_path / "source.safetensors", tmp_path / "pruned.safetensors"
     _checkpoint(source)
     masks = {"0.attn1": [1, 0], "0.attn2": [0, 1], "0.ff": [1, 0, 1]}
-    export_pruned.export(source, masks, output, model_key="2.5", provenance_block={"mask_sha256": "abc"}, mode="compact")
+    export_pruned.export(
+        source, masks, output, model_key="2.5", provenance_block={"mask_sha256": "abc"}, mode="compact"
+    )
     with safe_open(output, framework="pt") as handle:
         config = json.loads(handle.metadata()["config"])["transformer"]
         assert config["per_layer_video_attn1_rope_head_indices"] == [[0]]
@@ -100,14 +108,14 @@ def test_structural_export_slices_and_records_original_head_ids(tmp_path):
         assert handle.get_tensor(f"{export_pruned.PREFIX}.0.ff.net.2.weight").shape == (3, 2)
 
 
-def test_invalid_mask_fails_before_output(tmp_path):
+def test_invalid_mask_fails_before_output(tmp_path: Path) -> None:
     source, output = tmp_path / "source.safetensors", tmp_path / "pruned.safetensors"
     _checkpoint(source)
     with pytest.raises(ValueError, match="invalid binary mask"):
         export_pruned.export(source, {"0.attn1": [1]}, output, model_key="2.5")
 
 
-def test_full_width_qk_norm_matches_functional_head_mask():
+def test_full_width_qk_norm_matches_functional_head_mask() -> None:
     torch.manual_seed(3)
     source = Attention(query_dim=8, context_dim=8, heads=2, dim_head=4)
     exported = Attention(query_dim=8, context_dim=8, heads=1, dim_head=4, qk_heads=2)
@@ -130,11 +138,10 @@ def test_full_width_qk_norm_matches_functional_head_mask():
     assert torch.allclose(exported(x), expected, atol=1e-5, rtol=1e-5)
 
 
-def test_sparse_export_preserves_full_tensors_and_records_active_units(tmp_path):
+def test_sparse_export_preserves_full_tensors_and_records_active_units(tmp_path: Path) -> None:
     source, output = tmp_path / "source.safetensors", tmp_path / "sparse.safetensors"
     _checkpoint(source)
-    export_pruned.export(source, {"0.attn1": [1, 0], "0.attn2": [0, 1], "0.ff": [1, 0, 1]},
-                         output, model_key="2.5")
+    export_pruned.export(source, {"0.attn1": [1, 0], "0.attn2": [0, 1], "0.ff": [1, 0, 1]}, output, model_key="2.5")
     with safe_open(output, framework="pt") as handle:
         config = json.loads(handle.metadata()["config"])["transformer"]
         assert config["pruning"]["mode"] == "masked_full"
@@ -148,7 +155,7 @@ def test_sparse_export_preserves_full_tensors_and_records_active_units(tmp_path)
         assert handle.get_tensor(f"{export_pruned.PREFIX}.0.ff.net.2.weight").shape == (3, 3)
 
 
-def test_compact_ffn_only_does_not_gather_identity_rope_heads(tmp_path):
+def test_compact_ffn_only_does_not_gather_identity_rope_heads(tmp_path: Path) -> None:
     source, output = tmp_path / "source.safetensors", tmp_path / "compact_ffn.safetensors"
     _checkpoint(source)
     export_pruned.export(source, {"0.ff": [1, 0, 1]}, output, model_key="2.5", mode="compact")
@@ -160,7 +167,7 @@ def test_compact_ffn_only_does_not_gather_identity_rope_heads(tmp_path):
         assert handle.get_tensor(f"{export_pruned.PREFIX}.0.ff.net.2.weight").shape == (3, 2)
 
 
-def test_sparse_attention_matches_functional_mask():
+def test_sparse_attention_matches_functional_mask() -> None:
     torch.manual_seed(5)
     source = Attention(query_dim=8, context_dim=8, heads=2, dim_head=4)
     sparse = Attention(query_dim=8, context_dim=8, heads=2, dim_head=4, active_head_indices=[1])
@@ -176,11 +183,12 @@ def test_sparse_attention_matches_functional_mask():
     assert torch.allclose(sparse(x), expected, atol=1e-5, rtol=1e-5)
 
 
-def test_masked_full_attention_matches_functional_mask():
+def test_masked_full_attention_matches_functional_mask() -> None:
     torch.manual_seed(7)
     source = Attention(query_dim=8, context_dim=8, heads=2, dim_head=4)
-    exported = Attention(query_dim=8, context_dim=8, heads=2, dim_head=4,
-                         active_head_indices=[1], select_active_heads=False)
+    exported = Attention(
+        query_dim=8, context_dim=8, heads=2, dim_head=4, active_head_indices=[1], select_active_heads=False
+    )
     exported.load_state_dict(source.state_dict())
     x = torch.randn(2, 3, 8)
     handle = source.to_out[0].register_forward_pre_hook(
@@ -193,7 +201,7 @@ def test_masked_full_attention_matches_functional_mask():
     assert torch.equal(exported(x), expected)
 
 
-def test_sparse_ffn_matches_functional_mask():
+def test_sparse_ffn_matches_functional_mask() -> None:
     torch.manual_seed(6)
     source = FeedForward(dim=4, dim_out=4, inner_dim=8)
     sparse = FeedForward(dim=4, dim_out=4, inner_dim=8, active_channels=[0, 2, 4, 6])

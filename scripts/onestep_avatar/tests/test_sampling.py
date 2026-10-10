@@ -9,24 +9,24 @@ from scripts.onestep_avatar.model import sampling as model_sampling
 
 
 @pytest.fixture
-def model_sigmas():
+def model_sigmas() -> list[float]:
     return list(DISTILLED_SIGMA_VALUES)
 
 
-def test_one_step_refuses_a_sigma_off_the_distilled_grid(model_sigmas):
+def test_one_step_refuses_a_sigma_off_the_distilled_grid(model_sigmas: list[float]) -> None:
     """§2.3(2): the distilled model is a map defined at nine sigmas, not on a continuum."""
     with pytest.raises(ValueError, match="not on the distilled sigma grid"):
         model_sampling.one_step_schedule(model_sigmas, sigma0=0.8)
 
 
-def test_one_step_accepts_the_other_two_candidate_sigmas(model_sigmas):
+def test_one_step_accepts_the_other_two_candidate_sigmas(model_sigmas: list[float]) -> None:
     """§4.2 names exactly three: k1's, k2's and k3's start. C3 may revisit 0.909375."""
     for sigma0 in (0.421875, 0.725, 0.909375):
         assert model_sampling.one_step_schedule(model_sigmas, sigma0) == [sigma0, 0.0]
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_positive_euler_steps_match_native_operation_order(dtype):
+def test_positive_euler_steps_match_native_operation_order(dtype: torch.dtype) -> None:
     generator = torch.Generator().manual_seed(91)
     initial = torch.randn(1, 1024, 128, generator=generator).to(dtype)
     prediction = torch.randn(initial.shape, generator=generator).to(dtype)
@@ -43,7 +43,7 @@ def test_positive_euler_steps_match_native_operation_order(dtype):
         assert not torch.equal(interpolation, first_native)
 
 
-def test_direct_endpoint_is_exact_and_stock_bf16_rounding_is_distinct():
+def test_direct_endpoint_is_exact_and_stock_bf16_rounding_is_distinct() -> None:
     generator = torch.Generator().manual_seed(92)
     initial = torch.randn(1, 1024, 128, generator=generator).bfloat16()
     prediction = torch.randn(initial.shape, generator=generator).bfloat16()

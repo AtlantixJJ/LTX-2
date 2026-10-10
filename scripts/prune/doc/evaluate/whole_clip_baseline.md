@@ -108,6 +108,19 @@ pruning consumers refuse them:
   only. It does not import avatar training, run support or experiments.
 - Matched baseline and candidate runs differ only in `--transformer`.
 
+## Saved completion verification
+
+`verify_completion(args, root)` is an additive model-free reader for the queued
+raw-only white distilled unguided route. It validates exact requested view,
+seed, sigma and arm coverage, original producer settings and prompt identity,
+source master hashes, one-block geometry, local artifact containment and full
+hashes, finite BF16 epsilon and latent shapes, and exact capture `c0`. Every row
+for a view uses the same saved epsilon/artifact record. The reader never opens
+a model session, decoder or CUDA context and never regenerates CUDA noise.
+`evidence_paths` exposes only these checked local artifacts. The avatar queue
+wrapper separately pins full input/component bytes and current software before
+and after production; prune imports no execution or experiment owners.
+
 ## Tests
 
 `tests/test_whole_clip_baseline.py` checks the one-block plan for several

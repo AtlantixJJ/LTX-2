@@ -3,16 +3,17 @@
 Status: **Version-two saves, reads, tensor checks, parent initialization gates and evaluation preflight implemented; explicit legacy conversion is experiment-owned. Bulk original-adapter conversion and ambiguous legacy evidence remain pending.**
 Own `save_lora`, `load_stage_init`, `assert_exported_lora_is_noop`,
 `read_adapter_metadata`, and the adapter condition checker.
-The engine's original metadata producer remains transitional until mode/data integration.
-The extracted checker currently reads original flat metadata for existing research callers.
+The typed engine writes version-two contracts. The old metadata producer is removed.
+The historical condition checker reads original flat metadata only for the
+experiment-owned eight-block causality protocol.
 Historical conversion orchestration now lives in `experiments/legacy_adapters.py`.
 Shared contract and tensor checks do not import it. Structural/CPU/caller checks
 precede new native experiments on final owners. Normal save/load, contract and tensor validation stay shared.
 Preserve original conversion conditions and refuse unknown evidence; missing
 native scope does not justify retaining unrelated orchestration in this owner.
 Product generation requires the version-two record described below.
-Remove unused `assert_one_step_conditions`; its permissive missing-record rule
-is not part of the new checker. Schedule checks live in model/sampling.
+The unused `assert_one_step_conditions` is removed; its permissive missing-record
+rule is not part of the current checker. Schedule checks live in `model/sampling.py`.
 
 ## Objective
 

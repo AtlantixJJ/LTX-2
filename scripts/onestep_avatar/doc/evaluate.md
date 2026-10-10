@@ -11,7 +11,7 @@ saved-noise sampling, guidance, raw saves, queued verification and automatic
 rendering from pinned references exist. `media` prepares reference RGB and
 `prepare_inputs` assembles complete fixed records. Read
 [current acceptance](known_gaps.md#current-acceptance-and-next-step) for scope.
-Old visualizers remain temporary callers until their required behavior moves.
+The old visualizers are removed; required checks live with the shared final owners.
 
 Causal preflight includes explicit `history_mode` and `kv_source` in the
 requested adapter conditions. The shared checker compares them with the recorded
@@ -57,8 +57,8 @@ Report scripts in `expr/` consume saved results. They do not launch evaluation o
 
 ```mermaid
 flowchart LR
-  V[("checked video and saved noise")] --> C["check_conditions"]
-  C --> S["mode.sample"] --> R[("encoded output and run record")]
+  V[("checked video and<br/>saved noise")] --> C["check_conditions"]
+  C --> S["mode.sample"] --> R[("encoded output<br/>and run record")]
   R --> D["media.decode"] --> O(["videos for comparison"])
   classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
   classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;

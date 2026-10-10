@@ -11,7 +11,7 @@ from scripts.onestep_avatar.corpus import geometry
 
 
 class TestUnionBbox(unittest.TestCase):
-    def test_ignores_invalid_and_nan_rows(self):
+    def test_ignores_invalid_and_nan_rows(self) -> None:
         xyxy = np.array(
             [
                 [0.0, 0.0, 10.0, 10.0],
@@ -21,56 +21,56 @@ class TestUnionBbox(unittest.TestCase):
             ]
         )
         valid = np.array([True, False, True, True])
-        self.assertEqual(geometry.union_bbox(xyxy, valid), (0.0, 0.0, 20.0, 30.0))
+        assert geometry.union_bbox(xyxy, valid) == (0.0, 0.0, 20.0, 30.0)
 
-    def test_raises_when_nothing_valid(self):
+    def test_raises_when_nothing_valid(self) -> None:
         xyxy = np.array([[np.nan, 0.0, 10.0, 10.0]])
         valid = np.array([True])
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError, match="no valid, finite bbox"):
             geometry.union_bbox(xyxy, valid)
 
 
 class TestSquareCropBox(unittest.TestCase):
-    def test_square_and_centred(self):
+    def test_square_and_centred(self) -> None:
         box = geometry.square_crop_box((0.0, 0.0, 100.0, 40.0), pad_factor=1.0)
         x0, y0, x1, y1 = box
-        self.assertAlmostEqual(x1 - x0, y1 - y0)  # square
-        self.assertAlmostEqual(x1 - x0, 100.0)  # side = max(w, h), no padding
-        self.assertAlmostEqual((x0 + x1) / 2.0, 50.0)  # centred on the union's centre
-        self.assertAlmostEqual((y0 + y1) / 2.0, 20.0)
+        assert round(abs((x1 - x0) - (y1 - y0)), 7) == 0  # square
+        assert round(abs((x1 - x0) - (100.0)), 7) == 0  # side = max(w, h), no padding
+        assert round(abs(((x0 + x1) / 2.0) - (50.0)), 7) == 0  # centred on the union's centre
+        assert round(abs(((y0 + y1) / 2.0) - (20.0)), 7) == 0
 
-    def test_padding_scales_the_side(self):
+    def test_padding_scales_the_side(self) -> None:
         box = geometry.square_crop_box((0.0, 0.0, 100.0, 100.0), pad_factor=1.20)
-        x0, y0, x1, y1 = box
-        self.assertAlmostEqual(x1 - x0, 120.0)
+        x0, _y0, x1, _y1 = box
+        assert round(abs((x1 - x0) - (120.0)), 7) == 0
 
 
 class TestCropWithPadding(unittest.TestCase):
-    def test_pure_interior_crop_is_a_plain_slice(self):
+    def test_pure_interior_crop_is_a_plain_slice(self) -> None:
         frame = np.arange(100 * 100 * 3, dtype=np.uint8).reshape(100, 100, 3)
         out = geometry.crop_with_padding(frame, (10, 20, 30, 40))
         np.testing.assert_array_equal(out, frame[20:40, 10:30])
 
-    def test_pads_outside_the_frame_with_pad_value(self):
+    def test_pads_outside_the_frame_with_pad_value(self) -> None:
         frame = np.zeros((50, 50, 3), dtype=np.uint8)
         out = geometry.crop_with_padding(frame, (-10, -10, 40, 40), pad_value=255)
-        self.assertEqual(out.shape, (50, 50, 3))
+        assert out.shape == (50, 50, 3)
         # the top-left 10x10 corner is outside the source frame -> padded white
         np.testing.assert_array_equal(out[:10, :10], 255)
         # the rest overlaps the (all-zero) source frame
         np.testing.assert_array_equal(out[10:, 10:], 0)
 
-    def test_box_entirely_outside_frame_is_all_pad(self):
+    def test_box_entirely_outside_frame_is_all_pad(self) -> None:
         frame = np.zeros((50, 50), dtype=np.uint8)
         out = geometry.crop_with_padding(frame, (100, 100, 150, 150), pad_value=0)
-        self.assertEqual(out.shape, (50, 50))
-        self.assertTrue((out == 0).all())
+        assert out.shape == (50, 50)
+        assert (out == 0).all()
 
-    def test_single_channel_mask_shape_preserved(self):
+    def test_single_channel_mask_shape_preserved(self) -> None:
         mask = np.full((20, 20), 200, dtype=np.uint8)
         out = geometry.crop_with_padding(mask, (5, 5, 15, 15), pad_value=0)
-        self.assertEqual(out.shape, (10, 10))
-        self.assertTrue((out == 200).all())
+        assert out.shape == (10, 10)
+        assert (out == 200).all()
 
 
 if __name__ == "__main__":
@@ -90,7 +90,9 @@ if __name__ == "__main__":
         ((2600.0, 3600.0, 2990.0, 4090.0), (2412.0, 3508.0, 3000.0, 4096.0)),
     ],
 )
-def test_the_canonical_box_is_pinned_to_exact_values(union, expected):
+def test_the_canonical_box_is_pinned_to_exact_values(
+    union: tuple[float, float, float, float], expected: tuple[float, float, float, float]
+) -> None:
     """A golden test, and the stakes are why: this box is what every capture latent on disk
     was encoded with. Changing the rule silently re-crops the corpus -- guides and targets
     would still *look* fine and would no longer be the same pixels.
@@ -103,7 +105,7 @@ def test_the_canonical_box_is_pinned_to_exact_values(union, expected):
     assert box == expected
 
 
-def test_canonical_box_is_always_inside_the_canvas():
+def test_canonical_box_is_always_inside_the_canvas() -> None:
     """No synthetic padding ever reaches the loss target: whatever the bbox, the box is a
     square that lies wholly within the original camera canvas."""
     width, height = 3000, 4096
@@ -116,7 +118,7 @@ def test_canonical_box_is_always_inside_the_canvas():
         assert (x1 - x0) == (y1 - y0)
 
 
-def test_effective_pad_factor_flags_a_clipped_subject():
+def test_effective_pad_factor_flags_a_clipped_subject() -> None:
     """``< 1.0`` is the 0.4 % tail where the subject itself is wider than the canvas -- the
     box clips the person, and the view must be excluded rather than trained on."""
     width, height = 3000, 4096

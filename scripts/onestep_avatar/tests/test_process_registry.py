@@ -10,21 +10,22 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 from scripts.onestep_avatar.execution import process_registry, supervision
 
 
-def free():
-    return {gpu: 0 for gpu in range(8)}
+def free() -> dict[int, int]:
+    return dict.fromkeys(range(8), 0)
 
 
-def registry(tmp_path):
+def registry(tmp_path: Path) -> process_registry.ProcessRegistry:
     return process_registry.ProcessRegistry(tmp_path / "own_processes.json", inventory=free)
 
 
-def stop(child):
+def stop(child: subprocess.Popen) -> None:
     if child.poll() is None:
         descriptor = supervision._pidfd_open(child.pid)
         try:
@@ -34,7 +35,7 @@ def stop(child):
     child.wait(timeout=2)
 
 
-def test_direct_inventory_rechecked_and_shared_starts_coordinate(tmp_path):
+def test_direct_inventory_rechecked_and_shared_starts_coordinate(tmp_path: Path) -> None:
     owner = registry(tmp_path)
     assert owner.choose(free(), training=True) == (0, 1, 2, 3)
     owner.inventory = lambda: {**free(), 0: 2048}
@@ -53,29 +54,34 @@ def test_direct_inventory_rechecked_and_shared_starts_coordinate(tmp_path):
     second.release()
 
 
-def test_real_new_session_orphan_is_adopted_and_blocks_close(tmp_path):
+def test_real_new_session_orphan_is_adopted_and_blocks_close(tmp_path: Path) -> None:  # noqa: PLR0915 -- one complete fixture lifecycle with all assertions and cleanup
     owner = registry(tmp_path)
     assert owner.acquire((0,), job="orphan-control")
     ready = tmp_path / "worker.json"
-    command = [sys.executable, "-c", "import json, subprocess, sys, time\n"
+    command = [
+        sys.executable,
+        "-c",
+        "import json, subprocess, sys, time\n"
         "from pathlib import Path\n"
         "worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'], "
         "start_new_session=True)\n"
         f"Path({str(ready)!r}).write_text(json.dumps({{'pid': worker.pid}}))\n"
-        "time.sleep(.2)\n"]
+        "time.sleep(.2)\n",
+    ]
     child = subprocess.Popen(command, start_new_session=True)
     worker_pid = None
     try:
         owner.refresh(child_pid=child.pid)
         deadline = time.monotonic() + 3
         while not ready.exists() and time.monotonic() < deadline:
-            time.sleep(.01)
+            time.sleep(0.01)
         assert ready.exists()
         worker_pid = json.loads(ready.read_bytes())["pid"]
         assert os.getsid(worker_pid) == worker_pid
         child.wait(timeout=2)
         observed = owner.observe_workers(timeout=1)
-        assert observed["complete"] is True and observed["workers_live"] is True
+        assert observed["complete"] is True
+        assert observed["workers_live"] is True
         assert worker_pid in [identity["pid"] for identity in observed["identities"]]
         with pytest.raises(ValueError, match="remain live"):
             owner.release()
@@ -90,7 +96,7 @@ def test_real_new_session_orphan_is_adopted_and_blocks_close(tmp_path):
             if found == worker_pid:
                 worker_pid = None
                 break
-            time.sleep(.01)
+            time.sleep(0.01)
         assert worker_pid is None
         owner.release()
         assert process_registry.inspect_record(owner.path, owner.token)["complete"] is True
@@ -108,16 +114,16 @@ def test_real_new_session_orphan_is_adopted_and_blocks_close(tmp_path):
             while time.monotonic() < deadline:
                 if os.waitpid(worker_pid, os.WNOHANG)[0] == worker_pid:
                     break
-                time.sleep(.01)
+                time.sleep(0.01)
 
 
-def test_other_thread_children_are_in_targeted_scope(tmp_path):
+def test_other_thread_children_are_in_targeted_scope(tmp_path: Path) -> None:
     owner = registry(tmp_path)
     assert owner.acquire((0,), job="thread-fork-control")
     ready, end = threading.Event(), threading.Event()
     children = []
 
-    def launch():
+    def launch() -> None:
         children.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"]))
         ready.set()
         end.wait(timeout=3)
@@ -127,7 +133,8 @@ def test_other_thread_children_are_in_targeted_scope(tmp_path):
     try:
         assert ready.wait(timeout=2)
         observed = owner.observe_workers(timeout=1)
-        assert observed["complete"] is True and observed["workers_live"] is True
+        assert observed["complete"] is True
+        assert observed["workers_live"] is True
         assert children[0].pid in [identity["pid"] for identity in observed["identities"]]
         with pytest.raises(ValueError, match="remain live"):
             owner.release()
@@ -139,12 +146,12 @@ def test_other_thread_children_are_in_targeted_scope(tmp_path):
 
 
 @pytest.mark.parametrize("change", ["reuse", "denied", "owner_gone"])
-def test_handle_uncertainty_preserves_record(tmp_path, monkeypatch, change):
+def test_handle_uncertainty_preserves_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str) -> None:
     owner = registry(tmp_path)
     assert owner.acquire((0,), job="identity-control")
     original = process_registry._identity
 
-    def observe(pid):
+    def observe(pid: int) -> dict | None:
         if pid != owner.owner["pid"]:
             return original(pid)
         if change == "owner_gone":
@@ -155,14 +162,15 @@ def test_handle_uncertainty_preserves_record(tmp_path, monkeypatch, change):
 
     monkeypatch.setattr(process_registry, "_identity", observe)
     result = owner.observe_workers(timeout=1)
-    assert result["complete"] is False and result["workers_live"] is True
+    assert result["complete"] is False
+    assert result["workers_live"] is True
     with pytest.raises(ValueError, match="containment is unproven"):
         owner.release()
     assert json.loads(owner.path.read_bytes())["attempts"][owner.token]["state"] == "active"
     assert process_registry.workers_live(owner.path, owner.token) is True
 
 
-def test_live_notification_producer_must_be_own_descendant(tmp_path):
+def test_live_notification_producer_must_be_own_descendant(tmp_path: Path) -> None:
     owner = registry(tmp_path)
     assert owner.acquire((0,), job="rank-control")
     with pytest.raises(ValueError, match="owned descendant"):
@@ -170,7 +178,7 @@ def test_live_notification_producer_must_be_own_descendant(tmp_path):
     owner.release()
 
 
-def test_late_dead_unknown_notification_is_only_reported(tmp_path):
+def test_late_dead_unknown_notification_is_only_reported(tmp_path: Path) -> None:
     owner = registry(tmp_path)
     assert owner.acquire((0,), job="late-rank-control")
     identity = {"pid": 2147483647, "start_ticks": 1, "command": ["reported-rank"], "terminal": False}
@@ -181,32 +189,33 @@ def test_late_dead_unknown_notification_is_only_reported(tmp_path):
     owner.release()
 
 
-def test_target_tree_observation_has_finite_deadline(tmp_path):
+def test_target_tree_observation_has_finite_deadline(tmp_path: Path) -> None:
     owner = registry(tmp_path)
     assert owner.acquire((0,), job="deadline-control")
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
     try:
         owner.refresh(child_pid=child.pid)
         observed = owner.observe_workers(timeout=1e-12)
-        assert observed["complete"] is False and "TimeoutError" in observed["error"]
+        assert observed["complete"] is False
+        assert "TimeoutError" in observed["error"]
     finally:
         stop(child)
         owner.release()
 
 
-def test_shared_ledger_lock_wait_has_finite_deadline(tmp_path, monkeypatch):
+def test_shared_ledger_lock_wait_has_finite_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     owner = registry(tmp_path)
     real_clock = time.monotonic
     moments = iter((0, 6))
     monkeypatch.setattr(process_registry.time, "monotonic", lambda: next(moments))
-    monkeypatch.setattr(fcntl, "flock", lambda *args: (_ for _ in ()).throw(BlockingIOError()))
+    monkeypatch.setattr(fcntl, "flock", lambda *_args: (_ for _ in ()).throw(BlockingIOError()))
     started = real_clock()
     with pytest.raises(TimeoutError, match="lock deadline"):
         owner.choose(free(), training=True)
     assert real_clock() - started < 1
 
 
-def test_oversized_and_nonregular_ledger_refuse(tmp_path):
+def test_oversized_and_nonregular_ledger_refuse(tmp_path: Path) -> None:
     owner = registry(tmp_path)
     owner.path.write_bytes(b" " * (8 * 1024 * 1024 + 1))
     with pytest.raises(ValueError, match="8 MiB"):

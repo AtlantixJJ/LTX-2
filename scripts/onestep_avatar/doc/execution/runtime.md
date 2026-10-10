@@ -19,7 +19,7 @@ and failure. Model-free queue completion verifies these saved bytes separately
 from the scientific owner checks.
 
 ```mermaid
-flowchart TD
+flowchart LR
   C[("queue runtime contract")] --> R["runtime.run"]
   R --> P["resources.Phase"]
   P --> M["selected module main"]

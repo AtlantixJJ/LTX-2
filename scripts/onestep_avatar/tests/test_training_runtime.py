@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Never
 
 import pytest
 import torch
 from accelerate.utils import DistributedType
 from peft import LoraConfig, get_peft_model
 from safetensors.torch import load_file
+from torch.distributed.fsdp import MixedPrecision
+from torch.distributed.fsdp._runtime_utils import _cast_forward_inputs
+from torch.distributed.fsdp.wrap import CustomPolicy
 
+from ltx_core.model.transformer.modality import Modality
 from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar.corpus import dataset, precompute, subset
 from scripts.onestep_avatar.hashing import sha256
@@ -28,59 +34,64 @@ class CPUAccelerator:
     device = torch.device("cpu")
     mixed_precision = "no"
 
-    def prepare(self, model, optimizer):
+    def prepare(self, model: torch.nn.Module, optimizer: torch.optim.Optimizer) -> tuple:
         return model, optimizer
 
-    def backward(self, loss):
+    def backward(self, loss: torch.Tensor) -> None:
         loss.backward()
 
-    def clip_grad_norm_(self, parameters, maximum):
+    def clip_grad_norm_(self, parameters: object, maximum: float) -> torch.Tensor:
         return torch.nn.utils.clip_grad_norm_(parameters, maximum)
 
-    def wait_for_everyone(self):
+    def wait_for_everyone(self) -> None:
         pass
 
-    def get_state_dict(self, model):
+    def get_state_dict(self, model: torch.nn.Module) -> dict[str, torch.Tensor]:
         return model.state_dict()
 
-    def unwrap_model(self, model, **kwargs):
+    def unwrap_model(self, model: torch.nn.Module, **kwargs) -> torch.nn.Module:
+        del kwargs
         return model
 
 
 @pytest.mark.parametrize("mode", ["bidirectional", "causal"])
 @pytest.mark.parametrize("mixed_precision", [False, True])
 def test_native_builder_preserves_typed_fsdp_modality_precision(
-    mode, mixed_precision, tmp_path, monkeypatch
-):
-    from dataclasses import asdict
+    mode: str, mixed_precision: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
 
-    from torch.distributed.fsdp import MixedPrecision
-    from torch.distributed.fsdp._runtime_utils import _cast_forward_inputs
-
-    from ltx_core.model.transformer.modality import Modality
-
-    settings = config.parse_settings([
-        "--mode", mode, "--subset", str(tmp_path / "membership.json"),
-        "--output", str(tmp_path / "output"), "--lora-rank", "2",
-    ])
+    settings = config.parse_settings(
+        [
+            "--mode",
+            mode,
+            "--subset",
+            str(tmp_path / "membership.json"),
+            "--output",
+            str(tmp_path / "output"),
+            "--lora-rank",
+            "2",
+        ]
+    )
     settings.init_device = "cpu"
     policy = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16) if mixed_precision else None
     original = None if policy is None else asdict(policy)
     plugin = SimpleNamespace(mixed_precision_policy=policy)
     accelerator = SimpleNamespace(distributed_type=DistributedType.FSDP, state=SimpleNamespace(fsdp_plugin=plugin))
     specification = SimpleNamespace(paths=SimpleNamespace(transformer=lambda: "checked-base.safetensors"))
-    monkeypatch.setattr(engine, "load_transformer", lambda **kwargs: _model().bfloat16())
-    def wrapping(module, *, recurse=False, nonwrapped_numel=0):
-        return isinstance(module, torch.nn.Linear) or module.__class__.__name__ == 'BasicAVTransformerBlock'
-    monkeypatch.setattr(engine, "fsdp_auto_wrap_policy", lambda model: wrapping)
+    monkeypatch.setattr(engine, "load_transformer", lambda **_kwargs: _model().bfloat16())
+
+    def wrapping(module: torch.nn.Module, *, recurse: bool = False, nonwrapped_numel: int = 0) -> bool:
+        del nonwrapped_numel, recurse
+        return isinstance(module, torch.nn.Linear) or module.__class__.__name__ == "BasicAVTransformerBlock"
+
+    monkeypatch.setattr(engine, "fsdp_auto_wrap_policy", lambda _model: wrapping)
     model = engine.build_transformer(specification, settings, accelerator)
-    from torch.distributed.fsdp.wrap import CustomPolicy
     assert isinstance(plugin.auto_wrap_policy, CustomPolicy)
-    chosen = plugin.auto_wrap_policy._run_policy(model, set(), {'mixed_precision': policy})
+    chosen = plugin.auto_wrap_policy._run_policy(model, set(), {"mixed_precision": policy})
     assert set(chosen) == {module for module in model.modules() if wrapping(module)}
     for module, options in chosen.items():
         trainable = list(module.parameters()) and all(p.requires_grad for p in module.parameters())
-        assert options['mixed_precision'] is (None if trainable else policy)
+        assert options["mixed_precision"] is (None if trainable else policy)
     assert all(p.dtype == torch.float32 for name, p in model.named_parameters() if ".lora_" in name)
     if policy is None:
         assert plugin.mixed_precision_policy is None
@@ -91,8 +102,10 @@ def test_native_builder_preserves_typed_fsdp_modality_precision(
     # Exercise the installed recursive cast with the actual native dataclass.
     sigma = torch.tensor([0.725], dtype=torch.float32)
     video = Modality(
-        latent=torch.ones(1, 2, 8, dtype=torch.bfloat16), sigma=sigma,
-        timesteps=sigma.expand(1, 2), positions=torch.full((1, 3, 2, 2), 0.123456),
+        latent=torch.ones(1, 2, 8, dtype=torch.bfloat16),
+        sigma=sigma,
+        timesteps=sigma.expand(1, 2),
+        positions=torch.full((1, 3, 2, 2), 0.123456),
         context=torch.ones(1, 2, 16, dtype=torch.bfloat16),
     )
     dtype = policy.param_dtype if plugin.mixed_precision_policy.cast_root_forward_inputs else None
@@ -104,14 +117,22 @@ def test_native_builder_preserves_typed_fsdp_modality_precision(
     assert torch.equal(observed.positions, video.positions)
 
 
-
-
-def run_bounded_update(
-    mode: str, preview_failure: bool, queued: bool, update_evidence: bool,
-    resource_check: str, consumer_trace: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def run_bounded_update(  # noqa: PLR0912, PLR0915 -- one complete fixture lifecycle with all assertions and cleanup
+    mode: str,
+    preview_failure: bool,
+    queued: bool,
+    update_evidence: bool,
+    resource_check: str,
+    consumer_trace: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> dict | None:
     if queued:
-        from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
+        from scripts.onestep_avatar.execution.queue_protocol import (  # noqa: PLC0415 -- defer loader or fixture imports until preflight and test hooks are installed
+            JOB_ENV,
+            TOKEN_ENV,
+        )
+
         monkeypatch.setenv(JOB_ENV, "a" * 64)
         monkeypatch.setenv(TOKEN_ENV, "b" * 32)
     view = tmp_path / "corpus" / "actor" / "view"
@@ -119,8 +140,14 @@ def run_bounded_update(
     path = view / dataset.capture_bundle_name("white")
     generator = torch.Generator().manual_seed(17)
     capture = torch.randn(8, 7, 2, 2, generator=generator)
-    bundle = {"schema_version": 2, "master": capture, "fps": 30.0, "objective": "white",
-              "source": "actor/view", "vae_fingerprint": "runtime VAE identity"}
+    bundle = {
+        "schema_version": 2,
+        "master": capture,
+        "fps": 30.0,
+        "objective": "white",
+        "source": "actor/view",
+        "vae_fingerprint": "runtime VAE identity",
+    }
     torch.save(bundle, path)
     membership = {
         "schema_version": 2,
@@ -173,28 +200,35 @@ def run_bounded_update(
     if update_evidence:
         options += ["--chains-per-rank", "2", "--save-update-state"]
     if resource_check != "off":
-        from scripts.onestep_avatar.training import resources
+        from scripts.onestep_avatar.training import (  # noqa: PLC0415 -- fixture-local import
+            resources,
+        )
+
         budget_path = tmp_path / "resource_budget.json"
         budget_path.write_text(json.dumps({"wall_seconds_per_phase": 1800, "memory_limit_allocated_bytes": 1000}))
         options += ["--resource-budget", str(budget_path)]
         native_phase = resources.Phase
         peak = {"allocated": 100}
-        def controlled_phase(device, phase, rank, budget):
+
+        def controlled_phase(device: torch.device, phase: str, rank: int, budget: object) -> object:
             # CUDA counters are controlled; model execution stays on CPU. This is publication evidence only.
+            del device
             peak["allocated"] = 1001 if phase == "update:1" and resource_check == "update_failure" else 100
             return native_phase(torch.device("cuda:0"), phase, rank, budget)
+
         monkeypatch.setattr(resources, "Phase", controlled_phase)
-        monkeypatch.setattr(torch.cuda, "synchronize", lambda device: None)
-        monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda device: None)
-        monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda device: peak["allocated"])
-        monkeypatch.setattr(torch.cuda, "max_memory_reserved", lambda device: 2000)
+        monkeypatch.setattr(torch.cuda, "synchronize", lambda _device: None)
+        monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda _device: None)
+        monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda _device: peak["allocated"])
+        monkeypatch.setattr(torch.cuda, "max_memory_reserved", lambda _device: 2000)
     if consumer_trace:
         options += ["--consumer-trace"]
     settings = config.parse_settings(options)
     if preview_failure:
         settings.preview_record = {"test": "enqueue failure"}
 
-        def failed_enqueue(*args):
+        def failed_enqueue(*args) -> Never:
+            del args
             raise RuntimeError("preview-only failure")
 
         monkeypatch.setattr(engine, "enqueue_preview", failed_enqueue)
@@ -202,17 +236,18 @@ def run_bounded_update(
         scale_factors=SpatioTemporalScaleFactors(8, 32, 32),
         caps=SimpleNamespace(latent_channels=8),
         sigmas=[0.725],
-        paths=SimpleNamespace(transformer=lambda: tmp_path / "unused_base.safetensors",
-                              video_vae=lambda: tmp_path / "unused_vae.safetensors"),
+        paths=SimpleNamespace(
+            transformer=lambda: tmp_path / "unused_base.safetensors",
+            video_vae=lambda: tmp_path / "unused_vae.safetensors",
+        ),
     )
     specification.paths.transformer().write_bytes(b"controlled native-base identity")
-    monkeypatch.setattr(engine.backbone, "resolve", lambda *args: specification)
-    from scripts.onestep_avatar.corpus import precompute
-    monkeypatch.setattr(precompute, "file_fingerprint", lambda path: "runtime VAE identity")
+    monkeypatch.setattr(engine.backbone, "resolve", lambda *_args: specification)
+    monkeypatch.setattr(precompute, "file_fingerprint", lambda _path: "runtime VAE identity")
     monkeypatch.setattr(
         engine.backbone,
         "identity",
-        lambda *args, **kwargs: {
+        lambda *_args, **_kwargs: {
             "base_transformer_sha256": sha256(specification.paths.transformer()),
             "base_transformer_file": "base.safetensors",
             "base_variant": "dev",
@@ -220,23 +255,27 @@ def run_bounded_update(
         },
     )
     monkeypatch.setattr(engine, "Accelerator", CPUAccelerator)
-    monkeypatch.setattr(engine.prompt_cache, "get_or_build", lambda *args: torch.zeros(1, 3, 16, dtype=torch.bfloat16))
+    monkeypatch.setattr(engine.prompt_cache, "get_or_build", lambda *_args: torch.zeros(1, 3, 16, dtype=torch.bfloat16))
     calls = []
 
-    def build(*args):
+    def build(*args) -> torch.nn.Module:
+        del args
         model = _model(prompt_adaln=True).bfloat16()
         model.requires_grad_(False)
         torch.manual_seed(settings.init_seed)
         wrapped = get_peft_model(
             model,
             LoraConfig(
-                r=2, lora_alpha=2, target_modules=adapters.LORA_TARGETS["attn"],
-                lora_dropout=0.0, init_lora_weights=True
+                r=2,
+                lora_alpha=2,
+                target_modules=adapters.LORA_TARGETS["attn"],
+                lora_dropout=0.0,
+                init_lora_weights=True,
             ),
         )
         wrapped.get_base_model().set_gradient_checkpointing(True)
         wrapped.register_forward_hook(
-            lambda module, args, kwargs, result: calls.append(kwargs["video"]), with_kwargs=True
+            lambda _module, _args, kwargs, _result: calls.append(kwargs["video"]), with_kwargs=True
         )
         return wrapped
 
@@ -250,7 +289,9 @@ def run_bounded_update(
         return
     if mode == "bidirectional":
         monkeypatch.setattr(
-            causal.BlockCache, "allocate", lambda *args, **kwargs: pytest.fail("bidirectional allocated a causal cache")
+            causal.BlockCache,
+            "allocate",
+            lambda *_args, **_kwargs: pytest.fail("bidirectional allocated a causal cache"),
         )
     if resource_check == "update_failure":
         with pytest.raises(ValueError, match="allocated-memory limit"):
@@ -281,7 +322,10 @@ def run_bounded_update(
             "frame_plan_sha256": sha256(settings.output / "frame_plan.json"),
         }
         if consumer_trace:
-            from scripts.onestep_avatar.training.consumer_trace import validate
+            from scripts.onestep_avatar.training.consumer_trace import (  # noqa: PLC0415 -- fixture-local import
+                validate,
+            )
+
             evidence = complete["consumer_trace_evidence"]
             assert len(evidence) == 1
             trace_path, digest = next(iter(evidence.items()))
@@ -314,21 +358,33 @@ def run_bounded_update(
         assert initial_records == final_records[:2]
         assert json.loads(initial.with_suffix(".complete.json").read_text())["resource_evidence"] == initial_hashes
         assert json.loads(updated.with_suffix(".complete.json").read_text())["resource_evidence"] == final_hashes
-        resources.validate_records(records, 1, ["load", "export:0", "update:1", "export:1"],
-                                   resources.read_budget(budget_path))
+        resources.validate_records(
+            records, 1, ["load", "export:0", "update:1", "export:1"], resources.read_budget(budget_path)
+        )
     if update_evidence:
-        from scripts.onestep_avatar.training import update_state
+        from scripts.onestep_avatar.training import (  # noqa: PLC0415 -- fixture-local import
+            update_state,
+        )
+
         state_path = settings.output / "update_states/step_00001.pt"
         states = torch.load(state_path, weights_only=True)
         assert set(states) == set(initial_tensors)
         assert all(value["step"] == 1 for value in states.values())
         assert all(value["exp_avg"].dtype == torch.float32 for value in states.values())
-        assert (update_state.export_name("base_model.model.block.lora_A.default.weight")
-                == "diffusion_model.block.lora_A.weight")
-    return {"settings": settings, "options": options, "initial": initial, "updated": updated,
-            "initial_tensors": initial_tensors, "logs": logs,
-            "state_path": state_path if update_evidence else None,
-            "budget_path": budget_path if resource_check != "off" else None}
+        assert (
+            update_state.export_name("base_model.model.block.lora_A.default.weight")
+            == "diffusion_model.block.lora_A.weight"
+        )
+    return {
+        "settings": settings,
+        "options": options,
+        "initial": initial,
+        "updated": updated,
+        "initial_tensors": initial_tensors,
+        "logs": logs,
+        "state_path": state_path if update_evidence else None,
+        "budget_path": budget_path if resource_check != "off" else None,
+    }
 
 
 @pytest.mark.parametrize("mode", ["bidirectional", "causal"])
@@ -338,11 +394,18 @@ def run_bounded_update(
 @pytest.mark.parametrize("resource_check", ["off", "pass", "update_failure"])
 @pytest.mark.parametrize("consumer_trace", [False, True])
 def test_one_bounded_update_saves_real_zero_and_updated_lora(
-    mode: str, preview_failure: bool, queued: bool, update_evidence: bool,
-    resource_check: str, consumer_trace: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    mode: str,
+    preview_failure: bool,
+    queued: bool,
+    update_evidence: bool,
+    resource_check: str,
+    consumer_trace: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    run_bounded_update(mode, preview_failure, queued, update_evidence, resource_check,
-                       consumer_trace, tmp_path, monkeypatch)
+    run_bounded_update(
+        mode, preview_failure, queued, update_evidence, resource_check, consumer_trace, tmp_path, monkeypatch
+    )
 
 
 @pytest.mark.parametrize("rank", [0, 1])
@@ -355,39 +418,82 @@ def test_only_main_rank_archives_a_used_output_after_setup(
     view = tmp_path / "corpus" / "actor" / "view"
     view.mkdir(parents=True)
     path = view / dataset.capture_bundle_name("white")
-    bundle = {"schema_version": 2, "master": torch.randn(8, 7, 2, 2, generator=torch.Generator().manual_seed(3)),
-              "fps": 30.0, "objective": "white", "source": "actor/view", "vae_fingerprint": "runtime VAE identity"}
+    bundle = {
+        "schema_version": 2,
+        "master": torch.randn(8, 7, 2, 2, generator=torch.Generator().manual_seed(3)),
+        "fps": 30.0,
+        "objective": "white",
+        "source": "actor/view",
+        "vae_fingerprint": "runtime VAE identity",
+    }
     torch.save(bundle, path)
     membership = {
-        "schema_version": 2, "kind": subset.KIND, "corpus_root": str(tmp_path / "corpus"), "objective": "white",
+        "schema_version": 2,
+        "kind": subset.KIND,
+        "corpus_root": str(tmp_path / "corpus"),
+        "objective": "white",
         "splits": {"train": ["actor"]},
-        "sources": [{
-            "relative_dir": "actor/view", "actor": "actor", "split": "train", "n_latent_frames": 7,
-            "shape": [8, 7, 2, 2], "fps": 30.0, "capture_latent_sha256": sha256(path),
-            "capture_encode_record": {k: bundle[k] for k in ("schema_version", "fps", "objective", "source",
-                                                             "vae_fingerprint")},
-        }],
+        "sources": [
+            {
+                "relative_dir": "actor/view",
+                "actor": "actor",
+                "split": "train",
+                "n_latent_frames": 7,
+                "shape": [8, 7, 2, 2],
+                "fps": 30.0,
+                "capture_latent_sha256": sha256(path),
+                "capture_encode_record": {
+                    k: bundle[k] for k in ("schema_version", "fps", "objective", "source", "vae_fingerprint")
+                },
+            }
+        ],
     }
     membership["sha256"] = subset.membership_hash(membership)
     (tmp_path / "membership.json").write_text(json.dumps(membership))
     output = tmp_path / "run"
     output.mkdir()
     (output / "config.json").write_text("prior config")
-    settings = config.parse_settings([
-        "--mode", "bidirectional", "--subset", str(tmp_path / "membership.json"), "--output", str(output),
-        "--variant", "dev", "--objective", "white", "--guide-mode", "d0", "--lora-rank", "2",
-        "--steps", "0", "--no-wandb", "--overwrite",
-    ])
+    settings = config.parse_settings(
+        [
+            "--mode",
+            "bidirectional",
+            "--subset",
+            str(tmp_path / "membership.json"),
+            "--output",
+            str(output),
+            "--variant",
+            "dev",
+            "--objective",
+            "white",
+            "--guide-mode",
+            "d0",
+            "--lora-rank",
+            "2",
+            "--steps",
+            "0",
+            "--no-wandb",
+            "--overwrite",
+        ]
+    )
     specification = SimpleNamespace(
-        scale_factors=SpatioTemporalScaleFactors(8, 32, 32), caps=SimpleNamespace(latent_channels=8), sigmas=[0.725],
+        scale_factors=SpatioTemporalScaleFactors(8, 32, 32),
+        caps=SimpleNamespace(latent_channels=8),
+        sigmas=[0.725],
         paths=SimpleNamespace(transformer=lambda: tmp_path / "base.safetensors", video_vae=lambda: tmp_path / "vae"),
     )
     specification.paths.transformer().write_bytes(b"controlled native-base identity")
     monkeypatch.setattr(engine.backbone, "resolve", lambda *_args: specification)
     monkeypatch.setattr(precompute, "file_fingerprint", lambda _path: "runtime VAE identity")
-    monkeypatch.setattr(engine.backbone, "identity", lambda *_args, **_kwargs: {
-        "base_transformer_sha256": sha256(specification.paths.transformer()),
-        "base_transformer_file": "base.safetensors", "base_variant": "dev", "model_key": "2.5"})
+    monkeypatch.setattr(
+        engine.backbone,
+        "identity",
+        lambda *_args, **_kwargs: {
+            "base_transformer_sha256": sha256(specification.paths.transformer()),
+            "base_transformer_file": "base.safetensors",
+            "base_variant": "dev",
+            "model_key": "2.5",
+        },
+    )
     monkeypatch.setattr(engine.prompt_cache, "get_or_build", lambda *_args: torch.zeros(1, 3, 16, dtype=torch.bfloat16))
     events = []
 
@@ -412,7 +518,7 @@ def test_only_main_rank_archives_a_used_output_after_setup(
             for index in range(self.num_processes):
                 payload = json.dumps({**record, "rank": index}, sort_keys=True).encode()
                 row = torch.zeros_like(tensor)
-                row[:len(payload)] = torch.tensor(list(payload), dtype=torch.uint8)
+                row[: len(payload)] = torch.tensor(list(payload), dtype=torch.uint8)
                 rows.append(row)
             return torch.cat(rows)
 
@@ -421,8 +527,16 @@ def test_only_main_rank_archives_a_used_output_after_setup(
     def build(*_args: object) -> torch.nn.Module:
         model = _model().bfloat16()
         model.requires_grad_(False)
-        return get_peft_model(model, LoraConfig(r=2, lora_alpha=2, target_modules=adapters.LORA_TARGETS["attn"],
-                                                lora_dropout=0.0, init_lora_weights=True))
+        return get_peft_model(
+            model,
+            LoraConfig(
+                r=2,
+                lora_alpha=2,
+                target_modules=adapters.LORA_TARGETS["attn"],
+                lora_dropout=0.0,
+                init_lora_weights=True,
+            ),
+        )
 
     monkeypatch.setattr(engine, "build_transformer", build)
     archive = engine.archive_existing_run

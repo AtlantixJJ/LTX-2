@@ -16,7 +16,7 @@ child and observed descendant identities. Rank-bound phase notifications attach
 rank roles to the same identities. Records preserve observed command transitions.
 
 ```mermaid
-flowchart TD
+flowchart LR
   G["nvidia-smi: direct device occupancy"] --> Q["queue: select devices"]
   Q --> R["ProcessRegistry: record launch owner"]
   R --> C["queue: launch and register exact child"]

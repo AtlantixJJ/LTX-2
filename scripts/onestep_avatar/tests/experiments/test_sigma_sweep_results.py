@@ -17,8 +17,6 @@ from scripts.onestep_avatar.tests.test_evaluation_completion import (
     completed,  # noqa: F401 -- shared CPU model fixture
     controlled_scientific_receipt,
 )
-from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- transitive fixture
-from scripts.onestep_avatar.tests.test_training_preflight import checked_settings  # noqa: F401 -- transitive fixture
 from scripts.prune.core import model_registry
 
 
@@ -40,46 +38,84 @@ def completed_sweep(completed: tuple, monkeypatch: pytest.MonkeyPatch) -> tuple:
         render = view / dataset.render_name("white")
         render.write_bytes(b"controlled guide")
         sidecar = view / dataset.render_metadata_name("white")
-        sidecar.write_text(json.dumps({"objective": "white",
-                                      "compositing_version": dataset.GUIDE_COMPOSITING_VERSION}))
+        sidecar.write_text(json.dumps({"objective": "white", "compositing_version": dataset.GUIDE_COMPOSITING_VERSION}))
         encoding = {**source["capture_encode_record"], "input_fingerprint": sha256(render)}
         guide_path = view / dataset.guide_bundle_name("white")
         torch.save({**capture, **encoding, "master": capture["master"] + 1}, guide_path)
-        source.update(guide_latent_sha256=sha256(guide_path), guide_encode_record=encoding,
-                      guide_sidecar_sha256=sha256(sidecar))
+        source.update(
+            guide_latent_sha256=sha256(guide_path), guide_encode_record=encoding, guide_sidecar_sha256=sha256(sidecar)
+        )
     membership["sha256"] = subset.membership_hash(membership)
     settings.subset.write_text(json.dumps(membership))
     source = membership["sources"][0]
     view = Path(membership["corpus_root"]) / source["relative_dir"]
     noise_path = settings.output.parent / "shared_noise.pt"
     torch.save(torch.ones(1, 68, 2, dtype=torch.bfloat16), noise_path)
-    spec = {"schema_version": 2, "model": "2.5", "tag": "controlled", "decode_seed": 42,
-            "fps": 30, "vae": {"path": str(vae), "sha256": sha256(vae)}, "cells": []}
+    spec = {
+        "schema_version": 2,
+        "model": "2.5",
+        "tag": "controlled",
+        "decode_seed": 42,
+        "fps": 30,
+        "vae": {"path": str(vae), "sha256": sha256(vae)},
+        "cells": [],
+    }
     for role in ("capture", "guide"):
-        path = view / (dataset.capture_bundle_name("white") if role == "capture"
-                       else dataset.guide_bundle_name("white"))
+        path = view / (
+            dataset.capture_bundle_name("white") if role == "capture" else dataset.guide_bundle_name("white")
+        )
         spec[role] = {"path": str(path), "sha256": sha256(path)}
     for sigma, (_, count) in sigma_sweep.LEVELS.items():
-        schedule = {1: [sigma, 0], 2: [0.725, 0.421875, 0],
-                    3: [0.909375, 0.725, 0.421875, 0],
-                    8: [1.0, 0.99, 0.95, 0.909375, 0.8, 0.725, 0.6, 0.421875, 0]}[count]
+        schedule = {
+            1: [sigma, 0],
+            2: [0.725, 0.421875, 0],
+            3: [0.909375, 0.725, 0.421875, 0],
+            8: [1.0, 0.99, 0.95, 0.909375, 0.8, 0.725, 0.6, 0.421875, 0],
+        }[count]
         specification.sigmas = sorted(set(specification.sigmas + schedule[:-1]))
         for arm in ("d0", "d1"):
             output = settings.output.parent / f"run_{sigma}_{arm}"
-            command = ["--mode", "causal", "--subset", str(settings.subset), "--output", str(output),
-                       "--model", "2.5", "--variant", "distilled", "--guide-mode", arm,
-                       "--source", source["relative_dir"], "--noise-file", str(noise_path),
-                       "--span-latent-frames", "17", "--blocks-per-sample", "8",
-                       "--schedule", *map(str, schedule), "--seed", "42"]
+            command = [
+                "--mode",
+                "causal",
+                "--subset",
+                str(settings.subset),
+                "--output",
+                str(output),
+                "--model",
+                "2.5",
+                "--variant",
+                "distilled",
+                "--guide-mode",
+                arm,
+                "--source",
+                source["relative_dir"],
+                "--noise-file",
+                str(noise_path),
+                "--span-latent-frames",
+                "17",
+                "--blocks-per-sample",
+                "8",
+                "--schedule",
+                *map(str, schedule),
+                "--seed",
+                "42",
+            ]
             evaluate.execute_evaluation(evaluate.parse_args(command))
             record = output / "case_0000/variant_000/result.json"
-            job = {"id": f"{sigma}_{arm}", "kind": "evaluate", "arguments": command,
-                   "output": str(output), "completion": {"records": [str(record)]}}
+            job = {
+                "id": f"{sigma}_{arm}",
+                "kind": "evaluate",
+                "arguments": command,
+                "output": str(output),
+                "completion": {"records": [str(record)]},
+            }
             spec["cells"].append({"sigma": sigma, "arm": arm, "evaluation_job": job})
     path = settings.output.parent / "decode_spec.json"
     path.write_text(json.dumps(spec))
-    monkeypatch.setattr(sigma_sweep.media, "open_decoder_session",
-                        lambda *_a, **_k: pytest.fail("resolution opened a decoder"))
+    monkeypatch.setattr(
+        sigma_sweep.media, "open_decoder_session", lambda *_a, **_k: pytest.fail("resolution opened a decoder")
+    )
     return spec, path, settings.output.parent / "decoded", calls
 
 
@@ -128,16 +164,28 @@ def test_result_bound_decode_and_receipt_reverify_all_generation_evidence(
     completed_sweep: tuple, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, path, output, calls = completed_sweep
-    monkeypatch.setattr(sigma_sweep.media, "open_decoder_session", lambda *_a, **_k: SimpleNamespace(
-        decoder=lambda: nullcontext(None)))
-    monkeypatch.setattr(sigma_sweep.media, "decode", lambda _s, latent, _d, _seed:
-                        (torch.arange(129).float().view(129, 1, 1, 1) / 1000
-                         + latent.float().mean().sigmoid() / 2).expand(129, 3, 2, 2))
+    monkeypatch.setattr(
+        sigma_sweep.media, "open_decoder_session", lambda *_a, **_k: SimpleNamespace(decoder=lambda: nullcontext(None))
+    )
+    monkeypatch.setattr(
+        sigma_sweep.media,
+        "decode",
+        lambda _s, latent, _d, _seed: (
+            torch.arange(129).float().view(129, 1, 1, 1) / 1000 + latent.float().mean().sigmoid() / 2
+        ).expand(129, 3, 2, 2),
+    )
     manifest = sigma_sweep.execute(path, output, gpu_id=4)
     assert manifest["spec"]["schema_version"] == 2
-    job = {"id": "decode", "kind": "experiment", "experiment": "sigma_sweep",
-           "spec": str(path), "spec_sha256": sha256(path), "arguments": ["--spec", str(path), "--output", str(output)],
-           "output": str(output), "completion": {"manifest": str(output / "manifest.json")}}
+    job = {
+        "id": "decode",
+        "kind": "experiment",
+        "experiment": "sigma_sweep",
+        "spec": str(path),
+        "spec_sha256": sha256(path),
+        "arguments": ["--spec", str(path), "--output", str(output)],
+        "output": str(output),
+        "completion": {"manifest": str(output / "manifest.json")},
+    }
     jobs = path.parent / "decoding_jobs.json"
     jobs.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
     prepared = queue.prepare_jobs(jobs)[0]
@@ -168,10 +216,17 @@ def test_decoder_readiness_requires_all_eight_unchanged_receipts(
 ) -> None:
     spec, path, output, calls = completed_sweep
     generation = [cell["evaluation_job"] for cell in spec["cells"]]
-    decode = {"id": "decode", "kind": "experiment", "experiment": "sigma_sweep",
-           "spec": str(path), "spec_sha256": sha256(path), "arguments": ["--spec", str(path), "--output", str(output)],
-              "output": str(output), "dependencies": [job["id"] for job in generation],
-              "completion": {"manifest": str(output / "manifest.json")}}
+    decode = {
+        "id": "decode",
+        "kind": "experiment",
+        "experiment": "sigma_sweep",
+        "spec": str(path),
+        "spec_sha256": sha256(path),
+        "arguments": ["--spec", str(path), "--output", str(output)],
+        "output": str(output),
+        "dependencies": [job["id"] for job in generation],
+        "completion": {"manifest": str(output / "manifest.json")},
+    }
     jobs_path = path.parent / "pipeline_jobs.json"
     jobs_path.write_text(json.dumps({"schema_version": 1, "jobs": [*generation, decode]}))
     jobs = queue.prepare_jobs(jobs_path)
@@ -190,9 +245,7 @@ def test_decoder_readiness_requires_all_eight_unchanged_receipts(
     assert len(calls) == before
 
 
-def test_late_evidence_change_refuses_before_decoder(
-    completed_sweep: tuple, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_late_evidence_change_refuses_before_decoder(completed_sweep: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
     _, path, output, calls = completed_sweep
     verify = queue.verify_completion
 

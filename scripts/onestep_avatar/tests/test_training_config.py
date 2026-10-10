@@ -122,8 +122,19 @@ def test_random_segment_records_the_original_start_seed_key() -> None:
 
 @pytest.mark.parametrize("defect", ["missing", "seed", "key", "rule"])
 def test_reproduction_plan_refuses_changed_start_draw(tmp_path: Path, defect: str) -> None:
-    settings = config.parse_settings([*BASE, "--mode", "bidirectional", "--objective", "white",
-                                     "--span-latent-frames", "17", "--start-policy", "random"])
+    settings = config.parse_settings(
+        [
+            *BASE,
+            "--mode",
+            "bidirectional",
+            "--objective",
+            "white",
+            "--span-latent-frames",
+            "17",
+            "--start-policy",
+            "random",
+        ]
+    )
     membership = _membership()
     plan = config.build_frame_plan(settings, membership, SCALE)
     if defect == "missing":
@@ -154,9 +165,21 @@ def test_explicit_frame_plan_is_checked_without_rewriting_it(tmp_path: Path) -> 
 
 
 def test_random_causal_plan_cannot_select_later_original_blocks(tmp_path: Path) -> None:
-    settings = config.parse_settings([*BASE, "--mode", "causal", "--objective", "white",
-                                     "--span-latent-frames", "3", "--start-policy", "random",
-                                     "--blocks-per-sample", "1"])
+    settings = config.parse_settings(
+        [
+            *BASE,
+            "--mode",
+            "causal",
+            "--objective",
+            "white",
+            "--span-latent-frames",
+            "3",
+            "--start-policy",
+            "random",
+            "--blocks-per-sample",
+            "1",
+        ]
+    )
     membership = _membership()
     plan = config.build_frame_plan(settings, membership, SCALE)
     plan["samples"][0].update(blocks=[1], ranges=[[3, 5]], seed_is_clip_start=False)

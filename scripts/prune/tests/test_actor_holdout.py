@@ -23,8 +23,7 @@ def test_same_bare_actor_is_rejected_across_clips_and_parts(tmp_path: Path, part
     calibration = _view(tmp_path, "Part_1", "0008_01")
     heldout = _view(tmp_path, part, clip)
     artifact = tmp_path / "mask.json"
-    artifact.write_text(json.dumps({"provenance": {"task": whole_clip.TASK,
-                                                   "calibration_views": [str(calibration)]}}))
+    artifact.write_text(json.dumps({"provenance": {"task": whole_clip.TASK, "calibration_views": [str(calibration)]}}))
     with pytest.raises(ValueError, match="actor was used to calibrate"):
         hooks.require_native_heldout_scope(artifact, view=str(heldout), sigmas=[0.725])
 
@@ -52,10 +51,18 @@ def test_different_actor_is_allowed_by_native_holdout_guard(tmp_path: Path) -> N
     calibration = _view(tmp_path, "Part_1", "0008_01")
     heldout = _view(tmp_path, "Part_2", "0009_01")
     artifact = tmp_path / "mask.json"
-    artifact.write_text(json.dumps({"provenance": {"task": whole_clip.TASK,
-                                                   "calibration_views": [str(calibration)],
-                                                   "calibration_inputs": [{"capture_sha256": "calibration"}],
-                                                   "sigmas": [0.725]}}))
+    artifact.write_text(
+        json.dumps(
+            {
+                "provenance": {
+                    "task": whole_clip.TASK,
+                    "calibration_views": [str(calibration)],
+                    "calibration_inputs": [{"capture_sha256": "calibration"}],
+                    "sigmas": [0.725],
+                }
+            }
+        )
+    )
     hooks.require_native_heldout_scope(artifact, view=str(heldout), sigmas=[0.725], baseline={"videos": []})
     assert whole_clip.actor_identity(str(calibration)) != whole_clip.actor_identity(str(heldout))
 

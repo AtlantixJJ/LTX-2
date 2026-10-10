@@ -150,22 +150,25 @@ Remove a required preview from a test fixture and rebuild again.
 The expected result is a named missing-file error and zero model/decoder jobs.
 The report must not recreate the preview or start an `expr/` execution wrapper.
 
-After implementation, audit avatar `expr/` imports and subprocess commands.
-Check required training/evaluation queues and launchers have package owners.
-Check transferred code uses matching docs or small-file headers.
-Check retired `expr/` executor docs and forwarding wrappers are removed.
-Rebuild existing reports from saved results with model executors disabled.
-Full ownership closure remains a Stage D gate. The historical training report
-has a checked saved-only publication guard; other report families and import
-restoration paths need their own controls. One verified family does not certify
-the workspace.
+G13 records the retirement and report dispositions under `expr/onestep_avatar/`.
+Maintained reports rebuild from saved results; frozen reports retain their
+original bytes and attribution. The maintained AR report has saved B8
+acceptance, and the current implementation-status report has an independently
+checked saved-only rebuild. The future pilot report still needs its own checks
+when results exist. One verified family does not certify the workspace.
+
+The final code gate rechecks avatar `expr/` imports and subprocess commands,
+package ownership of queues and launchers, source docs and small-file headers,
+and the absence of retired executable wrappers. Discovery and report rebuilding
+must not restore retired execution. These checks remain distinct from fresh
+native and scientific acceptance.
 
 ## Limits of these checks
 
 Arithmetic and frame traces do not establish video quality, speed, memory use, or implemented-code equality.
 G7 cache-refresh differences, G8 bf16 LoRA fusion, and accepted G9 first-image differences remain.
-Complete the structural refactor and deterministic CPU/caller/profile checks
-first under the current handoff. Then run fresh native saved-input checks,
+The structural owners are implemented. Complete the final deterministic
+CPU/caller/profile gate under the current handoff, then run fresh native saved-input checks,
 stock comparisons and distributed updates on final owners with the original
 scientific settings. These native requirements remain acceptance gates after
 the refactor; they are not prerequisites for a reversible directory move.

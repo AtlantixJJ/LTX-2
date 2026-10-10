@@ -53,7 +53,7 @@ def reusable(cached: dict | None, job: dict, output: Path, source_hash: str, key
     ):
         return False
     try:
-        software.check_current(cached.get('software'))
+        software.check_current(cached.get("software"))
     except ValueError:
         return False
     artifacts = [{"file": cached.get("video"), "sha256": cached.get("video_sha256")}]
@@ -74,22 +74,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main() -> None:  # noqa: PLR0915 -- sequential saved-job decoding and comparison emission
+def main() -> None:  # noqa: PLR0912, PLR0915 -- sequential saved-job decoding, cache checks and comparison emission
     args = parse_args()
-    producer_software = software.capture('decoding')
+    producer_software = software.capture("decoding")
     jobs = json.loads(args.jobs.read_text())
     args.output.mkdir(parents=True, exist_ok=True)
     source_hash = sha256(Path(__file__))
     manifest_path = args.output / "manifest.json"
     prior = json.loads(manifest_path.read_text()) if manifest_path.exists() else {"jobs": [], "comparisons": []}
     completed = {row["id"]: row for row in prior["jobs"]}
-    for job in jobs['jobs']:
-        cached = completed.get(job['id'])
+    for job in jobs["jobs"]:
+        cached = completed.get(job["id"])
         if cached:
             try:
-                software.check_current(cached.get('software'))
+                software.check_current(cached.get("software"))
             except ValueError as error:
-                raise ValueError('historical decoder software differs; preserve outputs and use a fresh destination') from error
+                raise ValueError(
+                    "historical decoder software differs; preserve outputs and use a fresh destination"
+                ) from error
     software.check_current(producer_software)
     session = open_decoder_session(args.model, args.gpu_id, script="onestep_avatar.decode_saved")
     vae_path = Path(session.model.paths.video_vae())
@@ -162,8 +164,13 @@ def main() -> None:  # noqa: PLR0915 -- sequential saved-job decoding and compar
         comparisons = []
         for comparison in jobs.get("comparisons", []):
             left, right = rendered[comparison["left"]], rendered[comparison["right"]]
-            record = {**comparison, **differences(left, right), "difference_gain": 20, "samples": [],
-                      "software": producer_software}
+            record = {
+                **comparison,
+                **differences(left, right),
+                "difference_gain": 20,
+                "samples": [],
+                "software": producer_software,
+            }
             for index in [0, 32, 48, 60, 64]:
                 if index >= min(len(left), len(right)):
                     continue
@@ -180,4 +187,5 @@ def main() -> None:  # noqa: PLR0915 -- sequential saved-job decoding and compar
 
 if __name__ == "__main__":
     from scripts.onestep_avatar.execution.runtime import run
+
     raise SystemExit(run(main))

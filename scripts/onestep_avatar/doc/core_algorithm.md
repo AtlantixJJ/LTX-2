@@ -1,7 +1,7 @@
 # Core algorithm — shared rules and two modes
 
 Status: **Shared helpers, both mode functions and typed training implemented;
-full acceptance and legacy migration incomplete.** Read
+the final code gate and full native/scientific acceptance remain open.** Read
 [current acceptance](known_gaps.md#current-acceptance-and-next-step) for scope.
 The training CLI requires an explicit mode. The mode-less loop retired in
 refactor group G11.

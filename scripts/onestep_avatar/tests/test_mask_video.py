@@ -47,9 +47,7 @@ def test_frame_count_round_trips(tmp_path: Path) -> None:
     """A dropped or duplicated frame would silently shift every mask against its latent."""
     for frames in (1, 2, 9, 30):
         grid = _soft_mask(frames=frames)
-        decoded = mask_video.read_mask_video(
-            mask_video.write_mask_video(grid, tmp_path / f"m{frames}.mp4")
-        )
+        decoded = mask_video.read_mask_video(mask_video.write_mask_video(grid, tmp_path / f"m{frames}.mp4"))
         assert decoded.shape == grid.shape
 
 
@@ -86,9 +84,7 @@ def test_a_wrong_shaped_or_typed_grid_is_refused(tmp_path: Path) -> None:
 def test_masks_are_pooled_to_the_causal_latent_timeline_on_read() -> None:
     """Frame 0 stands alone; each later latent frame averages the next eight pixels."""
     grid = np.stack([np.full((4, 4), value, dtype=np.uint8) for value in range(17)])
-    pooled = mask_video.pool_to_latent_grid(
-        grid, latent_frames=3, latent_height=1, latent_width=1, time_scale=8
-    )
+    pooled = mask_video.pool_to_latent_grid(grid, latent_frames=3, latent_height=1, latent_width=1, time_scale=8)
     expected = np.array([0.0, np.mean(range(1, 9)) / 255.0, np.mean(range(9, 17)) / 255.0])
     assert np.allclose(pooled[:, 0, 0].float().numpy(), expected, atol=5e-5)
 

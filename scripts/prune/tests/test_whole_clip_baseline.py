@@ -72,8 +72,9 @@ def test_checked_sigmas_requires_the_model_grid() -> None:
 
 def test_global_epsilon_is_one_draw_sliced_by_the_plan() -> None:
     geometry = causal_core.CausalGeometry(SCALE, block_latent_frames=2, context_latent_frames=8)
-    grid = common.ClipGrid.build(9, 64, 64, 30.0, geometry, device=torch.device("cpu"), dtype=torch.float32,
-                                 latent_channels=CHANNELS)
+    grid = common.ClipGrid.build(
+        9, 64, 64, 30.0, geometry, device=torch.device("cpu"), dtype=torch.float32, latent_channels=CHANNELS
+    )
     source = torch.zeros(1, 9 * grid.tokens_per_latent_frame, CHANNELS)
     epsilon, blocks = producer.global_epsilon(source, grid, geometry.plan(9), 42)
     torch.testing.assert_close(epsilon, common.epsilon_block(source, 42), rtol=0, atol=0)
@@ -87,8 +88,14 @@ class _Caps:
 
 def _tiny_model() -> X0Model:
     model = LTXModel(
-        model_type=LTXModelType.VideoOnly, num_attention_heads=2, attention_head_dim=4, in_channels=CHANNELS,
-        out_channels=CHANNELS, num_layers=2, cross_attention_dim=8, caption_projection=torch.nn.Linear(16, 8),
+        model_type=LTXModelType.VideoOnly,
+        num_attention_heads=2,
+        attention_head_dim=4,
+        in_channels=CHANNELS,
+        out_channels=CHANNELS,
+        num_layers=2,
+        cross_attention_dim=8,
+        caption_projection=torch.nn.Linear(16, 8),
     )
     generator = torch.Generator().manual_seed(0)
     with torch.no_grad():
@@ -210,3 +217,169 @@ def test_refuses_a_used_output_directory(tmp_path: Path) -> None:
     (output / "manifest.json").write_text("{}")
     with pytest.raises(SystemExit, match="fresh and empty"):
         producer.main(["--view", str(tmp_path / "v"), "--output", str(output)])
+
+
+@pytest.fixture
+def saved_raw_baseline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
+    """Produce two real tiny sigma results, then forbid model or decoder execution."""
+    view = _views(tmp_path / "corpus")[0]
+    vae = _vae(tmp_path)
+    monkeypatch.setattr(producer, "open_session", lambda *_args, **_kwargs: _Session(vae))
+    root = tmp_path / "raw_completion"
+    argv = ["--view", str(view), "--sigmas", *map(str, SIGMAS), "--raw-only", "--prompt", "", "--output", str(root)]
+    assert producer.main(argv) == 0
+    args = producer.parse_args(argv)
+    monkeypatch.setattr(producer, "open_session", lambda *_args, **_kwargs: pytest.fail("verification loaded a model"))
+    monkeypatch.setattr(producer, "rollout", lambda *_args, **_kwargs: pytest.fail("verification regenerated output"))
+    monkeypatch.setattr(producer, "decode_pixels", lambda *_args, **_kwargs: pytest.fail("verification decoded output"))
+    return args, root, view
+
+
+def test_saved_completion_checks_all_rows_and_exposes_only_exact_local_evidence(saved_raw_baseline: tuple) -> None:
+    args, root, _ = saved_raw_baseline
+    assert producer.verify_completion(args, root)
+    assert set(producer.evidence_paths(args, root)) == {path for path in root.iterdir() if path.is_file()}
+    assert len(producer.evidence_paths(args, root)) == 6
+
+
+def test_saved_completion_compares_c0_in_the_actual_bf16_forward_dtype(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view = _views(tmp_path / "corpus")[0]
+    for name in (dataset.capture_bundle_name("white"), dataset.guide_bundle_name("white")):
+        path = view / name
+        bundle = torch.load(path, weights_only=True)
+        bundle["master"] = bundle["master"].float() + 0.001
+        torch.save(bundle, path)
+    vae = _vae(tmp_path)
+    monkeypatch.setattr(producer, "open_session", lambda *_args, **_kwargs: _Session(vae))
+    root = tmp_path / "float32_sources"
+    argv = ["--view", str(view), "--sigmas", "0.725", "--raw-only", "--arms", "d0", "--output", str(root)]
+    assert producer.main(argv) == 0
+    args = producer.parse_args(argv)
+    capture, _ = dataset.load_training_master(view / dataset.capture_bundle_name("white"))
+    output = torch.load(next(root.glob("*_d0.pt")), weights_only=True)
+    assert capture.dtype == torch.float32
+    assert not torch.equal(output[0, :, 0], capture[:, 0])
+    torch.testing.assert_close(output[0, :, 0], capture[:, 0].to(dtype=DTYPE), rtol=0, atol=0)
+    monkeypatch.setattr(producer, "open_session", lambda *_args, **_kwargs: pytest.fail("completion loaded a model"))
+    assert producer.verify_completion(args, root)
+
+
+@pytest.mark.parametrize(
+    ("target", "defect"),
+    [(target, defect) for target in ("latent", "epsilon") for defect in ("dtype", "shape", "nan", "not_tensor")]
+    + [("latent", "c0")],
+)
+def test_rehashed_tensor_still_requires_shape_dtype_finiteness_and_clean_capture(
+    saved_raw_baseline: tuple, target: str, defect: str
+) -> None:
+    args, root, _ = saved_raw_baseline
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    artifact = manifest["videos"][0]["artifacts"]
+    name = artifact["epsilon"] if target == "epsilon" else artifact["latents"][0]["path"]
+    path = root / name
+    value = torch.load(path, weights_only=True)
+    if defect == "dtype":
+        value = value.float()
+    elif defect == "shape":
+        value = value[..., :1]
+    elif defect == "nan":
+        value.reshape(-1)[0] = float("nan")
+    elif defect == "not_tensor":
+        value = {"invalid": value}
+    else:
+        value[:, :, :1] += 1
+    torch.save(value, path)
+    for row in manifest["videos"]:
+        record = row["artifacts"]
+        if target == "epsilon":
+            record["epsilon_sha256"] = producer.provenance.file_sha256(path)
+        else:
+            for item in record["latents"]:
+                if item["path"] == name:
+                    item["sha256"] = producer.provenance.file_sha256(path)
+    manifest_path.write_text(json.dumps(manifest))
+    assert not producer.verify_completion(args, root)
+    with pytest.raises(ValueError, match=r"tensor|c0"):
+        producer.evidence_paths(args, root)
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "row_count",
+        "row_blocks",
+        "row_sigma",
+        "row_schedule",
+        "shared_epsilon",
+        "latent_count",
+        "timing_count",
+        "forward_calls",
+        "seed",
+        "fps",
+        "capture_hash",
+        "epsilon_hash",
+        "guidance",
+        "prompt",
+    ],
+)
+def test_saved_manifest_refuses_incomplete_or_changed_scientific_coverage(  # noqa: PLR0912 -- each corruption changes one scientific field
+    saved_raw_baseline: tuple, defect: str
+) -> None:
+    args, root, _ = saved_raw_baseline
+    path = root / "manifest.json"
+    manifest = json.loads(path.read_text())
+    rows = manifest["videos"]
+    if defect == "row_count":
+        rows.pop()
+    elif defect == "row_blocks":
+        rows[1]["blocks"] = [[0, FRAMES - 1]]
+    elif defect == "row_sigma":
+        rows[1]["sigma"] = 0.421875
+    elif defect == "row_schedule":
+        rows[1]["schedule"] = [rows[1]["sigma"], 0.421875, 0]
+    elif defect == "shared_epsilon":
+        rows[1]["artifacts"]["epsilon"] = "different_noise.pt"
+    elif defect == "guidance":
+        manifest["guidance"]["cfg"] = 3
+    elif defect == "prompt":
+        manifest["text_context"]["prompt"] = "different action"
+    else:
+        for row in rows:
+            record = row["artifacts"]
+            if defect == "latent_count":
+                record["latents"].pop()
+            elif defect == "timing_count":
+                record["rollout_timing"].pop()
+            elif defect == "forward_calls":
+                record["rollout_timing"][0]["forward_passes"] = 2
+            elif defect == "seed":
+                record["seed"] += 1
+            elif defect == "fps":
+                record["fps"] = 25
+            elif defect == "capture_hash":
+                record["capture_sha256"] = "f" * 64
+            else:
+                record["epsilon_sha256"] = "f" * 64
+    path.write_text(json.dumps(manifest))
+    assert not producer.verify_completion(args, root)
+
+
+def test_changed_saved_epsilon_bytes_refuse_before_reusing_outputs(saved_raw_baseline: tuple) -> None:
+    args, root, _ = saved_raw_baseline
+    record = json.loads((root / "manifest.json").read_text())["videos"][0]["artifacts"]
+    path = root / record["epsilon"]
+    original = torch.load(path, weights_only=True)
+    torch.save(original + 1, path)
+    assert not producer.verify_completion(args, root)
+    with pytest.raises(ValueError, match="artifact path or hash differs"):
+        producer.evidence_paths(args, root)
+
+
+@pytest.mark.parametrize("payload", [None, [], {"model": []}])
+def test_malformed_completion_returns_false_without_loading_models(saved_raw_baseline: tuple, payload: object) -> None:
+    args, root, _ = saved_raw_baseline
+    (root / "manifest.json").write_text(json.dumps(payload))
+    assert not producer.verify_completion(args, root)

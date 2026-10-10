@@ -1,6 +1,10 @@
-"""Alignment metrics for the guidance-corpus review gate (SSB1 / SS4.5).
+"""Measure mask alignment for corpus review; see ``tests/test_qa.py``.
 
-Pure and dependency-free (numpy only); see ``tests/test_qa.py``.
+Read two single-channel masks in the same recorded crop. Threshold both at 128
+by default, count their binary intersection and union, and return their ratio.
+Two empty masks return one. The result measures overlap, not motion or image
+quality, and never weights a training loss. This NumPy-only owner produces no
+files and never changes the masks or their geometry.
 """
 
 from __future__ import annotations

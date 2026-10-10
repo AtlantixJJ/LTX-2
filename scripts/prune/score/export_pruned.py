@@ -74,9 +74,15 @@ def _slice_ffn(sd: dict[str, torch.Tensor], layer: int, keep: list[int]) -> None
     sd[key] = sd[key][:, index]
 
 
-def export(source: str | Path, masks: dict, output: str | Path, *, model_key: str,
-           provenance_block: dict | None = None,
-           mode: str = "masked_full") -> Path:
+def export(  # noqa: PLR0912 -- four explicit export formats
+    source: str | Path,
+    masks: dict,
+    output: str | Path,
+    *,
+    model_key: str,
+    provenance_block: dict | None = None,
+    mode: str = "masked_full",
+) -> Path:
     """Perform checkpoint-space surgery; masks are keyed ``'0.attn1'`` / ``'0.ff'``."""
     source, output = Path(source), Path(output)
     if mode not in ("masked_full", "sparse", "compact", "compact_faithful"):
@@ -89,7 +95,8 @@ def export(source: str | Path, masks: dict, output: str | Path, *, model_key: st
             raise ValueError(f"{name}: invalid binary mask or width")
     with safe_open(source, framework="pt", device="cpu") as handle:
         metadata = dict(handle.metadata() or {})
-        sd = {key: handle.get_tensor(key) for key in handle.keys()}
+        # safe_open exposes keys() but does not implement iteration.
+        sd = {key: handle.get_tensor(key) for key in handle.keys()}  # noqa: SIM118
     config_all = json.loads(metadata.get("config", "{}"))
     config = config_all.setdefault("transformer", {})
     layers, d = int(config.get("num_layers", 48)), int(config.get("attention_head_dim", 128))
@@ -124,18 +131,27 @@ def export(source: str | Path, masks: dict, output: str | Path, *, model_key: st
         else:
             ffn.append(original)
             ffn_active.append(keep)
-    config.update({"per_layer_video_attn1_heads": a1, "per_layer_video_attn2_heads": a2,
-                   "per_layer_ff_inner_dim": ffn, "per_layer_video_attn1_rope_head_indices": a1_indices,
-                   "per_layer_video_attn2_rope_head_indices": a2_indices,
-                   "video_pruning_preserve_qk_norm": True,
-                   "video_pruning_shape_faithful": mode == "compact_faithful",
-                   "pruning": {"task": "whole_clip_d0", "model_key": model_key, "mode": mode,
-                               **(provenance_block or {})}})
+    config.update(
+        {
+            "per_layer_video_attn1_heads": a1,
+            "per_layer_video_attn2_heads": a2,
+            "per_layer_ff_inner_dim": ffn,
+            "per_layer_video_attn1_rope_head_indices": a1_indices,
+            "per_layer_video_attn2_rope_head_indices": a2_indices,
+            "video_pruning_preserve_qk_norm": True,
+            "video_pruning_shape_faithful": mode == "compact_faithful",
+            "pruning": {"task": "whole_clip_d0", "model_key": model_key, "mode": mode, **(provenance_block or {})},
+        }
+    )
     if mode != "compact":
-        config.update({"per_layer_video_attn1_active_head_indices": a1_active,
-                       "per_layer_video_attn2_active_head_indices": a2_active,
-                       "per_layer_video_ffn_active_channels": ffn_active,
-                       "video_pruning_select_active_heads": mode == "sparse"})
+        config.update(
+            {
+                "per_layer_video_attn1_active_head_indices": a1_active,
+                "per_layer_video_attn2_active_head_indices": a2_active,
+                "per_layer_video_ffn_active_channels": ffn_active,
+                "video_pruning_select_active_heads": mode == "sparse",
+            }
+        )
     metadata["config"] = json.dumps(config_all)
     output.parent.mkdir(parents=True, exist_ok=True)
     save_file(sd, str(output), metadata=metadata)
@@ -154,17 +170,35 @@ def main() -> None:
     source = model.paths.transformer()
     stamp = provenance.stamp(model)
     masks, mask_sha256 = hooks.read_mask_artifact(
-        args.masks, model_key=model.key, fingerprint=stamp["transformer_fingerprint"],
+        args.masks,
+        model_key=model.key,
+        fingerprint=stamp["transformer_fingerprint"],
         widths=checkpoint_mask_widths(source),
         expected_task="whole_clip_d0",
     )
-    path = export(source, masks, args.output, model_key=model.key,
-                  mode=args.mode,
-                  provenance_block={**stamp, "task": "whole_clip_d0",
-                                    "source_transformer_fingerprint": stamp["transformer_fingerprint"],
-                                    "mask_sha256": mask_sha256, "masks": str(args.masks)})
-    print(json.dumps({"checkpoint": str(path), "fingerprint": provenance.checkpoint_fingerprint(path),
-                      "peak_rss_gib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 ** 2)}))
+    path = export(
+        source,
+        masks,
+        args.output,
+        model_key=model.key,
+        mode=args.mode,
+        provenance_block={
+            **stamp,
+            "task": "whole_clip_d0",
+            "source_transformer_fingerprint": stamp["transformer_fingerprint"],
+            "mask_sha256": mask_sha256,
+            "masks": str(args.masks),
+        },
+    )
+    print(
+        json.dumps(
+            {
+                "checkpoint": str(path),
+                "fingerprint": provenance.checkpoint_fingerprint(path),
+                "peak_rss_gib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**2),
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

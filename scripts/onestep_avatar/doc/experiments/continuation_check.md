@@ -205,7 +205,7 @@ E3 reads ordinary settings and future-noise choices through the public `experime
 ## G8 queue interface and completion
 
 ```mermaid
-flowchart TB
+flowchart LR
   S[("Pinned scientific spec")] --> P["read_spec"]
   P --> V["verify_completion"]
   M[("manifest.json and raw files")] --> V

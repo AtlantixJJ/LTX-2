@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from scripts.onestep_avatar.corpus import dataset
@@ -19,7 +21,6 @@ def test_atomic_write_replaces_the_destination_and_returns_write_tos_result(tmp_
 
 
 def test_atomic_write_uses_a_hidden_temp_name_with_the_pid_and_real_suffix(tmp_path) -> None:  # noqa: ANN001
-    import os
 
     seen: list = []
 

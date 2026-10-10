@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 
-def test_every_documented_entry_point_is_importable():
+def test_every_documented_entry_point_is_importable() -> None:
     """Every `python -m scripts.prune.X.Y` in README.md resolves."""
     text = Path("scripts/prune/README.md").read_text()
     names = set(re.findall(r"scripts\.prune\.(\w+\.\w+)", text))

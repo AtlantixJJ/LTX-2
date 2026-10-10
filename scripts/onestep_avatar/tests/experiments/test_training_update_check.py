@@ -2,6 +2,7 @@
 
 import json
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 import torch
@@ -11,7 +12,7 @@ from scripts.onestep_avatar.experiments import training_update_check as check
 from scripts.onestep_avatar.training import config
 
 
-def test_near_zero_and_nonfinite_comparisons():
+def test_near_zero_and_nonfinite_comparisons() -> None:
     assert check.gap(torch.zeros(4), torch.zeros(4))["passed"]
     result = check.gap(torch.full((4,), 2e-8), torch.zeros(4))
     assert result["near_zero"]
@@ -21,7 +22,7 @@ def test_near_zero_and_nonfinite_comparisons():
         check.gap(torch.tensor([float("nan")]), torch.zeros(1))
 
 
-def test_four_rank_accumulation_keeps_original_seed_keys():
+def test_four_rank_accumulation_keeps_original_seed_keys() -> None:
     settings = config.parse_settings(
         [
             "--mode",
@@ -62,7 +63,7 @@ def test_four_rank_accumulation_keeps_original_seed_keys():
         check.check_visits(visits, changed, settings)
 
 
-def test_experiment_owner_bound_without_ordinary_dependency(monkeypatch):
+def test_experiment_owner_bound_without_ordinary_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
     normal = software.capture("training", "causal")
     assert check.ENTRY not in normal["sources"]
     record = software.capture("training", "causal", extra_sources=check.EXTRA_SOURCES)
@@ -80,7 +81,9 @@ def test_experiment_owner_bound_without_ordinary_dependency(monkeypatch):
 
 
 @pytest.mark.parametrize("missing", ["--save-update-state", "--save-initial", "--steps"])
-def test_invalid_replay_design_fails_before_input_or_model_access(tmp_path, monkeypatch, missing):
+def test_invalid_replay_design_fails_before_input_or_model_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
     arguments = [
         "--mode",
         "bidirectional",
@@ -101,7 +104,7 @@ def test_invalid_replay_design_fails_before_input_or_model_access(tmp_path, monk
     del arguments[index : index + (2 if missing == "--steps" else 1)]
     job = tmp_path / "job.json"
     job.write_text(json.dumps({"arguments": arguments}))
-    monkeypatch.setattr(check.engine, "prepare_run", lambda *args, **kwargs: pytest.fail("opened inputs"))
+    monkeypatch.setattr(check.engine, "prepare_run", lambda *_args, **_kwargs: pytest.fail("opened inputs"))
     with pytest.raises(ValueError, match="fresh one-update"):
         check.execute(job, tmp_path / "output", 4)
     assert not (tmp_path / "output").exists()

@@ -18,7 +18,7 @@ collector; it owns no second model algorithm.
 ## Data flow
 
 ```mermaid
-flowchart TB
+flowchart LR
   J[("original four-rank job and saved inputs")] --> V["select original rank and slots"]
   V --> T["shared tokens and noise"]
   T --> F["one-rank FSDP or serial update"]

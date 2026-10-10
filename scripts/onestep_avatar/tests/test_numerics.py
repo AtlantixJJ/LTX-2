@@ -133,8 +133,6 @@ def test_changed_schema_two_environment_refuses_launch(tmp_path: Path, missing: 
         queue.verify_training_launch(launch, prepared)
 
 
-
-
 def test_typed_cli_is_import_light_then_bootstraps_before_native_imports() -> None:
     source = """
 import os, sys
@@ -152,6 +150,13 @@ assert not torch.cuda.is_initialized()
     environment = dict(os.environ)
     environment["CUDA_VISIBLE_DEVICES"] = ""
     environment.pop("CUBLAS_WORKSPACE_CONFIG", None)
-    result = subprocess.run([sys.executable, "-c", source], cwd=LTX_ROOT,
-                            env=environment, capture_output=True, text=True, timeout=60, check=False)
+    result = subprocess.run(
+        [sys.executable, "-c", source],
+        cwd=LTX_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
     assert result.returncode == 0, result.stderr

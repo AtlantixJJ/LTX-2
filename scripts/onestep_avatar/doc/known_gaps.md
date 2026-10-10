@@ -12,30 +12,26 @@ Status vocabulary: **open** (no fix), **in progress** (a fix is partially landed
 
 ## Current acceptance and next step
 
-The current task prepares the self-contained handoff for the next agent.
-Production source is unchanged by this documentation update. No GPU job or
-pilot has launched. The next agent completes the code refactor first, then
-validates CPU behavior, imports, commands and source boundaries. Fresh affected
-native checks and GPU experiments follow on the final source.
+The shared runtime and final source owners are implemented. The final code
+gate requires suites, boundary checks, documentation and records on one frozen
+source. Fresh affected native checks and GPU experiments follow that gate.
+The active handoff records its outcome and owns current progress.
 
 Shared two-mode calculations, typed training, unmerged fp32 adapters, strict
 input/adapter checks, fixed preparation, previews and product review are
-implemented. Saved numerical E4, one-camera zero/one-update E2, short causal
+implemented. Earlier numerical E4, one-camera zero/one-update E2, short causal
 controls and both-mode preview/product checks retain their original source
 attribution. Their frame-based media review covers all 49 frames and static
 480-pixel labels; it does not establish continuous-playback or learned quality.
-These scoped results remain valid for their recorded owners. After a move or
-profile change, publish fresh affected evidence instead of restamping them.
+Changed source profiles require fresh affected evidence.
 
-The next agent must move experiment orchestration into `experiments/`, separate
-ordinary evaluation and checkpoint handling, retire the duplicate runtime/parser,
-and remove obsolete executors after required behavior and callers are preserved.
-The [architecture migration map](architecture.md#migration-map) records every
-destination and retirement condition; the
-[active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#refactor-work-order--owner-groups)
-records the owner groups and their validations. GPU results
-are acceptance requirements for the final source, not blockers for reversible
-owner moves. Current root paths and module commands stay truthful until they move.
+Experiment orchestration lives in `experiments/`. Ordinary evaluation,
+measurements, previews and comparisons have separate owners. Legacy adapter
+conversion has its experiment owner; the duplicate trainer/parser, windows and
+visualizers are retired. `expr/` executors and runnable snapshots are
+non-executable provenance. The [architecture migration map](architecture.md#migration-map)
+records ownership, and the [active work order](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#refactor-work-order--owner-groups)
+records verified scopes and the remaining code gate.
 
 Scientific acceptance remains open: E2 needs two cameras and steps 20/60; E3
 needs the original 17-frame history/K/V and before/after-eviction controls,
@@ -54,7 +50,7 @@ it is not an observed pilot outcome or a substitute for final-source validation.
 | [G2](#g2--generic-teacher-forced-rollout-refreshes-from-the-guide-not-the-target) | Historical teacher-target defect | preserve explicit target invariant | **verified** |
 | [G3](#g3--checkpoint-and-artifact-conditions-are-recorded-but-not-enforced) | Condition checks are missing from some callers | silent off-condition evaluation | **in progress** |
 | [G4](#g4--no-d1-probe) | D1 probe coverage differs between paths | direct-path real-adapter verification remains incomplete | **in progress** |
-| [G5](#g5--training-and-deployment-disagree-about-valid-sigma) | Historical sigma consumers remain | typed validation checked; legacy retirement is gated | **in progress** |
+| [G5](#g5--training-and-deployment-disagree-about-valid-sigma) | Final-source sigma acceptance | shared validation implemented; fresh native checks pending | **in progress** |
 | [G6](#g6--guide-artifacts-on-disk-predate-the-compositing-fix) | Selected guides need current provenance checks | D1 data readiness | **in progress** |
 | [G7](#g7--cached-history-can-disagree-with-a-causal-prefix) | Cached history can disagree with an explicit causal prefix | continuation quality is unmeasured | **in progress** |
 | [G8](#g8--bf16-lora-fusion-weakens-the-trained-adapter) | bf16 LoRA fusion weakens the trained adapter | shared unmerged path needs native effect/cost verification | **in progress** |
@@ -112,8 +108,7 @@ expensive loading; geometry and allowed σ derived from metadata; model/objectiv
 off-condition research allowed only through an explicit recorded override.
 
 **Status.** In progress. Typed enforcement is implemented and CPU checked,
-including causal history/KV choices and adapter precision/application. Legacy
-consumers remain separate from the typed path until Stage D migration. Native
+including causal history/KV choices and adapter precision/application. Historical flat metadata is read only by its explicit experiment converter/checker. Native
 adapter acceptance remains E2/E4; metadata checks alone do not prove it.
 
 **Causal preview physical coverage.** The original E4
@@ -166,18 +161,14 @@ Typed training, ordinary evaluation and product use these rules. Dev permits
 continuous levels in `(0,1]`; distilled requires its actual nonzero grid.
 The checkpoint owner separately checks the adapter's calibrated levels and
 schedule. Deliberate supported research differences need the recorded evaluation
-override. Product exposes no override. The old trainer/parser and visualizers
-remain transitional consumers, pending Stage D retirement.
+override. Product exposes no override. The old trainer/parser and visualizers are retired.
 
 **Impact.** A completed run that cannot be deployed, discovered at deployment.
 
 **Acceptance.** A shared validator against the selected model's grid, with adapter calibration
 checked separately, and an explicit research override for deliberate off-grid work.
 
-**Status.** Typed validation is implemented and CPU checked. Reconcile and remove
-remaining historical consumers after their required behavior and callers move
-to checked final owners. Fresh affected native acceptance follows final-source
-validation. Package closure remains open; the removed product validator is historical evidence.
+**Status.** Shared validation is implemented and CPU checked; obsolete consumers are retired. Fresh affected native acceptance follows the final code gate. The removed product validator remains historical evidence.
 
 ---
 
@@ -199,7 +190,7 @@ contract. Readiness must be checked for that run's selected sources. D0 reads no
 D1 run; the subset's readiness checked against guide *latents*, not just render MP4s.
 
 **Status.** Selected-source readiness is checked; complete input-production and
-caller migration acceptance remain open. Preserve old render/encoding records
+native producer acceptance remains open. Preserve old render/encoding records
 with their original attribution. Reprepare invalid selected inputs through their
 one producer; never weaken provenance checks or repair bytes in a reader.
 
@@ -470,8 +461,8 @@ before weight/text sessions. It checks the full base hash, D1/background, mode,
 shape and exact schedule, and permits no research override. Supplied-image
 encoding provenance and actual VAE identity are checked. Distilled levels must
 be on the selected base grid; dev levels are continuous in (0,1]. Thus the old
-product-side G3/G5 paths described above are removed. Old research visualization
-callers still await conversion, so broader G3 enforcement remains incomplete.
+product-side G3/G5 paths described above are removed. Historical research
+visualization callers are retired; fresh final-source G3 workflow acceptance remains incomplete.
 
 ### Causal diagnostic condition repair — 2026-10-07
 
@@ -485,8 +476,9 @@ fields before model/text sessions and records them in `conditions`. Product
 preflight explicitly uses cache/refresh and exposes no diagnostic override.
 Focused CPU checks cover these paths with actual adapter contracts/matrices and
 checked input records. This fixes F5's omitted history choices. Legacy
-visualization consumers still leave broader G3 incomplete. The shared adapter
-repair also binds `application_method` before loading: unmerged is the ordinary method;
+visualization consumers are retired; fresh final-source G3 workflow acceptance
+remains incomplete. The shared adapter repair also binds `application_method`
+before loading: unmerged is the ordinary method;
 fusion requires a research override and is refused by product inference.
 
 The selected G7 default is clean global-sigma-zero cache refresh for training and

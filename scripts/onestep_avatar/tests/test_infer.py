@@ -1,6 +1,7 @@
 """Product generation uses real small-model paths and has no capture target."""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,8 +10,9 @@ from safetensors.torch import save_file
 
 from ltx_core.model.transformer.model import X0Model
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar import WORKSPACE_ROOT, infer
+from scripts.onestep_avatar import WORKSPACE_ROOT, evaluate, infer, media
 from scripts.onestep_avatar.corpus.precompute import file_fingerprint
+from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import causal
 from scripts.onestep_avatar.tests.test_causal_core import _geometry, _grid, _model
 from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
@@ -19,7 +21,7 @@ from scripts.onestep_avatar.training.config import BidirectionalSettings, Causal
 
 
 @pytest.mark.parametrize("mode", ["bidirectional", "causal"])
-def test_product_preserves_supplied_image_without_capture_metrics(mode, monkeypatch):
+def test_product_preserves_supplied_image_without_capture_metrics(mode: str, monkeypatch: pytest.MonkeyPatch) -> None:
     model = X0Model(_model())
     geometry = _geometry(context_latent_frames=8)
     grid = _grid(geometry)
@@ -32,7 +34,7 @@ def test_product_preserves_supplied_image_without_capture_metrics(mode, monkeypa
     settings = BidirectionalSettings() if mode == "bidirectional" else CausalSettings()
     if mode == "bidirectional":
         monkeypatch.setattr(
-            causal.BlockCache, "allocate", lambda *args, **kwargs: pytest.fail("product allocated cache")
+            causal.BlockCache, "allocate", lambda *_args, **_kwargs: pytest.fail("product allocated cache")
         )
     output, record = infer.generate(
         model, context, grid, guide, first, mode=mode, settings=settings, schedule=[0.725, 0], seed=11
@@ -42,10 +44,7 @@ def test_product_preserves_supplied_image_without_capture_metrics(mode, monkeypa
     assert "metrics" not in record
     assert record["call_counts"]["model_calls"] == (1 if mode == "bidirectional" else 6)
     if mode == "causal":
-        fixture = (
-            WORKSPACE_ROOT
-            / "expr/onestep_avatar/two_mode_restructure_20261005/fixtures/product_causal_legacy.pt"
-        )
+        fixture = WORKSPACE_ROOT / "expr/onestep_avatar/two_mode_restructure_20261005/fixtures/product_causal_legacy.pt"
         if not fixture.exists():
             pytest.skip("saved legacy product fixture is not installed")
         saved = torch.load(fixture, map_location="cpu", weights_only=True)
@@ -55,7 +54,7 @@ def test_product_preserves_supplied_image_without_capture_metrics(mode, monkeypa
         assert torch.equal(output, saved["output"])
 
 
-def test_product_rejects_capture_history_before_model_calls():
+def test_product_rejects_capture_history_before_model_calls() -> None:
     with pytest.raises(ValueError, match="no capture past"):
         infer.generate(
             None,
@@ -70,7 +69,7 @@ def test_product_rejects_capture_history_before_model_calls():
         )
 
 
-def test_supplied_image_producer_conditions_are_required():
+def test_supplied_image_producer_conditions_are_required() -> None:
     guide = torch.zeros(1, 8, 7, 2, 2)
     image = guide[:, :, :1]
     record = {
@@ -90,7 +89,7 @@ def test_supplied_image_producer_conditions_are_required():
 
 
 @pytest.fixture
-def product_files(tmp_path, monkeypatch):
+def product_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
     vae = tmp_path / "vae.safetensors"
     vae.write_bytes(b"vae identity fixture")
     common_record = {
@@ -113,8 +112,8 @@ def product_files(tmp_path, monkeypatch):
         sigmas=[0.725],
         paths=SimpleNamespace(transformer=lambda: tmp_path / "base.safetensors", video_vae=lambda: vae),
     )
-    monkeypatch.setattr(infer.backbone, "resolve", lambda *args: specification)
-    monkeypatch.setattr(infer.backbone, "identity", lambda *args, **kwargs: {"base_transformer_sha256": "a" * 64})
+    monkeypatch.setattr(infer.backbone, "resolve", lambda *_args: specification)
+    monkeypatch.setattr(infer.backbone, "identity", lambda *_args, **_kwargs: {"base_transformer_sha256": "a" * 64})
     args = [
         "--mode",
         "bidirectional",
@@ -133,51 +132,49 @@ def product_files(tmp_path, monkeypatch):
     return args, guide, image
 
 
-def test_product_dry_run_creates_no_output(product_files, capsys):
+def test_product_dry_run_creates_no_output(product_files: tuple, capsys: pytest.CaptureFixture[str]) -> None:
     args, _, _ = product_files
     assert infer.main([*args, "--dry-run"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["conditions"]["task"]["guide_mode"] == "d1"
-    from pathlib import Path
 
     assert not Path(args[args.index("--output") + 1]).exists()
 
 
-def test_product_adapter_wrong_mode_fails_before_session(product_files, tmp_path):
+def test_product_adapter_wrong_mode_fails_before_session(product_files: tuple, tmp_path: Path) -> None:
     args, _, _ = product_files
     record = _contract("causal")
     path = tmp_path / "causal.safetensors"
     save_file({A: torch.ones(2, 4), B: torch.zeros(4, 2)}, path, metadata={CONTRACT_KEY: json.dumps(record)})
-    with pytest.raises(ValueError, match="incompatible adapter conditions.*mode"):
+    with pytest.raises(ValueError, match=r"incompatible adapter conditions.*mode"):
         infer.main([*args, "--checkpoint", str(path), "--dry-run"])
 
 
-def test_product_image_condition_mismatch_precedes_base(product_files, monkeypatch):
+def test_product_image_condition_mismatch_precedes_base(product_files: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
     args, _, image = product_files
     record = torch.load(image, weights_only=True)
     record["objective"] = "bg"
     torch.save(record, image)
-    monkeypatch.setattr(infer.backbone, "resolve", lambda *args: pytest.fail("invalid image reached base resolution"))
+    monkeypatch.setattr(infer.backbone, "resolve", lambda *_args: pytest.fail("invalid image reached base resolution"))
     with pytest.raises(ValueError, match="objective"):
         infer.main([*args, "--dry-run"])
 
 
-def test_review_requires_decoding_before_file_access(product_files):
+def test_review_requires_decoding_before_file_access(product_files: tuple) -> None:
     args, _, _ = product_files
     with pytest.raises(SystemExit):
         infer.parse_args([*args, "--review"])
 
 
-def test_product_review_records_decoded_inputs_without_capture(tmp_path, monkeypatch):
-    from scripts.onestep_avatar import evaluate, media
-    from scripts.onestep_avatar.hashing import sha256
+def test_product_review_records_decoded_inputs_without_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     guide = torch.ones(1, 128, 2, 1, 1)
     image = torch.zeros(1, 128, 1, 1, 1)
     generated = torch.full((9, 3, 16, 16), 0.5)
     decoded = []
 
-    def decode(session, latent, decoder, seed):
+    def decode(session: object, latent: torch.Tensor, decoder: object, seed: int) -> torch.Tensor:
+        del decoder, session
         decoded.append((latent, seed))
         return torch.zeros((1 if latent is image else 9, 3, 16, 16))
 
@@ -187,9 +184,7 @@ def test_product_review_records_decoded_inputs_without_capture(tmp_path, monkeyp
     )
     original_hash = sha256(tmp_path / "raw/result.json")
     args = SimpleNamespace(seed=42, poster_frame=4, output=tmp_path)
-    record = infer.render_review(
-        None, None, generated, guide, image, completed=completed, args=args, vae_hash="a" * 64
-    )
+    record = infer.render_review(None, None, generated, guide, image, completed=completed, args=args, vae_hash="a" * 64)
     assert [latent for latent, seed in decoded] == [guide, image]
     assert all(seed == 42 for latent, seed in decoded)
     assert record["layout"] == "inference"
@@ -200,28 +195,33 @@ def test_product_review_records_decoded_inputs_without_capture(tmp_path, monkeyp
     assert record["panels"][0]["still"] is True
     assert [panel["role"] for panel in record["panels"]] == ["first_image", "guide", "generated"]
     assert record["common_settings"]["generated_decode_key"] == media.decode_key(
-        completed["output"]["sha256"], "a" * 64, list(guide.shape), "native_decode_video", 42,
+        completed["output"]["sha256"],
+        "a" * 64,
+        list(guide.shape),
+        "native_decode_video",
+        42,
         media.native_decoder_settings(),
     )
     assert sha256(tmp_path / "raw/result.json") == original_hash
 
 
-def test_product_causal_preflight_binds_the_recorded_cache_computation(product_files, tmp_path):
+def test_product_causal_preflight_binds_the_recorded_cache_computation(product_files: tuple, tmp_path: Path) -> None:
     args, _, _ = product_files
-    args[args.index('--mode') + 1] = 'causal'
-    contract = _contract('causal')
-    path = tmp_path / 'causal_adapter.safetensors'
-    save_file({A: torch.ones(2, 4), B: torch.zeros(4, 2)}, path,
-              metadata={CONTRACT_KEY: json.dumps(contract)})
-    _, _, _, _, requested, checked = infer.prepare_product(infer.parse_args(args + ['--checkpoint', str(path)]))
-    assert requested['history_mode'] == 'cache' and requested['kv_source'] == 'refresh'
-    assert checked['overrides'] == []
+    args[args.index("--mode") + 1] = "causal"
+    contract = _contract("causal")
+    path = tmp_path / "causal_adapter.safetensors"
+    save_file({A: torch.ones(2, 4), B: torch.zeros(4, 2)}, path, metadata={CONTRACT_KEY: json.dumps(contract)})
+    _, _, _, _, requested, checked = infer.prepare_product(infer.parse_args([*args, "--checkpoint", str(path)]))
+    assert requested["history_mode"] == "cache"
+    assert requested["kv_source"] == "refresh"
+    assert checked["overrides"] == []
 
 
-@pytest.mark.parametrize('options', [['--history-mode', 'recompute'], ['--kv-source', 'denoise'],
-                                     ['--research-override']])
-def test_product_exposes_no_diagnostic_history_override(product_files, options):
+@pytest.mark.parametrize(
+    "options", [["--history-mode", "recompute"], ["--kv-source", "denoise"], ["--research-override"]]
+)
+def test_product_exposes_no_diagnostic_history_override(product_files: tuple, options: list[str]) -> None:
     args, _, _ = product_files
-    args[args.index('--mode') + 1] = 'causal'
+    args[args.index("--mode") + 1] = "causal"
     with pytest.raises(SystemExit):
         infer.parse_args(args + options)

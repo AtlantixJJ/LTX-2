@@ -18,7 +18,7 @@ remain at this experiment owner; ordinary evaluation accepts no study flags.
 ## Data flow
 
 ```mermaid
-flowchart TB
+flowchart LR
   S[("pinned spec and scientific inputs")] --> P["check noise pair"]
   P --> E["shared evaluation or causal sampler"]
   E --> O("original and changed outputs")

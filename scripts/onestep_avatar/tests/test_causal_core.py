@@ -25,6 +25,7 @@ import pytest
 import torch
 
 from ltx_core.components.noisers import GaussianNoiser
+from ltx_core.model.transformer.modality import Modality
 from ltx_core.model.transformer.model import LTXModel, LTXModelType
 from ltx_core.types import LatentState, SpatioTemporalScaleFactors
 from scripts.onestep_avatar.model import causal as causal_core
@@ -235,7 +236,14 @@ def test_explicit_history_uses_no_dense_mask_for_first_block() -> None:
     for span in geometry.plan(grid.latent_frames)[:2]:
         lo, hi = grid.token_span(*span)
         causal_core.denoise_with_clean_history(
-            denoise, grid, geometry, source, source[:, lo:hi], _context(), SIGMA0, span,
+            denoise,
+            grid,
+            geometry,
+            source,
+            source[:, lo:hi],
+            _context(),
+            SIGMA0,
+            span,
         )
     assert seen[0] is None
     assert seen[1] is not None
@@ -253,15 +261,22 @@ def test_whole_clip_keeps_stock_sigma_precision_with_bf16_latents() -> None:
         return modality.latent
 
     causal_core.denoise_with_clean_history(
-        denoise, grid, geometry, source, source, _context(), 0.909375,
-        (0, grid.latent_frames), clean_prefix_tokens=grid.tokens_per_latent_frame,
+        denoise,
+        grid,
+        geometry,
+        source,
+        source,
+        _context(),
+        0.909375,
+        (0, grid.latent_frames),
+        clean_prefix_tokens=grid.tokens_per_latent_frame,
     )
     modality = seen[0]
     assert modality.attention_mask is None
     assert modality.sigma.dtype == torch.float32
     assert modality.timesteps.dtype == torch.float32
     assert float(modality.sigma[0]) == pytest.approx(0.909375, abs=1e-7)
-    assert bool((modality.timesteps[:, :grid.tokens_per_latent_frame] == 0).all())
+    assert bool((modality.timesteps[:, : grid.tokens_per_latent_frame] == 0).all())
 
 
 def test_joint_window_changes_information_access_only_after_block_zero() -> None:
@@ -744,13 +759,26 @@ def test_the_real_training_loop_runs_a_sample_against_a_real_transformer() -> No
     capture = grid.patchify(torch.randn(1, CHANNELS, LATENT_FRAMES, 2, 2).to(torch.bfloat16))
     guide = grid.patchify(torch.randn(1, CHANNELS, LATENT_FRAMES, 2, 2).to(torch.bfloat16))
     cache = BlockCache.allocate(
-        grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
-        device=DEVICE, dtype=torch.bfloat16,
+        grid,
+        geometry,
+        num_layers=len(model.transformer_blocks),
+        inner_dim=model.inner_dim,
+        device=DEVICE,
+        dtype=torch.bfloat16,
     )
     totals = causal_core.train_sample(
-        model, torch.randn(1, CONTEXT_TOKENS, CONTEXT_DIM, dtype=torch.bfloat16), grid, capture, guide, geometry,
+        model,
+        torch.randn(1, CONTEXT_TOKENS, CONTEXT_DIM, dtype=torch.bfloat16),
+        grid,
+        capture,
+        guide,
+        geometry,
         # Mid-clip on purpose: this is the path that primes the cache from the capture prefix.
-        [1, 2], lambda loss: loss.backward(), sigma=SIGMA0, seed=0, cache=cache,
+        [1, 2],
+        lambda loss: loss.backward(),
+        sigma=SIGMA0,
+        seed=0,
+        cache=cache,
     )
 
     assert [entry["block_index"] for entry in totals["per_block"]] == [1, 2]
@@ -1110,59 +1138,83 @@ def test_fusion_parity_block_matches_original_real_model_path(kind: str) -> None
     span = geometry.plan(grid.latent_frames)[0]
     lo, hi = grid.token_span(*span)
     noisy = torch.randn(1, hi - lo, CHANNELS)
-    c0 = noisy[:, :grid.tokens_per_latent_frame].clone()
+    c0 = noisy[:, : grid.tokens_per_latent_frame].clone()
     context = _context()
     calls = []
     hook = model.register_forward_hook(lambda *_args: calls.append(1))
 
     def cache() -> BlockCache:
         return BlockCache.allocate(
-            grid, geometry, num_layers=len(model.transformer_blocks), inner_dim=model.inner_dim,
-            device=DEVICE, dtype=torch.float32,
+            grid,
+            geometry,
+            num_layers=len(model.transformer_blocks),
+            inner_dim=model.inner_dim,
+            device=DEVICE,
+            dtype=torch.float32,
         )
 
     try:
-        denoiser = (common.denoised_from_velocity_model(model) if kind == "velocity"
-                    else common.denoised_from_x0_model(model))
+        denoiser = (
+            common.denoised_from_velocity_model(model) if kind == "velocity" else common.denoised_from_x0_model(model)
+        )
         with torch.no_grad():
-            original = common.with_clean_prefix(causal_core.denoise_block(
-                denoiser, grid, cache(), noisy, context, SIGMA0, span,
-                clean_prefix_tokens=grid.tokens_per_latent_frame,
-            ), c0)
+            original = common.with_clean_prefix(
+                causal_core.denoise_block(
+                    denoiser,
+                    grid,
+                    cache(),
+                    noisy,
+                    context,
+                    SIGMA0,
+                    span,
+                    clean_prefix_tokens=grid.tokens_per_latent_frame,
+                ),
+                c0,
+            )
         assert len(calls) == 1
         extracted = causal_core.fusion_parity_block(
-            model, kind, grid, cache(), noisy, context, SIGMA0, span,
+            model,
+            kind,
+            grid,
+            cache(),
+            noisy,
+            context,
+            SIGMA0,
+            span,
             clean_prefix_tokens=grid.tokens_per_latent_frame,
         )
         assert len(calls) == 2
         assert torch.equal(original, extracted)
-        assert torch.equal(extracted[:, :grid.tokens_per_latent_frame], c0)
+        assert torch.equal(extracted[:, : grid.tokens_per_latent_frame], c0)
         assert not extracted.requires_grad
     finally:
         hook.remove()
 
 
-def test_bf16_cached_calls_keep_float32_global_and_token_sigmas():
+def test_bf16_cached_calls_keep_float32_global_and_token_sigmas() -> None:
     geometry = _geometry()
     grid = _grid(geometry)
     model = _model(prompt_adaln=True).bfloat16()
     context = _context().bfloat16()
     clean = torch.randn(1, LATENT_FRAMES * grid.tokens_per_latent_frame, CHANNELS).bfloat16()
-    cache = BlockCache.allocate(grid, geometry, num_layers=2, inner_dim=8,
-                                device=DEVICE, dtype=torch.bfloat16)
+    cache = BlockCache.allocate(grid, geometry, num_layers=2, inner_dim=8, device=DEVICE, dtype=torch.bfloat16)
     seen = []
     native = common.denoised_from_velocity_model(model)
-    def predict(modality):
+
+    def predict(modality: Modality) -> torch.Tensor:
         seen.append(modality)
         assert modality.latent.dtype == torch.bfloat16
         assert modality.sigma.dtype == modality.timesteps.dtype == torch.float32
         return native(modality)
+
     causal_core.prime_cache(predict, grid, cache, clean, geometry, context, upto_latent_frame=3)
     span = (3, 5)
     lo, hi = grid.token_span(*span)
     predicted = causal_core.denoise_block(predict, grid, cache, clean[:, lo:hi], context, 0.6315688490867615, span)
     causal_core.refresh_block(predict, grid, cache, predicted, context, span)
     assert len(seen) == 3
-    assert [call.sigma.item() for call in seen] == [0., 0.6315688490867615, 0.]
-    assert seen[0].kv_write and not seen[1].kv_write and seen[2].kv_write
+    assert [call.sigma.item() for call in seen] == [0.0, 0.6315688490867615, 0.0]
+    assert seen[0].kv_write
+    assert not seen[1].kv_write
+    assert seen[2].kv_write
     assert torch.count_nonzero(seen[0].timesteps) == torch.count_nonzero(seen[2].timesteps) == 0

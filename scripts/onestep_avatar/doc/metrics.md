@@ -10,7 +10,7 @@ No function loads transformer, text-encoder or VAE weights.
 
 ```mermaid
 flowchart LR
-  T("matched output and reference tensors") --> M["encoded_metrics or RGB measurement"]
+  T("matched output and<br/>reference tensors") --> M["encoded_metrics<br/>or RGB measurement"]
   M --> R(["metric values"])
   classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
   classDef tensor fill:#dcfce7,stroke:#4d9863,color:#143d23;
@@ -106,6 +106,6 @@ It opens no model session and downloads no weights. Preserve its original
 per-batch tensor sums on the model device,
 rather than changing scalar rounding through a Python per-frame reduction.
 Record model identity at the caller. LPIPS measures perceptual difference, not correctness of motion or
-identity. Both helpers stay outside report code; historical rendering caller
-migration remains pending until layout/decoder execution also moves.
+identity. Both helpers stay outside report code. Ordinary rendering and
+experiment owners call this shared measurement owner; reports read saved scores.
 

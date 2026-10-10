@@ -206,13 +206,18 @@ historical tensors. Generation preparation also creates result-bound dependent
 decoders for new outputs.
 Four checked specs are under
 `expr/onestep_avatar/d1_selfrollout_sigma_sweep_20260926/configs/`.
-This command uses the original raw tensors and masters and requires a fresh
-destination. Check that the selected GPU is free and use the shared own-process ledger
+Prepare current queue rows with `kind: "experiment"`, selector `sigma_sweep`,
+the pinned spec and a fresh output. The scientific arguments are `--spec` and
+`--output`; the queue owns the local GPU argument. These jobs use the original
+raw tensors and masters and require fresh destinations. Check that the selected GPU is free and use the shared own-process ledger
 before native execution. From `LTX-2`:
 
 ```bash
-conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiments.sigma_sweep \
-  --spec <SAVED_SWEEP_SPEC> --output <FRESH_SAVED_MEDIA_DIRECTORY> --gpu-id <GPU>
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
+  --jobs <CURRENT_SAVED_DECODE_JOBS> --state <FRESH_QUEUE_STATE> --dry-run
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
+  --jobs <CURRENT_SAVED_DECODE_JOBS> --state <FRESH_QUEUE_STATE> \
+  --execute --loop --process-ledger ../expr/onestep_avatar/processes.json
 ```
 
 The historical `sheets.py` report and saved sheets are frozen provenance.
@@ -248,8 +253,7 @@ conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.experiment
 ```
 
 Current real preparation refuses a changed guide-render pin in `t2r2.json`.
-Do not remove it to bypass conversion checks. The old launcher remains pending
-checked data and parity; original results remain historical evidence. See the
+Do not remove it to bypass conversion checks. The old launcher is retired as non-executable provenance; final-owner native parity remains pending. Original results remain historical evidence. See the
 [preparation design](../doc/experiments/future_noise_study.md) for the exact noise slicing,
 five jobs and seven result roles.
 
@@ -301,17 +305,18 @@ Historical mixed-level runs cannot be assigned today's uniform rule by default.
 Original adapters, configs, subsets and masters
 remain unchanged. This command does not resume training or recalibrate weights.
 
-For a new training run, choose a fresh output directory. Repeat the shared
-Accelerate command above and replace its training arguments with one of these:
+For a new training run, choose a fresh output directory and put one of these
+argument lists in a queue `train` job. Keep four processes, a hash-pinned shared
+FSDP configuration and the recorded port. The queue builds the Accelerate command:
 
 ```text
--m scripts.onestep_avatar.train --mode bidirectional \
+--mode bidirectional \
   --subset <V2_SUBSET> --output <FRESH_OUT> --model 2.5 --variant dev \
   --guide-mode d1 --objective white --span-latent-frames 17 \
   --start-policy clip_start --sigma0 0.725 \
   --lora-rank 8 --lora-alpha 8 --lora-target attn --seed 42
 
--m scripts.onestep_avatar.train --mode causal \
+--mode causal \
   --subset <V2_SUBSET> --output <FRESH_OUT> --model 2.5 --variant dev \
   --guide-mode d1 --objective white --block-latent-frames 2 \
   --blocks-per-sample 3 --context-latent-frames 8 --sigma0 0.725 \
@@ -547,6 +552,29 @@ The `product` job supplies `--mode bidirectional`, `--guide <GUIDE_PT>`,
 `--first-image <IMAGE_PT>`, `--variant dev`, `--schedule 0.725 0`, the explicit
 fresh `--output`, `--decode`, `--review` and `--poster-frame 0`. The G8 template
 pins completion artifacts. Execute through the queue after the final code gate.
+
+### Saved pruning baseline reproduction
+
+Use the fixed `prune_baseline` experiment selector for the handoff's one-case
+raw reproduction. Its pinned spec contains one absolute `--view`, one `--seed`,
+`--model 2.5 --variant distilled --objective white`, exact on-grid `--sigmas`,
+the original prompt, `--raw-only` and `--arms d0` (or `d0 d1`). It keeps
+unguided sampling and context eight. Output and device belong to the queue.
+An existing prompt-context cache is a checked input. Missing or changed inputs
+fail before native production.
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.onestep_avatar.execution.queue \
+  --jobs <PRUNE_BASELINE_QUEUE_JSON> --state <STATE_JSON> --dry-run
+```
+
+The [one-case template](../../../../expr/onestep_avatar/handoff_implementation_20261007/stage_d_refactor/g14/templates/prune_baseline.json)
+has the matching completion manifest. Regenerate fresh output/state paths for
+native execution after the final code gate. The producer's original files stay
+under `baseline/`; job-root records pin inputs/software and the complete local
+artifact inventory. Compare saved epsilon and D0 values against the selected
+historical case. This raw check does not establish decoded quality. See the
+[protocol design](../doc/experiments/prune_baseline.md).
 
 The generated-only video stays separate from the review under `review/`.
 The review shows the decoded supplied-image still, decoded guide and generated

@@ -23,12 +23,18 @@ def saved() -> tuple[dict, dict, dict]:
     for name in ("B", "B2", "B3"):
         noises[name] = original.clone()
         noises[name][:, 4:] = torch.randn(1, 12, 128, generator=generator).bfloat16()
-    manifest = {"latent_frames": 9, "tokens_per_latent_frame": 2,
-                "source": "Part_1/0012_09/views/view01_cam52", "seed": 42,
-                "geometry": {"block_latent_frames": 2, "context_latent_frames": 8},
-                "schedule": [1, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0],
-                "noise": {name: hashlib.sha256(value.view(torch.uint8).numpy().tobytes()).hexdigest()[:16]
-                          for name, value in noises.items()}}
+    manifest = {
+        "latent_frames": 9,
+        "tokens_per_latent_frame": 2,
+        "source": "Part_1/0012_09/views/view01_cam52",
+        "seed": 42,
+        "geometry": {"block_latent_frames": 2, "context_latent_frames": 8},
+        "schedule": [1, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0],
+        "noise": {
+            name: hashlib.sha256(value.view(torch.uint8).numpy().tobytes()).hexdigest()[:16]
+            for name, value in noises.items()
+        },
+    }
     return manifest, noises, {"seed": 42, "epsilons": eps}
 
 
@@ -59,8 +65,7 @@ def test_invalid_noise_cannot_enter_package_jobs(saved: tuple, defect: str) -> N
         else:
             noises["B"][:, 0] += 1
         if defect != "hash":
-            manifest["noise"]["B"] = hashlib.sha256(
-                noises["B"].view(torch.uint8).numpy().tobytes()).hexdigest()[:16]
+            manifest["noise"]["B"] = hashlib.sha256(noises["B"].view(torch.uint8).numpy().tobytes()).hexdigest()[:16]
     with pytest.raises(ValueError, match=r"noise|intervention|historical study|nine frames"):
         study.full_noise(manifest, noises, blocks)
 
@@ -101,11 +106,15 @@ def test_existing_output_is_refused_before_reading_or_writing(tmp_path: Path) ->
 
 @pytest.mark.parametrize("change", [False, True])
 def test_preparation_publishes_only_after_unchanged_input_checks(
-    saved: tuple, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: bool,
+    saved: tuple,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: bool,
 ) -> None:
     manifest, noises, blocks = saved
-    manifest_path, noise_path, block_path, subset_path = [tmp_path / name for name in
-                                                        ("manifest.json", "noise.pt", "blocks.pt", "subset.json")]
+    manifest_path, noise_path, block_path, subset_path = [
+        tmp_path / name for name in ("manifest.json", "noise.pt", "blocks.pt", "subset.json")
+    ]
     manifest_path.write_text(json.dumps(manifest))
     torch.save(noises, noise_path)
     torch.save(blocks, block_path)
@@ -128,8 +137,7 @@ def test_preparation_publishes_only_after_unchanged_input_checks(
         assert len(record["outputs"]) == 7
         jobs = json.loads((output / "jobs.json").read_text())
         assert len(jobs["jobs"]) == 5
-        assert torch.equal(torch.load(output / "noise_A.pt", weights_only=True),
-                           torch.cat(blocks["epsilons"], dim=1))
+        assert torch.equal(torch.load(output / "noise_A.pt", weights_only=True), torch.cat(blocks["epsilons"], dim=1))
 
 
 def test_real_historical_noise_preserves_original_block_bytes() -> None:
@@ -151,13 +159,20 @@ def preparation_inputs(saved: tuple, tmp_path: Path, monkeypatch: pytest.MonkeyP
     torch.save(noises, paths[1])
     torch.save(blocks, paths[2])
     paths[3].write_text("{}")
-    monkeypatch.setattr(study.subset, "convert_legacy", lambda *_a, **_k: (
-        {"objective": "bg", "sources": [{"relative_dir": manifest["source"]}]}, {"original_plan": True}))
+    monkeypatch.setattr(
+        study.subset,
+        "convert_legacy",
+        lambda *_a, **_k: (
+            {"objective": "bg", "sources": [{"relative_dir": manifest["source"]}]},
+            {"original_plan": True},
+        ),
+    )
     return paths, tmp_path / "preparation"
 
 
 def test_late_input_change_leaves_partial_files_without_conversion_record(
-    preparation_inputs: tuple, monkeypatch: pytest.MonkeyPatch,
+    preparation_inputs: tuple,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths, output = preparation_inputs
     original_save = torch.save
@@ -190,10 +205,23 @@ def test_cli_refuses_incomplete_or_mixed_operations(arguments: list[str]) -> Non
         study.main(arguments)
 
 
-@pytest.mark.parametrize("defect", ["input", "artifact", "inventory", "producer", "roles",
-                                    "jobs_rehashed", "noise_rehashed", "membership_rehashed", "plan_rehashed"])
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "input",
+        "artifact",
+        "inventory",
+        "producer",
+        "roles",
+        "jobs_rehashed",
+        "noise_rehashed",
+        "membership_rehashed",
+        "plan_rehashed",
+    ],
+)
 def test_preparation_verification_refuses_changed_bytes_and_semantics(
-    preparation_inputs: tuple, defect: str,
+    preparation_inputs: tuple,
+    defect: str,
 ) -> None:
     paths, output = preparation_inputs
     result = study.prepare(*paths, output)
@@ -208,8 +236,12 @@ def test_preparation_verification_refuses_changed_bytes_and_semantics(
     elif defect == "roles":
         result["outputs"]["J-A"] = result["outputs"]["C-A"]
     else:
-        name = {"jobs_rehashed": "jobs.json", "noise_rehashed": "noise_A.pt",
-                "membership_rehashed": "membership.json", "plan_rehashed": "frame_plan.json"}[defect]
+        name = {
+            "jobs_rehashed": "jobs.json",
+            "noise_rehashed": "noise_A.pt",
+            "membership_rehashed": "membership.json",
+            "plan_rehashed": "frame_plan.json",
+        }[defect]
         artifact = output / name
         if defect == "noise_rehashed":
             tensor = torch.load(artifact, weights_only=True) + 1

@@ -175,7 +175,7 @@ source attribution, and affected native checks run again after the code gate.
 ## G8 queue interface and completion
 
 ```mermaid
-flowchart TB
+flowchart LR
   S[("Pinned scientific spec")] --> P["read_spec"]
   P --> V["verify_completion"]
   M[("manifest.json and raw files")] --> V

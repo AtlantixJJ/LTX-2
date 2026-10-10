@@ -16,8 +16,8 @@ text encoder. Queue render dispatch calls this module.
 
 ```mermaid
 flowchart LR
-  S[("saved latent panels and specification")] --> C["render_saved_comparisons"]
-  C --> D["shared VAE decoder"] --> M["media.render_panels"] --> O[("media and render manifest")]
+  S[("saved latent panels<br/>and specification")] --> C["render_saved_comparisons"]
+  C --> D["shared VAE decoder"] --> M["media.render_panels"] --> O[("media and<br/>render manifest")]
   classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
   classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
   class C,D,M proc;
@@ -117,13 +117,13 @@ establish perceptual quality or layerwise K/V agreement.
 
 ```mermaid
 flowchart LR
-  refs[(Prepared RGB reference bundle)] --> read[Check saved reference pixels]
-  outputs[(Saved output encodings and result records)] --> match[Check source and changed factor]
+  refs[("Prepared RGB<br/>reference bundle")] --> read["Check saved<br/>reference pixels"]
+  outputs[("Saved encodings<br/>and result records")] --> match["Check source<br/>and changed factor"]
   read --> match
-  match --> decode[Decode output encodings only]
-  read --> render[Render synchronized panels]
+  match --> decode["Decode output<br/>encodings only"]
+  read --> render["Render synchronized<br/>panels"]
   decode --> render
-  render --> media[(Full and compact media)]
+  render --> media[("Full and<br/>compact media")]
   classDef code fill:#dbe7ff,stroke:#3b5ea8,color:#10203f
   classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937
   class read,match,decode,render code

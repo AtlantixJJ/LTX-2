@@ -9,7 +9,7 @@ its one canonical tensor validator. It owns no trainer or sampler.
 ## Data flow
 
 ```mermaid
-flowchart TB
+flowchart LR
   J[("pinned preview job")] --> P["generate_preview"]
   P --> E["evaluate.execute_evaluation"] --> O[("raw result records")]
   O --> R["render saved outputs"] --> M[("media and queue completion")]
@@ -149,8 +149,10 @@ failure propagates to the generation stage's failed-job handler. Standalone
 render-owner recovery and real native full-preview acceptance remain pending.
 
 `generate_preview(job_path, gpu_id=...)` is the package-owned raw generation
-stage. Invoke it with `previews --preview-job <job.json> --gpu-id <ID>`;
-this route accepts no study-setting overrides. Verify the fixed files and completed adapter, claim the job under its
+stage. A `preview` queue job supplies `--preview-job <job.json> --output <output>`
+in its `arguments`; the queue assigns the device and verifies saved completion.
+Use the [queue recipes](../configs/README.md) to validate and execute the list.
+This route accepts no study-setting overrides. Verify the fixed files and completed adapter, claim the job under its
 state lock, and build evaluation arguments from the saved settings. The
 executor adds the pinned checkpoint and a new numbered attempt directory;
 it never changes training settings or overwrites an earlier failed attempt.

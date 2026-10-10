@@ -33,7 +33,7 @@ Two passes, one per CLI flag.
 **`--process_gt_latent`** — owns the crop box and the capture master:
 
 ```mermaid
-flowchart TD
+flowchart LR
   BBOX[("bbox.npy")]
   BOX["square box"]
   MAN[("capture_latent_manifest.json<br/>the box of record, one producer")]
@@ -65,7 +65,7 @@ flowchart TD
 **`--process_syn_latent`** — the paired guide pass:
 
 ```mermaid
-flowchart TD
+flowchart LR
   REND[("argavatar_render[_white].mp4")]
   ENC["tiled_encode — once"]
   ZG[("z_g master")]

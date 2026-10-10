@@ -11,7 +11,7 @@ This model-free command runs directly in `ltx` and needs no queue job.
 ## Data flow
 
 ```mermaid
-flowchart TB
+flowchart LR
   M[("historical manifest and masters")] --> P["deduplicate view and seed"]
   P --> H["check encoding file SHA"] --> T("aligned output, capture and guide")
   T --> C["short or long metrics"] --> J[("atomic metrics JSON")]

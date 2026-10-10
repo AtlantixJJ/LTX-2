@@ -5,11 +5,13 @@ from __future__ import annotations
 import pytest
 import torch
 
+from ltx_core.model.transformer.transformer import BasicAVTransformerBlock, TransformerConfig
+from scripts.prune.core import model_registry
+
 
 @pytest.fixture(scope="session")
-def model():
+def model() -> model_registry.RefinerModel:
     """The real 2.5 registry entry; resolution reads checkpoint metadata only."""
-    from scripts.prune.core import model_registry
 
     try:
         return model_registry.resolve("2.5")
@@ -18,14 +20,11 @@ def model():
 
 
 @pytest.fixture
-def block():
+def block() -> torch.nn.Module:
     """A small real production transformer block, not a test double."""
-    from ltx_core.model.transformer.transformer import BasicAVTransformerBlock, TransformerConfig
 
     torch.manual_seed(0)
-    transformer_block = BasicAVTransformerBlock(
-        video=TransformerConfig(dim=32, heads=4, d_head=8, context_dim=32)
-    )
+    transformer_block = BasicAVTransformerBlock(video=TransformerConfig(dim=32, heads=4, d_head=8, context_dim=32))
 
     class Model(torch.nn.Module):
         def __init__(self) -> None:

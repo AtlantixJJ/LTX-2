@@ -1,21 +1,27 @@
 """Preview scheduling pins bytes and cannot turn an incomplete save into a job."""
 
 import json
+from argparse import Namespace
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Never
 
 import pytest
 import torch
 from safetensors.torch import save_file
 
 from scripts.onestep_avatar import evaluate, hashing, media, previews
+from scripts.onestep_avatar.corpus import dataset, precompute
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
 from scripts.onestep_avatar.training import config, engine
 from scripts.onestep_avatar.training.checkpoints import CONTRACT_KEY
+from scripts.prune.core import session as native_session
 
 
-def _fixed_inputs(tmp_path):
+def _fixed_inputs(tmp_path: Path) -> tuple:
     files = {}
     for role in ("subset", "capture", "guide", "first_image", "text", "noise"):
         path = tmp_path / role
@@ -47,7 +53,7 @@ def _fixed_inputs(tmp_path):
     return path, settings
 
 
-def _completed(tmp_path):
+def _completed(tmp_path: Path) -> Path:
     checkpoint = tmp_path / "checkpoint.safetensors"
     contract = _contract()
     contract["adapter"]["step"] = 100
@@ -66,7 +72,7 @@ def _completed(tmp_path):
     return checkpoint
 
 
-def test_fixed_inputs_checked_without_output_or_models(tmp_path):
+def test_fixed_inputs_checked_without_output_or_models(tmp_path: Path) -> None:
     path, settings = _fixed_inputs(tmp_path)
     checked = engine.read_preview_inputs(path, settings)
     assert len(checked["sha256"]) == 64
@@ -76,7 +82,7 @@ def test_fixed_inputs_checked_without_output_or_models(tmp_path):
         engine.read_preview_inputs(path, settings)
 
 
-def test_enqueue_is_idempotent_and_keeps_existing_state(tmp_path):
+def test_enqueue_is_idempotent_and_keeps_existing_state(tmp_path: Path) -> None:
     path, settings = _fixed_inputs(tmp_path)
     record = engine.read_preview_inputs(path, settings)
     checkpoint = _completed(tmp_path)
@@ -91,7 +97,7 @@ def test_enqueue_is_idempotent_and_keeps_existing_state(tmp_path):
     assert sha256(checkpoint) == job["checkpoint"]["sha256"]
 
 
-def test_incomplete_or_changed_checkpoint_never_enqueues(tmp_path):
+def test_incomplete_or_changed_checkpoint_never_enqueues(tmp_path: Path) -> None:
     path, settings = _fixed_inputs(tmp_path)
     record = engine.read_preview_inputs(path, settings)
     checkpoint = _completed(tmp_path)
@@ -101,7 +107,7 @@ def test_incomplete_or_changed_checkpoint_never_enqueues(tmp_path):
     assert not settings.output.exists()
 
 
-def test_executor_owned_options_rejected(tmp_path):
+def test_executor_owned_options_rejected(tmp_path: Path) -> None:
     path, settings = _fixed_inputs(tmp_path)
     record = json.loads(path.read_text())
     record["evaluation_arguments"] += ["--checkpoint", "untracked.safetensors"]
@@ -110,7 +116,9 @@ def test_executor_owned_options_rejected(tmp_path):
         engine.read_preview_inputs(path, settings)
 
 
-def test_generation_failure_records_reason_and_keeps_checkpoint(tmp_path, monkeypatch):
+def test_generation_failure_records_reason_and_keeps_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path, settings = _fixed_inputs(tmp_path)
     fixed = engine.read_preview_inputs(path, settings)
     checkpoint = _completed(tmp_path)
@@ -118,7 +126,7 @@ def test_generation_failure_records_reason_and_keeps_checkpoint(tmp_path, monkey
     marker_digest = sha256(checkpoint.with_suffix(".complete.json"))
     job_path = engine.enqueue_preview(checkpoint, fixed, settings.output)
 
-    def fail_execution(args, **kwargs):
+    def fail_execution(args: Namespace, **kwargs) -> Never:
         assert kwargs["preview_tensor_validator"] is previews.verify_preview_tensors
         assert args.checkpoint == [checkpoint]
         assert args.preview_fixed == fixed
@@ -135,7 +143,7 @@ def test_generation_failure_records_reason_and_keeps_checkpoint(tmp_path, monkey
     assert sha256(checkpoint.with_suffix(".complete.json")) == marker_digest
 
 
-def test_preview_actual_tensor_check_rejects_changed_bytes():
+def test_preview_actual_tensor_check_rejects_changed_bytes() -> None:
     value = torch.ones(1, 4, 2, dtype=torch.bfloat16)
     fixed = {"input_files": {"capture": {"tensor_sha256": hashing.tensor_sha256(value)}}}
     previews.verify_preview_tensors(fixed, {"capture": value})
@@ -145,14 +153,17 @@ def test_preview_actual_tensor_check_rejects_changed_bytes():
         previews.verify_preview_tensors(fixed, {})
 
 
-def test_generation_corrupt_input_records_failure_before_execution(tmp_path, monkeypatch):
+def test_generation_corrupt_input_records_failure_before_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path, settings = _fixed_inputs(tmp_path)
     fixed = engine.read_preview_inputs(path, settings)
     checkpoint = _completed(tmp_path)
     job_path = engine.enqueue_preview(checkpoint, fixed, settings.output)
     Path(fixed["input_files"]["noise"]["path"]).write_bytes(b"changed input")
 
-    def forbidden(args, **_kwargs):
+    def forbidden(args: Namespace, **_kwargs) -> None:
+        del args
         pytest.fail("changed pinned files must fail before generation")
 
     monkeypatch.setattr(evaluate, "execute_evaluation", forbidden)
@@ -163,7 +174,9 @@ def test_generation_corrupt_input_records_failure_before_execution(tmp_path, mon
     assert "noise file changed" in failed["error"]
 
 
-def test_generation_records_raw_evidence_and_retry_preserves_prior_attempt(tmp_path, monkeypatch):
+def test_generation_records_raw_evidence_and_retry_preserves_prior_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path, settings = _fixed_inputs(tmp_path)
     fixed = engine.read_preview_inputs(path, settings)
     checkpoint = _completed(tmp_path)
@@ -172,16 +185,21 @@ def test_generation_records_raw_evidence_and_retry_preserves_prior_attempt(tmp_p
     job_path = engine.enqueue_preview(checkpoint, fixed, settings.output)
     attempts = []
 
-    def save_raw(args, **_kwargs):
+    def save_raw(args: Namespace, **_kwargs) -> int:
         attempts.append(args.output)
         record = {
-            "mode": fixed["mode"], "adapter": str(checkpoint), "adapter_sha256": checkpoint_hash,
+            "mode": fixed["mode"],
+            "adapter": str(checkpoint),
+            "adapter_sha256": checkpoint_hash,
             "software": software.capture("evaluation", fixed["mode"]),
             **{
                 key: fixed["input_files"][role]["tensor_sha256"]
                 for role, key in (
-                    ("capture", "capture_sha256"), ("guide", "guide_sha256"),
-                    ("first_image", "c0_sha256"), ("text", "text_sha256"), ("noise", "noise_sha256"),
+                    ("capture", "capture_sha256"),
+                    ("guide", "guide_sha256"),
+                    ("first_image", "c0_sha256"),
+                    ("text", "text_sha256"),
+                    ("noise", "noise_sha256"),
                 )
             },
         }
@@ -206,7 +224,7 @@ def test_generation_records_raw_evidence_and_retry_preserves_prior_attempt(tmp_p
     assert sha256(checkpoint.with_suffix(".complete.json")) == marker_hash
 
 
-def test_preview_failure_and_retry_do_not_change_checkpoint(tmp_path):
+def test_preview_failure_and_retry_do_not_change_checkpoint(tmp_path: Path) -> None:
     path, settings = _fixed_inputs(tmp_path)
     fixed = engine.read_preview_inputs(path, settings)
     checkpoint = _completed(tmp_path)
@@ -224,7 +242,7 @@ def test_preview_failure_and_retry_do_not_change_checkpoint(tmp_path):
     assert sha256(checkpoint.with_suffix(".complete.json")) == marker_digest
 
 
-def test_changed_inputs_fail_before_job_claim(tmp_path):
+def test_changed_inputs_fail_before_job_claim(tmp_path: Path) -> None:
     path, settings = _fixed_inputs(tmp_path)
     fixed = engine.read_preview_inputs(path, settings)
     checkpoint = _completed(tmp_path)
@@ -236,7 +254,7 @@ def test_changed_inputs_fail_before_job_claim(tmp_path):
     assert previews.set_preview_state(job, "failed", error="fixed noise changed")["error"] == "fixed noise changed"
 
 
-def test_completion_requires_matched_raw_and_rendered_evidence(tmp_path):
+def test_completion_requires_matched_raw_and_rendered_evidence(tmp_path: Path) -> None:
     path, settings = _fixed_inputs(tmp_path)
     fixed = engine.read_preview_inputs(path, settings)
     checkpoint = _completed(tmp_path)
@@ -295,153 +313,188 @@ def test_completion_requires_matched_raw_and_rendered_evidence(tmp_path):
     )
 
 
-def test_reference_bundle_pins_capture_source_and_guide(tmp_path):
+def test_reference_bundle_pins_capture_source_and_guide(tmp_path: Path) -> None:
     path, settings = _fixed_inputs(tmp_path)
     fixed = json.loads(path.read_text())
-    fixed['evaluation_arguments'] += ['--source', 'actor/view']
-    guide_path = Path(fixed['input_files']['guide']['path'])
-    torch.save({'input_fingerprint': 'a' * 64}, guide_path)
-    fixed['input_files']['guide']['sha256'] = sha256(guide_path)
+    fixed["evaluation_arguments"] += ["--source", "actor/view"]
+    guide_path = Path(fixed["input_files"]["guide"]["path"])
+    torch.save({"input_fingerprint": "a" * 64}, guide_path)
+    fixed["input_files"]["guide"]["sha256"] = sha256(guide_path)
     pixels = torch.zeros(9, 3, 16, 16)
-    panels = [media.Panel(role, role, pixels, tuple(range(9))) for role in ('recorded', 'decoded', 'guide')]
+    panels = [media.Panel(role, role, pixels, tuple(range(9))) for role in ("recorded", "decoded", "guide")]
     producer = {
-        'source': 'actor/view', 'capture_encoding_sha256': fixed['input_files']['capture']['sha256'],
-        'guide_rgb_sha256': 'a' * 64, 'source_frames': list(range(9)),
-        'panels': [{'role': p.role, 'pixels_sha256': media._pixel_identity(p.pixels)} for p in panels],
+        "source": "actor/view",
+        "capture_encoding_sha256": fixed["input_files"]["capture"]["sha256"],
+        "guide_rgb_sha256": "a" * 64,
+        "source_frames": list(range(9)),
+        "panels": [{"role": p.role, "pixels_sha256": media._pixel_identity(p.pixels)} for p in panels],
     }
-    destination = tmp_path / 'reference_bundle'
+    destination = tmp_path / "reference_bundle"
     media.save_training_references(panels, producer, destination)
-    manifest = destination / 'references.json'
-    fixed['reference_bundle'] = {'path': str(manifest.resolve()), 'sha256': sha256(manifest)}
+    manifest = destination / "references.json"
+    fixed["reference_bundle"] = {"path": str(manifest.resolve()), "sha256": sha256(manifest)}
     path.write_text(json.dumps(fixed))
     checked = engine.read_preview_inputs(path, settings)
     assert previews.check_preview_reference_bundle(checked) == producer
-    checked['input_files']['capture']['sha256'] = 'b' * 64
-    with pytest.raises(ValueError, match='different capture encoding'):
+    checked["input_files"]["capture"]["sha256"] = "b" * 64
+    with pytest.raises(ValueError, match="different capture encoding"):
         previews.check_preview_reference_bundle(checked)
-    checked['input_files']['capture']['sha256'] = producer['capture_encoding_sha256']
-    (destination / 'guide.pt').write_bytes(b'changed RGB')
-    with pytest.raises(ValueError, match='pixel file changed'):
+    checked["input_files"]["capture"]["sha256"] = producer["capture_encoding_sha256"]
+    (destination / "guide.pt").write_bytes(b"changed RGB")
+    with pytest.raises(ValueError, match="pixel file changed"):
         previews.check_preview_reference_bundle(checked)
 
 
-def test_d1_preview_refuses_absent_guide_even_with_missing_fingerprint(tmp_path):
+def test_d1_preview_refuses_absent_guide_even_with_missing_fingerprint(tmp_path: Path) -> None:
     path, settings = _fixed_inputs(tmp_path)
     fixed = json.loads(path.read_text())
-    fixed['evaluation_arguments'] += ['--source', 'actor/view']
-    guide = Path(fixed['input_files']['guide']['path'])
+    fixed["evaluation_arguments"] += ["--source", "actor/view"]
+    guide = Path(fixed["input_files"]["guide"]["path"])
     torch.save({}, guide)
-    fixed['input_files']['guide']['sha256'] = sha256(guide)
+    fixed["input_files"]["guide"]["sha256"] = sha256(guide)
     pixels = torch.zeros(9, 3, 16, 16)
-    panels = [media.Panel(role, role, pixels, tuple(range(9))) for role in ('recorded', 'decoded')]
-    panels.append(media.Panel('guide', 'Guide RGB', None, tuple(range(9)), missing_reason='Guide not used'))
+    panels = [media.Panel(role, role, pixels, tuple(range(9))) for role in ("recorded", "decoded")]
+    panels.append(media.Panel("guide", "Guide RGB", None, tuple(range(9)), missing_reason="Guide not used"))
     producer = {
-        'source': 'actor/view', 'capture_encoding_sha256': fixed['input_files']['capture']['sha256'],
-        'guide_rgb_sha256': None, 'source_frames': list(range(9)),
-        'panels': [{'role': p.role, 'pixels_sha256': media._pixel_identity(p.pixels)} for p in panels],
+        "source": "actor/view",
+        "capture_encoding_sha256": fixed["input_files"]["capture"]["sha256"],
+        "guide_rgb_sha256": None,
+        "source_frames": list(range(9)),
+        "panels": [{"role": p.role, "pixels_sha256": media._pixel_identity(p.pixels)} for p in panels],
     }
-    destination = tmp_path / 'references'
+    destination = tmp_path / "references"
     media.save_training_references(panels, producer, destination)
-    manifest = destination / 'references.json'
-    fixed['reference_bundle'] = {'path': str(manifest.resolve()), 'sha256': sha256(manifest)}
+    manifest = destination / "references.json"
+    fixed["reference_bundle"] = {"path": str(manifest.resolve()), "sha256": sha256(manifest)}
     path.write_text(json.dumps(fixed))
-    with pytest.raises(ValueError, match='D1 preview requires a checked guide reference'):
+    with pytest.raises(ValueError, match="D1 preview requires a checked guide reference"):
         engine.read_preview_inputs(path, settings)
 
 
 @pytest.mark.parametrize("changed_runtime", [False, True])
 @pytest.mark.parametrize("reference_case", ["producer", "capture_only", "no_fit"])
-def test_generation_with_reference_bundle_renders_and_completes(tmp_path, monkeypatch, changed_runtime, reference_case):
-    from contextlib import nullcontext
-    from types import SimpleNamespace
-
-    from scripts.onestep_avatar.corpus import dataset, precompute
-    from scripts.prune.core import session as native_session
+def test_generation_with_reference_bundle_renders_and_completes(  # noqa: PLR0915 -- one complete fixture lifecycle with all assertions and cleanup
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed_runtime: bool, reference_case: str
+) -> None:
 
     path, settings = _fixed_inputs(tmp_path)
     fixed = json.loads(path.read_text())
-    fixed['evaluation_arguments'] += ['--source', 'actor/view']
-    guide_path = Path(fixed['input_files']['guide']['path'])
-    torch.save({'input_fingerprint': 'a' * 64}, guide_path)
-    fixed['input_files']['guide']['sha256'] = sha256(guide_path)
-    vae = tmp_path / 'vae.safetensors'
-    vae.write_bytes(b'fixed decoder')
+    fixed["evaluation_arguments"] += ["--source", "actor/view"]
+    guide_path = Path(fixed["input_files"]["guide"]["path"])
+    torch.save({"input_fingerprint": "a" * 64}, guide_path)
+    fixed["input_files"]["guide"]["sha256"] = sha256(guide_path)
+    vae = tmp_path / "vae.safetensors"
+    vae.write_bytes(b"fixed decoder")
     pixels = torch.zeros(9, 3, 16, 16)
-    view = tmp_path / 'actor/view'
+    view = tmp_path / "actor/view"
     view.mkdir(parents=True)
-    capture_path = view / dataset.capture_bundle_name('white')
-    torch.save({'schema_version': 2, 'master': torch.zeros(128, 2, 1, 1), 'fps': 30}, capture_path)
-    fixed['input_files']['capture'].update(path=str(capture_path), sha256=sha256(capture_path))
-    capture_only = reference_case == 'capture_only'
+    capture_path = view / dataset.capture_bundle_name("white")
+    torch.save({"schema_version": 2, "master": torch.zeros(128, 2, 1, 1), "fps": 30}, capture_path)
+    fixed["input_files"]["capture"].update(path=str(capture_path), sha256=sha256(capture_path))
+    capture_only = reference_case == "capture_only"
     source = {
-        'relative_dir': 'actor/view', 'capture_latent_sha256': sha256(capture_path),
-        'guide_sha256': None if capture_only else 'a' * 64, 'shape': [128, 2, 1, 1], 'fps': 30,
-        'capture_encode_record': {'vae_fingerprint': precompute.file_fingerprint(vae)},
+        "relative_dir": "actor/view",
+        "capture_latent_sha256": sha256(capture_path),
+        "guide_sha256": None if capture_only else "a" * 64,
+        "shape": [128, 2, 1, 1],
+        "fps": 30,
+        "capture_encode_record": {"vae_fingerprint": precompute.file_fingerprint(vae)},
     }
-    monkeypatch.setattr(media, 'recorded_capture_rgb', lambda *a: pixels)
-    monkeypatch.setattr(media, 'recorded_guide_rgb', lambda *a: pixels)
-    monkeypatch.setattr(media, 'decode', lambda *a: pixels)
+    monkeypatch.setattr(media, "recorded_capture_rgb", lambda *_a: pixels)
+    monkeypatch.setattr(media, "recorded_guide_rgb", lambda *_a: pixels)
+    monkeypatch.setattr(media, "decode", lambda *_a: pixels)
     preparation_session = SimpleNamespace(model=SimpleNamespace(paths=SimpleNamespace(video_vae=lambda: vae)))
     panels, producer = media.prepare_training_references(
-        preparation_session, None, source, tmp_path, 'white', 2, 42, require_guide=not capture_only,
+        preparation_session,
+        None,
+        source,
+        tmp_path,
+        "white",
+        2,
+        42,
+        require_guide=not capture_only,
     )
     if capture_only:
-        settings.guide_mode = 'd0'
-        fixed['evaluation_arguments'] += ['--guide-mode', 'd0']
-        del fixed['input_files']['guide']
-    if reference_case == 'no_fit':
-        from dataclasses import replace
-        panels[1] = replace(panels[1], title='A reference title that cannot possibly fit inside any supported training panel')
-    destination = tmp_path / 'references'
+        settings.guide_mode = "d0"
+        fixed["evaluation_arguments"] += ["--guide-mode", "d0"]
+        del fixed["input_files"]["guide"]
+    if reference_case == "no_fit":
+        from dataclasses import (  # noqa: PLC0415 -- fixture-local import
+            replace,
+        )
+
+        panels[1] = replace(
+            panels[1], title="A reference title that cannot possibly fit inside any supported training panel"
+        )
+    destination = tmp_path / "references"
     media.save_training_references(panels, producer, destination)
-    manifest = destination / 'references.json'
-    fixed['reference_bundle'] = {'path': str(manifest.resolve()), 'sha256': sha256(manifest)}
+    manifest = destination / "references.json"
+    fixed["reference_bundle"] = {"path": str(manifest.resolve()), "sha256": sha256(manifest)}
     path.write_text(json.dumps(fixed))
     fixed = engine.read_preview_inputs(path, settings)
     checkpoint = _completed(tmp_path)
     job_path = engine.enqueue_preview(checkpoint, fixed, settings.output)
     original_hash = sha256(checkpoint)
 
-    def save_raw(args, **_kwargs):
+    def save_raw(args: Namespace, **_kwargs) -> None:
         record = {
-            'mode': 'bidirectional', 'frames': 2, 'source': 'actor/view', 'fps': 30,
-            'software': software.capture('evaluation', 'bidirectional'),
-            'adapter': str(checkpoint), 'adapter_sha256': sha256(checkpoint),
-            **{key: fixed['input_files'][role]['tensor_sha256'] if role in fixed['input_files'] else None for role, key in (
-                ('capture', 'capture_sha256'), ('guide', 'guide_sha256'), ('first_image', 'c0_sha256'),
-                ('text', 'text_sha256'), ('noise', 'noise_sha256'),
-            )},
+            "mode": "bidirectional",
+            "frames": 2,
+            "source": "actor/view",
+            "fps": 30,
+            "software": software.capture("evaluation", "bidirectional"),
+            "adapter": str(checkpoint),
+            "adapter_sha256": sha256(checkpoint),
+            **{
+                key: fixed["input_files"][role]["tensor_sha256"] if role in fixed["input_files"] else None
+                for role, key in (
+                    ("capture", "capture_sha256"),
+                    ("guide", "guide_sha256"),
+                    ("first_image", "c0_sha256"),
+                    ("text", "text_sha256"),
+                    ("noise", "noise_sha256"),
+                )
+            },
         }
-        evaluate.save_case(torch.zeros(1, 128, 2, 1, 1), record, args.output / 'case_0000/variant_0000')
+        evaluate.save_case(torch.zeros(1, 128, 2, 1, 1), record, args.output / "case_0000/variant_0000")
 
-    monkeypatch.setattr(evaluate, 'execute_evaluation', save_raw)
-    monkeypatch.setattr(evaluate.backbone, 'resolve', lambda *a: SimpleNamespace(paths=SimpleNamespace(video_vae=lambda: vae)))
-    monkeypatch.setattr(native_session, 'Session', lambda *a: SimpleNamespace(decoder=lambda: nullcontext(None)))
-    monkeypatch.setattr(media, 'decode', lambda *a: pixels)
-    if changed_runtime or reference_case == 'no_fit':
-        monkeypatch.setattr(media, 'native_decoder_settings', lambda: {**producer['decoder_settings'], 'torch': 'different'})
+    monkeypatch.setattr(evaluate, "execute_evaluation", save_raw)
+    monkeypatch.setattr(
+        evaluate.backbone, "resolve", lambda *_a: SimpleNamespace(paths=SimpleNamespace(video_vae=lambda: vae))
+    )
+    monkeypatch.setattr(native_session, "Session", lambda *_a: SimpleNamespace(decoder=lambda: nullcontext(None)))
+    monkeypatch.setattr(media, "decode", lambda *_a: pixels)
+    if changed_runtime or reference_case == "no_fit":
+        monkeypatch.setattr(
+            media, "native_decoder_settings", lambda: {**producer["decoder_settings"], "torch": "different"}
+        )
         if not changed_runtime:
-            monkeypatch.setattr(media, 'native_decoder_settings', lambda: producer['decoder_settings'])
-        monkeypatch.setattr(native_session, 'Session', lambda *a: pytest.fail('decoder opened before runtime validation'))
-        monkeypatch.setattr(media, 'decode', lambda *a: pytest.fail('pixels decoded before layout/runtime validation'))
-        with pytest.raises(ValueError, match='decoder settings differ' if changed_runtime else 'no readable compact layout'):
+            monkeypatch.setattr(media, "native_decoder_settings", lambda: producer["decoder_settings"])
+        monkeypatch.setattr(
+            native_session, "Session", lambda *_a: pytest.fail("decoder opened before runtime validation")
+        )
+        monkeypatch.setattr(media, "decode", lambda *_a: pytest.fail("pixels decoded before layout/runtime validation"))
+        with pytest.raises(
+            ValueError, match="decoder settings differ" if changed_runtime else "no readable compact layout"
+        ):
             previews.generate_preview(job_path, gpu_id=4)
         failed = json.loads(job_path.read_text())
-        assert failed['state'] == 'failed'
-        assert failed['results']
+        assert failed["state"] == "failed"
+        assert failed["results"]
         assert sha256(checkpoint) == original_hash
-        assert not list(Path(failed['output']).glob('render_attempt_*'))
+        assert not list(Path(failed["output"]).glob("render_attempt_*"))
         return
     results = previews.generate_preview(job_path, gpu_id=4)
     completed = json.loads(job_path.read_text())
-    assert completed['state'] == 'complete' and completed['results'] == results
+    assert completed["state"] == "complete"
+    assert completed["results"] == results
     assert sha256(checkpoint) == original_hash
-    rendering = json.loads(Path(completed['renderings'][0]['path']).read_text())
-    assert rendering['common_settings']['reference_bundle'] == fixed['reference_bundle']
-    assert len(rendering['common_settings']['decoder_records']) == 1
-    assert rendering['layout'] == 'compact_training'
-    assert rendering['font_size'] * 480 / rendering['display_size'][0] >= 16
-    guide_panel = next(row for row in rendering['panels'] if row['role'] == 'guide')
+    rendering = json.loads(Path(completed["renderings"][0]["path"]).read_text())
+    assert rendering["common_settings"]["reference_bundle"] == fixed["reference_bundle"]
+    assert len(rendering["common_settings"]["decoder_records"]) == 1
+    assert rendering["layout"] == "compact_training"
+    assert rendering["font_size"] * 480 / rendering["display_size"][0] >= 16
+    guide_panel = next(row for row in rendering["panels"] if row["role"] == "guide")
     if capture_only:
-        assert guide_panel['missing_reason'] == 'Guide not used'
-        assert guide_panel['pixels_sha256'] is None
+        assert guide_panel["missing_reason"] == "Guide not used"
+        assert guide_panel["pixels_sha256"] is None

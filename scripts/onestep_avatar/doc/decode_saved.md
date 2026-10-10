@@ -63,4 +63,10 @@ actor/config jobs and compares original metric tolerances; this producer remains
 
 ## Invocation
 
-From `LTX-2`: `conda run -n ltx python -m scripts.onestep_avatar.decode_saved --jobs /absolute/jobs.json --output /absolute/output --gpu-id 4 --seed 42 --model 2.5`.
+Use a `decode` queue job whose `arguments` contain
+`--jobs /absolute/decode-jobs.json --output /absolute/output --seed 42 --model 2.5`.
+The queue assigns the GPU and the child uses local device zero. From `LTX-2`,
+validate the queue list with `conda run -n ltx python -m
+scripts.onestep_avatar.execution.queue --jobs /absolute/queue-jobs.json
+--state /absolute/state.json --dry-run`, then execute through the shared process
+ledger. See the [queue recipes](../configs/README.md) for the complete launch.

@@ -14,13 +14,28 @@ from scripts.onestep_avatar.training import numerics, runtime
 
 
 def inventory(*, numerical: bool = False) -> dict:
-    policy = {"param_dtype": "torch.bfloat16", "reduce_dtype": "torch.bfloat16", "buffer_dtype": None,
-              "cast_forward_inputs": False, "cast_root_forward_inputs": False, "keep_low_precision_grads": False}
+    policy = {
+        "param_dtype": "torch.bfloat16",
+        "reduce_dtype": "torch.bfloat16",
+        "buffer_dtype": None,
+        "cast_forward_inputs": False,
+        "cast_root_forward_inputs": False,
+        "keep_low_precision_grads": False,
+    }
     schema = 2 if numerical else 1
-    ranks = [{"schema_version": schema, "rank": rank, "world_size": 4, "mixed_precision": "bf16",
-              "distributed_type": "FSDP", "conditioning_precision": "float32",
-              "adapter_storage_dtypes": ["torch.float32"], "fsdp_policies": [deepcopy(policy)]}
-             for rank in range(4)]
+    ranks = [
+        {
+            "schema_version": schema,
+            "rank": rank,
+            "world_size": 4,
+            "mixed_precision": "bf16",
+            "distributed_type": "FSDP",
+            "conditioning_precision": "float32",
+            "adapter_storage_dtypes": ["torch.float32"],
+            "fsdp_policies": [deepcopy(policy)],
+        }
+        for rank in range(4)
+    ]
     if numerical:
         for rank in ranks:
             rank["numerics"] = {**numerics.POLICY, "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32}
@@ -31,9 +46,17 @@ def test_applied_policy_inventory_agrees() -> None:
     runtime.validate(inventory(), 4, "bf16", native=True)
 
 
-@pytest.mark.parametrize(("field", "value"), [("rank", True), ("world_size", 2), ("mixed_precision", "no"),
-                                        ("conditioning_precision", "float16"), ("distributed_type", "invented"),
-                                        ("adapter_storage_dtypes", [])])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("rank", True),
+        ("world_size", 2),
+        ("mixed_precision", "no"),
+        ("conditioning_precision", "float16"),
+        ("distributed_type", "invented"),
+        ("adapter_storage_dtypes", []),
+    ],
+)
 def test_one_rank_changed_policy_refuses(field: str, value: object) -> None:
     record = inventory()
     record["ranks"][2][field] = value
@@ -77,15 +100,17 @@ def test_capture_observes_applied_policy_objects(monkeypatch: pytest.MonkeyPatch
     class Wrapped(torch.nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            self.mixed_precision = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.float32,
-                                                 cast_root_forward_inputs=False)
+            self.mixed_precision = MixedPrecision(
+                param_dtype=torch.bfloat16, reduce_dtype=torch.float32, cast_root_forward_inputs=False
+            )
             self.lora_A = torch.nn.Linear(2, 2, bias=False)
 
     monkeypatch.setattr(runtime, "FSDP", Wrapped)
     model = torch.nn.Module()
     model.wrapped = Wrapped()
-    accelerator = SimpleNamespace(num_processes=1, process_index=0, mixed_precision="bf16",
-                                  distributed_type=DistributedType.FSDP)
+    accelerator = SimpleNamespace(
+        num_processes=1, process_index=0, mixed_precision="bf16", distributed_type=DistributedType.FSDP
+    )
     observed = runtime.capture(model, accelerator, "float32")
     assert observed["adapter_storage_dtypes"] == ["torch.float32"]
     assert observed["fsdp_policies"][0]["reduce_dtype"] == "torch.float32"

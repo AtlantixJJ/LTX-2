@@ -96,42 +96,91 @@ def _cache(tmp_path: Path) -> tuple[Path, dict]:
     config["transformer"]["per_layer_ff_inner_dim"] = [256] * 4
     source = tmp_path / "source.safetensors"
     model = _model(config)
-    save_file({"model.diffusion_model." + key: value for key, value in model.state_dict().items()}, str(source),
-              metadata={"config": json.dumps(config)})
+    save_file(
+        {"model.diffusion_model." + key: value for key, value in model.state_dict().items()},
+        str(source),
+        metadata={"config": json.dumps(config)},
+    )
     capture = tmp_path / "capture.pt"
     torch.save({"schema_version": 2, "master": torch.zeros(8, 7, 2, 2, dtype=torch.bfloat16), "fps": 30}, capture)
     noise = tmp_path / "epsilon.pt"
     torch.save(torch.zeros(1, 28, 8, dtype=torch.bfloat16), noise)
     manifest = {
-        "whole_clip": True, "trajectory_only": False, "attention": "full_bidirectional", "objective": "white",
-        "text_context": {}, "geometry": {}, "seed": 42, "latent_dtype": "torch.bfloat16", "sigmas": [0.725, 1.0],
+        "whole_clip": True,
+        "trajectory_only": False,
+        "attention": "full_bidirectional",
+        "objective": "white",
+        "text_context": {},
+        "geometry": {},
+        "seed": 42,
+        "latent_dtype": "torch.bfloat16",
+        "sigmas": [0.725, 1.0],
         "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1},
-        "model": {"model_key": "2.5", "transformer_path": str(source),
-                  "transformer_fingerprint": provenance.checkpoint_fingerprint(source), "video_vae_fingerprint": "vae"},
-        "videos": [{"view": "calibration/views/view00", "sigma": sigma, "schedule": [sigma, 0],
-                    "artifacts": {"capture": str(capture), "capture_sha256": provenance.file_sha256(capture),
-                                  "epsilon": noise.name, "epsilon_sha256": provenance.file_sha256(noise),
-                                  "fps": 30, "blocks": [[0, 7]]}} for sigma in (0.725, 1.0)],
+        "model": {
+            "model_key": "2.5",
+            "transformer_path": str(source),
+            "transformer_fingerprint": provenance.checkpoint_fingerprint(source),
+            "video_vae_fingerprint": "vae",
+        },
+        "videos": [
+            {
+                "view": "calibration/views/view00",
+                "sigma": sigma,
+                "schedule": [sigma, 0],
+                "artifacts": {
+                    "capture": str(capture),
+                    "capture_sha256": provenance.file_sha256(capture),
+                    "epsilon": noise.name,
+                    "epsilon_sha256": provenance.file_sha256(noise),
+                    "fps": 30,
+                    "blocks": [[0, 7]],
+                },
+            }
+            for sigma in (0.725, 1.0)
+        ],
     }
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
     stamp = whole_clip.native_provenance(tmp_path, manifest, ["calibration/views/view00"], [0.725, 1.0])
     mask = tmp_path / "mask.json"
-    mask.write_text(json.dumps({"candidate_format": "whole_clip_d0_mask_v1", "provenance": stamp,
-                               "masks": {f"{layer}.ff": [1] * 128 + [0] * 128 for layer in range(4)}}))
+    mask.write_text(
+        json.dumps(
+            {
+                "candidate_format": "whole_clip_d0_mask_v1",
+                "provenance": stamp,
+                "masks": {f"{layer}.ff": [1] * 128 + [0] * 128 for layer in range(4)},
+            }
+        )
+    )
     payload = tmp_path / "samples.pt"
     torch.save({"retained_features": torch.zeros(8, 128), "teacher_output": torch.zeros(8, 8)}, payload)
     indices = token_sampling.sample_indices(28, 2, 2, 2, torch.device("cpu"), sampler="balanced_2d_midpoint_v1")
-    sampling = token_sampling.sampling_record(indices, tokens=28, height=2, width=2, stride=2,
-                                              sampler="balanced_2d_midpoint_v1")
+    sampling = token_sampling.sampling_record(
+        indices, tokens=28, height=2, width=2, stride=2, sampler="balanced_2d_midpoint_v1"
+    )
     selected = ridge.midpoint_subsample(indices, 4)
     cache = {
-        "cache_format": ridge.CACHE_FORMAT, "target": ridge.TARGET, "selection": ridge.SELECTION,
-        "provenance": stamp, "source_checkpoint": str(source), "mask_path": str(mask),
-        "mask_sha256": provenance.file_sha256(mask), "branch": "0.ff", "retained_indices": list(range(128)),
-        "payload": str(payload), "payload_sha256": provenance.file_sha256(payload),
-        "cases": [{"view": "calibration/views/view00", "sigma": sigma, "sampling": sampling,
-                   "token_indices": selected.tolist(), "token_indices_sha256": token_sampling.index_sha256(selected),
-                   "row_slice": [order * 4, (order + 1) * 4]} for order, sigma in enumerate((0.725, 1.0))],
+        "cache_format": ridge.CACHE_FORMAT,
+        "target": ridge.TARGET,
+        "selection": ridge.SELECTION,
+        "provenance": stamp,
+        "source_checkpoint": str(source),
+        "mask_path": str(mask),
+        "mask_sha256": provenance.file_sha256(mask),
+        "branch": "0.ff",
+        "retained_indices": list(range(128)),
+        "payload": str(payload),
+        "payload_sha256": provenance.file_sha256(payload),
+        "cases": [
+            {
+                "view": "calibration/views/view00",
+                "sigma": sigma,
+                "sampling": sampling,
+                "token_indices": selected.tolist(),
+                "token_indices_sha256": token_sampling.index_sha256(selected),
+                "row_slice": [order * 4, (order + 1) * 4],
+            }
+            for order, sigma in enumerate((0.725, 1.0))
+        ],
     }
     path = tmp_path / "samples.json"
     path.write_text(json.dumps(cache))
@@ -146,8 +195,10 @@ def test_calibration_cache_pins_real_checkpoint_geometry_mask_noise_and_sampler(
     assert all(case["token_indices"][0] >= 4 for case in report["cache"]["cases"])
 
 
-@pytest.mark.parametrize("change", ["heldout", "duplicate", "c0", "geometry", "sampler_hash", "keep",
-                                   "unequal_quota", "mask_hash", "target", "scope"])
+@pytest.mark.parametrize(
+    "change",
+    ["heldout", "duplicate", "c0", "geometry", "sampler_hash", "keep", "unequal_quota", "mask_hash", "target", "scope"],
+)
 def test_mutated_cache_manifest_is_rejected(tmp_path: Path, change: str) -> None:
     path, _ = _cache(tmp_path)
     cache = json.loads(path.read_text())
@@ -167,8 +218,9 @@ def test_mutated_cache_manifest_is_rejected(tmp_path: Path, change: str) -> None
     elif change == "unequal_quota":
         full = token_sampling.sample_indices(28, 2, 2, 2, torch.device("cpu"), sampler="balanced_2d_midpoint_v1")
         subset = ridge.midpoint_subsample(full, 3)
-        first.update(token_indices=subset.tolist(), token_indices_sha256=token_sampling.index_sha256(subset),
-                     row_slice=[0, 3])
+        first.update(
+            token_indices=subset.tolist(), token_indices_sha256=token_sampling.index_sha256(subset), row_slice=[0, 3]
+        )
         cache["cases"][1]["row_slice"] = [3, 7]
     elif change == "mask_hash":
         cache["mask_sha256"] = "changed"
@@ -181,8 +233,7 @@ def test_mutated_cache_manifest_is_rejected(tmp_path: Path, change: str) -> None
         ridge.load_calibration_cache(path)
 
 
-@pytest.mark.parametrize("change", ["epsilon_missing", "epsilon_mutated", "capture", "payload", "manifest",
-                                   "source"])
+@pytest.mark.parametrize("change", ["epsilon_missing", "epsilon_mutated", "capture", "payload", "manifest", "source"])
 def test_mutated_calibration_artifacts_are_rejected(tmp_path: Path, change: str) -> None:
     path, _ = _cache(tmp_path)
     if change == "epsilon_missing":

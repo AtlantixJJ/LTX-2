@@ -28,7 +28,7 @@ later updates do not invalidate earlier checkpoint evidence. Final verification
 also requires the snapshot records to equal the final live journals.
 
 ```mermaid
-flowchart TD
+flowchart LR
   B[("declared resource budget")] --> R["read_budget"] --> P("checked limits and budget hash")
   P --> S["Phase.start"] --> C{{"local CUDA peak counters"}}
   W["engine: load, update or export"] --> C

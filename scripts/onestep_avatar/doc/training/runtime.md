@@ -15,7 +15,7 @@ then save the complete ordered inventory in resolved config and checkpoint
 markers. The canonical launch owner checks requested process count and precision.
 
 ```mermaid
-flowchart TD
+flowchart LR
   W("prepared model and actual Accelerator") --> C["capture"] --> R("one rank's applied-policy record")
   R --> G["gather and validate"] --> I("ordered matching rank inventory")
   I --> E["engine: bind runtime evidence"] --> S[("resolved config and checkpoint markers")]

@@ -65,10 +65,16 @@ def saved_sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
 
 def sweep_queue_job(path: Path, output: Path) -> dict:
     """Prepare the real queue command through its public parser and identity owner."""
-    job = {"id": "matched", "kind": "experiment", "experiment": "sigma_sweep",
-           "spec": str(path), "spec_sha256": sha256(path),
-           "arguments": ["--spec", str(path), "--output", str(output)],
-           "output": str(output), "completion": {"manifest": str(output / "manifest.json")}}
+    job = {
+        "id": "matched",
+        "kind": "experiment",
+        "experiment": "sigma_sweep",
+        "spec": str(path),
+        "spec_sha256": sha256(path),
+        "arguments": ["--spec", str(path), "--output", str(output)],
+        "output": str(output),
+        "completion": {"manifest": str(output / "manifest.json")},
+    }
     jobs = path.parent / "queue_jobs.json"
     jobs.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
     return queue.prepare_jobs(jobs)[0]
@@ -270,13 +276,13 @@ def test_public_completion_refuses_changed_movie_with_unchanged_poster_records(s
     movie = Path(row["video"])
     original_movie = movie.read_bytes()
     posters = {sample["path"]: sha256(Path(sample["path"])) for sample in row["samples"]}
-    inventory = sorted(str(p.relative_to(output)) for p in output.rglob('*'))
-    movie.write_bytes(original_movie + b'changed movie bytes outside poster records')
+    inventory = sorted(str(p.relative_to(output)) for p in output.rglob("*"))
+    movie.write_bytes(original_movie + b"changed movie bytes outside poster records")
     before = len(calls)
     with pytest.raises(ValueError, match="saved media path or bytes changed"):
         sigma_sweep.verify_completion(path, output)
     assert all(sha256(Path(p)) == digest for p, digest in posters.items())
-    assert sorted(str(p.relative_to(output)) for p in output.rglob('*')) == inventory
+    assert sorted(str(p.relative_to(output)) for p in output.rglob("*")) == inventory
     assert len(calls) == before
     movie.write_bytes(original_movie)
     assert sigma_sweep.verify_completion(path, output) == manifest

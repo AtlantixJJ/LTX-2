@@ -1,6 +1,5 @@
 """Sampling budget and native spatial coordinates are independent of scoring quality."""
 
-
 import hashlib
 import struct
 
@@ -18,16 +17,21 @@ from scripts.prune.score.whole_clip_d0_scores import _sample_indices
 def test_default_sampler_exactly_preserves_old_stride(height: int, width: int, stride: int) -> None:
     device = torch.device("cpu")
     tokens = 5 * height * width
-    assert torch.equal(token_sampling.sample_indices(tokens, height, width, stride, device),
-                       _sample_indices(tokens, height * width, stride, device))
+    assert torch.equal(
+        token_sampling.sample_indices(tokens, height, width, stride, device),
+        _sample_indices(tokens, height * width, stride, device),
+    )
 
 
-@pytest.mark.parametrize(("height", "width", "stride"), [(32, 32, 16), (5, 11, 7), (3, 17, 4),
-                                               (1, 13, 3), (13, 1, 2), (4, 7, 1), (4, 7, 100)])
+@pytest.mark.parametrize(
+    ("height", "width", "stride"),
+    [(32, 32, 16), (5, 11, 7), (3, 17, 4), (1, 13, 3), (13, 1, 2), (4, 7, 1), (4, 7, 100)],
+)
 def test_balanced_grid_matches_budget_uniqueness_and_excludes_c0(height: int, width: int, stride: int) -> None:
     per_frame = height * width
-    indices = token_sampling.sample_indices(5 * per_frame, height, width, stride, torch.device("cpu"),
-                                            sampler="balanced_2d_midpoint_v1")
+    indices = token_sampling.sample_indices(
+        5 * per_frame, height, width, stride, torch.device("cpu"), sampler="balanced_2d_midpoint_v1"
+    )
     budget = len(range(0, per_frame, stride))
     assert indices.numel() == 4 * budget
     assert torch.unique(indices).numel() == indices.numel()
@@ -48,10 +52,12 @@ def test_32_grid_expands_columns_without_claiming_full_spatial_coverage() -> Non
 
 
 def _record(height: int, width: int, stride: int, sampler: str) -> dict:
-    indices = token_sampling.sample_indices(3 * height * width, height, width, stride,
-                                            torch.device("cpu"), sampler=sampler)
-    return token_sampling.sampling_record(indices, tokens=3 * height * width, height=height, width=width,
-                                          stride=stride, sampler=sampler)
+    indices = token_sampling.sample_indices(
+        3 * height * width, height, width, stride, torch.device("cpu"), sampler=sampler
+    )
+    return token_sampling.sampling_record(
+        indices, tokens=3 * height * width, height=height, width=width, stride=stride, sampler=sampler
+    )
 
 
 def test_index_hash_has_explicit_integer_encoding_and_geometry_pin() -> None:
@@ -65,24 +71,43 @@ def test_index_hash_has_explicit_integer_encoding_and_geometry_pin() -> None:
 def test_sampler_indices_match_real_patchifier_row_column_coordinates() -> None:
     height, width, frames = 3, 5, 4
     geometry = causal_core.CausalGeometry(scale_factors=SpatioTemporalScaleFactors(time=8, height=32, width=32))
-    grid = common.ClipGrid.build(frames, height * 32, width * 32, 30, geometry,
-                                    device=torch.device("cpu"), dtype=torch.float32, latent_channels=1)
+    grid = common.ClipGrid.build(
+        frames,
+        height * 32,
+        width * 32,
+        30,
+        geometry,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        latent_channels=1,
+    )
     latent = torch.empty(1, 1, frames, height, width)
     for frame in range(frames):
         for row in range(height):
             for column in range(width):
                 latent[0, 0, frame, row, column] = 100 * frame + 10 * row + column
-    indices = token_sampling.sample_indices(frames * height * width, height, width, 3,
-                                            torch.device("cpu"), sampler="balanced_2d_midpoint_v1")
+    indices = token_sampling.sample_indices(
+        frames * height * width, height, width, 3, torch.device("cpu"), sampler="balanced_2d_midpoint_v1"
+    )
     selected = grid.patchify(latent)[0, indices, 0]
-    expected = [100 * (index // (height * width)) + 10 * ((index % (height * width)) // width) + index % width
-                for index in indices.tolist()]
+    expected = [
+        100 * (index // (height * width)) + 10 * ((index % (height * width)) // width) + index % width
+        for index in indices.tolist()
+    ]
     assert selected.tolist() == expected
 
 
-@pytest.mark.parametrize(("tokens", "height", "width", "stride", "sampler"), [
-    (15, 3, 5, 2, "stride"), (31, 3, 5, 2, "stride"),
-    (30, 0, 5, 2, "stride"), (30, 3, 5, 0, "stride"), (30, 3, 5, True, "stride"), (30, 3, 5, 2, "random")])
+@pytest.mark.parametrize(
+    ("tokens", "height", "width", "stride", "sampler"),
+    [
+        (15, 3, 5, 2, "stride"),
+        (31, 3, 5, 2, "stride"),
+        (30, 0, 5, 2, "stride"),
+        (30, 3, 5, 0, "stride"),
+        (30, 3, 5, True, "stride"),
+        (30, 3, 5, 2, "random"),
+    ],
+)
 def test_invalid_grid_or_sampler_fails(tokens: int, height: int, width: int, stride: int, sampler: str) -> None:
     with pytest.raises(ValueError, match=r"token|stride|sampler"):
         token_sampling.sample_indices(tokens, height, width, stride, torch.device("cpu"), sampler=sampler)

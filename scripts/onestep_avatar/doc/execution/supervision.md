@@ -20,7 +20,7 @@ its measurement. The helper writes exclusive, complete JSON events outside the
 scientific output directory. It imports no model library.
 
 ```mermaid
-flowchart TD
+flowchart LR
   C[("frozen attempt and phase contract")] --> N["rank: notify_phase"] --> E[("exclusive phase events")]
   P["queue: registered child and own registry"] --> S["supervise"]
   E --> S

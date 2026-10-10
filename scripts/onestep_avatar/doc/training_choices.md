@@ -1,9 +1,8 @@
 # Training choices — mode, input, background, and past frames
 
-These definitions apply to the implemented typed modes. The next agent moves
-required behavior and callers to final owners, then removes legacy execution.
-CPU/import/boundary checks precede fresh affected native experiments on that
-final source. The current task prepares the handoff and changes no source.
+These definitions apply to the implemented typed modes and final source owners.
+The final documentation, CPU/import/boundary and command gate precedes fresh
+affected native experiments. The active handoff owns progress and work order.
 
 Historical D0 completion reports keep their original attribution and metrics.
 The removed fixed-run report builder expected a training grid containing sigma
@@ -111,7 +110,8 @@ Current code supports D0/D1, both backgrounds, both causal history policies, cle
 and existing evaluation/generation paths.
 Explicit mode files, a fixed video list independent of frame selection,
 shared typed training, and one adapter checker are implemented. Their native
-acceptance, remaining input preparation and legacy ownership cleanup are open.
+acceptance and the final code gate remain open. Selected inputs still need
+their recorded readiness checks before each run.
 
 Required ordinary adapter application uses the same unmerged fp32 PEFT adapter
 function as training, against frozen bf16 base weights. Current ordinary
@@ -119,7 +119,7 @@ typed evaluation/inference use the shared unmerged loader; G8 remains open
 for full matched views/trained-step coverage and cost measurement. Keep historical fused results labeled
 with that original method. Memory failure does not authorize a fused fallback.
 
-Remove disabled anchor plumbing during cleanup.
+The disabled anchor plumbing is removed; historical saved fields remain attribution.
 Masks and alpha are data-quality records, not loss weights.
 Old sliding-window designs and dropped choices are not active defaults.
 [Known gaps](known_gaps.md) records fixed defects and unresolved limits.

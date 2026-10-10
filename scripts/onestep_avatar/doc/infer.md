@@ -32,7 +32,7 @@ research override. Save encoding and actual run records before rendering.
 ## Data flow
 
 ```mermaid
-flowchart TB
+flowchart LR
   I[("checked guide and supplied image")] --> G["ordinary mode generation"]
   G --> O[("raw output and consumed text/noise")]
   O --> D["optional native decoding"] --> M[("video and review")]

@@ -14,7 +14,7 @@ artifacts, then publishes a manifest. Model-free completion checks the spec,
 settings, complete local inventory and the checker's scientific verifier.
 
 ```mermaid
-flowchart TB
+flowchart LR
   S[("pinned spec")] --> P["checker scientific parser"]
   P --> C["checker kernel"]
   C --> A[("scientific artifacts")]

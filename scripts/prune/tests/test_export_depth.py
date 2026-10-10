@@ -26,29 +26,55 @@ from scripts.prune.score import export_depth
 
 def _config(*, per_layer: bool = False) -> dict:
     config = {
-        "dropout": 0.0, "attention_bias": True, "num_vector_embeds": None,
-        "activation_fn": "gelu-approximate", "num_embeds_ada_norm": 1000,
-        "use_linear_projection": False, "only_cross_attention": False, "cross_attention_norm": True,
-        "double_self_attention": False, "upcast_attention": False, "standardization_norm": "rms_norm",
-        "norm_elementwise_affine": False, "qk_norm": "rms_norm", "positional_embedding_type": "rope",
-        "use_audio_video_cross_attention": True, "share_ff": False, "av_cross_ada_norm": True,
-        "use_middle_indices_grid": True, "num_attention_heads": 2, "attention_head_dim": 4,
-        "num_layers": 4, "in_channels": 8, "out_channels": 8, "cross_attention_dim": 8,
-        "audio_num_attention_heads": 2, "audio_attention_head_dim": 4, "audio_in_channels": 8,
-        "audio_out_channels": 8, "audio_cross_attention_dim": 8, "caption_proj_before_connector": True,
-        "cross_attention_adaln": True, "use_prompt_adaln_single": False,
-        "apply_gated_attention": True, "use_keyframes_abs_pos_embedding": True, "ff_bias": False,
+        "dropout": 0.0,
+        "attention_bias": True,
+        "num_vector_embeds": None,
+        "activation_fn": "gelu-approximate",
+        "num_embeds_ada_norm": 1000,
+        "use_linear_projection": False,
+        "only_cross_attention": False,
+        "cross_attention_norm": True,
+        "double_self_attention": False,
+        "upcast_attention": False,
+        "standardization_norm": "rms_norm",
+        "norm_elementwise_affine": False,
+        "qk_norm": "rms_norm",
+        "positional_embedding_type": "rope",
+        "use_audio_video_cross_attention": True,
+        "share_ff": False,
+        "av_cross_ada_norm": True,
+        "use_middle_indices_grid": True,
+        "num_attention_heads": 2,
+        "attention_head_dim": 4,
+        "num_layers": 4,
+        "in_channels": 8,
+        "out_channels": 8,
+        "cross_attention_dim": 8,
+        "audio_num_attention_heads": 2,
+        "audio_attention_head_dim": 4,
+        "audio_in_channels": 8,
+        "audio_out_channels": 8,
+        "audio_cross_attention_dim": 8,
+        "caption_proj_before_connector": True,
+        "cross_attention_adaln": True,
+        "use_prompt_adaln_single": False,
+        "apply_gated_attention": True,
+        "use_keyframes_abs_pos_embedding": True,
+        "ff_bias": False,
     }
     if per_layer:
-        config.update({
-            "per_layer_video_attn1_heads": [2, 2, 2, 2], "per_layer_video_attn2_heads": [2, 2, 2, 2],
-            "per_layer_ff_inner_dim": [32, 24, 16, 40],
-            "per_layer_video_attn1_rope_head_indices": [None] * 4,
-            "per_layer_video_attn2_rope_head_indices": [None] * 4,
-            "per_layer_video_attn1_active_head_indices": [None] * 4,
-            "per_layer_video_attn2_active_head_indices": [None] * 4,
-            "per_layer_video_ffn_active_channels": [None] * 4,
-        })
+        config.update(
+            {
+                "per_layer_video_attn1_heads": [2, 2, 2, 2],
+                "per_layer_video_attn2_heads": [2, 2, 2, 2],
+                "per_layer_ff_inner_dim": [32, 24, 16, 40],
+                "per_layer_video_attn1_rope_head_indices": [None] * 4,
+                "per_layer_video_attn2_rope_head_indices": [None] * 4,
+                "per_layer_video_attn1_active_head_indices": [None] * 4,
+                "per_layer_video_attn2_active_head_indices": [None] * 4,
+                "per_layer_video_ffn_active_channels": [None] * 4,
+            }
+        )
     return {"transformer": config}
 
 
@@ -70,15 +96,30 @@ def _setup(tmp_path: Path, removed: list[int], *, av: bool = False, per_layer: b
     tensors = {"model.diffusion_model." + name: value for name, value in model.state_dict().items()}
     save_file(tensors, str(source), metadata={"config": json.dumps(config), "license": "test license"})
     baseline = {
-        "whole_clip": True, "trajectory_only": False, "attention": "full_bidirectional",
-        "objective": "white", "text_context": {}, "geometry": {}, "seed": 42,
-        "latent_dtype": "torch.bfloat16", "sigmas": [0.725],
+        "whole_clip": True,
+        "trajectory_only": False,
+        "attention": "full_bidirectional",
+        "objective": "white",
+        "text_context": {},
+        "geometry": {},
+        "seed": 42,
+        "latent_dtype": "torch.bfloat16",
+        "sigmas": [0.725],
         "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1},
-        "model": {"model_key": "2.5", "transformer_path": str(source),
-                  "transformer_fingerprint": provenance.checkpoint_fingerprint(source), "video_vae_fingerprint": "vae"},
-        "videos": [{"view": "calibration/views/view00", "sigma": 0.725, "schedule": [0.725, 0],
-                    "artifacts": {"capture_sha256": "capture", "epsilon_sha256": "epsilon",
-                                  "fps": 30, "blocks": [[0, 7]]}}],
+        "model": {
+            "model_key": "2.5",
+            "transformer_path": str(source),
+            "transformer_fingerprint": provenance.checkpoint_fingerprint(source),
+            "video_vae_fingerprint": "vae",
+        },
+        "videos": [
+            {
+                "view": "calibration/views/view00",
+                "sigma": 0.725,
+                "schedule": [0.725, 0],
+                "artifacts": {"capture_sha256": "capture", "epsilon_sha256": "epsilon", "fps": 30, "blocks": [[0, 7]]},
+            }
+        ],
     }
     (tmp_path / "manifest.json").write_text(json.dumps(baseline))
     artifact = export_depth.create_artifact(tmp_path, ["calibration/views/view00"], [0.725], removed)
@@ -102,10 +143,18 @@ def _reload(path: Path, *, av: bool = False) -> LTXModel:
 def _inputs() -> tuple[common.ClipGrid, Modality, torch.Tensor]:
     geometry = causal_core.CausalGeometry(
         scale_factors=SpatioTemporalScaleFactors(time=8, height=32, width=32),
-        block_latent_frames=2, context_latent_frames=16,
+        block_latent_frames=2,
+        context_latent_frames=16,
     )
     grid = common.ClipGrid.build(
-        7, 64, 64, 30, geometry, device=torch.device("cpu"), dtype=torch.float32, latent_channels=8,
+        7,
+        64,
+        64,
+        30,
+        geometry,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        latent_channels=8,
     )
     generator = torch.Generator().manual_seed(6)
     capture = torch.randn(1, 28, 8, generator=generator)
@@ -114,7 +163,12 @@ def _inputs() -> tuple[common.ClipGrid, Modality, torch.Tensor]:
     c0 = capture[:, :4]
     state = common.with_clean_prefix(common.mix_block_noise(capture, noise, 0.725), c0)
     modality = common.block_modality(
-        grid, state, context, 0.725, token_slices=[(0, 28)], clean_prefix_tokens=4,
+        grid,
+        state,
+        context,
+        0.725,
+        token_slices=[(0, 28)],
+        clean_prefix_tokens=4,
     )
     return grid, modality, c0
 
@@ -127,13 +181,18 @@ def test_real_video_bidirectional_reload_matches_retained_reference(tmp_path: Pa
     loaded = _reload(output)
     original = model.transformer_blocks
     calls = []
-    handles = [block.register_forward_hook(lambda _m, _i, _o, index=index: calls.append(index))
-               for index, block in enumerate(original)]
+    handles = [
+        block.register_forward_hook(lambda _m, _i, _o, index=index: calls.append(index))
+        for index, block in enumerate(original)
+    ]
     grid, modality, c0 = _inputs()
     try:
         with export_depth.retained_blocks(model, removed), torch.no_grad():
             expected = export_parity._forward(
-                X0Model(model), grid, modality, c0,
+                X0Model(model),
+                grid,
+                modality,
+                c0,
             )
         actual = export_parity._forward(X0Model(loaded), grid, modality, c0)
     finally:
@@ -159,10 +218,13 @@ def test_real_video_bidirectional_reload_matches_retained_reference(tmp_path: Pa
             for key in before_keys:
                 prefix = export_depth.PREFIX + str(original_index) + "."
                 if key.startswith(prefix):
-                    renamed = export_depth.PREFIX + str(compact_index) + "." + key[len(prefix):]
+                    renamed = export_depth.PREFIX + str(compact_index) + "." + key[len(prefix) :]
                     assert torch.equal(after.get_tensor(renamed), before.get_tensor(key))
-        blocks = {int(key[len(export_depth.PREFIX):].split(".", 1)[0]) for key in after_keys
-                  if key.startswith(export_depth.PREFIX)}
+        blocks = {
+            int(key[len(export_depth.PREFIX) :].split(".", 1)[0])
+            for key in after_keys
+            if key.startswith(export_depth.PREFIX)
+        }
         assert blocks == set(range(len(retained)))
     export_depth.verify_export(source, artifact_path, output)
 
@@ -177,8 +239,10 @@ def test_real_av_strict_reload_and_both_streams(tmp_path: Path, removed: list[in
     time = torch.arange(5, dtype=torch.float32)
     audio = Modality(
         latent=torch.randn(1, 5, 8, generator=torch.Generator().manual_seed(7)),
-        sigma=torch.tensor([0.725]), timesteps=torch.full((1, 5, 1), 0.725),
-        positions=torch.stack((time, time + 1), dim=-1)[None, None], context=video.context,
+        sigma=torch.tensor([0.725]),
+        timesteps=torch.full((1, 5, 1), 0.725),
+        positions=torch.stack((time, time + 1), dim=-1)[None, None],
+        context=video.context,
     )
     with export_depth.retained_blocks(model, removed), torch.no_grad():
         expected = model(video=video, audio=audio, perturbations=None)
@@ -189,8 +253,9 @@ def test_real_av_strict_reload_and_both_streams(tmp_path: Path, removed: list[in
     counts = result["parameter_counts"]["source"]
     assert counts["resident_video_parameters"]["elements"] < counts["checkpoint_tensors"]["elements"]
     expected_video = _model(_config())
-    assert counts["resident_video_parameters"]["elements"] == sum(value.numel()
-                                                                 for value in expected_video.state_dict().values())
+    assert counts["resident_video_parameters"]["elements"] == sum(
+        value.numel() for value in expected_video.state_dict().values()
+    )
 
 
 def test_reloaded_compact_cached_forward_matches_in_memory_and_causal_reference(tmp_path: Path) -> None:
@@ -201,29 +266,50 @@ def test_reloaded_compact_cached_forward_matches_in_memory_and_causal_reference(
     grid, modality, _ = _inputs()
     geometry = causal_core.CausalGeometry(
         scale_factors=SpatioTemporalScaleFactors(time=8, height=32, width=32),
-        block_latent_frames=2, context_latent_frames=16,
+        block_latent_frames=2,
+        context_latent_frames=16,
     )
     clean = torch.randn_like(modality.latent)
     plan = geometry.plan(grid.latent_frames)
     with export_depth.retained_blocks(model, [0, 2]), torch.no_grad():
-        caches = [causal_core.BlockCache.allocate(
-            grid, geometry, num_layers=subject.num_blocks, inner_dim=subject.inner_dim,
-            device=torch.device("cpu"), dtype=torch.float32,
-        ) for subject in (model, loaded)]
+        caches = [
+            causal_core.BlockCache.allocate(
+                grid,
+                geometry,
+                num_layers=subject.num_blocks,
+                inner_dim=subject.inner_dim,
+                device=torch.device("cpu"),
+                dtype=torch.float32,
+            )
+            for subject in (model, loaded)
+        ]
         forwards = [common.denoised_from_velocity_model(subject) for subject in (model, loaded)]
         for index, span in enumerate(plan):
             lo, hi = grid.token_span(*span)
-            outputs = [causal_core.denoise_block(
-                forward, grid, cache, modality.latent[:, lo:hi], modality.context, 0.725, span,
-            ) for forward, cache in zip(forwards, caches, strict=True)]
+            outputs = [
+                causal_core.denoise_block(
+                    forward,
+                    grid,
+                    cache,
+                    modality.latent[:, lo:hi],
+                    modality.context,
+                    0.725,
+                    span,
+                )
+                for forward, cache in zip(forwards, caches, strict=True)
+            ]
             assert torch.equal(outputs[0], outputs[1])
             sequence = torch.cat([clean[:, :lo], modality.latent[:, lo:hi]], dim=1)
-            spans = [(start, end, order) for order, (start, end) in enumerate(plan[:index + 1])]
+            spans = [(start, end, order) for order, (start, end) in enumerate(plan[: index + 1])]
             ids = causal_core.block_ids_for(spans, grid.tokens_per_latent_frame)
             timesteps = torch.zeros(1, hi, 1)
             timesteps[:, lo:] = 0.725
             reference_modality = common.block_modality(
-                grid, sequence, modality.context, 0.725, token_slices=[(0, hi)],
+                grid,
+                sequence,
+                modality.context,
+                0.725,
+                token_slices=[(0, hi)],
                 attention_mask=causal_core.block_causal_mask(ids),
             )
             reference = forwards[1](Modality(**{**reference_modality.__dict__, "timesteps": timesteps}))
@@ -245,20 +331,37 @@ def test_compact_cache_eviction_preserves_reloaded_execution(tmp_path: Path) -> 
     grid, modality, _ = _inputs()
     geometry = causal_core.CausalGeometry(
         scale_factors=SpatioTemporalScaleFactors(time=8, height=32, width=32),
-        block_latent_frames=2, context_latent_frames=2,
+        block_latent_frames=2,
+        context_latent_frames=2,
     )
     evicted = False
     with export_depth.retained_blocks(model, [0, 2]), torch.no_grad():
-        caches = [causal_core.BlockCache.allocate(
-            grid, geometry, num_layers=subject.num_blocks, inner_dim=subject.inner_dim,
-            device=torch.device("cpu"), dtype=torch.float32,
-        ) for subject in (model, loaded)]
+        caches = [
+            causal_core.BlockCache.allocate(
+                grid,
+                geometry,
+                num_layers=subject.num_blocks,
+                inner_dim=subject.inner_dim,
+                device=torch.device("cpu"),
+                dtype=torch.float32,
+            )
+            for subject in (model, loaded)
+        ]
         forwards = [common.denoised_from_velocity_model(subject) for subject in (model, loaded)]
         for span in geometry.plan(grid.latent_frames):
             lo, hi = grid.token_span(*span)
-            outputs = [causal_core.denoise_block(
-                forward, grid, cache, modality.latent[:, lo:hi], modality.context, 0.725, span,
-            ) for forward, cache in zip(forwards, caches, strict=True)]
+            outputs = [
+                causal_core.denoise_block(
+                    forward,
+                    grid,
+                    cache,
+                    modality.latent[:, lo:hi],
+                    modality.context,
+                    0.725,
+                    span,
+                )
+                for forward, cache in zip(forwards, caches, strict=True)
+            ]
             assert torch.equal(outputs[0], outputs[1])
             for forward, cache in zip(forwards, caches, strict=True):
                 written_length = cache.start + hi - lo
@@ -266,8 +369,8 @@ def test_compact_cache_eviction_preserves_reloaded_execution(tmp_path: Path) -> 
                 evicted = evicted or cache.start < written_length
             assert caches[0].start == caches[1].start
             for before, after in zip(caches[0].caches, caches[1].caches, strict=True):
-                assert torch.equal(before.k[:, :before.length], after.k[:, :after.length])
-                assert torch.equal(before.v[:, :before.length], after.v[:, :after.length])
+                assert torch.equal(before.k[:, : before.length], after.k[:, : after.length])
+                assert torch.equal(before.v[:, : before.length], after.v[:, : after.length])
     assert evicted
 
 
@@ -339,10 +442,12 @@ def test_changed_source_and_already_pruned_sources_are_rejected(tmp_path: Path) 
     _rewrite(source, lambda tensors, _metadata: tensors[next(iter(tensors))].add_(1))
     with pytest.raises(ValueError, match="fingerprint"):
         export_depth.export(source, artifact_path, tmp_path / "invalid.safetensors")
+
     def set_pruning(_tensors: dict, metadata: dict) -> None:
         config = json.loads(metadata["config"])
         config["transformer"]["pruning"] = {"family": "width"}
         metadata["config"] = json.dumps(config)
+
     _rewrite(source, set_pruning)
     with pytest.raises(ValueError, match="already-pruned"):
         export_depth.inspect_checkpoint(source)
@@ -363,11 +468,13 @@ def test_source_overwrite_aliases_are_rejected(tmp_path: Path, alias: str) -> No
 
 
 @pytest.mark.parametrize("failure", ["copy", "source_change"])
-def test_failed_copy_leaves_no_checkpoint_or_temporary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                                     failure: str) -> None:
+def test_failed_copy_leaves_no_checkpoint_or_temporary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
     _, source, artifact_path, _, _ = _setup(tmp_path, [1])
     original = export_depth._copy_tensor
     changed = False
+
     def fail_or_mutate(*args) -> None:
         nonlocal changed
         if failure == "copy":
@@ -376,6 +483,7 @@ def test_failed_copy_leaves_no_checkpoint_or_temporary(tmp_path: Path, monkeypat
         if not changed:
             source.touch()
             changed = True
+
     monkeypatch.setattr(export_depth, "_copy_tensor", fail_or_mutate)
     output = tmp_path / "failed.safetensors"
     with pytest.raises((ValueError, OSError), match=r"interrupted copy|changed during"):
@@ -389,13 +497,16 @@ def test_native_candidate_dispatch_checks_depth_config_and_artifact(tmp_path: Pa
     output = tmp_path / "valid.safetensors"
     export_depth.export(source, artifact_path, output)
     candidate = copy.deepcopy(baseline)
-    candidate["model"].update(transformer_path=str(output),
-                              transformer_fingerprint=provenance.checkpoint_fingerprint(output))
+    candidate["model"].update(
+        transformer_path=str(output), transformer_fingerprint=provenance.checkpoint_fingerprint(output)
+    )
     assert whole_clip.verify_candidate(baseline, candidate)["family"] == "depth"
+
     def alter_config(_tensors: dict, metadata: dict) -> None:
         config = json.loads(metadata["config"])
         config["transformer"]["timestep_scale_multiplier"] = 2000
         metadata["config"] = json.dumps(config)
+
     _rewrite(output, alter_config)
     candidate["model"]["transformer_fingerprint"] = provenance.checkpoint_fingerprint(output)
     with pytest.raises(ValueError, match="architecture"):
@@ -410,8 +521,18 @@ def test_native_candidate_dispatch_checks_depth_config_and_artifact(tmp_path: Pa
 
 
 def test_parity_parser_preserves_masks_and_accepts_one_depth_artifact() -> None:
-    common = ["--baseline", "baseline", "--exported-checkpoint", "export", "--view", "view",
-              "--sigmas", "0.725", "--gpu-id", "0"]
+    common = [
+        "--baseline",
+        "baseline",
+        "--exported-checkpoint",
+        "export",
+        "--view",
+        "view",
+        "--sigmas",
+        "0.725",
+        "--gpu-id",
+        "0",
+    ]
     assert export_parity.argument_parser().parse_args([*common, "--masks", "masks"]).masks == Path("masks")
     depth_args = export_parity.argument_parser().parse_args([*common, "--depth-artifact", "depth"])
     assert depth_args.depth_artifact == Path("depth")

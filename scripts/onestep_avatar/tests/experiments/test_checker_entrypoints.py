@@ -71,9 +71,9 @@ def test_moved_checker_source_bound_as_extra_owner(name: str) -> None:
     software.check_current(experimental)
 
 
-
-@pytest.mark.parametrize(("name", "retired"), [
-    ("training_update_check", "supervised_reference"), ("continuation_check", "supervised_run")])
+@pytest.mark.parametrize(
+    ("name", "retired"), [("training_update_check", "supervised_reference"), ("continuation_check", "supervised_run")]
+)
 def test_checker_has_no_retired_self_launch(name: str, retired: str) -> None:
     checker = importlib.import_module("scripts.onestep_avatar.experiments." + name)
     assert not hasattr(checker, retired)

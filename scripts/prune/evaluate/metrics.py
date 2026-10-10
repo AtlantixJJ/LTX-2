@@ -25,7 +25,11 @@ def psnr(pred: torch.Tensor, target: torch.Tensor, data_range: float = 1.0) -> f
     if pred.shape != target.shape:
         raise ValueError(f"PSNR shapes differ: {tuple(pred.shape)} vs {tuple(target.shape)}")
     mse = (pred - target).square().mean()
-    return float("inf") if mse.item() == 0 else float(10 * torch.log10(torch.tensor(data_range**2, device=mse.device) / mse))
+    return (
+        float("inf")
+        if mse.item() == 0
+        else float(10 * torch.log10(torch.tensor(data_range**2, device=mse.device) / mse))
+    )
 
 
 def ssim_global(pred: torch.Tensor, target: torch.Tensor, data_range: float = 1.0) -> float:
@@ -38,10 +42,14 @@ def ssim_global(pred: torch.Tensor, target: torch.Tensor, data_range: float = 1.
     vx = ((x - mux) ** 2).mean((-1, -2), keepdim=True)
     vy = ((y - muy) ** 2).mean((-1, -2), keepdim=True)
     cov = ((x - mux) * (y - muy)).mean((-1, -2), keepdim=True)
-    return float((((2 * mux * muy + c1) * (2 * cov + c2)) / ((mux.square() + muy.square() + c1) * (vx + vy + c2))).mean())
+    return float(
+        (((2 * mux * muy + c1) * (2 * cov + c2)) / ((mux.square() + muy.square() + c1) * (vx + vy + c2))).mean()
+    )
 
 
-def t3_video(source: torch.Tensor, teacher: torch.Tensor, candidate: torch.Tensor, output: str | Path, *, fps: float = 24.0) -> Path:
+def t3_video(
+    source: torch.Tensor, teacher: torch.Tensor, candidate: torch.Tensor, output: str | Path, *, fps: float = 24.0
+) -> Path:
     """Save a synchronized source | reference | candidate MP4.
 
     The three streams are frame-aligned and concatenated horizontally. ffmpeg is
@@ -55,7 +63,30 @@ def t3_video(source: torch.Tensor, teacher: torch.Tensor, candidate: torch.Tenso
         raise ValueError("T3 video streams must share an RGB-compatible C,H,W shape")
     path = Path(output)
     path.parent.mkdir(parents=True, exist_ok=True)
-    command = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w * 3}x{h}", "-r", str(fps), "-i", "-", "-an", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", str(path)]
+    command = [
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        f"{w * 3}x{h}",
+        "-r",
+        str(fps),
+        "-i",
+        "-",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
+        str(path),
+    ]
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         for i in range(frames):

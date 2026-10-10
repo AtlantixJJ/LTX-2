@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import copy
 import random
+from typing import Never
 
 import pytest
 import torch
 
+from ltx_core.model.transformer.modality import Modality
 from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar.model import bidirectional, common, sampling
 from scripts.onestep_avatar.model import causal as causal_core
@@ -18,7 +20,9 @@ from scripts.onestep_avatar.training import config
 @pytest.mark.parametrize("guide_mode", ["d0", "d1"])
 @pytest.mark.parametrize("sigma", [0.725, 1.0])
 @pytest.mark.parametrize("start", [0, 2])
-def test_same_inputs_match_original_prediction_loss_and_gradient(guide_mode, sigma, start, monkeypatch):
+def test_same_inputs_match_original_prediction_loss_and_gradient(
+    guide_mode: str, sigma: float, start: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
     scale = SpatioTemporalScaleFactors(time=8, height=32, width=32)
     geometry = causal_core.CausalGeometry(scale, block_latent_frames=2, context_latent_frames=1)
     grid = common.ClipGrid.build(
@@ -31,8 +35,8 @@ def test_same_inputs_match_original_prediction_loss_and_gradient(guide_mode, sig
     original = _model().bfloat16()
     current = copy.deepcopy(original)
     # A segment is a clip of its own: its frame 0 (the future c0) is master frame ``start``.
-    capture = capture_master[:, start:start+3].contiguous()
-    guide = guide_master[:, start:start+3].contiguous()
+    capture = capture_master[:, start : start + 3].contiguous()
+    guide = guide_master[:, start : start + 3].contiguous()
     assert torch.equal(capture[:, 0], capture_master[:, start])
     cache = causal_core.BlockCache.allocate(
         grid, geometry, num_layers=2, inner_dim=8, device=torch.device("cpu"), dtype=torch.bfloat16
@@ -53,7 +57,8 @@ def test_same_inputs_match_original_prediction_loss_and_gradient(guide_mode, sig
         accumulation=3,
     )
 
-    def forbidden(*args, **kwargs):
+    def forbidden(*args, **kwargs) -> Never:
+        del args, kwargs
         raise AssertionError("bidirectional mode called a causal helper")
 
     monkeypatch.setattr(causal_core.BlockCache, "allocate", forbidden)
@@ -84,7 +89,7 @@ def test_same_inputs_match_original_prediction_loss_and_gradient(guide_mode, sig
             assert torch.equal(old_parameter.grad, parameter.grad), name
     modalities = []
 
-    def predict(modality):
+    def predict(modality: Modality) -> torch.Tensor:
         modalities.append(modality)
         return common.denoised_from_velocity_model(current)(modality)
 
@@ -101,15 +106,18 @@ def test_same_inputs_match_original_prediction_loss_and_gradient(guide_mode, sig
     assert counts == {"denoise_calls": 1, "prime_calls": 0, "refresh_calls": 0}
     assert len(modalities) == 1
     modality = modalities[0]
-    assert modality.sigma.dtype == torch.float32 and modality.timesteps.dtype == torch.float32
+    assert modality.sigma.dtype == torch.float32
+    assert modality.timesteps.dtype == torch.float32
     assert modality.sigma.item() == torch.tensor(sigma, dtype=torch.float32).item()
-    assert modality.kv_caches is None and not modality.kv_write and modality.attention_mask is None
+    assert modality.kv_caches is None
+    assert not modality.kv_write
+    assert modality.attention_mask is None
     assert torch.equal(modality.latent[:, :4], target[:, :4])
     assert torch.count_nonzero(modality.timesteps[:, :4]) == 0
     assert torch.equal(output[:, :4], target[:, :4])
 
 
-def test_random_frame_selection_preserves_the_original_seed_keys():
+def test_random_frame_selection_preserves_the_original_seed_keys() -> None:
     key = config.window_start_draw(42)["key"]
     for step in range(5):
         for rank in range(2):
@@ -121,6 +129,6 @@ def test_random_frame_selection_preserves_the_original_seed_keys():
 
 
 @pytest.mark.parametrize("levels", [[float("nan"), 0], [float("inf"), 0], [1.1, 0], [0.5, 0.6, 0], [0.5, -0.1, 0]])
-def test_invalid_schedule_fails_before_prediction(levels):
-    with pytest.raises(ValueError):
+def test_invalid_schedule_fails_before_prediction(levels: list[float]) -> None:
+    with pytest.raises(ValueError, match="schedule"):
         sampling.validate_schedule(levels)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import pickle
 import time
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
@@ -14,6 +15,7 @@ import torch
 
 from ltx_core.model.transformer.attention import attention_label
 from ltx_core.model.transformer.transformer import DEFAULT_TRANSFORMER_OPS
+from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.corpus.dataset import load_training_master
 from scripts.onestep_avatar.model import backbone, common
@@ -213,6 +215,159 @@ def decode_pixels(session, latent: torch.Tensor, decoder, seed: int) -> torch.Te
     if len(pixels) != expected:
         raise ValueError(f"decoder returned {len(pixels)} frames; expected {expected}")
     return pixels
+
+
+def _saved_tensor(root: Path, name: str, digest: str, shape: tuple[int, ...]) -> torch.Tensor:
+    """Check contained saved bytes before loading a CPU tensor; never reconstruct device RNG."""
+    path = root / name
+    if (
+        not isinstance(name, str)
+        or Path(name).name != name
+        or path.is_symlink()
+        or not path.resolve().is_relative_to(root.resolve())
+        or provenance.file_sha256(path) != digest
+    ):
+        raise ValueError("baseline artifact path or hash differs")
+    tensor = torch.load(path, map_location="cpu", weights_only=True)
+    if not isinstance(tensor, torch.Tensor) or tensor.dtype != DTYPE or tuple(tensor.shape) != shape:
+        raise ValueError("baseline tensor type, dtype or shape differs")
+    if not torch.isfinite(tensor).all():
+        raise ValueError("baseline tensor is nonfinite")
+    return tensor
+
+
+def _inspect_completion(args: argparse.Namespace, root: Path) -> list[Path]:  # noqa: PLR0912, PLR0915
+    """Verify saved raw distilled coverage and conditioning without model or decoder loading."""
+    if root.is_symlink() or (root / "manifest.json").is_symlink():
+        raise ValueError("baseline root or manifest is a symlink")
+    manifest = json.loads((root / "manifest.json").read_text())
+    if (
+        not args.raw_only or args.objective != "white" or args.variant != "distilled"
+        or (args.cfg, args.stg, args.rescale) != (1.0, 0.0, 0.0)
+        or args.negative_prompt is not None
+        or not args.sigmas or len(set(args.sigmas)) != len(args.sigmas)
+        or any(not 0.0 < sigma <= 1.0 for sigma in args.sigmas)
+        or args.arms not in (["d0"], ["d0", "d1"])
+    ):
+        raise ValueError("saved completion supports raw white distilled unguided D0, optional D1")
+    seeds = [args.seed] if args.seeds is None else list(args.seeds)
+    if len(set(seeds)) != len(seeds) or len({view.resolve() for view in args.view}) != len(args.view):
+        raise ValueError("duplicate baseline view or seed")
+    fixed = {
+        "kind": "d1_paired_source_probe", "checkpoint": None, "objective": args.objective,
+        "sigmas": list(args.sigmas), "seed": args.seed, "seeds": seeds, "whole_clip": True,
+        "trajectory_only": False, "teacher_forcing": False, "history_policy": "none_single_block",
+        "history_mode": "recompute", "model_variant": args.variant, "steps": None,
+        "denoising_steps_requested": None, "schedule_policy": "distilled_grid",
+        "attention": "full_bidirectional", "latent_dtype": str(DTYPE), "max_blocks": None,
+        "raw_only": True, "arms": list(args.arms), "adapter_condition_problems": [], "off_condition": False,
+        "noise": {"scheme": "one global epsilon tensor per view, sliced by latent-frame block",
+                  "shared_across_arms_sigmas_and_block_geometries": True},
+        "guidance": {"cfg": 1.0, "stg": 0.0, "stg_blocks": [], "rescale": 0.0,
+                     "negative_prompt": None, "negative_prompt_sha256": None, "passes_per_step": 1,
+                     "execution": "sequential passes"},
+    }
+    if any(manifest.get(key) != value for key, value in fixed.items()):
+        raise ValueError("baseline scientific settings differ")
+    prompt = resolve_prompt(args)
+    text = manifest["text_context"]
+    if (text["prompt"] != prompt or text["prompt_sha256"] != hashlib.sha256(prompt.encode()).hexdigest()
+            or text["is_default_prompt"] != (prompt == DEFAULT_PROMPT)
+            or text["dtype"] != str(DTYPE) or len(text["shape"]) != 3 or text["shape"][0] != 1
+            or any(type(size) is not int or size < 1 for size in text["shape"])
+            or not isinstance(text["sha256"], str) or len(text["sha256"]) != 64):
+        raise ValueError("baseline prompt or text context identity differs")
+    if manifest["model"].get("model_key") != args.model or manifest["model"].get("script") != SCRIPT:
+        raise ValueError("baseline model or producer identity differs")
+    rows = manifest["videos"]
+    if len(rows) != len(args.view) * len(seeds) * len(args.sigmas):
+        raise ValueError("baseline row coverage differs")
+    evidence = {root / "manifest.json"}
+    seen = set()
+    records = {}
+    for row in rows:
+        artifact = row["artifacts"]
+        view = Path(artifact["view"])
+        seed, sigma = artifact["seed"], row["sigma"]
+        key = (str(view.resolve()), seed, sigma)
+        if (key in seen or view not in [item.resolve() for item in args.view]
+                or seed not in seeds or sigma not in args.sigmas):
+            raise ValueError("baseline view, seed or sigma coverage differs")
+        seen.add(key)
+        if (Path(row["view"]).resolve() != view or row["schedule"] != [sigma, 0.0]
+                or row["trajectory"] != "one_step" or row["output"] is not None
+                or row["blocks"] != artifact["blocks"]
+                or row["panels"] != ["ground_truth"] + [
+                    {"d0": "gt_latent_rollout", "d1": "rgb_render_latent_rollout"}[arm] for arm in args.arms
+                ]):
+            raise ValueError("baseline row schedule, panels or output differs")
+        record_key = (str(view), seed)
+        if record_key in records:
+            if records[record_key] != artifact:
+                raise ValueError("baseline rows do not share identical input/noise records")
+            continue
+        records[record_key] = artifact
+        capture, guide, fps = load_masters(view, args.objective)
+        if not torch.isfinite(capture).all() or not torch.isfinite(guide).all():
+            raise ValueError("baseline source masters are nonfinite")
+        if artifact["fps"] != fps:
+            raise ValueError("baseline source fps differs")
+        for role, bundle in (("capture", dataset.capture_bundle_name(args.objective)),
+                             ("guide", dataset.guide_bundle_name(args.objective))):
+            source = view / bundle
+            if Path(artifact[role]) != source or provenance.file_sha256(source) != artifact[role + "_sha256"]:
+                raise ValueError("baseline source path or hash differs")
+        frames = capture.shape[1]
+        geometry = causal_core.deployed_geometry(
+            SpatioTemporalScaleFactors(*manifest["geometry"]["scale_factors"]),
+            block_latent_frames=whole_clip_block([frames]), context_latent_frames=args.context_latent_frames,
+        )
+        if (manifest["geometry"] != geometry.as_dict() or artifact["blocks"] != [[0, frames]]
+                or row["blocks"] != [[0, frames]] or manifest["capabilities"]["latent_channels"] != capture.shape[0]):
+            raise ValueError("baseline whole-clip geometry differs")
+        grid = clip_grid(capture, fps, geometry, device=torch.device("cpu"), latent_channels=capture.shape[0])
+        tokens = grid.patchify(capture.unsqueeze(0))
+        _saved_tensor(root, artifact["epsilon"], artifact["epsilon_sha256"], tuple(tokens.shape))
+        evidence.add(root / artifact["epsilon"])
+        latents = artifact["latents"]
+        timings = artifact["rollout_timing"]
+        pairs = {(sigma, arm) for sigma in args.sigmas for arm in args.arms}
+        if (len(latents) != len(pairs) or {(item["sigma"], item["arm"]) for item in latents} != pairs
+                or len({item["path"] for item in latents}) != len(pairs)
+                or artifact["epsilon"] in {item["path"] for item in latents}
+                or len(timings) != len(pairs) or {(item["sigma"], item["arm"]) for item in timings} != pairs
+                or any(item["schedule"] != [item["sigma"], 0.0] or item["forward_passes"] != 1 for item in timings)):
+            raise ValueError("baseline latent or forward coverage differs")
+        for item in latents:
+            latent = _saved_tensor(root, item["path"], item["sha256"], (1, *capture.shape))
+            # Native rollout conditions the model with the master's BF16 conversion.
+            if not torch.equal(latent[0, :, 0], capture[:, 0].to(dtype=DTYPE)):
+                raise ValueError("baseline c0 differs from clean capture")
+            evidence.add(root / item["path"])
+    actual = set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise ValueError("baseline output contains a symlink")
+        if path.is_file():
+            actual.add(path)
+    if actual != evidence:
+        raise ValueError("baseline local artifact inventory differs")
+    return sorted(evidence)
+
+
+def verify_completion(args: argparse.Namespace, root: Path) -> bool:
+    """Return false for incomplete or altered saved outputs; no native model lifetime."""
+    try:
+        _inspect_completion(args, root)
+        return True
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, AttributeError, EOFError,
+            pickle.UnpicklingError, SystemExit):
+        return False
+
+
+def evidence_paths(args: argparse.Namespace, root: Path) -> list[Path]:
+    """Expose only fully verified local baseline evidence to its queue wrapper."""
+    return _inspect_completion(args, root)
 
 
 def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one ordered producer

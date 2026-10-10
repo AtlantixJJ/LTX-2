@@ -2,6 +2,7 @@
 
 import base64
 import json
+import subprocess
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ import torch
 from accelerate.utils import DistributedType
 
 from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution.queue_protocol import LAUNCH_ENV
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.training import config, engine, numerics, resources
 
@@ -129,7 +131,6 @@ def test_single_job_authority_matches_list_and_prepared_reconstruction(tmp_path:
 def test_changed_budget_refuses_prepared_command_and_dispatch_launch_before_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import subprocess
 
     raw, _, _, _, _, _ = original_job(tmp_path)
     output = tmp_path / "pending_training"
@@ -144,11 +145,11 @@ def test_changed_budget_refuses_prepared_command_and_dispatch_launch_before_chil
     with pytest.raises(ValueError, match=r"resource budget.*changed"):
         queue.prepare_job(prepared, tmp_path)
     with pytest.raises(ValueError, match=r"resource budget.*changed"):
-        queue.job_command(prepared, queue.GPU_POOL[:queue.TRAIN_PROCESSES])
+        queue.job_command(prepared, queue.GPU_POOL[: queue.TRAIN_PROCESSES])
     with pytest.raises(ValueError, match=r"resource budget.*changed"):
         queue.training_launch_record(prepared)
     released = []
-    claims = SimpleNamespace(owned=set(queue.GPU_POOL[:queue.TRAIN_PROCESSES]), release=lambda: released.append(True))
+    claims = SimpleNamespace(owned=set(queue.GPU_POOL[: queue.TRAIN_PROCESSES]), release=lambda: released.append(True))
     with pytest.raises(ValueError, match=r"resource budget.*changed"):
         queue.run_child(prepared, claims, tmp_path / "logs/child.log")
     assert released == [True]
@@ -163,14 +164,17 @@ def test_claimed_budget_hash_must_match_actual_bytes(tmp_path: Path) -> None:
         queue.prepare_job(raw, tmp_path)
 
 
-
-
 @pytest.mark.parametrize("step", [0, 1])
 def test_shared_marker_reader_checks_actual_bytes_for_zero_and_one(tmp_path: Path, step: int) -> None:
     checkpoint = tmp_path / f"lora_weights_step_{step:05d}.safetensors"
     checkpoint.write_bytes(b"controlled checkpoint bytes; readiness only")
-    marker = {"schema_version": 2, "state": "complete", "step": step,
-              "path": str(checkpoint), "sha256": sha256(checkpoint)}
+    marker = {
+        "schema_version": 2,
+        "state": "complete",
+        "step": step,
+        "path": str(checkpoint),
+        "sha256": sha256(checkpoint),
+    }
     checkpoint.with_suffix(".complete.json").write_text(json.dumps(marker))
     assert queue.read_training_marker(checkpoint, step) == marker
     checkpoint.write_bytes(b"changed checkpoint bytes")
@@ -178,26 +182,11 @@ def test_shared_marker_reader_checks_actual_bytes_for_zero_and_one(tmp_path: Pat
         queue.read_training_marker(checkpoint, step)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @pytest.mark.parametrize("mode", ["bidirectional", "causal"])
 @pytest.mark.parametrize("defect", ["world", "precision", "distributed"])
 def test_engine_actual_accelerator_refuses_checked_queued_launch_before_models_or_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, defect: str
 ) -> None:
-    from scripts.onestep_avatar.execution.queue_protocol import LAUNCH_ENV
 
     raw, _, _, _, _, _ = original_job(tmp_path)
     output = tmp_path / "fresh_training"
@@ -219,7 +208,8 @@ def test_engine_actual_accelerator_refuses_checked_queued_launch_before_models_o
         num_processes=2 if defect == "world" else 4,
         mixed_precision="no" if defect == "precision" else "bf16",
         distributed_type=DistributedType.MULTI_GPU if defect == "distributed" else DistributedType.FSDP,
-        device=torch.device("cpu"), process_index=0,
+        device=torch.device("cpu"),
+        process_index=0,
     )
     monkeypatch.setattr(engine, "Accelerator", lambda: actual)
     monkeypatch.setattr(engine.prompt_cache, "get_or_build", lambda *_args, **_kwargs: pytest.fail("loaded text"))

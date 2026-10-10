@@ -12,6 +12,7 @@ enforces it.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 
 import torch
@@ -26,7 +27,7 @@ def transformer_ctx(stage: DiffusionStage, **kwargs: object) -> AbstractContextM
 
 
 @contextmanager
-def video_decoder(video_vae_path: str, dtype: torch.dtype, device: torch.device):
+def video_decoder(video_vae_path: str, dtype: torch.dtype, device: torch.device) -> Iterator[torch.nn.Module]:
     """A resident video decoder, built and freed as a context manager."""
     holder = VideoDecoder(video_vae_path, dtype, device)
     with torch.no_grad(), gpu_model(holder._decoder_builder.build(device=device, dtype=dtype).eval()) as decoder:
@@ -34,7 +35,7 @@ def video_decoder(video_vae_path: str, dtype: torch.dtype, device: torch.device)
 
 
 @contextmanager
-def video_encoder(video_vae_path: str, dtype: torch.dtype, device: torch.device):
+def video_encoder(video_vae_path: str, dtype: torch.dtype, device: torch.device) -> Iterator[torch.nn.Module]:
     """A resident video encoder, built and freed as a context manager."""
     conditioner = ImageConditioner(video_vae_path, dtype, device)
     with torch.no_grad(), gpu_model(conditioner._build_encoder()) as encoder:

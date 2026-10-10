@@ -45,7 +45,7 @@ materializing the whole clip.
 ## Data flow
 
 ```mermaid
-flowchart TD
+flowchart LR
   BGUID["build_guidance.py<br/>alpha_grid [N,256,256] uint8"]
   PRE["precompute.py<br/>cropped matte [N,256,256]"]
   W["write_mask_video"]

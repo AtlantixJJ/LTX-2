@@ -71,7 +71,7 @@ def _root_derivations(source: str) -> list[int]:  # noqa: PLR0912, PLR0915 -- fi
         for scope in scopes:
             if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 positional = [*scope.args.posonlyargs, *scope.args.args]
-                defaults = list(zip(positional[-len(scope.args.defaults):], scope.args.defaults, strict=False))
+                defaults = list(zip(positional[-len(scope.args.defaults) :], scope.args.defaults, strict=False))
                 defaults.extend(zip(scope.args.kwonlyargs, scope.args.kw_defaults, strict=False))
                 for parameter, default in defaults:
                     if filename(default, tree):

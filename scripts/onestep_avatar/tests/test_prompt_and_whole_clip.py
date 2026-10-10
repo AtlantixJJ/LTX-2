@@ -9,9 +9,14 @@ producer's one-block plan and option checks moved with it to
 from __future__ import annotations
 
 import argparse
+import itertools
 
 import pytest
+import torch
 
+from ltx_core.components.guiders import MultiModalGuider, MultiModalGuiderParams
+from ltx_core.components.schedulers import LTX2Scheduler
+from ltx_core.model.transformer.modality import Modality
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.model import common
 from scripts.onestep_avatar.model import sampling as model_sampling
@@ -52,21 +57,21 @@ SHAPE = (1, 128, 18, 32, 32)
 def test_rescaled_schedule_shape(sigma: float, steps: int) -> None:
     schedule = model_sampling.rescaled_schedule(sigma, steps)
     assert len(schedule) == steps + 1
-    assert schedule[0] == sigma and schedule[-1] == 0.0  # exact: rollout rejects any mismatch
-    assert all(b < a for a, b in zip(schedule, schedule[1:]))
+    assert schedule[0] == sigma
+    assert schedule[-1] == 0.0
+    assert all(b < a for a, b in itertools.pairwise(schedule))
 
 
 def test_rescaled_schedule_at_one_is_stock() -> None:
-    from ltx_core.components.schedulers import LTX2Scheduler
 
     stock = LTX2Scheduler().execute(steps=30).tolist()
     assert model_sampling.rescaled_schedule(1.0, 30) == pytest.approx(tuple(stock))
 
 
 def test_rescaled_schedule_rejects_bad_inputs() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="sigma_start"):
         model_sampling.rescaled_schedule(0.0, 8)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="steps"):
         model_sampling.rescaled_schedule(0.5, 0)
 
 
@@ -78,9 +83,9 @@ class _FakeX0:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def __call__(self, video, audio, perturbations):  # noqa: ANN001, ANN204
-        import torch
+    def __call__(self, video, audio, perturbations):  # noqa: ANN001
 
+        del audio
         if perturbations is not None:
             self.calls.append("ptb")
             value = 3.0
@@ -94,44 +99,38 @@ class _FakeX0:
 
 
 def _modality(context):  # noqa: ANN001, ANN202
-    import torch
-
-    from ltx_core.model.transformer.modality import Modality
 
     return Modality(
-        latent=torch.zeros(1, 4, 2), sigma=torch.ones(1), timesteps=torch.ones(1, 4),
-        positions=torch.zeros(1, 3, 4, 2), context=context,
+        latent=torch.zeros(1, 4, 2),
+        sigma=torch.ones(1),
+        timesteps=torch.ones(1, 4),
+        positions=torch.zeros(1, 3, 4, 2),
+        context=context,
     )
 
 
 def test_guided_denoise_combines_passes() -> None:
-    import torch
-
-    from ltx_core.components.guiders import MultiModalGuider, MultiModalGuiderParams
 
     model = _FakeX0()
     neg = -torch.ones(1, 2, 8)
     guider = MultiModalGuider(MultiModalGuiderParams(cfg_scale=3.0, stg_scale=1.0, stg_blocks=[28]), neg)
     out = common.guided_denoised_from_x0_model(model, guider, neg)(_modality(torch.ones(1, 2, 8)))
     assert model.calls == ["cond", "uncond", "ptb"]
-    # 5 + (3 - 1) * (5 - 2) + 1 * (5 - 3)
+    # Guided value: 5 + (3 - 1) * (5 - 2) + 1 * (5 - 3) = 13.
     assert torch.allclose(out, torch.full_like(out, 13.0))
 
 
 def test_unguided_is_one_conditional_pass() -> None:
-    import torch
-
-    from ltx_core.components.guiders import MultiModalGuider, MultiModalGuiderParams
 
     model = _FakeX0()
     guider = MultiModalGuider(MultiModalGuiderParams())
     out = common.guided_denoised_from_x0_model(model, guider)(_modality(torch.ones(1, 2, 8)))
-    assert model.calls == ["cond"] and torch.allclose(out, torch.full_like(out, 5.0))
+    assert model.calls == ["cond"]
+    assert torch.allclose(out, torch.full_like(out, 5.0))
 
 
 @pytest.mark.parametrize("steps", [1, 2, 8, 30])
 def test_truncated_schedule(steps: int) -> None:
-    from ltx_core.components.schedulers import LTX2Scheduler
 
     assert model_sampling.truncated_schedule(1.0, steps) == pytest.approx(
         tuple(LTX2Scheduler().execute(steps=steps).tolist()) if steps > 1 else (1.0, 0.0)
@@ -139,7 +138,8 @@ def test_truncated_schedule(steps: int) -> None:
     counts = []
     for sigma in (0.421875, 0.725, 0.909375, 0.975, 1.0):
         sched = model_sampling.truncated_schedule(sigma, steps)
-        assert sched[0] == sigma and sched[-1] == 0.0
-        assert all(b < a for a, b in zip(sched, sched[1:]))
+        assert sched[0] == sigma
+        assert sched[-1] == 0.0
+        assert all(b < a for a, b in itertools.pairwise(sched))
         counts.append(len(sched) - 1)
     assert counts == sorted(counts)  # lower start noise never takes more steps

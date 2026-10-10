@@ -1,4 +1,5 @@
 """Owner moves preserve hash bytes, fixed-preview gates and direct CLI routing."""
+
 from __future__ import annotations
 
 import ast
@@ -23,9 +24,9 @@ def test_tensor_identity_preserves_shape_dtype_and_original_contiguous_bytes() -
         digest = sha256(json.dumps({"shape": list(original.shape), "dtype": str(original.dtype)}).encode())
         digest.update(original.view(torch.uint8).numpy().tobytes())
         expected = {
-            'torch.float32': '5c271c218e4a794da54061cd6990b601fce95ca45b35059f347e23a7625dd54d',
-            'torch.bfloat16': '9001928007e5819cb74126c887ca9fd2d29d26417d64d928d8fb6a387b224cd5',
-            'torch.int64': '625e3a75724acc1be4e6ad9d86efa5ce5a5c4023f21495b97f5bca7af79ad7db',
+            "torch.float32": "5c271c218e4a794da54061cd6990b601fce95ca45b35059f347e23a7625dd54d",
+            "torch.bfloat16": "9001928007e5819cb74126c887ca9fd2d29d26417d64d928d8fb6a387b224cd5",
+            "torch.int64": "625e3a75724acc1be4e6ad9d86efa5ce5a5c4023f21495b97f5bca7af79ad7db",
         }
         assert hashing.tensor_sha256(value) == digest.hexdigest()
         assert hashing.tensor_sha256(value) == expected[str(dtype)]
@@ -42,8 +43,9 @@ sys.meta_path.insert(0, Block())
 from scripts.onestep_avatar import hashing
 assert hashing.sha256 and hashing.tensor_sha256
 """
-    result = subprocess.run([sys.executable, "-c", command], cwd=LTX_ROOT,
-                            capture_output=True, text=True, check=False, timeout=15)
+    result = subprocess.run(
+        [sys.executable, "-c", command], cwd=LTX_ROOT, capture_output=True, text=True, check=False, timeout=15
+    )
     assert result.returncode == 0, result.stderr
 
 
@@ -73,21 +75,39 @@ def test_preview_validation_dependency_has_one_direction() -> None:
 @pytest.mark.parametrize("owner", ["previews", "comparisons"])
 def test_moved_output_clis_help_without_loading_models(owner: str) -> None:
     environment = {**os.environ, "CUDA_VISIBLE_DEVICES": ""}
-    completed = subprocess.run([sys.executable, "-m", "scripts.onestep_avatar." + owner, "--help"],
-                               cwd=LTX_ROOT, env=environment, capture_output=True, text=True, check=False, timeout=30)
+    completed = subprocess.run(
+        [sys.executable, "-m", "scripts.onestep_avatar." + owner, "--help"],
+        cwd=LTX_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
     assert completed.returncode == 0, completed.stderr
     expected = "--preview-job" if owner == "previews" else "--render-saved-comparisons"
     assert expected in completed.stdout
 
 
 @pytest.mark.parametrize("flag", ["--preview-job", "--render-saved-comparisons"])
-def test_evaluation_cli_refuses_moved_routes(
-    flag: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_evaluation_cli_refuses_moved_routes(flag: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     output = tmp_path / "output"
     with pytest.raises(SystemExit) as error:
-        evaluate.main(["--mode", "bidirectional", "--subset", str(tmp_path / "subset"),
-                       "--output", str(output), "--schedule", "1", "0", flag, str(tmp_path / "job")])
+        evaluate.main(
+            [
+                "--mode",
+                "bidirectional",
+                "--subset",
+                str(tmp_path / "subset"),
+                "--output",
+                str(output),
+                "--schedule",
+                "1",
+                "0",
+                flag,
+                str(tmp_path / "job"),
+            ]
+        )
     assert error.value.code == 2
     assert "unrecognized arguments" in capsys.readouterr().err
     assert not output.exists()

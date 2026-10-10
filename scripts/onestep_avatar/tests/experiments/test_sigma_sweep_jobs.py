@@ -20,7 +20,8 @@ STUDY = WORKSPACE_ROOT / "expr/onestep_avatar/d1_selfrollout_sigma_sweep_2026092
 
 @pytest.mark.parametrize("preparation_kind", ["historical", "current"])
 def test_actual_prepared_jobs_preserve_all_historical_inputs_and_schedules(  # noqa: PLR0915 -- full case inventory
-    tmp_path: Path, preparation_kind: str,
+    tmp_path: Path,
+    preparation_kind: str,
 ) -> None:
     cases = json.loads((STUDY / "configs/generation_cases.json").read_text())["cases"]
     historical = EVIDENCE / "sigma_sweep_generation_v4"
@@ -33,7 +34,10 @@ def test_actual_prepared_jobs_preserve_all_historical_inputs_and_schedules(  # n
         # The recorded producer predates owner moves; bind its preserved bytes.
         original_source = subprocess.run(
             ["git", "show", "44b72f1539bd98009c69ef25c0604280b677235c:scripts/onestep_avatar/sigma_sweep_jobs.py"],
-            cwd=LTX_ROOT, capture_output=True, check=True, timeout=5,
+            cwd=LTX_ROOT,
+            capture_output=True,
+            check=True,
+            timeout=5,
         ).stdout
         assert provenance["producer_sha256"] == bytes_sha256(original_source).hexdigest()
     else:
@@ -43,7 +47,8 @@ def test_actual_prepared_jobs_preserve_all_historical_inputs_and_schedules(  # n
         provenance = json.loads((prepared / "preparation.json").read_text())
         assert provenance["producer_sha256"] == sha256(Path(sigma_sweep_jobs.__file__))
         assert provenance["source_hashes"] == {
-            "subset.py": sha256(Path(subset.__file__)), "evaluate.py": sha256(Path(evaluate.__file__)),
+            "subset.py": sha256(Path(subset.__file__)),
+            "evaluate.py": sha256(Path(evaluate.__file__)),
         }
         assert provenance["input_file_hashes"] == historical_provenance["input_file_hashes"]
     assert provenance["schema_version"] == 2
@@ -53,8 +58,11 @@ def test_actual_prepared_jobs_preserve_all_historical_inputs_and_schedules(  # n
     for name, digest in provenance["input_file_hashes"].items():
         assert sha256(sigma_sweep_jobs.saved_location(Path(name))) == digest
     # The retired kind remains historical data; only fresh jobs enter today's queue.
-    jobs = (json.loads((prepared / "jobs.json").read_text())["jobs"]
-            if preparation_kind == "historical" else queue.prepare_jobs(prepared / "jobs.json"))
+    jobs = (
+        json.loads((prepared / "jobs.json").read_text())["jobs"]
+        if preparation_kind == "historical"
+        else queue.prepare_jobs(prepared / "jobs.json")
+    )
     assert len(jobs) == 36
     for case in cases:
         official = json.loads(Path(case["official_manifest"]).read_text())
@@ -69,7 +77,7 @@ def test_actual_prepared_jobs_preserve_all_historical_inputs_and_schedules(  # n
         dataset.ClipStore(membership).verify(require_guide=True)
         original = torch.load(Path(case["official_manifest"]).parent / art["epsilon"], weights_only=True)
         noise = torch.load(prepared / f"{case['tag']}_noise.pt", weights_only=True)
-        assert torch.equal(noise, original[:, :17 * source["shape"][2] * source["shape"][3]])
+        assert torch.equal(noise, original[:, : 17 * source["shape"][2] * source["shape"][3]])
         selected = [job for job in jobs if job["id"].startswith(f"sweep_{case['tag']}_")]
         assert len(selected) == 8
         decoder = next(job for job in jobs if job["id"] == f"decode_{case['tag']}")
@@ -83,9 +91,10 @@ def test_actual_prepared_jobs_preserve_all_historical_inputs_and_schedules(  # n
         assert spec["schema_version"] == 2
         assert [cell["evaluation_job"]["id"] for cell in spec["cells"]] == decoder["dependencies"]
         assert all("path" not in cell and "sha256" not in cell for cell in spec["cells"])
-        assert {(evaluate.parse_args(job["arguments"]).schedule[0],
-                 evaluate.parse_args(job["arguments"]).guide_mode) for job in selected} == {
-            (sigma, arm) for sigma in (0.421875, 0.725, 0.909375, 1.0) for arm in ("d0", "d1")}
+        assert {
+            (evaluate.parse_args(job["arguments"]).schedule[0], evaluate.parse_args(job["arguments"]).guide_mode)
+            for job in selected
+        } == {(sigma, arm) for sigma in (0.421875, 0.725, 0.909375, 1.0) for arm in ("d0", "d1")}
         for job in selected:
             args = evaluate.parse_args(job["arguments"])
             assert args.mode == "causal"
@@ -190,7 +199,8 @@ def test_replay_membership_preserves_source_and_refuses_conflicting_rows(tmp_pat
 
 
 def test_retired_source_evidence_is_read_from_its_recorded_location(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     renamed = tmp_path / "expr/old/visualize_d1.py.txt"
     live = tmp_path / "expr/report/study.py"
@@ -198,11 +208,20 @@ def test_retired_source_evidence_is_read_from_its_recorded_location(
         path.parent.mkdir(parents=True)
         path.write_bytes(content)
     record = tmp_path / "retired_executors.json"
-    record.write_text(json.dumps({"files": [
-        {"original_path": "expr/old/visualize_d1.py", "new_path": "expr/old/visualize_d1.py.txt"},
-        {"original_path": "expr/report/study.py", "new_path": "expr/report/study.pre_refactor.py.txt",
-         "original_path_is_live": True},
-    ]}))
+    record.write_text(
+        json.dumps(
+            {
+                "files": [
+                    {"original_path": "expr/old/visualize_d1.py", "new_path": "expr/old/visualize_d1.py.txt"},
+                    {
+                        "original_path": "expr/report/study.py",
+                        "new_path": "expr/report/study.pre_refactor.py.txt",
+                        "original_path_is_live": True,
+                    },
+                ]
+            }
+        )
+    )
     monkeypatch.setattr(sigma_sweep_jobs, "WORKSPACE_ROOT", tmp_path)
     monkeypatch.setattr(sigma_sweep_jobs, "RETIRED_EXECUTORS", record)
     assert sigma_sweep_jobs.saved_location(tmp_path / "expr/old/visualize_d1.py") == renamed

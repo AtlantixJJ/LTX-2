@@ -19,45 +19,85 @@ def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dict
 
     vae = tmp_path / "vae.safetensors"
     vae.write_bytes(b"checked VAE")
-    monkeypatch.setattr(model_registry, "resolve", lambda *_args: SimpleNamespace(
-        paths=SimpleNamespace(video_vae=lambda: vae),
-        scale_factors=SimpleNamespace(time=8, height=32, width=32)))
+    monkeypatch.setattr(
+        model_registry,
+        "resolve",
+        lambda *_args: SimpleNamespace(
+            paths=SimpleNamespace(video_vae=lambda: vae), scale_factors=SimpleNamespace(time=8, height=32, width=32)
+        ),
+    )
     frames = tuple(range(9))
     pixels = [torch.full((9, 3, 64, 64), index * 50, dtype=torch.uint8) for index in range(3)]
     roles = ("recorded", "decoded", "guide")
     refs = [media.Panel(role, role, value, frames) for role, value in zip(roles, pixels, strict=True)]
-    producer = {"source": "actor/view", "objective": "white", "fps": 30,
-                "source_frames": list(frames), "capture_encoding_sha256": "a" * 64,
-                "guide_rgb_sha256": "b" * 64, "membership_sha256": "c" * 64,
-                "vae_sha256": sha256(vae), "decode_seed": 42,
-                "decoder_settings": media.native_decoder_settings(), "software": software.capture("decoding"),
-                "panels": [{"role": panel.role, "pixels_sha256": media._pixel_identity(panel.pixels)}
-                           for panel in refs]}
+    producer = {
+        "source": "actor/view",
+        "objective": "white",
+        "fps": 30,
+        "source_frames": list(frames),
+        "capture_encoding_sha256": "a" * 64,
+        "guide_rgb_sha256": "b" * 64,
+        "membership_sha256": "c" * 64,
+        "vae_sha256": sha256(vae),
+        "decode_seed": 42,
+        "decoder_settings": media.native_decoder_settings(),
+        "software": software.capture("decoding"),
+        "panels": [{"role": panel.role, "pixels_sha256": media._pixel_identity(panel.pixels)} for panel in refs],
+    }
     media.save_training_references(refs, producer, tmp_path / "refs")
-    panels = [{"role": role, "title": title, "reference_role": role}
-              for role, title in zip(roles, ("RGB", "VAE", "Guide"), strict=True)]
+    panels = [
+        {"role": role, "title": title, "reference_role": role}
+        for role, title in zip(roles, ("RGB", "VAE", "Guide"), strict=True)
+    ]
     for index, history in enumerate(("cache", "recompute")):
         latent = torch.zeros(1, 3, 2, 2, 2)
         latent[:, :, 1:] = (index + 1) / 10
         path = tmp_path / f"{history}.pt"
         torch.save(latent, path)
-        record = {"state": "complete", "source": "actor/view", "fps": 30, "frames": 2,
-                  "capture_sha256": "d" * 64, "guide_sha256": "e" * 64,
-                  "c0_sha256": hashing.tensor_sha256(VideoLatentPatchifier(patch_size=1).patchify(latent[:, :, :1])),
-                  "noise_sha256": "f" * 64,
-                  "text_sha256": "1" * 64, "mode": "causal", "mode_settings": {"teacher_forcing": False},
-                  "guide_mode": "d1", "schedule": [1.0, 0], "history_mode": history, "kv_source": "refresh",
-                  "conditions": {"task": {"objective": "white", "guide_mode": "d1"}, "history_mode": history},
-                  "application_method": "base", "adapter": None, "membership_sha256": "c" * 64,
-                  "input_file_hashes": {"capture": "a" * 64, "render": "b" * 64},
-                  "software": software.capture("evaluation", "causal"),
-                  "output": {"path": str(path), "sha256": sha256(path), "shape": list(latent.shape)}}
+        record = {
+            "state": "complete",
+            "source": "actor/view",
+            "fps": 30,
+            "frames": 2,
+            "capture_sha256": "d" * 64,
+            "guide_sha256": "e" * 64,
+            "c0_sha256": hashing.tensor_sha256(VideoLatentPatchifier(patch_size=1).patchify(latent[:, :, :1])),
+            "noise_sha256": "f" * 64,
+            "text_sha256": "1" * 64,
+            "mode": "causal",
+            "mode_settings": {"teacher_forcing": False},
+            "guide_mode": "d1",
+            "schedule": [1.0, 0],
+            "history_mode": history,
+            "kv_source": "refresh",
+            "conditions": {"task": {"objective": "white", "guide_mode": "d1"}, "history_mode": history},
+            "application_method": "base",
+            "adapter": None,
+            "membership_sha256": "c" * 64,
+            "input_file_hashes": {"capture": "a" * 64, "render": "b" * 64},
+            "software": software.capture("evaluation", "causal"),
+            "output": {"path": str(path), "sha256": sha256(path), "shape": list(latent.shape)},
+        }
         (tmp_path / f"{history}.json").write_text(json.dumps(record))
-        panels.append({"role": "baseline" if index == 0 else "changed", "title": "Cache" if index == 0 else "Recalc",
-                       "latent": f"{history}.pt", "result": f"{history}.json"})
-    comparison = {"name": "history", "question": "Compare history", "span": 2, "fps": 30,
-                  "panel_size": [80, 80], "viewing_width": 288, "reference_bundle": "refs/references.json",
-                  "changed_factor": "history_mode", "panels": panels}
+        panels.append(
+            {
+                "role": "baseline" if index == 0 else "changed",
+                "title": "Cache" if index == 0 else "Recalc",
+                "latent": f"{history}.pt",
+                "result": f"{history}.json",
+            }
+        )
+    comparison = {
+        "name": "history",
+        "question": "Compare history",
+        "span": 2,
+        "fps": 30,
+        "panel_size": [80, 80],
+        "viewing_width": 288,
+        "reference_bundle": "refs/references.json",
+        "changed_factor": "history_mode",
+        "panels": panels,
+    }
     spec = tmp_path / "spec.json"
     spec.write_text(json.dumps({"model": "2.5", "comparisons": [comparison]}))
     calls = []
@@ -67,8 +107,11 @@ def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dict
         return torch.full((9, 3, 64, 64), float(latent[:, :, 1:].mean()))
 
     monkeypatch.setattr(media, "decode", decode)
-    monkeypatch.setattr(media, "open_decoder_session", lambda *_args, **_kwargs: SimpleNamespace(
-        device=torch.device("cpu"), decoder=lambda: nullcontext(None)))
+    monkeypatch.setattr(
+        media,
+        "open_decoder_session",
+        lambda *_args, **_kwargs: SimpleNamespace(device=torch.device("cpu"), decoder=lambda: nullcontext(None)),
+    )
     return spec, comparison, calls
 
 
@@ -80,19 +123,43 @@ def test_saved_rgb_references_render_without_another_reference_decode(
     row = result["comparisons"][0]
     assert calls == [42, 42]
     assert [item["role"] for item in row["rendering"]["panels"]] == [
-        "recorded", "decoded", "guide", "baseline", "changed", "unused"]
+        "recorded",
+        "decoded",
+        "guide",
+        "baseline",
+        "changed",
+        "unused",
+    ]
     assert [item.get("kind") for item in row["inputs"]] == ["rgb_reference"] * 3 + [None, None]
     manifest = json.loads((tmp_path / "refs/references.json").read_text())
     assert [item["pixels_sha256"] for item in row["rendering"]["panels"][:3]] == [
-        item["pixels_sha256"] for item in manifest["panels"]]
+        item["pixels_sha256"] for item in manifest["panels"]
+    ]
     monkeypatch.setattr(media, "open_decoder_session", lambda *_a, **_k: pytest.fail("completion opened VAE"))
     assert comparisons.verify_saved_comparison_completion(spec, tmp_path / "out")
     assert calls == [42, 42]
 
 
-@pytest.mark.parametrize("changed", ["fps", "mapping", "seed", "vae", "settings", "missing_pixel",
-                                     "output_source", "output_master", "output_guide", "output_membership",
-                                     "output_shape", "output_c0", "second_factor", "result_missing", "role"])
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "fps",
+        "mapping",
+        "seed",
+        "vae",
+        "settings",
+        "missing_pixel",
+        "output_source",
+        "output_master",
+        "output_guide",
+        "output_membership",
+        "output_shape",
+        "output_c0",
+        "second_factor",
+        "result_missing",
+        "role",
+    ],
+)
 def test_reference_or_output_mismatch_refuses_before_decoder(  # noqa: PLR0912 -- one-field negative cases
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str
 ) -> None:
@@ -144,9 +211,7 @@ def test_reference_or_output_mismatch_refuses_before_decoder(  # noqa: PLR0912 -
     assert not (tmp_path / "out").exists()
 
 
-def test_changed_original_result_prevents_manifest_publication(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_changed_original_result_prevents_manifest_publication(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     spec, _comparison, _calls = fixture(tmp_path, monkeypatch)
     original = media.decode
 

@@ -2,8 +2,7 @@
 
 Status: path, filename, and crop-record functions are **Current**.
 `load_training_master` is the shared checked reader extracted from `train.py`.
-`ClipStore` reads the new fixed-video list. Engine integration remains pending.
-Source already exceeds 100 lines.
+`ClipStore` reads the fixed-video list and is integrated with typed training, evaluation and preparation.
 
 ## Objective
 
@@ -25,7 +24,7 @@ flowchart LR
   class C out;
 ```
 
-This diagram is Proposed.
+This diagram describes the implemented reader.
 Current `load_master` reads schema-two continuous masters.
 `dataset.load_training_master` checks arrays and frame rate.
 `ClipStore` checks capture/guide pairs against the membership pins.
@@ -68,7 +67,7 @@ D0 loading does not read guide data.
 
 ### Checked-reader procedure
 
-The proposed `ClipStore` receives a verified video-list entry and the chosen background.
+`ClipStore` receives a verified video-list entry and the chosen background.
 Resolve its relative view path against the requested corpus root.
 Read capture encoding through `load_training_master`: a nonempty floating `[C,F,H,W]`
 array and finite positive frame rate.
@@ -96,7 +95,7 @@ Never import the ARGAvatar renderer or training CLI here.
 
 ## Gotchas
 
-Keep old alpha `.npy` reading until its usage and conversion checks pass.
+Masks and alpha use the lossless video codec. The old `.npy` fallback is retired after checked data conversion.
 Use person IDs that prevent the same person from entering both data groups.
 A guide file can exist and still have outdated encode records.
 Equal shape alone is insufficient for D1.

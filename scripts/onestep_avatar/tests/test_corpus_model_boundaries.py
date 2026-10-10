@@ -1,4 +1,5 @@
 """Corpus and model imports obey the G3 ownership rows, including lazy imports."""
+
 from __future__ import annotations
 
 import ast
@@ -36,7 +37,7 @@ def internal_imports(source: str, module: str) -> list[tuple[str, str | None]]:
         def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
             base = node.module or ""
             if node.level:
-                parent = module.split(".")[:-node.level]
+                parent = module.split(".")[: -node.level]
                 base = ".".join([*parent, *([base] if base else [])])
             if base == PREFIX:
                 for alias in node.names:
@@ -59,8 +60,14 @@ def violations(source: str, relative: str) -> list[tuple[str, str | None]]:
     for target, function in internal_imports(source, module):
         if (relative, target, function) == CONVERSION_EDGE:
             continue
-        if not any(target == permitted or target.startswith(permitted + ".")
-                   for permitted in allowed if permitted != PREFIX) and target != PREFIX:
+        if (
+            not any(
+                target == permitted or target.startswith(permitted + ".")
+                for permitted in allowed
+                if permitted != PREFIX
+            )
+            and target != PREFIX
+        ):
             failures.append((target, function))
     return failures
 
@@ -95,6 +102,7 @@ from scripts.onestep_avatar.corpus import dataset, subset, geometry, mask_video,
 assert dataset.CAPTURE_MANIFEST_NAME == 'capture_latent_manifest.json'
 """
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": ""}
-    completed = subprocess.run([sys.executable, "-c", command], cwd=LTX_ROOT, env=env,
-                               capture_output=True, text=True, check=False)
+    completed = subprocess.run(
+        [sys.executable, "-c", command], cwd=LTX_ROOT, env=env, capture_output=True, text=True, check=False
+    )
     assert completed.returncode == 0, completed.stderr

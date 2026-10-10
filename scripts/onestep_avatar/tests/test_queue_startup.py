@@ -1,4 +1,6 @@
 """Startup retries require terminal workers, exact events and preserved attempts."""
+
+import errno
 import json
 import os
 import signal
@@ -7,241 +9,386 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Never
 
 import pytest
 import torch
 
+from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import process_registry, queue, supervision
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.training import startup
+from scripts.onestep_avatar.training import engine, startup
 
 
-def event(name, token='b' * 32, job='a' * 64, rank=2):
-    return startup.PREFIX + json.dumps({'schema_version': 1, 'event': name,
-        'token': token, 'job_sha256': job, 'rank': rank, 'reason': 'cuda_oom'}) + '\n'
+def event(name: str, token: str = "b" * 32, job: str = "a" * 64, rank: int = 2) -> str:
+    return (
+        startup.PREFIX
+        + json.dumps(
+            {"schema_version": 1, "event": name, "token": token, "job_sha256": job, "rank": rank, "reason": "cuda_oom"}
+        )
+        + "\n"
+    )
 
 
-def failed_attempt(tmp_path):
-    output = tmp_path / 'runs' / 'training'
+def failed_attempt(tmp_path: Path) -> tuple:
+    output = tmp_path / "runs" / "training"
     output.mkdir(parents=True)
-    (output / 'config.json').write_text('original startup settings')
-    (output / 'partial.bin').write_bytes(b'preserve every original byte')
-    log = tmp_path / 'attempt.log'
-    log.write_text(event('startup_contended') + 'torch.cuda.OutOfMemoryError: fixture\n')
-    job = {'id': 'training', 'kind': 'train', 'sha256': 'a' * 64,
-           'output': str(output), 'dependencies': [], 'arguments': ['--mode', 'causal']}
-    attempt = {'state': 'failed', 'returncode': 1, 'child_pid': 99999999,
-               'child_session': 99999999, 'child_identity': None, 'log': str(log),
-               'log_sha256': sha256(log), 'environment_changes': {
-                   startup.TOKEN_ENV: 'b' * 32, startup.JOB_ENV: job['sha256']}}
-    attempt['attempt_started_ticks'] = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf('SC_CLK_TCK'))
-    state_path = tmp_path / 'state.json'
+    (output / "config.json").write_text("original startup settings")
+    (output / "partial.bin").write_bytes(b"preserve every original byte")
+    log = tmp_path / "attempt.log"
+    log.write_text(event("startup_contended") + "torch.cuda.OutOfMemoryError: fixture\n")
+    job = {
+        "id": "training",
+        "kind": "train",
+        "sha256": "a" * 64,
+        "output": str(output),
+        "dependencies": [],
+        "arguments": ["--mode", "causal"],
+    }
+    attempt = {
+        "state": "failed",
+        "returncode": 1,
+        "child_pid": 99999999,
+        "child_session": 99999999,
+        "child_identity": None,
+        "log": str(log),
+        "log_sha256": sha256(log),
+        "environment_changes": {startup.TOKEN_ENV: "b" * 32, startup.JOB_ENV: job["sha256"]},
+    }
+    attempt["attempt_started_ticks"] = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf("SC_CLK_TCK"))
+    state_path = tmp_path / "state.json"
     with queue.queue_state(state_path, [job]) as state:
-        state['jobs'][job['id']].update(state='failed', error='QueueChildError: CUDA startup failure',
-            returncode=1, child_pid=99999999, child_session=99999999, attempts=[attempt])
-        state['jobs'][job['id']].update(environment_changes=attempt['environment_changes'],
-            attempt_started_ticks=attempt['attempt_started_ticks'])
+        state["jobs"][job["id"]].update(
+            state="failed",
+            error="QueueChildError: CUDA startup failure",
+            returncode=1,
+            child_pid=99999999,
+            child_session=99999999,
+            attempts=[attempt],
+        )
+        state["jobs"][job["id"]].update(
+            environment_changes=attempt["environment_changes"], attempt_started_ticks=attempt["attempt_started_ticks"]
+        )
     return job, state_path, output, log
 
 
 @pytest.mark.parametrize("reason", ["cuda_oom", "port_in_use"])
-def test_retry_preserves_output_log_error_and_identity_before_pending(tmp_path, reason):
+def test_retry_preserves_output_log_error_and_identity_before_pending(tmp_path: Path, reason: str) -> None:
     job, state_path, output, log = failed_attempt(tmp_path)
     if reason == "port_in_use":
         log.write_text(log.read_text().replace("cuda_oom", "port_in_use"))
-        s=json.loads(state_path.read_text());s["jobs"][job["id"]]["attempts"][0]["log_sha256"]=sha256(log)
+        s = json.loads(state_path.read_text())
+        s["jobs"][job["id"]]["attempts"][0]["log_sha256"] = sha256(log)
         state_path.write_text(json.dumps(s))
     source_hashes = {p.name: sha256(p) for p in output.iterdir()}
     log_hash = sha256(log)
     assert queue.retry_startup_failure(job, [job], state_path)
-    row = json.loads(state_path.read_text())['jobs'][job['id']]
-    assert row['state'] == 'pending' and row['child_pid'] is None and row['child_session'] is None
-    assert row['startup_retries'] == 1 and len(row['attempts']) == 1
-    old = row['attempts'][0]
-    assert old['state'] == 'failed' and old['returncode'] == 1
-    archive = Path(old['archive'])
+    row = json.loads(state_path.read_text())["jobs"][job["id"]]
+    assert row["state"] == "pending"
+    assert row["child_pid"] is None
+    assert row["child_session"] is None
+    assert row["startup_retries"] == 1
+    assert len(row["attempts"]) == 1
+    old = row["attempts"][0]
+    assert old["state"] == "failed"
+    assert old["returncode"] == 1
+    archive = Path(old["archive"])
     assert not output.exists()
-    assert source_hashes == {p.name: sha256(p) for p in (archive / 'output').iterdir()}
-    assert sha256(archive / 'child.log') == log_hash == sha256(log)
-    assert (archive / 'README.md').is_file()
-    preserved = json.loads((archive / 'preservation.json').read_text())
-    assert preserved['job_sha256'] == job['sha256'] and preserved['files'] == source_hashes
-    assert preserved['error'] == row['error'] and preserved['contended_ranks'] == [2]
+    assert source_hashes == {p.name: sha256(p) for p in (archive / "output").iterdir()}
+    assert sha256(archive / "child.log") == log_hash == sha256(log)
+    assert (archive / "README.md").is_file()
+    preserved = json.loads((archive / "preservation.json").read_text())
+    assert preserved["job_sha256"] == job["sha256"]
+    assert preserved["files"] == source_hashes
+    assert preserved["error"] == row["error"]
+    assert preserved["contended_ranks"] == [2]
 
 
-@pytest.mark.parametrize('corruption', [
-    'evaluation', 'no_event', 'wrong_token', 'wrong_job', 'wrong_rank', 'boolean_rank',
-    'wrong_schema', 'extra_field', 'bad_json', 'prefixed_line', 'updates_begin',
-    'other_rank_validation', 'metrics', 'zero_exit', 'no_session', 'changed_log', 'retry_limit',
-])
-def test_ambiguous_or_nonstartup_failure_never_mutates_state_or_output(tmp_path, corruption):
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "evaluation",
+        "no_event",
+        "wrong_token",
+        "wrong_job",
+        "wrong_rank",
+        "boolean_rank",
+        "wrong_schema",
+        "extra_field",
+        "bad_json",
+        "prefixed_line",
+        "updates_begin",
+        "other_rank_validation",
+        "metrics",
+        "zero_exit",
+        "no_session",
+        "changed_log",
+        "retry_limit",
+    ],
+)
+def test_ambiguous_or_nonstartup_failure_never_mutates_state_or_output(tmp_path: Path, corruption: str) -> None:  # noqa: PLR0912 -- one complete fixture lifecycle with all assertions and cleanup
     job, state_path, output, log = failed_attempt(tmp_path)
-    s = json.loads(state_path.read_text()); row = s['jobs'][job['id']]; attempt = row['attempts'][0]
+    s = json.loads(state_path.read_text())
+    row = s["jobs"][job["id"]]
+    attempt = row["attempts"][0]
     changed = None
-    if corruption == 'evaluation': job['kind'] = 'evaluate'
-    elif corruption == 'no_event': changed = 'CUDA out of memory: an untrusted traceback\n'
-    elif corruption == 'wrong_token': changed = event('startup_contended', token='c' * 32)
-    elif corruption == 'wrong_job': changed = event('startup_contended', job='c' * 64)
-    elif corruption == 'wrong_rank': changed = event('startup_contended', rank=4)
-    elif corruption == 'boolean_rank': changed = event('startup_contended', rank=True)
-    elif corruption == 'wrong_schema': changed = event('startup_contended').replace('"schema_version": 1', '"schema_version": true')
-    elif corruption == 'extra_field': changed = event('startup_contended').replace('"rank": 2', '"rank": 2, "extra": 0')
-    elif corruption == 'bad_json': changed = startup.PREFIX + 'invalid JSON\n'
-    elif corruption == 'prefixed_line': changed = '[rank2] ' + event('startup_contended')
-    elif corruption == 'updates_begin': changed = event('startup_contended') + event('updates_begin', rank=0)
-    elif corruption == 'other_rank_validation': changed = event('startup_contended') + event('startup_failed', rank=0)
-    elif corruption == 'metrics': (output / 'metrics_rank0.jsonl').write_text('{"step":1}\n')
-    elif corruption == 'zero_exit': attempt['returncode'] = 0
-    elif corruption == 'no_session': attempt['child_session'] = None
-    elif corruption == 'changed_log': log.write_text('changed after terminal receipt')
-    elif corruption == 'retry_limit': row['attempts'] = [dict(attempt) for _ in range(4)]
+    if corruption == "evaluation":
+        job["kind"] = "evaluate"
+    elif corruption == "no_event":
+        changed = "CUDA out of memory: an untrusted traceback\n"
+    elif corruption == "wrong_token":
+        changed = event("startup_contended", token="c" * 32)
+    elif corruption == "wrong_job":
+        changed = event("startup_contended", job="c" * 64)
+    elif corruption == "wrong_rank":
+        changed = event("startup_contended", rank=4)
+    elif corruption == "boolean_rank":
+        changed = event("startup_contended", rank=True)
+    elif corruption == "wrong_schema":
+        changed = event("startup_contended").replace('"schema_version": 1', '"schema_version": true')
+    elif corruption == "extra_field":
+        changed = event("startup_contended").replace('"rank": 2', '"rank": 2, "extra": 0')
+    elif corruption == "bad_json":
+        changed = startup.PREFIX + "invalid JSON\n"
+    elif corruption == "prefixed_line":
+        changed = "[rank2] " + event("startup_contended")
+    elif corruption == "updates_begin":
+        changed = event("startup_contended") + event("updates_begin", rank=0)
+    elif corruption == "other_rank_validation":
+        changed = event("startup_contended") + event("startup_failed", rank=0)
+    elif corruption == "metrics":
+        (output / "metrics_rank0.jsonl").write_text('{"step":1}\n')
+    elif corruption == "zero_exit":
+        attempt["returncode"] = 0
+    elif corruption == "no_session":
+        attempt["child_session"] = None
+    elif corruption == "changed_log":
+        log.write_text("changed after terminal receipt")
+    elif corruption == "retry_limit":
+        row["attempts"] = [dict(attempt) for _ in range(4)]
     if changed is not None:
-        log.write_text(changed); attempt['log_sha256'] = sha256(log)
+        log.write_text(changed)
+        attempt["log_sha256"] = sha256(log)
     state_path.write_text(json.dumps(s))
-    original = state_path.read_bytes(); inputs = {p.name: sha256(p) for p in output.iterdir()}
+    original = state_path.read_bytes()
+    inputs = {p.name: sha256(p) for p in output.iterdir()}
     assert not queue.retry_startup_failure(job, [job], state_path)
     assert original == state_path.read_bytes()
     assert inputs == {p.name: sha256(p) for p in output.iterdir()}
-    assert not (output.parent / 'superseded_startup_contention').exists()
+    assert not (output.parent / "superseded_startup_contention").exists()
 
 
-def test_archive_publication_failure_restores_output_and_preserves_journal(tmp_path, monkeypatch):
-    from scripts.onestep_avatar.corpus import dataset
+def test_archive_publication_failure_restores_output_and_preserves_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     job, state_path, output, log = failed_attempt(tmp_path)
-    original = state_path.read_bytes(); hashes = {p.name: sha256(p) for p in output.iterdir()}
-    def unavailable(*_args, **_kwargs): raise OSError('state disk failed')
-    monkeypatch.setattr(dataset, 'atomic_write', unavailable)
-    with pytest.raises(OSError, match='state disk failed'):
+    original = state_path.read_bytes()
+    hashes = {p.name: sha256(p) for p in output.iterdir()}
+
+    def unavailable(*_args, **_kwargs) -> Never:
+        raise OSError("state disk failed")
+
+    monkeypatch.setattr(dataset, "atomic_write", unavailable)
+    with pytest.raises(OSError, match="state disk failed"):
         queue.retry_startup_failure(job, [job], state_path)
     assert state_path.read_bytes() == original
     assert hashes == {p.name: sha256(p) for p in output.iterdir()}
     assert log.is_file()
 
 
-@pytest.mark.parametrize('after_updates', [False, True])
-@pytest.mark.parametrize('kind', ['oom', 'validation'])
-def test_typed_runtime_reports_only_oom_before_any_training(monkeypatch, capsys, after_updates, kind):
-    from scripts.onestep_avatar.training import engine
-    monkeypatch.setenv(startup.TOKEN_ENV, 'b' * 32)
-    monkeypatch.setenv(startup.JOB_ENV, 'a' * 64)
-    monkeypatch.setenv('RANK', '2')
-    def fail(_settings, events):
-        if after_updates: events.begin_updates()
-        raise torch.cuda.OutOfMemoryError('CUDA contention') if kind == 'oom' else ValueError('invalid adapter')
-    monkeypatch.setattr(engine, '_run_settings', fail)
-    with pytest.raises(torch.cuda.OutOfMemoryError if kind == 'oom' else ValueError):
+@pytest.mark.parametrize("after_updates", [False, True])
+@pytest.mark.parametrize("kind", ["oom", "validation"])
+def test_typed_runtime_reports_only_oom_before_any_training(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], after_updates: bool, kind: str
+) -> None:
+    monkeypatch.setenv(startup.TOKEN_ENV, "b" * 32)
+    monkeypatch.setenv(startup.JOB_ENV, "a" * 64)
+    monkeypatch.setenv("RANK", "2")
+
+    def fail(_settings: object, events: list) -> Never:
+        if after_updates:
+            events.begin_updates()
+        raise torch.cuda.OutOfMemoryError("CUDA contention") if kind == "oom" else ValueError("invalid adapter")
+
+    monkeypatch.setattr(engine, "_run_settings", fail)
+    with pytest.raises(torch.cuda.OutOfMemoryError if kind == "oom" else ValueError):
         engine.run_settings(None)
-    records = [json.loads(line[len(startup.PREFIX):]) for line in capsys.readouterr().out.splitlines()]
-    assert [r['event'] for r in records] == (
-        ['updates_begin', 'startup_failed'] if after_updates else
-        ['startup_contended' if kind == 'oom' else 'startup_failed'])
-    assert all(r['rank'] == 2 and r['job_sha256'] == 'a' * 64 and r['token'] == 'b' * 32 for r in records)
+    records = [json.loads(line[len(startup.PREFIX) :]) for line in capsys.readouterr().out.splitlines()]
+    assert [r["event"] for r in records] == (
+        ["updates_begin", "startup_failed"]
+        if after_updates
+        else ["startup_contended" if kind == "oom" else "startup_failed"]
+    )
+    assert all(r["rank"] == 2 and r["job_sha256"] == "a" * 64 and r["token"] == "b" * 32 for r in records)
 
 
-def test_nonqueued_startup_failure_has_no_protocol(monkeypatch, capsys):
-    monkeypatch.delenv(startup.TOKEN_ENV, raising=False); monkeypatch.delenv(startup.JOB_ENV, raising=False)
+def test_nonqueued_startup_failure_has_no_protocol(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> Never:
+    monkeypatch.delenv(startup.TOKEN_ENV, raising=False)
+    monkeypatch.delenv(startup.JOB_ENV, raising=False)
     with pytest.raises(torch.cuda.OutOfMemoryError), startup.StartupEvents():
-        raise torch.cuda.OutOfMemoryError('unrelated direct run')
-    assert capsys.readouterr().out == ''
+        raise torch.cuda.OutOfMemoryError("unrelated direct run")
+    assert capsys.readouterr().out == ""
 
 
-@pytest.mark.parametrize('success_after', [None, 2])
-def test_loop_retries_at_most_three_times_with_new_claims_and_preserved_attempts(tmp_path, monkeypatch, success_after, controlled_queue_launch):
-    from scripts.onestep_avatar.execution import process_registry
-    job = {'id': 'training', 'kind': 'train', 'sha256': 'a' * 64, 'dependencies': [],
-           'output': str(tmp_path / 'runs/training'),
-           'arguments': ['--mode', 'causal', '--subset', str(tmp_path / 'membership.json'),
-                         '--output', str(tmp_path / 'runs/training')]}
-    state_path, claims = tmp_path / 'state.json', tmp_path / 'claims'
-    claims.mkdir(); (claims / '5').write_text('legacy foreign claim')
-    ledger = claims / 'processes.json'
-    monkeypatch.setattr(queue, 'prepare_jobs', lambda *_: [job])
-    monkeypatch.setattr(queue, 'job_command', lambda *_: (['controlled child'], {'CUDA_VISIBLE_DEVICES': '0,1,2,3'}))
+@pytest.mark.parametrize("success_after", [None, 2])
+@pytest.mark.usefixtures("controlled_queue_launch")
+def test_loop_retries_at_most_three_times_with_new_claims_and_preserved_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, success_after: int | None
+) -> None:
+    job = {
+        "id": "training",
+        "kind": "train",
+        "sha256": "a" * 64,
+        "dependencies": [],
+        "output": str(tmp_path / "runs/training"),
+        "arguments": [
+            "--mode",
+            "causal",
+            "--subset",
+            str(tmp_path / "membership.json"),
+            "--output",
+            str(tmp_path / "runs/training"),
+        ],
+    }
+    state_path, claims = tmp_path / "state.json", tmp_path / "claims"
+    claims.mkdir()
+    (claims / "5").write_text("legacy foreign claim")
+    ledger = claims / "processes.json"
+    monkeypatch.setattr(queue, "prepare_jobs", lambda *_: [job])
+    monkeypatch.setattr(queue, "job_command", lambda *_: (["controlled child"], {"CUDA_VISIBLE_DEVICES": "0,1,2,3"}))
     # This immediate fake-Popen control tests retries, not canonical launch acceptance.
-    monkeypatch.setattr(queue, 'training_launch_record', lambda *_: {'command': ['controlled child']})
-    monkeypatch.setattr(subprocess, 'run', lambda *_a, **_k: SimpleNamespace(stdout='\n'.join(f'{g}, 0' for g in range(8))))
+    monkeypatch.setattr(queue, "training_launch_record", lambda *_: {"command": ["controlled child"]})
+    monkeypatch.setattr(
+        subprocess, "run", lambda *_a, **_k: SimpleNamespace(stdout="\n".join(f"{g}, 0" for g in range(8)))
+    )
     launches = []
-    def launch(command, **kwargs):
-        assert kwargs['start_new_session'] and kwargs['env']['CUDA_VISIBLE_DEVICES'] == '0,1,2,3'
-        token = kwargs['env'][startup.TOKEN_ENV]
-        assert token not in launches; launches.append(token)
-        output = Path(job['output']); output.mkdir(parents=True)
-        (output / 'partial.bin').write_bytes(f'original attempt {len(launches)}'.encode())
+
+    def launch(command: list[str], **kwargs) -> SimpleNamespace:
+        del command
+        assert kwargs["start_new_session"]
+        assert kwargs["env"]["CUDA_VISIBLE_DEVICES"] == "0,1,2,3"
+        token = kwargs["env"][startup.TOKEN_ENV]
+        assert token not in launches
+        launches.append(token)
+        output = Path(job["output"])
+        output.mkdir(parents=True)
+        (output / "partial.bin").write_bytes(f"original attempt {len(launches)}".encode())
         code = 0 if success_after == len(launches) else 1
-        kwargs['stdout'].write(event('startup_contended', token=token)); kwargs['stdout'].flush()
+        kwargs["stdout"].write(event("startup_contended", token=token))
+        kwargs["stdout"].flush()
         return SimpleNamespace(pid=99999999, poll=lambda: code, wait=lambda: code)
-    monkeypatch.setattr(subprocess, 'Popen', launch)
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
     # This immediate fake child has no OS lifetime. The controlled exact handle
     # keeps this fixture scoped to retry/archive transactions, not containment.
     original_identity = process_registry._identity
-    monkeypatch.setattr(process_registry, '_identity', lambda pid: (
-        {'pid': pid, 'start_ticks': 1, 'command': ['controlled child'], 'terminal': True}
-        if pid == 99999999 else original_identity(pid)))
-    monkeypatch.setattr(queue, 'completion_receipt', lambda *_, **__: {'job_sha256': job['sha256'], 'evidence': []})
-    monkeypatch.setattr(queue, 'verify_receipt', lambda *_: True)
+    monkeypatch.setattr(
+        process_registry,
+        "_identity",
+        lambda pid: (
+            {"pid": pid, "start_ticks": 1, "command": ["controlled child"], "terminal": True}
+            if pid == 99999999
+            else original_identity(pid)
+        ),
+    )
+    monkeypatch.setattr(queue, "completion_receipt", lambda *_, **__: {"job_sha256": job["sha256"], "evidence": []})
+    monkeypatch.setattr(queue, "verify_receipt", lambda *_: True)
     if success_after is None:
-        with pytest.raises(queue.QueueChildError, match='failed with exit 1'):
-            queue.execute_jobs(tmp_path / 'jobs.json', state_path, ledger, once=False)
+        with pytest.raises(queue.QueueChildError, match="failed with exit 1"):
+            queue.execute_jobs(tmp_path / "jobs.json", state_path, ledger, once=False)
         assert len(launches) == 4
     else:
-        assert queue.execute_jobs(tmp_path / 'jobs.json', state_path, ledger, once=False) == 0
+        assert queue.execute_jobs(tmp_path / "jobs.json", state_path, ledger, once=False) == 0
         assert len(launches) == success_after
-    row = json.loads(state_path.read_text())['jobs']['training']
-    assert len(row['attempts']) == len(launches)
-    assert row['state'] == ('failed' if success_after is None else 'complete')
-    for index, old in enumerate(row['attempts'][:-1], 1):
-        archive = Path(old['archive'])
-        assert (archive / 'output/partial.bin').read_bytes() == f'original attempt {index}'.encode()
-        assert old['error'].startswith('QueueChildError:') and old['returncode'] == 1
-    assert sorted(p.name for p in claims.iterdir() if p.name.isdigit()) == ['5']
-    assert (claims / '5').read_text() == 'legacy foreign claim'
-    attempts = json.loads(ledger.read_text())['attempts']
+    row = json.loads(state_path.read_text())["jobs"]["training"]
+    assert len(row["attempts"]) == len(launches)
+    assert row["state"] == ("failed" if success_after is None else "complete")
+    for index, old in enumerate(row["attempts"][:-1], 1):
+        archive = Path(old["archive"])
+        assert (archive / "output/partial.bin").read_bytes() == f"original attempt {index}".encode()
+        assert old["error"].startswith("QueueChildError:")
+        assert old["returncode"] == 1
+    assert sorted(p.name for p in claims.iterdir() if p.name.isdigit()) == ["5"]
+    assert (claims / "5").read_text() == "legacy foreign claim"
+    attempts = json.loads(ledger.read_text())["attempts"]
     assert set(attempts) == set(launches)
-    assert all(item['state'] == 'closed' and item['gpus'] == [0, 1, 2, 3] for item in attempts.values())
+    assert all(item["state"] == "closed" and item["gpus"] == [0, 1, 2, 3] for item in attempts.values())
 
 
-@pytest.mark.parametrize('new_session', [False, True])
+@pytest.mark.parametrize("new_session", [False, True])
 def test_surviving_own_worker_is_bounded_stopped_after_leader_exit(  # noqa: PLR0915 -- one owned-worker lifecycle and cleanup
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, new_session: bool
 ) -> None:
-    pid_file = tmp_path / 'worker.pid'
+    pid_file = tmp_path / "worker.pid"
+    ready_file = tmp_path / "worker.ready"
+    release_file = tmp_path / "leader.release"
+    worker_code = (
+        f"import time; from pathlib import Path; Path({str(ready_file)!r}).write_text('ready'); time.sleep(30)"
+    )
     code = (
-        'import subprocess,sys; from pathlib import Path; '
-        'p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"],'
-        f'stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session={new_session!r}); '
-        f'Path({str(pid_file)!r}).write_text(str(p.pid))'
+        "import subprocess,sys,time; from pathlib import Path; "
+        f"p=subprocess.Popen([sys.executable,'-c',{worker_code!r}],"
+        f"stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session={new_session!r}); "
+        f"Path({str(pid_file)!r}).write_text(str(p.pid)); "
+        "deadline=time.monotonic()+5\n"
+        f"while not Path({str(release_file)!r}).exists():\n"
+        " if time.monotonic()>=deadline: raise RuntimeError('worker registration was not observed')\n"
+        " time.sleep(.01)\n"
     )
-    job = {'id': 'owned', 'kind': 'evaluate', 'sha256': 'a' * 64,
-           'output': str(tmp_path / 'output'), 'arguments': ['--mode', 'causal'], 'dependencies': []}
-    ledger = tmp_path / 'own_processes.json'
+    job = {
+        "id": "owned",
+        "kind": "evaluate",
+        "sha256": "a" * 64,
+        "output": str(tmp_path / "output"),
+        "arguments": ["--mode", "causal"],
+        "dependencies": [],
+    }
+    ledger = tmp_path / "own_processes.json"
     claims = process_registry.ProcessRegistry(ledger, inventory=lambda: dict.fromkeys(range(8), 0))
-    assert claims.acquire((4,), job='owned')
-    monkeypatch.setattr(queue, 'job_command', lambda *_: ([sys.executable, '-c', code], {}))
-    monkeypatch.setattr(queue, 'live_session_processes', lambda *_a, **_k: pytest.fail('broad session scan used'))
+    assert claims.acquire((4,), job="owned")
+    original_refresh = claims.refresh
+
+    def refresh(*, child_pid: int | None = None) -> None:
+        original_refresh(child_pid=child_pid)
+        if not pid_file.exists() or not ready_file.exists():
+            return
+        saved = json.loads(ledger.read_text())["attempts"][claims.token]
+        worker_pid = pid_file.read_text()
+        if worker_pid in saved["processes"]:
+            # Exit the leader only after its live worker is present in the real ledger.
+            release_file.write_text("registered")
+
+    monkeypatch.setattr(claims, "refresh", refresh)
+    monkeypatch.setattr(queue, "job_command", lambda *_: ([sys.executable, "-c", code], {}))
+    monkeypatch.setattr(queue, "live_session_processes", lambda *_a, **_k: pytest.fail("broad session scan used"))
     monkeypatch.setattr(
-        queue, 'live_attempt_processes', lambda *_a, **_k: pytest.fail('unrelated environment scan used')
+        queue, "live_attempt_processes", lambda *_a, **_k: pytest.fail("unrelated environment scan used")
     )
-    state_path = tmp_path / 'state.json'
+    state_path = tmp_path / "state.json"
     worker = None
     try:
-        with pytest.raises(ValueError, match='bounded package child failed'):
-            queue.run_child(job, claims, tmp_path / 'child.log', state_path=state_path, jobs=[job], poll_seconds=0.01)
+        with pytest.raises(ValueError, match="bounded package child failed"):
+            queue.run_child(job, claims, tmp_path / "child.log", state_path=state_path, jobs=[job], poll_seconds=0.01)
         worker = int(pid_file.read_text())
-        row = json.loads(state_path.read_text())['jobs']['owned']
-        assert row['returncode'] == 0
-        assert row['state'] == 'failed'
-        assert row['process_ledger'] == str(ledger.resolve())
+        assert ready_file.read_text() == "ready"
+        assert release_file.read_text() == "registered"
+        row = json.loads(state_path.read_text())["jobs"]["owned"]
+        assert row["returncode"] == 0
+        assert row["state"] == "failed"
+        assert row["process_ledger"] == str(ledger.resolve())
         observed = claims.observe_workers(timeout=1)
-        assert observed['complete'] is True
-        assert observed['workers_live'] is False
-        saved = json.loads(ledger.read_text())['attempts'][claims.token]
-        assert saved['state'] == 'closed'
-        assert saved['processes'][str(worker)]['identity']['pid'] == worker
+        assert observed["complete"] is True
+        assert observed["workers_live"] is False
+        saved = json.loads(ledger.read_text())["attempts"][claims.token]
+        assert saved["state"] == "closed"
+        assert saved["processes"][str(worker)]["identity"]["pid"] == worker
         assert not claims.owned
-        assert not (tmp_path / 'claims').exists()
-        stopped=json.loads(Path(row['supervision_result']).read_text())
-        assert stopped['state']=='failed'
-        assert stopped['workers_absent'] is True
+        assert not (tmp_path / "claims").exists()
+        stopped = json.loads(Path(row["supervision_result"]).read_text())
+        assert stopped["state"] == "failed"
+        assert stopped["workers_absent"] is True
         # Devices become available only after the bounded owned-worker proof.
         memory = dict.fromkeys(range(8), 2048)
         memory[4] = 0
@@ -251,19 +398,19 @@ def test_surviving_own_worker_is_bounded_stopped_after_leader_exit(  # noqa: PLR
             worker = int(pid_file.read_text())
         if worker is not None:
             identity = queue.process_identity(worker)
-            if identity is not None and not identity['terminal']:
+            if identity is not None and not identity["terminal"]:
                 descriptor = supervision._pidfd_open(worker)
                 try:
                     current = queue.process_identity(worker)
-                    assert current['pid'] == identity['pid']
-                    assert current['start_ticks'] == identity['start_ticks']
+                    assert current["pid"] == identity["pid"]
+                    assert current["start_ticks"] == identity["start_ticks"]
                     supervision._pidfd_signal(descriptor, signal.SIGTERM)
                 finally:
                     os.close(descriptor)
             deadline = time.monotonic() + 2
             while time.monotonic() < deadline:
                 try:
-                    waited=os.waitpid(worker, os.WNOHANG)[0]
+                    waited = os.waitpid(worker, os.WNOHANG)[0]
                 except ChildProcessError:
                     break
                 if waited == worker:
@@ -271,92 +418,119 @@ def test_surviving_own_worker_is_bounded_stopped_after_leader_exit(  # noqa: PLR
                 time.sleep(0.01)
         if claims.owned:
             claims.release()
-        assert json.loads(ledger.read_text())['attempts'][claims.token]['state'] == 'closed'
+        assert json.loads(ledger.read_text())["attempts"][claims.token]["state"] == "closed"
 
 
-def test_session_scan_distinguishes_live_terminal_and_unknown_handles(tmp_path):
-    def stat(pid, state, session_id):
-        p = tmp_path / str(pid); p.mkdir()
-        fields = [state, '0', '0', str(session_id), *(['0'] * 15), '123']
-        (p / 'stat').write_text(f'{pid} (worker (name)) ' + ' '.join(fields))
-    stat(10, 'S', 42); stat(11, 'Z', 42); stat(12, 'S', 99)
+def test_session_scan_distinguishes_live_terminal_and_unknown_handles(tmp_path: Path) -> None:
+    def stat(pid: int, state: str, session_id: int) -> None:
+        p = tmp_path / str(pid)
+        p.mkdir()
+        fields = [state, "0", "0", str(session_id), *(["0"] * 15), "123"]
+        (p / "stat").write_text(f"{pid} (worker (name)) " + " ".join(fields))
+
+    stat(10, "S", 42)
+    stat(11, "Z", 42)
+    stat(12, "S", 99)
     assert queue.live_session_processes(42, proc_root=tmp_path) == [10]
     assert queue.live_session_processes(100, proc_root=tmp_path) == []
-    (tmp_path / '12/stat').write_text('bad stat')
-    with pytest.raises(ValueError, match='malformed'):
+    (tmp_path / "12/stat").write_text("bad stat")
+    with pytest.raises(ValueError, match="malformed"):
         queue.live_session_processes(42, proc_root=tmp_path)
 
 
-def test_once_records_retry_pending_without_a_second_launch(tmp_path, monkeypatch):
-    job, state_path, output, log = failed_attempt(tmp_path)
+def test_once_records_retry_pending_without_a_second_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    job, state_path, _output, _log = failed_attempt(tmp_path)
     # Reuse the real preservation path after a mocked single failed dispatch.
-    monkeypatch.setattr(queue, 'prepare_jobs', lambda *_: [job])
+    monkeypatch.setattr(queue, "prepare_jobs", lambda *_: [job])
     seen = []
-    def dispatch(*_args):
+
+    def dispatch(*_args) -> bool:
         seen.append(1)
         assert queue.retry_startup_failure(job, [job], state_path)
         return True
-    monkeypatch.setattr(queue, 'dispatch_ready', dispatch)
-    assert queue.execute_jobs(tmp_path / 'jobs.json', state_path, tmp_path / 'claims', once=True) == 2
-    assert seen == [1] and json.loads(state_path.read_text())['jobs']['training']['state'] == 'pending'
+
+    monkeypatch.setattr(queue, "dispatch_ready", dispatch)
+    assert queue.execute_jobs(tmp_path / "jobs.json", state_path, tmp_path / "claims", once=True) == 2
+    assert seen == [1]
+    assert json.loads(state_path.read_text())["jobs"]["training"]["state"] == "pending"
 
 
-@pytest.mark.parametrize('after_updates', [False, True])
-@pytest.mark.parametrize('number', [98, 13])
-def test_typed_port_contention_is_distinct_from_other_os_errors(monkeypatch, capsys, after_updates, number):
-    import errno
-    monkeypatch.setenv(startup.TOKEN_ENV, 'b' * 32); monkeypatch.setenv(startup.JOB_ENV, 'a' * 64)
-    monkeypatch.setenv('RANK', '0')
-    with pytest.raises(OSError), startup.StartupEvents() as reporter:
-        if after_updates: reporter.begin_updates()
-        raise OSError(errno.EADDRINUSE if number == 98 else errno.EACCES, 'fixture error')
-    events = [json.loads(line[len(startup.PREFIX):]) for line in capsys.readouterr().out.splitlines()]
-    assert events[-1]['event'] == ('startup_contended' if number == 98 and not after_updates else 'startup_failed')
-    assert events[-1]['reason'] == ('port_in_use' if number == 98 and not after_updates else None)
+@pytest.mark.parametrize("after_updates", [False, True])
+@pytest.mark.parametrize("number", [98, 13])
+def test_typed_port_contention_is_distinct_from_other_os_errors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], after_updates: bool, number: int
+) -> Never:
+    monkeypatch.setenv(startup.TOKEN_ENV, "b" * 32)
+    monkeypatch.setenv(startup.JOB_ENV, "a" * 64)
+    monkeypatch.setenv("RANK", "0")
+    with pytest.raises(OSError, match="fixture error"), startup.StartupEvents() as reporter:  # noqa: PT012 -- assert rollback and lifecycle reporting across the whole transaction
+        if after_updates:
+            reporter.begin_updates()
+        raise OSError(errno.EADDRINUSE if number == 98 else errno.EACCES, "fixture error")
+    events = [json.loads(line[len(startup.PREFIX) :]) for line in capsys.readouterr().out.splitlines()]
+    assert events[-1]["event"] == ("startup_contended" if number == 98 and not after_updates else "startup_failed")
+    assert events[-1]["reason"] == ("port_in_use" if number == 98 and not after_updates else None)
 
 
-def test_claim_free_wait_after_preserved_retry_creates_no_additional_attempt(tmp_path, monkeypatch):
-    job, state_path, output, log = failed_attempt(tmp_path)
+def test_claim_free_wait_after_preserved_retry_creates_no_additional_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job, state_path, output, _log = failed_attempt(tmp_path)
     assert queue.retry_startup_failure(job, [job], state_path)
     original = state_path.read_bytes()
-    monkeypatch.setattr(queue, 'prepare_jobs', lambda *_: [job])
-    monkeypatch.setattr(subprocess, 'run', lambda *_a, **_k: SimpleNamespace(stdout='\n'.join(f'{g}, 2048' for g in range(8))))
-    monkeypatch.setattr(queue, 'run_child', lambda *_a, **_k: pytest.fail('launched on busy device'))
-    ledger = tmp_path / 'own_processes.json'
-    assert queue.execute_jobs(tmp_path / 'jobs.json', state_path, ledger, once=True) == 2
-    assert state_path.read_bytes() == original and not output.exists()
+    monkeypatch.setattr(queue, "prepare_jobs", lambda *_: [job])
+    monkeypatch.setattr(
+        subprocess, "run", lambda *_a, **_k: SimpleNamespace(stdout="\n".join(f"{g}, 2048" for g in range(8)))
+    )
+    monkeypatch.setattr(queue, "run_child", lambda *_a, **_k: pytest.fail("launched on busy device"))
+    ledger = tmp_path / "own_processes.json"
+    assert queue.execute_jobs(tmp_path / "jobs.json", state_path, ledger, once=True) == 2
+    assert state_path.read_bytes() == original
+    assert not output.exists()
     assert not ledger.exists()
     assert not any(p.name.isdigit() for p in tmp_path.iterdir())
 
 
-def test_attempt_worker_scan_requires_exact_token_and_skips_older_handles(tmp_path):
-    def create(pid, tick, environment):
-        p = tmp_path / str(pid); p.mkdir()
-        (p / 'stat').write_text(f'{pid} (worker) ' + ' '.join(['S', '0', '0', '999', *(['0'] * 15), str(tick)]))
-        if environment is not None: (p / 'environ').write_bytes(environment)
-    marker = (startup.TOKEN_ENV + '=' + 'b' * 32).encode()
-    create(42, 200, marker + b'\0OTHER=x\0')
-    create(43, 200, marker + b'x\0')
+def test_attempt_worker_scan_requires_exact_token_and_skips_older_handles(tmp_path: Path) -> None:
+    def create(pid: int, tick: int, environment: bytes) -> None:
+        p = tmp_path / str(pid)
+        p.mkdir()
+        (p / "stat").write_text(f"{pid} (worker) " + " ".join(["S", "0", "0", "999", *(["0"] * 15), str(tick)]))
+        if environment is not None:
+            (p / "environ").write_bytes(environment)
+
+    marker = (startup.TOKEN_ENV + "=" + "b" * 32).encode()
+    create(42, 200, marker + b"\0OTHER=x\0")
+    create(43, 200, marker + b"x\0")
     create(44, 50, None)  # Older process may have an inaccessible environment.
-    assert queue.live_attempt_processes('b' * 32, started_ticks=100, proc_root=tmp_path) == [42]
+    assert queue.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path) == [42]
 
 
-def test_attempt_worker_scan_refuses_unreadable_or_reused_handles(tmp_path, monkeypatch):
-    p = tmp_path / '42'; p.mkdir()
-    stat = p / 'stat'
-    stat.write_text('42 (worker) ' + ' '.join(['S', '0', '0', '999', *(['0'] * 15), '200']))
-    (p / 'environ').write_bytes((startup.TOKEN_ENV + '=' + 'b' * 32).encode())
+def test_attempt_worker_scan_refuses_unreadable_or_reused_handles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = tmp_path / "42"
+    p.mkdir()
+    stat = p / "stat"
+    stat.write_text("42 (worker) " + " ".join(["S", "0", "0", "999", *(["0"] * 15), "200"]))
+    (p / "environ").write_bytes((startup.TOKEN_ENV + "=" + "b" * 32).encode())
     original = Path.read_bytes
-    def unreadable(path):
-        if path == p / 'environ': raise PermissionError('unknown eligible process')
+
+    def unreadable(path: Path) -> bytes:
+        if path == p / "environ":
+            raise PermissionError("unknown eligible process")
         return original(path)
-    monkeypatch.setattr(Path, 'read_bytes', unreadable)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
     with pytest.raises(PermissionError):
-        queue.live_attempt_processes('b' * 32, started_ticks=100, proc_root=tmp_path)
-    def reused(path):
+        queue.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path)
+
+    def reused(path: Path) -> bytes:
         result = original(path)
-        if path == p / 'environ': stat.write_text(stat.read_text().replace('200', '201'))
+        if path == p / "environ":
+            stat.write_text(stat.read_text().replace("200", "201"))
         return result
-    monkeypatch.setattr(Path, 'read_bytes', reused)
-    with pytest.raises(ValueError, match='handle changed'):
-        queue.live_attempt_processes('b' * 32, started_ticks=100, proc_root=tmp_path)
+
+    monkeypatch.setattr(Path, "read_bytes", reused)
+    with pytest.raises(ValueError, match="handle changed"):
+        queue.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path)

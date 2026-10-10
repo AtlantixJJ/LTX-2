@@ -18,9 +18,7 @@ def test_converted_training_jobs_cover_each_active_legacy_row_exactly_once() -> 
     rows = [shlex.split(line, comments=True) for line in (EXPR / "configs/train_jobs.txt").read_text().splitlines()]
     rows = [row for row in rows if row]
     assert len(jobs) == len({row[0] for row in rows})
-    assert {job["id"].removeprefix("legacy_train_") for job in jobs} == {
-        row[0].replace("/", "_") for row in rows
-    }
+    assert {job["id"].removeprefix("legacy_train_") for job in jobs} == {row[0].replace("/", "_") for row in rows}
     for row in rows:
         name, subset, port, *legacy = row
         job = next(item for item in jobs if item["id"] == "legacy_train_" + name.replace("/", "_"))
@@ -31,8 +29,15 @@ def test_converted_training_jobs_cover_each_active_legacy_row_exactly_once() -> 
         assert args[args.index("--output") + 1].endswith(f"runs/{name}")
         assert job["port"] == int(port)
         assert job["processes"] == 4
-        for flag in ("--guide-mode", "--block-latent-frames", "--sigma-levels", "--noise-policy",
-                     "--warmup-steps", "--steps", "--save-every"):
+        for flag in (
+            "--guide-mode",
+            "--block-latent-frames",
+            "--sigma-levels",
+            "--noise-policy",
+            "--warmup-steps",
+            "--steps",
+            "--save-every",
+        ):
             if flag in legacy:
                 assert flag in args
         assert args[args.index("--seed") + 1] == "42"
@@ -89,9 +94,11 @@ def test_progress_jobs_preserve_fixed_sources_and_exact_schedules() -> None:
         start = args.index("--schedule") + 1
         end = args.index("--source")
         levels = list(map(float, args[start:end]))
-        expected = ([0.8977352380752563, 0.0] if job["id"].endswith("vis_k1") else
-                    [0.8977352380752563, 0.8355841040611267, 0.7364180088043213,
-                     0.48016369342803955, 0.0])
+        expected = (
+            [0.8977352380752563, 0.0]
+            if job["id"].endswith("vis_k1")
+            else [0.8977352380752563, 0.8355841040611267, 0.7364180088043213, 0.48016369342803955, 0.0]
+        )
         assert levels == expected
         assert len(job["completion"]["records"]) == 2
         if "frozen" not in job["id"]:

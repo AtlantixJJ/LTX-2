@@ -19,8 +19,9 @@ from scripts.onestep_avatar.training import resources
 def original_job(tmp_path: Path, *, tolerance: dict | None = check.TOLERANCE) -> tuple:
     return ordinary_job(tmp_path, tolerance=tolerance)
 
+
 @pytest.mark.parametrize(
-    "field,value",
+    ("field", "value"),
     [
         ("state", "pending"),
         ("schema_version", 1),
@@ -32,7 +33,7 @@ def original_job(tmp_path: Path, *, tolerance: dict | None = check.TOLERANCE) ->
     ],
 )
 def test_replay_readiness_rejects_changed_marker_before_scientific_inputs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, value
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, value: str
 ) -> None:
     _, _, _, job_path, _, marker_path = original_job(tmp_path)
     marker = json.loads(marker_path.read_text())
@@ -96,7 +97,7 @@ def test_fully_bound_wrong_frozen_tolerance_refuses_before_scientific_inputs(
         "journal_disagreement",
     ],
 )
-def test_applied_runtime_and_resource_defects_refuse_before_scientific_inputs(  # noqa: PLR0912 -- explicit negative controls
+def test_applied_runtime_and_resource_defects_refuse_before_scientific_inputs(  # noqa: PLR0912, PLR0915 -- explicit negative controls
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str
 ) -> None:
     _, _, _, path, saved, marker_path = original_job(tmp_path)
@@ -239,7 +240,7 @@ def test_actual_serial_accelerator_refuses_before_models_or_output(
     monkeypatch.setattr(check, "Accelerator", lambda **_kwargs: actual)
     monkeypatch.setattr(check.engine, "build_transformer", lambda *_args: pytest.fail("loaded model"))
     output = tmp_path / "serial"
-    with pytest.raises(ValueError, match="actual Accelerator|ordinary process"):
+    with pytest.raises(ValueError, match=r"actual Accelerator|ordinary process"):
         check.execute(job_path, output, 4)
     assert not output.exists()
 
@@ -255,7 +256,7 @@ def test_input_change_during_serial_accelerator_setup_refuses_before_models_or_o
     monkeypatch.setattr(check.software, "capture", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(check.software, "check_current", lambda *_args: None)
 
-    def accelerator(**_kwargs):
+    def accelerator(**_kwargs) -> SimpleNamespace:
         budget_path.write_text(budget_path.read_text() + "\n")
         return SimpleNamespace(num_processes=1, mixed_precision="bf16", distributed_type=DistributedType.NO)
 

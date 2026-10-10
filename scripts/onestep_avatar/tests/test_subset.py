@@ -7,67 +7,9 @@ import json
 from pathlib import Path
 
 import pytest
-import torch
 
 from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.hashing import sha256
-
-
-@pytest.fixture
-def old_subset(tmp_path: Path) -> dict:
-    sources = []
-    chains = []
-    for actor, group in (("1", "train"), ("2", "held_out")):
-        name = f"Part_1/{actor}/views/view00"
-        view = tmp_path / name
-        view.mkdir(parents=True)
-        (view / "rgb.mp4").write_bytes(b"saved capture bytes" + actor.encode())
-        torch.save(
-            {
-                "schema_version": 2,
-                "master": torch.arange(56).reshape(2, 7, 2, 2).float(),
-                "fps": 30.0,
-                "objective": "white",
-                "source": name,
-                "vae_fingerprint": "saved VAE identity",
-                "box_xyxy": [0, 0, 64, 64],
-                "edge": 64,
-                "encode_contract_version": 1,
-            },
-            view / dataset.capture_bundle_name("white"),
-        )
-        sources.append(
-            {
-                "relative_dir": name,
-                "actor": actor,
-                "fps": 30.0,
-                "n_latent_frames": 7,
-                "n_blocks": 3,
-                "rgb_sha256": sha256(view / "rgb.mp4"),
-                "guide_sha256": None,
-            }
-        )
-        chains += [
-            {"source": name, "actor": actor, "split": group, "blocks": [0, 1], "seed_is_clip_start": True},
-            {"source": name, "actor": actor, "split": group, "blocks": [1, 2], "seed_is_clip_start": False},
-        ]
-    return {
-        "kind": "one_step_argavatar_block_chains",
-        "schema_version": 1,
-        "objective": "white",
-        "corpus_root": str(tmp_path),
-        "capture_manifest": {"sha256": "original crop record"},
-        "splits": {"train": ["1"], "held_out": ["2"]},
-        "sources": sources,
-        "chains": chains,
-        "geometry": {
-            "latent_time_scale": 8,
-            "block_latent_frames": 2,
-            "context_latent_frames": 1,
-            "sink_latent_frames": 1,
-        },
-        "chain_length": 2,
-    }
 
 
 def test_conversion_preserves_people_hashes_and_exact_original_ranges(old_subset: dict) -> None:
@@ -148,9 +90,15 @@ def test_clip_store_d0_reads_no_guide_and_checks_changed_masters(old_subset: dic
 
 def test_subset_sha256_covers_chains_and_splits() -> None:
     """The full subset identity changes when only chains or splits change (G3)."""
-    base = {"objective": "white", "sources": [{"relative_dir": "a"}], "chains": [{"blocks": [0, 1]}],
-            "splits": {"train": ["1"], "validation": ["2"], "test": ["3"]}, "span_latent_frames": 17,
-            "clip_start_only": True, "chain_length": 2}
+    base = {
+        "objective": "white",
+        "sources": [{"relative_dir": "a"}],
+        "chains": [{"blocks": [0, 1]}],
+        "splits": {"train": ["1"], "validation": ["2"], "test": ["3"]},
+        "span_latent_frames": 17,
+        "clip_start_only": True,
+        "chain_length": 2,
+    }
     assert subset.subset_sha256(base) == subset.subset_sha256(dict(base))
     assert subset.subset_sha256(base) != subset.subset_sha256({**base, "chains": [{"blocks": [1, 2]}]})
     assert subset.subset_sha256(base) != subset.subset_sha256({**base, "splits": {"train": ["2"]}})

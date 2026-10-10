@@ -14,7 +14,7 @@ Report denoise, cache setup/update, and complete-output cost separately.
 ## Data flow
 
 ```mermaid
-flowchart TB
+flowchart LR
   I[("checked ordinary inputs")] --> T["measure repetitions"]
   T --> G["ordinary sampler"] --> O[("raw outputs and measurements")]
   O --> V["saved completion verifier"]

@@ -11,7 +11,8 @@ tolerances and native E1–E5 gates remain unchanged.
 Status: **Implementation authorized and in progress.**
 The user directed execution of the revised plan. Shared input helpers, schedules,
 the checked master reader, and bidirectional functions now exist.
-The full restructure remains incomplete. Each module records its own status.
+The final source owners are implemented. The code gate verifies one frozen
+source; native and scientific acceptance require separate evidence.
 The required work order is code refactor, CPU/import/boundary validation, fresh
 affected native checks, then GPU experiments on the final source. The active
 handoff records verified owner groups and the next unfinished group.
@@ -126,10 +127,9 @@ complete migration map. The latest user instruction puts Stage D source moves
 and duplicate-runtime removal first. Preserve required behavior and callers,
 validate the final source with CPU/import/boundary checks, then publish fresh
 affected native checks before GPU experiments. The tables
-below include current mixed owners; their presence is not final boundary compliance.
+below describe current owners; their presence alone is not final gate acceptance.
 Every queue kind now uses bounded supervision and the shared GPU pool. Final
-G8 CPU verification remains pending; remaining migration and native acceptance
-still follow the active handoff.
+CPU owner-group checks are recorded in the handoff. Whole-package final validation and fresh native acceptance still follow its work order.
 The architecture migration map gives their required destinations. New larger
 experiment sources require designs under `doc/experiments/` before source changes.
 
@@ -155,6 +155,7 @@ Complete input production and native model acceptance remain pending.
 | `prepare_inputs.py` | [prepare_inputs.md](prepare_inputs.md) | >100; fixed preview assembly/pinned text-noise-image tensors and actual one-RGB supplied-image VAE preparation |
 | `experiments/stock_parity.py` | [stock_parity.md](experiments/stock_parity.md) | >100; actual stock video sampling components, repeated controls, checked-reference precision comparison and decoded traces; native acceptance open |
 | `experiments/spec_protocol.py` | [experiments/spec_protocol.md](experiments/spec_protocol.md) | >100; pinned data-only checker specifications, artifact manifests and saved completion inventory |
+| `experiments/prune_baseline.py` | [experiments/prune_baseline.md](experiments/prune_baseline.md) | >100; queued one-case pruning reproduction through the public prune producer, pinned inputs/software and saved completion |
 | `model/bidirectional.py` | [model/bidirectional.md](model/bidirectional.md) | >100; segment training and generation |
 | `model/causal.py` | [model/causal.md](model/causal.md) | >100; block and cache operations |
 | `model/sampling.py` | [model/sampling.md](model/sampling.md) | >100; exact denoising levels and steps |
@@ -172,9 +173,9 @@ Complete input production and native model acceptance remain pending.
 | `media.py` | [media.md](media.md) | >100; training/inference visualization |
 | `bench.py` | [bench.md](bench.md) | >100; actual mode cost |
 | `corpus/dataset.py` | [dataset.md](corpus/dataset.md) | >100; checked unsliced master reader and corpus names |
-| `train.py` | header design below | ≤100 target; thin CLI |
+| `train.py` | header design below | ≤100; thin CLI |
 | `infer.py` | [infer.md](infer.md) | >100; product CLI/API, strict preflight and generated-only rendering |
-| `model/backbone.py` | header design below | ≤100 expected; resolve base weights |
+| `model/backbone.py` | header design below | ≤100; resolve base weights |
 
 If a thin file needs over 100 lines, write its matching doc before implementation.
 
@@ -237,14 +238,13 @@ If a thin file needs over 100 lines, write its matching doc before implementatio
   conditions, verify scientific completion and bind all result/text/noise bytes
   without models or writes.
 
-- **`experiments/future_noise_study.py` (preparation implemented, migration incomplete):**
+- **`experiments/future_noise_study.py` (preparation implemented; fresh native parity pending):**
   [design](experiments/future_noise_study.md). Reconstruct exact saved noise and prepare
   package jobs for the historical intervention/repeat/causal controls. Current
   real conversion refuses a changed guide-render pin in the old subset. Keep
-  a still-required old executor until its callers and required behavior have a
-  checked final owner; follow the active handoff's disposition rule. Do not retain
-  a broken command indefinitely. The owner now lives in `experiments/`; G7
-uses the implemented `causality` selector and pins its five scientific specifications.
+  original source attribution as non-executable provenance. The owner lives in
+  `experiments/`; queued jobs use the `causality` selector and pin all five
+  scientific specifications. A failed historical data pin is never repaired by a reader.
 
 - **`experiments/convert_progress_jobs.py`:** data-only conversion of historical progress
   rows to package evaluation jobs. Preserve both fixed views, seed 42, sigma
@@ -309,7 +309,7 @@ uses the implemented `causality` selector and pins its five scientific specifica
   This implemented large file has [doc/infer.md](infer.md).
 - **`model/backbone.py`:** resolve version and dev/distilled weight paths once.
   Keep registry defaults and return the actual weight hash.
-  The current resolver has 62 lines.
+  This small source explains its resolver rules in the header.
 - **`training/startup.py` (implemented):** the small-file header owns queued startup events.
   Bind an optional attempt token/job hash and rank; mark updates before training.
   Propagate exceptions and emit only the defined contention/failure events.
@@ -318,90 +318,51 @@ uses the implemented `causality` selector and pins its five scientific specifica
   contiguous bytes through one leaf owner. Keep module import standard-library
   only; tensor hashing imports Torch inside its function. Do not substitute
   size/time for a content hash. The small-file header owns the design.
-- **`qa.py`:** compare masks with the declared threshold and calculate overlap.
-  This score is not a loss weight. Current size: 25 lines.
+- **`corpus/qa.py`:** compare masks with the declared threshold and calculate overlap.
+  This score is not a loss weight. Its small-file header explains the inputs and empty-mask rule.
   Compare raw alpha and capture mask in the same crop, not composited RGB.
   Low overlap requires inspection.
 - **`decode_saved.py`:** read hashed jobs and call `media`.
   Do not regenerate model output.
-  If its current 104 lines become at most 100, move the doc into its header.
+  The current large source has the mirrored [decoding design](decode_saved.md).
 
 These notes describe the intended ownership. Implemented small-file headers
 explain their logic; larger sources use the mirrored docs above.
 
-## Current source owners and remaining migration
+## Current source owners and final gate
 
-The tables in this file list **current** paths. Final paths and every
-destination are in [architecture: target layout](architecture.md#target-layout)
-and [migration map](architecture.md#migration-map); that map wins over the
-"Planned change" summaries below.
+The index above names current files. The [architecture migration map](architecture.md#migration-map)
+records their original locations and required ownership. Corpus, execution and
+experiment owners have moved; ordinary evaluation, metrics, previews and
+comparisons are separate. Legacy adapter conversion belongs to experiments.
+The typed trainer is the only training runtime. The pruning baseline producer
+belongs to `scripts/prune/evaluate/whole_clip_baseline.py`.
 
-| Current source | Current doc | Planned change |
-|---|---|---|
-| `corpus/precompute.py` | [precompute.md](corpus/precompute.md) | move to `corpus/`; keep capture/guide VAE producers |
-| `corpus/build_guidance.py` | [build_guidance.md](corpus/build_guidance.md) | move to `corpus/`; keep the only ARGAvatar process; check old branches |
-| `corpus/geometry.py` | [geometry.md](corpus/geometry.md) | move to `corpus/`; keep the shared crop rule |
-| `corpus/motion.py` | [motion.md](corpus/motion.md) | move to `corpus/`; keep pose conversion |
-| `corpus/mask_video.py` | [mask_video.md](corpus/mask_video.md) | move to `corpus/`; keep lossless masks; check old data use |
-| `experiments/stats.py` | [stats.md](experiments/stats.md) | implemented at `experiments/stats.py` (A1/B1c study code; no other consumer) |
-| `plot_training.py` | [plot_training.md](plot_training.md) | keep training plots; remove old readers after log conversion |
-| `decode_saved.py` | [decode_saved.md](decode_saved.md) | use media; apply final size rule |
-| `train.py` | source header | thin CLI; requires `--mode`; [engine](training/engine.md) and [config](training/config.md) are the typed owners |
-| `model/causal.py` | [model/causal.md](model/causal.md) | typed training/evaluation/product integrated; native quality/cost acceptance pending |
-| `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | version-two records and tensor preflight stay; legacy conversion is in `experiments/legacy_adapters.py` |
-| removed `onestep_core.py` | [infer.md](infer.md) | explicit-mode product CLI/API and shared model/media owners |
-| `bench.py` | [bench.md](bench.md) | causal-operation diagnostic and explicit-mode whole-generation CLI implemented; native measurement pending |
-| `model/backbone.py` | [source docstrings](../model/backbone.py) | moved; keep the weight-identity description |
-| `hashing.py` | [source docstrings](../hashing.py) | stays at the root as a leaf utility; gains `tensor_sha256` |
-| `corpus/qa.py` | [source docstrings](../corpus/qa.py) | move to `corpus/`; keep mask comparison; caller rules above |
-
-The architecture contract also requires study/diagnostic orchestration to leave
-ordinary `evaluate.py`, A1/B1c orchestration to leave the shared root, and historical
-adapter conversion orchestration to leave the normal checkpoint owner. Shared
-measurement/model/validation primitives keep one common owner. G4 moved the
-five acceptance checkers, including the stock comparison, into `experiments/`.
-G5 moved the six sweep/progress study owners into `experiments/` and migrated
-their tests. Current commands use those module paths. Fresh affected native
-evidence follows the final code gate.
-
-Current commands remain in [configs/README](../configs/README.md).
-Explicit `--mode` and the shared `fsdp.yaml` are implemented.
-Internal imports use the extracted owners. The subset conversion CLI is runnable.
+The final gate checks the entire layout, imports, software profiles, commands,
+documentation and removal records. It remains separate from source presence and
+from fresh native acceptance. Current commands are in [configs/README](../configs/README.md).
 
 ## External code and doc migration
 
-Current `expr/` scripts include training/evaluation queues, launch scripts, and model probes.
-Some combine execution with report assembly.
-Move required execution into this package's public CLIs/helpers.
-Retain only report-specific code in `expr/`.
-Keep original saved results and their producer records.
+`expr/` contains study settings, saved evidence and report code. Retired model
+executors, launchers, monitors and runnable source snapshots are non-executable
+`.py.txt` or `.sh.txt` provenance. The [retirement record](../../../../expr/onestep_avatar/retired_executors.json)
+keeps their paths, hashes and reasons. The [report dispositions](../../../../expr/onestep_avatar/report_dispositions.json)
+identify maintained and frozen reports.
 
-Use the workspace plan's explicit file inventory and deletion checks during implementation.
-Transfer required module explanations into source-mirrored package docs or small-file headers.
-Remove old `expr/code/doc/` pages for deleted model executors.
-Retained report code keeps only its own report-generation explanation.
-If a required queue needs a new package executor, establish its design doc before source changes.
-The package executor is specified in [queue](execution/queue.md). Execution requires
-`--execute`, exactly one of `--once` or `--loop`, and
-`--process-ledger <SHARED_PROCESS_LEDGER.json>`. Current attempts share
-`expr/onestep_avatar/processes.json`, query `nvidia-smi` directly and record only
-their own PID/start/command/GPU identities and descendants. The loop rereads
-append-only jobs and waits without an active process record,
-verifies dependency/completion receipts and refuses failed or unrecovered work.
-Bounded startup retries preserve failed attempts; historical job conversion
-and native retry/live handoff acceptance remain pending.
-The design defines saved job settings, exact completion
-evidence, GPU restrictions, own-process tracking, child ownership and recovery.
-The retained legacy `GPUClaims` helper and reservation files describe historical
-attempts; new dispatch does not read them or unrelated process environments.
-Live queue
-migration remains pending and must preserve recorded scientific conditions.
-The initial inventory includes active and archived sources. Ownership classification
-and execution migration remain incomplete.
-Classify mixed study branches separately: saved-result rebuilding can coexist
-with explicit model generation or historical-byte import in the same source.
-Stage D must prevent discovery, import and rebuild from restoring retired execution,
-in addition to removing its current paths and forwarding wrappers.
+Maintained report builders read saved results only. They refuse missing or
+changed cited evidence before writes and children; discovery and rebuild cannot
+restore retired execution. The maintained AR report has saved B8 acceptance;
+the future pilot report needs its own saved-only checks when results exist.
+Historical producer records retain their original paths and hashes. The current
+implementation-status update is an explicitly authorized exception to its
+historical folder's freeze; archived scientific reports remain frozen.
+
+Only the package queue launches model work. Execution requires `--execute`,
+one of `--once` or `--loop`, and the shared `--process-ledger`. It uses direct
+GPU inventory, bounded supervision, owned process identities and the one device
+pool. Native retry and scientific acceptance use fresh output IDs after the
+final code gate. No historical launcher is restored to satisfy a later failure.
 
 ## Artifact owners
 
@@ -425,10 +386,11 @@ CPU behavior, scoped native acceptance and remaining full requirements. Exact
 receipts and preserved failed attempts belong to the active handoff.
 Diagram checks and documentation links do not prove numerical or video quality.
 
-Final migration must audit `expr/` imports and subprocess calls for model
-execution, remove obsolete runnable paths, and prevent import/rebuild from
-restoring them. Rebuild reports from saved results with training, generation and
-decoder loaders disabled. Missing results must fail without starting a job.
+The final gate rechecks `expr/` imports and subprocess calls for model execution
+and verifies retirement records against the current tree. Import and rebuild
+must not restore retired execution. Maintained reports rebuild from saved
+results with training, generation and decoder loaders disabled; missing results
+fail without starting a job.
 
 ### G3 corpus and adapter layering
 

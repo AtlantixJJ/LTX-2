@@ -135,16 +135,36 @@ def test_current_scientific_receipt_cannot_unblock_without_supervision() -> None
 
 
 def test_saved_execution_refuses_changed_physical_device_mapping(tmp_path: Path) -> None:
-    job = queue.prepare_job({
-        "id": "case", "kind": "evaluate", "output": "output",
-        "arguments": ["--mode", "causal", "--subset", "membership.json", "--output", "output",
-                      "--schedule", "1", "0"],
-        "completion": {"records": ["output/result.json"]},
-    }, tmp_path)
+    job = queue.prepare_job(
+        {
+            "id": "case",
+            "kind": "evaluate",
+            "output": "output",
+            "arguments": [
+                "--mode",
+                "causal",
+                "--subset",
+                "membership.json",
+                "--output",
+                "output",
+                "--schedule",
+                "1",
+                "0",
+            ],
+            "completion": {"records": ["output/result.json"]},
+        },
+        tmp_path,
+    )
     command, environment = queue.job_command(job, (0,))
-    row = {"command": command, "gpus": [0], "child_identity": {},
-           "environment_changes": environment, "supervision_result": str(tmp_path / "missing.json"),
-           "supervision_result_sha256": "a" * 64, "supervision_contract": str(tmp_path / "phases.json")}
+    row = {
+        "command": command,
+        "gpus": [0],
+        "child_identity": {},
+        "environment_changes": environment,
+        "supervision_result": str(tmp_path / "missing.json"),
+        "supervision_result_sha256": "a" * 64,
+        "supervision_contract": str(tmp_path / "phases.json"),
+    }
     with pytest.raises(FileNotFoundError):
         queue.verify_attempt_evidence(job, row)  # Correct mapping proceeds to saved evidence.
     row["environment_changes"] = {**environment, "CUDA_VISIBLE_DEVICES": "1"}

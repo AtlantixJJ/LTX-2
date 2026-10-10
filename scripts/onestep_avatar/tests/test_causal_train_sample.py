@@ -89,13 +89,29 @@ def _cache(grid: common.ClipGrid, geometry: CausalGeometry = GEOMETRY, **kwargs)
     return BlockCache.allocate(grid, geometry, num_layers=1, inner_dim=4, device=DEVICE, dtype=DTYPE, **kwargs)
 
 
-def _run(clip: SimpleNamespace, model: torch.nn.Module, *, blocks: list[int] | None = None,
-         geometry: CausalGeometry = GEOMETRY, cache: BlockCache | None = None, **kwargs) -> dict:
+def _run(
+    clip: SimpleNamespace,
+    model: torch.nn.Module,
+    *,
+    blocks: list[int] | None = None,
+    geometry: CausalGeometry = GEOMETRY,
+    cache: BlockCache | None = None,
+    **kwargs,
+) -> dict:
     grid = _grid(geometry)
     return causal_core.train_sample(
-        model, torch.zeros(1, 1, 8), grid, _tokens(clip.z_y, grid), _tokens(clip.z_g, grid), geometry,
-        [0] if blocks is None else blocks, lambda loss: loss.backward(),
-        sigma=SIGMA0, seed=0, cache=_cache(grid, geometry) if cache is None else cache, **kwargs,
+        model,
+        torch.zeros(1, 1, 8),
+        grid,
+        _tokens(clip.z_y, grid),
+        _tokens(clip.z_g, grid),
+        geometry,
+        [0] if blocks is None else blocks,
+        lambda loss: loss.backward(),
+        sigma=SIGMA0,
+        seed=0,
+        cache=_cache(grid, geometry) if cache is None else cache,
+        **kwargs,
     )
 
 
@@ -280,8 +296,14 @@ def test_k1_sample_matches_a_single_non_ar_step() -> None:
     c0 = target[:, : grid.tokens_per_latent_frame]
     noisy = common.with_clean_prefix(common.noise_block(guide[:, lo:hi], SIGMA0, 0), c0)
     z0 = causal_core.denoise_block(
-        common.denoised_from_velocity_model(model_plain), grid, _cache(grid), noisy,
-        torch.zeros(1, 1, 8), SIGMA0, span, clean_prefix_tokens=c0.shape[1],
+        common.denoised_from_velocity_model(model_plain),
+        grid,
+        _cache(grid),
+        noisy,
+        torch.zeros(1, 1, 8),
+        SIGMA0,
+        span,
+        clean_prefix_tokens=c0.shape[1],
     )
     loss = common.full_frame_mse(common.with_clean_prefix(z0, c0), target[:, lo:hi])
     loss.backward()
@@ -351,8 +373,14 @@ def test_rollout_slices_blocks_out_of_one_master_encode() -> None:
     grid = _grid()
     guide = _tokens(clip.z_g, grid)
     tokens, forwards = causal_core.rollout(
-        common.denoised_from_velocity_model(StubTransformer()), grid, GEOMETRY, _cache(grid), guide,
-        torch.zeros(1, 1, 8), SIGMA0, first_frame_condition=guide[:, : grid.tokens_per_latent_frame],
+        common.denoised_from_velocity_model(StubTransformer()),
+        grid,
+        GEOMETRY,
+        _cache(grid),
+        guide,
+        torch.zeros(1, 1, 8),
+        SIGMA0,
+        first_frame_condition=guide[:, : grid.tokens_per_latent_frame],
     )
     assert forwards == 2 * len(GEOMETRY.plan(LATENT_FRAMES))  # one denoise plus one cache refresh per block
     assert tokens.shape == guide.shape

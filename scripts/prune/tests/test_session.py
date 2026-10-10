@@ -11,7 +11,7 @@ from scripts.prune.core import session
 from scripts.prune.score import hooks
 
 
-def test_dtype_is_declared_exactly_once():
+def test_dtype_is_declared_exactly_once() -> None:
     subpackages = ("core", "data", "score", "evaluate", "checks")
     hits = [
         f.relative_to("scripts/prune").as_posix()
@@ -23,7 +23,7 @@ def test_dtype_is_declared_exactly_once():
 
 
 @pytest.mark.gpu
-def test_transformer_context_frees_its_memory():
+def test_transformer_context_frees_its_memory() -> None:
     args = argparse.Namespace(model="2.5", gpu_id=0, seed=42)
     s = session.open_session(args, script="test")
     before = torch.cuda.memory_allocated(s.device)

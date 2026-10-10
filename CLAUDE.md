@@ -18,6 +18,15 @@ Two directories under `scripts/` are real packages with their own rules, and eac
 * **`scripts/prune/`** -- training-free head/FFN pruning calibrated and evaluated with whole-clip bidirectional D0 forwards. See `scripts/prune/CLAUDE.md` for saved-input and native export-parity requirements.
 * **`scripts/onestep_avatar/`** -- the one-step LTX-2.5 avatar renderer: corpus tooling *and* model training in one package. Read `scripts/onestep_avatar/CLAUDE.md` and its `doc/` folder. It uses **two conda envs**: `argavatar` for `corpus/build_guidance.py` alone and `ltx` for everything else. Production files over 100 physical lines require mirrored designs at `doc/<relative-source-path>.md`; smaller files explain their logic in the header. Update the design or header with changes to objective, data flow, organization or invariants. These changes live in this submodule's worktree. A commit changes submodule history; update the workspace's recorded commit pin only when explicitly authorized.
 
+The avatar package separates `corpus/`, `model/`, `training/`, `execution/` and
+`experiments/`; its architecture doc owns the dependency rules. The workspace's
+`plans/2026-10-07-onestep-avatar-development-experiment-handoff.md` is the sole
+active handoff. Model work uses the package queue with bounded supervision and
+the shared owned-process ledger. Training keeps four ranks selected from GPUs
+0–7. Corpus production retains its documented direct commands. Code under
+`expr/onestep_avatar/` reads saved results for reports; retired model executors
+remain non-executable provenance.
+
 For a deep technical reference covering the data-flow spine, model class hierarchy, tensor
 shapes, config loading chain, training internals, and a common-pitfalls list mined from
 `assert`/`no_grad`/`detach`/`strict=False` across the whole repo, see
@@ -88,6 +97,9 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 accelerate launch --main_process_port 29503 --confi
 ```
 
 ## Architecture notes
+
+Documentation diagrams use Mermaid with a horizontal, left-to-right layout
+(`flowchart LR` or `graph LR`) by default.
 
 **Data flow**: Video pixels / audio waveform / text prompt -> modality-specific VAE/Gemma encoders -> latents & embeddings -> asymmetric dual-stream transformer (48 shared blocks, 14B video-stream / 5B audio-stream params, bidirectional audio-visual cross-attention with cross-modality AdaLN) -> denoising loop -> VAE decoders back to pixels/mel -> vocoder to waveform. Full diagram and per-component detail in `packages/ltx-core/README.md`.
 

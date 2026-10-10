@@ -4,7 +4,9 @@ Operational GPU and process rules (direct `nvidia-smi`, one shared own-process
 ledger, concurrent runs on GPUs 0–7) are user amendments in the
 [package guidance](../CLAUDE.md). This document does not repeat them.
 
-Status: **Required design, approved 2026-10-08. The source does not match it yet.**
+Status: **Required architecture contract. The owner layout and source moves are
+implemented; the code gate and fresh affected native acceptance require separate
+source-bound evidence.**
 This document is the only owner of the target layout, the ownership and
 dependency rules, and the migration map. The
 [active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md)
@@ -14,7 +16,8 @@ test counts, run timelines or group status into this document.
 Required means the agreed target. Current means inspected source behavior.
 Verified means a check with saved evidence and an explicit scope. Keep these
 meanings separate. A path in this document that does not exist yet is
-**Proposed**. Do not quote it as a runnable command until the code moves.
+**Proposed**. Do not quote an absent path as a runnable command. Current source
+owners below exist; their presence alone does not prove the final acceptance gates.
 
 ## Objective and authority
 
@@ -133,7 +136,8 @@ experiments/         training_update_check, training_slice_check,
                      stock_parity, fusion_parity, sigma_sweep,
                      sigma_sweep_jobs, sigma_sweep_results,
                      future_noise_study, convert_progress_jobs,
-                     stats, saved_probe_metrics, spec_protocol, legacy_adapters
+                     stats, saved_probe_metrics, spec_protocol, legacy_adapters,
+                     prune_baseline
 configs/             fsdp.yaml, fsdp_forward_prefetch.yaml, README.md recipes
 doc/                 mirrored module designs and cross-module contracts
 tests/               ordinary tests; tests/experiments/ for experiment tests
@@ -227,7 +231,7 @@ drawn: `experiments/` may import every package, and every package may import
 the root leaf utilities.
 
 ```mermaid
-flowchart TB
+flowchart LR
   R["root run support"] --> T["training/"]
   R --> M["model/"]
   R --> C["corpus/"]
@@ -365,6 +369,7 @@ EXPERIMENTS = {
     "fusion_parity": "scripts.onestep_avatar.experiments.fusion_parity",
     "sigma_sweep": "scripts.onestep_avatar.experiments.sigma_sweep",
     "stats": "scripts.onestep_avatar.experiments.stats",
+    "prune_baseline": "scripts.onestep_avatar.experiments.prune_baseline",
 }
 ```
 
@@ -375,6 +380,14 @@ The queue checks `spec_sha256` before launch and again before completion. An
 unknown selector fails before any claim, write or child process. Ordinary kinds
 never read the table. Adding a queued study means editing this literal table
 and its tests. There is no registration API, discovery or plugin loading.
+
+`prune_baseline` is a bounded reproduction protocol for one saved pruning
+case. Its experiment owner supplies pinned scientific settings to the public
+`scripts.prune.evaluate.whole_clip_baseline` producer. The numerical producer
+stays in prune, which imports no avatar experiment or execution owner. Queue
+supervision, claims and resource receipts stay in `execution/`. The protocol
+keeps the producer's original files under `baseline/` and publishes separate
+input/software acceptance and saved-completion records at the job root.
 
 **Bounded supervision for every kind.** A job may name a resource budget in the
 existing `training/resources.py` format. `train` keeps its typed

@@ -24,7 +24,6 @@ from scripts.onestep_avatar import train
 from scripts.onestep_avatar.corpus import dataset, precompute, subset
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import bidirectional
-from scripts.onestep_avatar.tests.test_subset import old_subset  # noqa: F401 -- pytest fixture
 from scripts.onestep_avatar.training import checkpoints, config, engine
 
 # --- the one typed entry point ---------------------------------------------------------
@@ -100,7 +99,9 @@ def test_fresh_noise_changes_per_visit_and_is_shared_across_candidates() -> None
     """Fresh noise is new per visit and ignores sigma/arm; fixed_per_chain is the old rule."""
     seeds = {
         config.training_noise_seed(_noise_args(), step=step, rank=rank, slot=slot, chain_index=0)
-        for step in range(50) for rank in range(4) for slot in range(2)
+        for step in range(50)
+        for rank in range(4)
+        for slot in range(2)
     }
     assert len(seeds) == 50 * 4 * 2
     candidate = _noise_args(sigma0=0.725, guide_mode="d0")
@@ -108,9 +109,11 @@ def test_fresh_noise_changes_per_visit_and_is_shared_across_candidates() -> None
         config.training_noise_seed(candidate, step=7, rank=1, slot=0, chain_index=5)
     )
     fixed = _noise_args(noise_policy="fixed_per_chain")
-    assert config.training_noise_seed(fixed, step=0, rank=0, slot=0, chain_index=3) == config.training_noise_seed(
-        fixed, step=99, rank=1, slot=1, chain_index=3
-    ) == 42 * 100003 + 3 * 101
+    assert (
+        config.training_noise_seed(fixed, step=0, rank=0, slot=0, chain_index=3)
+        == config.training_noise_seed(fixed, step=99, rank=1, slot=1, chain_index=3)
+        == 42 * 100003 + 3 * 101
+    )
 
 
 # --- step-zero LoRA export -------------------------------------------------------------
@@ -178,32 +181,54 @@ def test_init_wandb_calls_wandb_init(monkeypatch: pytest.MonkeyPatch) -> None:
 # Flat safetensors metadata exactly as the retired mode-less engine stamped it for a step-1
 # D1 dev adapter (captured from its checkpoint_metadata before G11 removed that writer).
 LEGACY_METADATA = {
-    "lora_alpha": "16", "lora_rank": "16", "lora_target": "attn", "model_key": "2.5",
+    "lora_alpha": "16",
+    "lora_rank": "16",
+    "lora_target": "attn",
+    "model_key": "2.5",
     "onestep_avatar_attention": "block_causal",
     "onestep_avatar_base_transformer_file": "dev.safetensors",
     "onestep_avatar_base_transformer_fingerprint": "abcdabcdabcdabcd",
-    "onestep_avatar_base_variant": "dev", "onestep_avatar_block_latent_frames": "2",
-    "onestep_avatar_chain_length": "8", "onestep_avatar_chains_per_update": "4",
-    "onestep_avatar_context_latent_frames": "8", "onestep_avatar_data_seed": "42",
-    "onestep_avatar_first_frame_conditioning": "clean_c0_v1", "onestep_avatar_guide_mode": "d1",
-    "onestep_avatar_history_computation": "cached_refresh_global_sigma0", "onestep_avatar_init_seed": "42",
-    "onestep_avatar_loss": "full_frame_x0_mse", "onestep_avatar_noise_policy": "fresh",
-    "onestep_avatar_noise_seed": "42", "onestep_avatar_objective": "white", "onestep_avatar_parent_adapter": "",
-    "onestep_avatar_schedule": "ONE_STEP", "onestep_avatar_sigma0": "0.421875",
-    "onestep_avatar_sigma_levels": "0.421875", "onestep_avatar_sigma_sampling": "iid_uniform_v1",
+    "onestep_avatar_base_variant": "dev",
+    "onestep_avatar_block_latent_frames": "2",
+    "onestep_avatar_chain_length": "8",
+    "onestep_avatar_chains_per_update": "4",
+    "onestep_avatar_context_latent_frames": "8",
+    "onestep_avatar_data_seed": "42",
+    "onestep_avatar_first_frame_conditioning": "clean_c0_v1",
+    "onestep_avatar_guide_mode": "d1",
+    "onestep_avatar_history_computation": "cached_refresh_global_sigma0",
+    "onestep_avatar_init_seed": "42",
+    "onestep_avatar_loss": "full_frame_x0_mse",
+    "onestep_avatar_noise_policy": "fresh",
+    "onestep_avatar_noise_seed": "42",
+    "onestep_avatar_objective": "white",
+    "onestep_avatar_parent_adapter": "",
+    "onestep_avatar_schedule": "ONE_STEP",
+    "onestep_avatar_sigma0": "0.421875",
+    "onestep_avatar_sigma_levels": "0.421875",
+    "onestep_avatar_sigma_sampling": "iid_uniform_v1",
     "onestep_avatar_sink_latent_frames": "1",
     "onestep_avatar_subset_full_sha256": "7d6f65636e660e72a8ed284bc68b689aca72845b6f0765d4ca9ecae279a491c6",
     "onestep_avatar_subset_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-    "onestep_avatar_teacher_forcing": "False", "onestep_avatar_window": "clip_start", "step": "1",
+    "onestep_avatar_teacher_forcing": "False",
+    "onestep_avatar_window": "clip_start",
+    "step": "1",
 }
-_BASE = {"model_key": "2.5", "base_variant": "dev", "base_transformer_file": "dev.safetensors",
-         "base_transformer_fingerprint": "abcd" * 4}
+_BASE = {
+    "model_key": "2.5",
+    "base_variant": "dev",
+    "base_transformer_file": "dev.safetensors",
+    "base_transformer_fingerprint": "abcd" * 4,
+}
 
 
 def test_condition_reader_refuses_a_dev_adapter_on_distilled_weights() -> None:
     """A dev adapter is refused on distilled weights, at another sigma, or as a multi-step model."""
     ok = {
-        "base": _BASE, "objective": "white", "guide_mode": "d1", "schedule": [0.421875, 0.0],
+        "base": _BASE,
+        "objective": "white",
+        "guide_mode": "d1",
+        "schedule": [0.421875, 0.0],
         "geometry": {"block_latent_frames": 2, "context_latent_frames": 8, "sink_latent_frames": 1},
         "teacher_forcing": False,
     }
@@ -245,7 +270,9 @@ def test_random_start_keeps_the_original_seed_key_and_stream() -> None:
         assert starts[:12] == expected
         documented = [
             random.Random(key.format(seed=seed, step=s, rank=r, slot=sl)).randrange(frames - span + 1)
-            for s in range(6) for r in range(4) for sl in range(2)
+            for s in range(6)
+            for r in range(4)
+            for sl in range(2)
         ]
         assert starts == documented
 
@@ -281,20 +308,29 @@ def _write_guides(old: dict) -> None:
 
 
 @pytest.fixture
-def two_videos(old_subset: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201, F811
+def two_videos(old_subset: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
     _write_guides(old_subset)
     membership, _ = subset.convert_legacy(old_subset, original_file_sha256="a" * 64, require_guide=True)
     path = tmp_path / "membership.json"
     path.write_text(json.dumps(membership))
     specification = SimpleNamespace(
-        scale_factors=SpatioTemporalScaleFactors(8, 32, 32), caps=SimpleNamespace(latent_channels=2), sigmas=[0.725],
+        scale_factors=SpatioTemporalScaleFactors(8, 32, 32),
+        caps=SimpleNamespace(latent_channels=2),
+        sigmas=[0.725],
         paths=SimpleNamespace(transformer=lambda: tmp_path / "base.safetensors", video_vae=lambda: tmp_path / "vae"),
     )
     monkeypatch.setattr(engine.backbone, "resolve", lambda *_args: specification)
     monkeypatch.setattr(precompute, "file_fingerprint", lambda _path: "saved VAE identity")
-    monkeypatch.setattr(engine.backbone, "identity", lambda *_args, **_kwargs: {
-        "base_transformer_sha256": "a" * 64, "base_transformer_file": "base.safetensors",
-        "base_variant": "dev", "model_key": "2.5"})
+    monkeypatch.setattr(
+        engine.backbone,
+        "identity",
+        lambda *_args, **_kwargs: {
+            "base_transformer_sha256": "a" * 64,
+            "base_transformer_file": "base.safetensors",
+            "base_variant": "dev",
+            "model_key": "2.5",
+        },
+    )
     monkeypatch.setattr(engine, "build_transformer", lambda *_args: pytest.fail("preflight loaded a transformer"))
     monkeypatch.setattr(engine, "Accelerator", lambda *_args, **_kwargs: pytest.fail("preflight reached Accelerator"))
     return path, membership
@@ -329,8 +365,10 @@ def test_startup_refuses_a_defective_second_video_without_touching_the_run(
     path, membership = two_videos
     role, error = DEFECTS[defect]
     source = membership["sources"][1]
-    bundle = Path(membership["corpus_root"]) / source["relative_dir"] / (
-        dataset.guide_bundle_name("white") if role == "guide" else dataset.capture_bundle_name("white")
+    bundle = (
+        Path(membership["corpus_root"])
+        / source["relative_dir"]
+        / (dataset.guide_bundle_name("white") if role == "guide" else dataset.capture_bundle_name("white"))
     )
     record = torch.load(bundle, weights_only=True)
     if defect in ("missing_guide", "missing_capture"):
@@ -354,11 +392,26 @@ def test_startup_refuses_a_defective_second_video_without_touching_the_run(
     output.mkdir()
     old_log = output / "metrics_rank0.jsonl"
     old_log.write_bytes(b"old run\n")
-    settings = config.parse_settings([
-        "--mode", "bidirectional", "--subset", str(path), "--output", str(output), "--overwrite",
-        "--variant", "dev", "--objective", "white", "--guide-mode", "d1" if role == "guide" else "d0",
-        "--span-latent-frames", "7", *(["--dry-run"] if dry_run else []),
-    ])
+    settings = config.parse_settings(
+        [
+            "--mode",
+            "bidirectional",
+            "--subset",
+            str(path),
+            "--output",
+            str(output),
+            "--overwrite",
+            "--variant",
+            "dev",
+            "--objective",
+            "white",
+            "--guide-mode",
+            "d1" if role == "guide" else "d0",
+            "--span-latent-frames",
+            "7",
+            *(["--dry-run"] if dry_run else []),
+        ]
+    )
     with pytest.raises((ValueError, SystemExit, FileNotFoundError), match=error):
         engine.run_settings(settings)
     assert old_log.read_bytes() == b"old run\n"
@@ -369,10 +422,24 @@ def test_the_complete_two_video_membership_passes_preflight(two_videos: tuple[Pa
     """The fixture is valid in both arms, so each defect above is the only failure."""
     path, membership = two_videos
     for guide_mode in ("d0", "d1"):
-        settings = config.parse_settings([
-            "--mode", "bidirectional", "--subset", str(path), "--output", str(tmp_path / guide_mode),
-            "--variant", "dev", "--objective", "white", "--guide-mode", guide_mode, "--span-latent-frames", "7",
-        ])
+        settings = config.parse_settings(
+            [
+                "--mode",
+                "bidirectional",
+                "--subset",
+                str(path),
+                "--output",
+                str(tmp_path / guide_mode),
+                "--variant",
+                "dev",
+                "--objective",
+                "white",
+                "--guide-mode",
+                guide_mode,
+                "--span-latent-frames",
+                "7",
+            ]
+        )
         store, plan, _, archive = engine.prepare_run(settings)
         assert len(store) == 2
         assert plan["membership_sha256"] == membership["sha256"]
@@ -389,8 +456,21 @@ def test_an_old_subset_is_refused_before_model_or_output_work(tmp_path: Path, ki
     output = tmp_path / "used"
     output.mkdir()
     (output / "metrics_rank0.jsonl").write_bytes(b"old run\n")
-    settings = config.parse_settings(["--mode", "bidirectional", "--subset", str(old), "--output", str(output),
-                                      "--overwrite", "--variant", "dev", "--objective", "white"])
+    settings = config.parse_settings(
+        [
+            "--mode",
+            "bidirectional",
+            "--subset",
+            str(old),
+            "--output",
+            str(output),
+            "--overwrite",
+            "--variant",
+            "dev",
+            "--objective",
+            "white",
+        ]
+    )
     with pytest.raises(ValueError, match="version-two onestep_avatar_membership"):
         engine.run_settings(settings)
     assert (output / "metrics_rank0.jsonl").read_bytes() == b"old run\n"

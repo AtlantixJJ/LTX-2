@@ -20,7 +20,7 @@ It **consumes** `precompute.py --process_gt_latent`'s crop box and never re-deri
 ## Data flow
 
 ```mermaid
-flowchart TD
+flowchart LR
   MAN[("capture_latent_manifest.json")]
   BOX["resolve_box"]
   POSE[("pose3d.npy + refined_pose3d.npy")]

@@ -19,10 +19,10 @@ renderer, corpus tooling and model training in **one tree**.
 
 **Implementation authorization (2026-10-05):** the user directed execution of the revised
 two-mode plan. The review boundary is passed. Read `doc/README.md` for the current
-implemented/proposed mapping. Model execution and launchers belong in this package;
+source/design mapping. Model execution and launchers belong in this package;
 `expr/` code only generates reports from saved results.
 The user-directed 2026-10-07 [architecture amendment](doc/architecture.md)
-defines the internal boundary and permits a proposed `experiments/` subpackage.
+defines the implemented internal boundary, including the `experiments/` subpackage.
 The latest October 8 user direction requires code refactoring first: move
 experiment owners, retire duplicate execution after caller/data/code checks,
 and validate the final layout. Run fresh affected native checks and the unchanged
@@ -33,8 +33,8 @@ paths as shipped.
 
 **Refactor design decisions — user, 2026-10-08:** the
 [architecture contract](doc/architecture.md#decisions-recorded-on-2026-10-08)
-is the target. It adds proposed `corpus/`, `execution/` and `experiments/`
-subpackages, splits ordinary `evaluate.py` into `evaluate.py`, `metrics.py`,
+is the required contract. The implemented layout has `corpus/`, `execution/` and `experiments/`
+subpackages and splits ordinary `evaluate.py` into `evaluate.py`, `metrics.py`,
 `previews.py` and `comparisons.py`, keeps every historical study as an
 experiment module, replaces the `sigma_sweep` queue kind with one `experiment`
 kind, moves the whole-clip pruning producer to `scripts/prune/`, and limits
@@ -51,7 +51,7 @@ owner groups G0–G14 order the work.
 Before editing anything here, in this order:
 
 1. [`doc/architecture.md`](doc/architecture.md) — common versus experiment owners, allowed
-   dependencies, proposed destinations, code checks and post-refactor native acceptance.
+   dependencies, source destinations, code checks and post-refactor native acceptance.
 2. [`doc/core_algorithm.md`](doc/core_algorithm.md) — symbols, the conditioning contract, the
    block-by-block algorithm, train/probe/deploy parity.
 3. [`doc/training_choices.md`](doc/training_choices.md) — D0/D1, `bg`/`white`, teacher/self forcing, and
@@ -116,7 +116,7 @@ and their docs. Do not leave forwarding execution wrappers in `expr/`.
 
 **Internal boundary:** core training and ordinary evaluation/product must not
 depend on experiment modules. Comparison orchestration and historical converters
-move to `experiments/` during the refactor; they call shared public
+live in `experiments/`; they call shared public
 owners. Numerical diagnostic kernels can stay with their model owner. The existing
 queue can explicitly dispatch an experiment job without making ordinary jobs
 depend on it. Follow `doc/architecture.md` for the map, provenance and worked checks.
@@ -192,6 +192,9 @@ Name data explicitly in diagrams, for example `capture or guide frames` and `enc
 Avoid unexplained labels such as `selected span` or `source span + c0`.
 
 ## Diagrams
+
+Prefer a horizontal, left-to-right layout. Use `flowchart LR` (or `graph LR`)
+for flow diagrams.
 
 Draw a diagram only for a **topology** — what flows where, who produces what. Per-block facts
 (source, timestep, cache contents) belong in a table, which states them; a picture only gestures

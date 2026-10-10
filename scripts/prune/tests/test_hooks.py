@@ -6,7 +6,7 @@ import torch
 from scripts.prune.score import hooks
 
 
-def test_head_mask_zeroes_exactly_that_heads_slice(block):
+def test_head_mask_zeroes_exactly_that_heads_slice(block: torch.nn.Module) -> None:
     attention = block.transformer_blocks[0].attn1
     inputs = torch.randn(1, 5, 32)
     manual = inputs.clone().reshape(1, 5, 4, 8)
@@ -19,7 +19,7 @@ def test_head_mask_zeroes_exactly_that_heads_slice(block):
     assert not torch.equal(actual, attention.to_out[0](inputs))
 
 
-def test_hooks_are_fully_removed_on_context_exit(block):
+def test_hooks_are_fully_removed_on_context_exit(block: torch.nn.Module) -> None:
     attention = block.transformer_blocks[0].attn1
     before = len(attention.to_out[0]._forward_pre_hooks)
     with hooks.attach_head_masks(block):
@@ -27,17 +27,17 @@ def test_hooks_are_fully_removed_on_context_exit(block):
     assert len(attention.to_out[0]._forward_pre_hooks) == before
 
 
-def test_module_names_match_remove_head_cli_grammar(block):
+def test_module_names_match_remove_head_cli_grammar(block: torch.nn.Module) -> None:
     assert list(dict(hooks.iter_video_attention(block))) == ["0.attn1", "0.attn2"]
     assert list(dict(hooks.iter_video_ffn(block))) == ["0.ff"]
 
 
-def test_wrong_width_mask_is_rejected(block):
+def test_wrong_width_mask_is_rejected(block: torch.nn.Module) -> None:
     with pytest.raises(ValueError, match="!= heads"):
         hooks.attach_head_masks(block, {"0.attn1": torch.ones(7)})
 
 
-def test_ffn_mask_zeroes_intermediate_channels(block):
+def test_ffn_mask_zeroes_intermediate_channels(block: torch.nn.Module) -> None:
     ffn = block.transformer_blocks[0].ff
     inputs = torch.randn(1, 4, 128)
     keep = torch.ones(128)

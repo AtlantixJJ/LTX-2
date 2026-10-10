@@ -10,14 +10,12 @@ from scripts.prune.score.whole_clip_d0_scores import _sample_indices
 def test_exact_local_energy_accounts_for_within_head_covariance() -> None:
     activation = torch.tensor([[[1.0, 1.0, 2.0, 0.0], [3.0, -3.0, 0.0, 2.0]]])
     weight = torch.tensor([[1.0, -1.0, 1.0, 0.0]])
-    score = estimators.exact_local_head_energy(activation, weight, heads=2,
-                                                sample_indices=torch.tensor([0, 1]))
+    score = estimators.exact_local_head_energy(activation, weight, heads=2, sample_indices=torch.tensor([0, 1]))
     assert score.tolist() == pytest.approx([float(18**0.5), float(2**0.5)])
 
 
 def test_rms_proxy_and_stable_fractional_allocation() -> None:
-    scores = estimators.rms_projection_scores(torch.tensor([4.0, 1.0, 1.0]),
-                                               torch.tensor([2.0, 1.0, 1.0]), 1)
+    scores = estimators.rms_projection_scores(torch.tensor([4.0, 1.0, 1.0]), torch.tensor([2.0, 1.0, 1.0]), 1)
     assert scores.tolist() == [4.0, 1.0, 1.0]
     assert estimators.fractional_masks({"0.attn1": scores}, 0.34)["0.attn1"] == [1, 0, 1]
     with pytest.raises(ValueError, match="finite"):

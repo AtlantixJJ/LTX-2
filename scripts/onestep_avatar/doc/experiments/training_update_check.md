@@ -29,7 +29,7 @@ The replay retains original `load`, `update`, `export` measurements and budgets.
 ## Data flow
 
 ```mermaid
-flowchart TB
+flowchart LR
   I[("training arguments and checked inputs")] --> P["prepare_run and first_update_visits"]
   P --> V["tokens_for_sample and mode.train_sample"]
   V --> G("averaged serial gradient")

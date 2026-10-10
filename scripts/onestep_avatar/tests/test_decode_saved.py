@@ -15,14 +15,14 @@ def test_reuse_requires_decoder_and_all_artifacts(tmp_path: Path) -> None:
     row = {
         "input": job,
         "source_code_sha256": "producer",
-        "software": software.capture('decoding'),
+        "software": software.capture("decoding"),
         "decode_key": "decoder",
         "video": video.name,
         "video_sha256": sha256(video),
         "samples": [{"file": poster.name, "sha256": sha256(poster)}],
     }
     assert reusable(row, job, tmp_path, "producer", "decoder")
-    assert not reusable({k: v for k, v in row.items() if k != 'software'}, job, tmp_path, 'producer', 'decoder')
+    assert not reusable({k: v for k, v in row.items() if k != "software"}, job, tmp_path, "producer", "decoder")
     assert not reusable(row, job, tmp_path, "producer", "other VAE/settings")
     assert not reusable({k: v for k, v in row.items() if k != "decode_key"}, job, tmp_path, "producer", "decoder")
     assert not reusable(row, {**job, "comparison_required": True}, tmp_path, "producer", "decoder")

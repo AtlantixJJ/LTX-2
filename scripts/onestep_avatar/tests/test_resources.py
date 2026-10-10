@@ -14,13 +14,21 @@ from scripts.onestep_avatar.training import resources
 @pytest.fixture
 def budget(tmp_path: Path) -> dict:
     path = tmp_path / "budget.json"
-    path.write_text(json.dumps({"wall_seconds_per_phase": 1800, "memory_limit_allocated_bytes": 48000000000,
-                                "tolerance": {"relative_l2": 0.02}}))
+    path.write_text(
+        json.dumps(
+            {
+                "wall_seconds_per_phase": 1800,
+                "memory_limit_allocated_bytes": 48000000000,
+                "tolerance": {"relative_l2": 0.02},
+            }
+        )
+    )
     return resources.read_budget(path)
 
 
-def measured(monkeypatch: pytest.MonkeyPatch, budget: dict, *, allocated: int = 47000000000,
-             elapsed: float = 100) -> tuple[resources.Phase, list]:
+def measured(
+    monkeypatch: pytest.MonkeyPatch, budget: dict, *, allocated: int = 47000000000, elapsed: float = 100
+) -> tuple[resources.Phase, list]:
     events = []
     monkeypatch.setattr(torch.cuda, "synchronize", lambda device: events.append(("sync", str(device))))
     monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda device: events.append(("reset", str(device))))
@@ -42,8 +50,9 @@ def test_phase_uses_synchronized_allocator_counters(monkeypatch: pytest.MonkeyPa
     resources.validate_records([record], 1, ["load"], budget)
 
 
-@pytest.mark.parametrize(("allocated", "elapsed", "error"), [
-    (48000000001, 100, "allocated-memory"), (47000000000, 1800.001, "wall-time")])
+@pytest.mark.parametrize(
+    ("allocated", "elapsed", "error"), [(48000000001, 100, "allocated-memory"), (47000000000, 1800.001, "wall-time")]
+)
 def test_breached_phase_retains_failed_measurements(
     monkeypatch: pytest.MonkeyPatch, budget: dict, allocated: int, elapsed: float, error: str
 ) -> None:
@@ -63,8 +72,9 @@ def test_exact_limit_is_allowed_and_reserved_is_separate(monkeypatch: pytest.Mon
 
 def test_changed_budget_preserves_failure_and_original_digest(monkeypatch: pytest.MonkeyPatch, budget: dict) -> None:
     phase, _ = measured(monkeypatch, budget)
-    Path(budget["path"]).write_text(json.dumps({"wall_seconds_per_phase": 1900,
-                                              "memory_limit_allocated_bytes": 48000000000}))
+    Path(budget["path"]).write_text(
+        json.dumps({"wall_seconds_per_phase": 1900, "memory_limit_allocated_bytes": 48000000000})
+    )
     record = phase.finish()
     assert record["state"] == "failed"
     assert "changed" in record["error"]
@@ -81,8 +91,10 @@ def test_exception_is_retained_with_measured_peak(monkeypatch: pytest.MonkeyPatc
     assert record["peak_allocated_bytes"] == 47000000000
 
 
-@pytest.mark.parametrize("change", ["missing_rank", "missing_phase", "duplicate", "no_budget", "cpu", "nan", "bool",
-                                    "bad_device", "bool_schema"])
+@pytest.mark.parametrize(
+    "change",
+    ["missing_rank", "missing_phase", "duplicate", "no_budget", "cpu", "nan", "bool", "bad_device", "bool_schema"],
+)
 def test_native_validator_refuses_incomplete_or_invalid_evidence(
     monkeypatch: pytest.MonkeyPatch, budget: dict, change: str
 ) -> None:
@@ -120,8 +132,15 @@ def test_cpu_measurement_is_explicit_and_cannot_accept_native_budget(budget: dic
         resources.Phase(torch.device("cpu"), "load", 0, budget).start()
 
 
-@pytest.mark.parametrize("payload", [[], {}, {"wall_seconds_per_phase": True, "memory_limit_allocated_bytes": 1},
-                                     {"wall_seconds_per_phase": 1, "memory_limit_allocated_bytes": 0}])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {},
+        {"wall_seconds_per_phase": True, "memory_limit_allocated_bytes": 1},
+        {"wall_seconds_per_phase": 1, "memory_limit_allocated_bytes": 0},
+    ],
+)
 def test_missing_or_invalid_budget_fails_before_phase(tmp_path: Path, payload: object) -> None:
     path = tmp_path / "budget.json"
     path.write_text(json.dumps(payload))
@@ -131,8 +150,10 @@ def test_missing_or_invalid_budget_fails_before_phase(tmp_path: Path, payload: o
 
 def test_failed_synchronization_preserves_original_error(monkeypatch: pytest.MonkeyPatch, budget: dict) -> None:
     phase, _ = measured(monkeypatch, budget)
+
     def denied(_device: torch.device) -> None:
         raise RuntimeError("CUDA observer failed")
+
     monkeypatch.setattr(torch.cuda, "synchronize", denied)
     record = phase.finish(error="original model failure")
     assert record["state"] == "failed"

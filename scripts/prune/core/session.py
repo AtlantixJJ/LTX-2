@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,20 +21,20 @@ DTYPE = torch.bfloat16
 DEFAULT_PROMPT = "a high quality, sharp, detailed video with fine texture and natural lighting"
 
 
-def add_model_args(parser) -> None:
+def add_model_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", default="2.5", choices=SUPPORTED_MODELS)
     parser.add_argument("--gpu-id", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
 
 
-def add_prompt_args(parser) -> None:
+def add_prompt_args(parser: argparse.ArgumentParser) -> None:
     """Text prompt selection; the default keeps every saved run reproducible."""
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--prompt", default=None, help="Prompt text; default DEFAULT_PROMPT.")
     group.add_argument("--prompt-file", type=Path, default=None, help="UTF-8 file holding the prompt text.")
 
 
-def resolve_prompt(args) -> str:
+def resolve_prompt(args: argparse.Namespace) -> str:
     """The prompt text selected by ``add_prompt_args`` (``REFINE_PROMPT`` when neither flag is set)."""
     if getattr(args, "prompt_file", None) is not None:
         return args.prompt_file.read_text(encoding="utf-8").strip()
@@ -56,15 +58,14 @@ class Session:
     def out_root(self) -> Path:
         return artifacts.root(self.key)
 
-
     @contextmanager
     def transformer(
         self,
         transformer_path: Path | None = None,
         *,
-        video_tools=None,
+        video_tools: object | None = None,
         loras: tuple[LoraPathStrengthAndSDOps, ...] = (),
-    ):
+    ) -> Iterator[torch.nn.Module]:
         """The resident transformer, optionally with ``loras`` fused into its weights.
 
         LoRAs fuse at load (``loader/fuse_loras.py``), so the built transformer is an ordinary
@@ -88,18 +89,18 @@ class Session:
             torch.cuda.empty_cache()
 
     @contextmanager
-    def decoder(self):
+    def decoder(self) -> Iterator[torch.nn.Module]:
         with ltx_adapter.video_decoder(self.model.paths.video_vae(), DTYPE, self.device) as decoder:
             yield decoder
 
     def stamp(self, **extra) -> dict:
-        from scripts.prune.core import provenance
+        from scripts.prune.core import provenance  # noqa: PLC0415 -- defer the session/artifact provenance edge
 
         return provenance.stamp(self.model, self.device, script=self.script, **extra)
 
 
 def open_session(
-    args,
+    args: argparse.Namespace,
     *,
     script: str,
     transformer_path: Path | None = None,
