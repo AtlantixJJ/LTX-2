@@ -66,7 +66,10 @@ When decoding was requested, require the generated-only video/poster record,
 exact frames/fps/poster and native decode key, current VAE hash/decoder settings,
 and every media byte hash. Review additionally checks the fixed image/guide/
 generated roles, moving frame mapping and both decoded-input keys against the
-checked source encodings. `evidence_paths` lists these verified files. Neither
+checked source encodings. `check_review_panels` owns the panel rule: three
+panels in that order, titles "Input image", "Guide" and "Generated", the image
+as a still with no frames, the other two on every generated frame, and an
+empty `missing_reason` on each, which is how `media.Panel` marks a present panel. `evidence_paths` lists these verified files. Neither
 helper opens weights, text or decoder sessions, starts a process, or repairs output.
 
 Worked completion control: replacing `generation_inputs.pt` and refreshing its

@@ -299,6 +299,25 @@ def _media_evidence(record: dict, directory: Path, *, video_name: str) -> list[P
     return paths
 
 
+def check_review_panels(panels: list[dict], frames: int) -> None:
+    """Require the three review panels exactly as ``render_review`` records them.
+
+    ``media.Panel`` marks a present panel with an empty ``missing_reason``.
+    """
+    if (
+        len(panels) != 3
+        or [panel.get("role") for panel in panels] != ["first_image", "guide", "generated"]
+        or [panel.get("title") for panel in panels] != ["Input image", "Guide", "Generated"]
+        or any(
+            panel.get("still") != (index == 0)
+            or panel.get("missing_reason") != ""
+            or panel.get("source_frames") != ([] if index == 0 else list(range(frames)))
+            for index, panel in enumerate(panels)
+        )
+    ):
+        raise ValueError("product review roles or synchronized frame mapping differ")
+
+
 def _verify_product_media(
     args: argparse.Namespace, specification: RefinerModel, guide: torch.Tensor, image: torch.Tensor, record: dict
 ) -> list[Path]:
@@ -366,19 +385,7 @@ def _verify_product_media(
     }
     if any(review.get(name) != value for name, value in expected.items()):
         raise ValueError("product review differs from raw output or checked decoded inputs")
-    panels = review.get("panels", [])
-    if (
-        len(panels) != 3
-        or [panel.get("role") for panel in panels] != ["first_image", "guide", "generated"]
-        or [panel.get("title") for panel in panels] != ["Input image", "Guide", "Generated"]
-        or any(
-            panel.get("still") != (index == 0)
-            or panel.get("missing_reason") is not None
-            or panel.get("source_frames") != ([] if index == 0 else list(range(frames)))
-            for index, panel in enumerate(panels)
-        )
-    ):
-        raise ValueError("product review roles or synchronized frame mapping differ")
+    check_review_panels(review.get("panels", []), frames)
     software.check_current(review.get("software"))
     return [*paths, path, *_media_evidence(review, path.parent, video_name="comparison.mp4")]
 

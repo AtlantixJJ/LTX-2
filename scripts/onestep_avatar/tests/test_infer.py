@@ -194,6 +194,13 @@ def test_product_review_records_decoded_inputs_without_capture(tmp_path: Path, m
     assert set(record["common_settings"]["decoded_inputs"]) == {"first_image", "guide"}
     assert record["panels"][0]["still"] is True
     assert [panel["role"] for panel in record["panels"]] == ["first_image", "guide", "generated"]
+    # The completion verifier accepts the panels exactly as the producer records them.
+    infer.check_review_panels(record["panels"], 9)
+    for field, value in (("missing_reason", None), ("missing_reason", "Missing"), ("still", False)):
+        changed = [dict(panel) for panel in record["panels"]]
+        changed[0][field] = value
+        with pytest.raises(ValueError, match="review roles or synchronized frame mapping"):
+            infer.check_review_panels(changed, 9)
     assert record["common_settings"]["generated_decode_key"] == media.decode_key(
         completed["output"]["sha256"],
         "a" * 64,

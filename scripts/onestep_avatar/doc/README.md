@@ -74,7 +74,7 @@ reads saved inputs and cannot run models, decoding, or queue work.
 | `experiments/training_slice_check.py` | [experiments/training_slice_check.md](experiments/training_slice_check.md) | 461 |
 | `experiments/training_update_check.py` | [experiments/training_update_check.md](experiments/training_update_check.md) | 704 |
 | `hashing.py` | source header | 34 |
-| `infer.py` | [infer.md](infer.md) | 688 |
+| `infer.py` | [infer.md](infer.md) | 695 |
 | `media.py` | [media.md](media.md) | 714 |
 | `metrics.py` | [metrics.md](metrics.md) | 151 |
 | `model/adapters.py` | [model/adapters.md](model/adapters.md) | 145 |
