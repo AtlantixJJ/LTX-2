@@ -27,14 +27,17 @@ SELECTOR = "prune_reproduction"
 ENTRY = "scripts/onestep_avatar/experiments/prune_reproduction.py"
 EXTRA_SOURCES = (ENTRY, *baseline.EXTRA_SOURCES)
 # Model-input changes per control. The three process-flag controls change no model input.
-# historical_inputs combines the two recorded source differences of the old producer.
+# The old producer made the global sigma in the BF16 token dtype, while its per-token
+# timesteps came from ltx-core's float32 denoise mask; historical_inputs is that pair of
+# inputs plus its all-visible mask. sigma_bf16 casts both schedule inputs.
 INPUT_CHANGES = {
-    "sigma_bf16": ("sigma_bf16",),
+    "global_sigma_bf16": ("global_sigma_bf16",),
+    "sigma_bf16": ("global_sigma_bf16", "timesteps_bf16"),
     "dense_mask": ("dense_mask",),
     "deterministic_off": (),
     "cudnn_deterministic_off": (),
     "bf16_reduction_off": (),
-    "historical_inputs": ("sigma_bf16", "dense_mask"),
+    "historical_inputs": ("global_sigma_bf16", "dense_mask"),
 }
 FIRST, LAST = "current_first", "current_last"
 SAVED = ("reference", "earlier")
@@ -182,9 +185,9 @@ def controlled(denoise_fn: Callable, changes: tuple[str, ...], calls: list[dict]
     """Apply this arm's model-input changes at the model call, and record every actual input."""
     def call(modality):  # noqa: ANN001, ANN202 -- ltx_core Modality in, denoised tokens out
         updates = {}
-        if "sigma_bf16" in changes:
-            # The old producer built both schedule inputs in the BF16 token dtype.
+        if "global_sigma_bf16" in changes:
             updates["sigma"] = modality.sigma.to(torch.bfloat16)
+        if "timesteps_bf16" in changes:
             updates["timesteps"] = modality.timesteps.to(torch.bfloat16)
         if "dense_mask" in changes:
             if modality.attention_mask is not None:

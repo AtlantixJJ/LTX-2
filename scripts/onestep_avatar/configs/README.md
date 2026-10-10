@@ -525,8 +525,8 @@ reference directory, an earlier current-producer run and the controls:
 Each saved directory must hold the producer's `manifest.json`, its epsilon and
 one D0 output per requested sigma. Run it as a queue `experiment` job with
 `"numerical_policy": "deterministic"`. Run a second job without a numerical
-policy (PyTorch defaults) with `--controls sigma_bf16 dense_mask
-historical_inputs bf16_reduction_off`. It tests the environment that the cuBLAS
+policy (PyTorch defaults) with `--controls global_sigma_bf16 sigma_bf16
+dense_mask historical_inputs bf16_reduction_off`. It tests the environment that the cuBLAS
 workspace setting fixes at process start. The dense-mask controls belong only in
 this second job: under the deterministic policy their mask preprocessing needs
 16.8 GiB more memory and does not fit beside the 22B model on a 48 GB GPU.

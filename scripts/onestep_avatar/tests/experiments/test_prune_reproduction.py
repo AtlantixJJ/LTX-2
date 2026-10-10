@@ -21,7 +21,7 @@ from scripts.prune.evaluate import whole_clip_baseline as producer
 from scripts.prune.tests.test_whole_clip_baseline import SCALE, _vae, _views
 
 SIGMAS = ("0.725", "0.909375")
-CONTROLS = ("sigma_bf16", "dense_mask", "historical_inputs", "bf16_reduction_off")
+CONTROLS = ("sigma_bf16", "global_sigma_bf16", "dense_mask", "historical_inputs", "bf16_reduction_off")
 
 
 def write_spec(path: Path, arguments: list[str]) -> Path:
@@ -95,6 +95,11 @@ def test_controls_record_their_actual_model_inputs_and_compare_every_arm(complet
     assert bf16["sigma"] == {"dtype": "torch.bfloat16", "values": [0.7265625]}
     assert bf16["timesteps"] == {"dtype": "torch.bfloat16", "values": [0.0, 0.7265625]}
     assert records["sigma_bf16"]["calls"][1]["sigma"]["values"] == [0.91015625]
+    # The old producer's pair: BF16 global sigma with float32 per-token timesteps.
+    global_only = records["global_sigma_bf16"]["calls"][0]
+    assert global_only["sigma"] == {"dtype": "torch.bfloat16", "values": [0.7265625]}
+    assert global_only["timesteps"] == current["timesteps"]
+    assert current["timesteps"]["dtype"] == "torch.float32"
     masked = records["dense_mask"]["calls"][0]
     mask = masked["attention_mask"]
     assert mask["dtype"] == "torch.float32"
@@ -102,6 +107,7 @@ def test_controls_record_their_actual_model_inputs_and_compare_every_arm(complet
     assert mask["shape"][0] == 1
     assert mask["shape"][1] == mask["shape"][2]
     assert records["historical_inputs"]["calls"][0]["sigma"]["dtype"] == "torch.bfloat16"
+    assert records["historical_inputs"]["calls"][0]["timesteps"]["dtype"] == "torch.float32"
     assert records["historical_inputs"]["calls"][0]["attention_mask"] == mask
     # Every arm receives the same noisy input tokens; only its named change differs.
     assert masked["latent_sha256"] == bf16["latent_sha256"] == current["latent_sha256"]
@@ -112,7 +118,10 @@ def test_controls_record_their_actual_model_inputs_and_compare_every_arm(complet
     assert summary["current_repeats_earlier"] is True
     assert summary["current_first_equals_last"] is True
     assert {study.FIRST, study.LAST} <= set(summary["arms_reproducing_reference"])
-    assert {"sigma_bf16", "historical_inputs"} <= set(summary["arms_changing_current"])
+    # BF16 timesteps reach the main AdaLN and the X0 conversion. The global sigma reaches only
+    # the prompt AdaLN, which the tiny model lacks, so neither global-sigma arm changes it.
+    assert "sigma_bf16" in summary["arms_changing_current"]
+    assert {"global_sigma_bf16", "historical_inputs"}.isdisjoint(summary["arms_changing_current"])
     assert set(results["comparisons"]) == set(results["arms"])
     row = results["comparisons"]["sigma_bf16"]["0.725000"]
     assert set(row) == {"reference", "earlier", study.FIRST}

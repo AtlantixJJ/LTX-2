@@ -42,6 +42,12 @@ flowchart LR
   class J out;
 ```
 
+The model uses the two schedule inputs differently. The per-token timesteps
+drive the main AdaLN and the X0 conversion. The global sigma drives only the
+prompt AdaLN (`prompt_adaln`, the cross-attention conditioning of LTX-2.5).
+The old producer's timesteps were float32, because ltx-core always builds the
+denoise mask in float32; only its global sigma was BF16.
+
 `producer` is `scripts.prune.evaluate.whole_clip_baseline`. Its `rollout`
 calls the causal owner with one whole-clip block, so each sigma makes one model
 call. `controlled` wraps the model call: it receives the `Modality` that the
@@ -61,9 +67,10 @@ then `current_last`. The two current arms change nothing.
 
 | Control | Change | Kept fixed |
 |---|---|---|
-| `sigma_bf16` | Cast the global sigma and per-token timesteps to BF16 at the model call: 0.725 → 0.7265625, 0.909375 → 0.91015625, 1.0 → 1.0. The old producer built both in the BF16 token dtype. | mask, flags |
+| `global_sigma_bf16` | Cast the global sigma to BF16 at the model call: 0.725 → 0.7265625, 0.909375 → 0.91015625, 1.0 → 1.0. The old producer built it in the BF16 token dtype. | timesteps, mask, flags |
+| `sigma_bf16` | Cast the global sigma and the per-token timesteps to BF16. | mask, flags |
 | `dense_mask` | Add the old all-visible `(1, T, T)` float32 mask from `causal.block_causal_mask` with one block index. The current owner passes no mask for one block. | schedule precision, flags |
-| `historical_inputs` | Both changes above, as the old producer had them. | flags |
+| `historical_inputs` | `global_sigma_bf16` and `dense_mask` together: the old producer's model inputs. | flags |
 | `deterministic_off` | `torch.use_deterministic_algorithms(False)`. | cuBLAS workspace, cuDNN flags, model inputs |
 | `cudnn_deterministic_off` | `torch.backends.cudnn.deterministic = False`. | other flags, model inputs |
 | `bf16_reduction_off` | `torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False`. | other flags, model inputs |
@@ -127,7 +134,8 @@ cannot change it. Run one job with `"numerical_policy": "deterministic"` and the
 controls that fit it: `sigma_bf16`, `deterministic_off`,
 `cudnn_deterministic_off` and `bf16_reduction_off`. Run a second job with no
 numerical policy. PyTorch defaults then apply, as in the reference run. Give it
-`sigma_bf16`, `dense_mask`, `historical_inputs` and `bf16_reduction_off`; the
+`global_sigma_bf16`, `sigma_bf16`, `dense_mask`, `historical_inputs` and
+`bf16_reduction_off`; the
 two `*deterministic_off` controls need the deterministic policy, and the mask
 controls need the smaller memory of the default environment (see Gotchas).
 
@@ -161,10 +169,13 @@ controls need the smaller memory of the default environment (see Gotchas).
 twice to make the saved reference and earlier runs, then runs four controls.
 
 Worked check: at sigma 0.725 the `current_first` call has float32 sigma
-0.725 and no mask. The `sigma_bf16` call has BF16 sigma 0.7265625 and timesteps
-{0, 0.7265625}. The `dense_mask` call has a float32 mask of ones. All calls
-have the same latent hash. On CPU, `current_first`, `current_last`, the
-reference and the earlier run are equal, and `sigma_bf16` changes the output.
+0.725, float32 timesteps and no mask. The `sigma_bf16` call has BF16 sigma
+0.7265625 and BF16 timesteps {0, 0.7265625}. The `global_sigma_bf16` call has
+BF16 sigma 0.7265625 and the current float32 timesteps. The `dense_mask` call
+has a float32 mask of ones. All calls have the same latent hash. On CPU,
+`current_first`, `current_last`, the reference and the earlier run are equal,
+and `sigma_bf16` changes the output. The tiny model has no prompt AdaLN, so the
+global-sigma arms leave its output unchanged.
 
 The tests also check that completion loads no model, that the queue routes the
 selector, that a rewritten RMS in `results.json` fails completion even with a
