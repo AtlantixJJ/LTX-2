@@ -81,7 +81,7 @@ CPU runs explicitly record null CUDA peaks and cannot satisfy native acceptance.
 The final validator requires every declared rank and phase exactly once, finite
 nonnegative measurements, unchanged budget and passed phase states. A missing
 record, changed budget, duplicate rank/phase or breached limit refuses completion.
-The external exact-owned-process wall-time supervisor remains required: measuring
+The queue's external owned-process wall-time supervisor is still required: measuring
 elapsed time at a completed boundary alone cannot interrupt a hung operation.
 When a checked supervision contract is present, publish token/job/rank/budget-bound
 phase begin before the initial synchronize and phase end after measurement.
@@ -89,7 +89,6 @@ Notification failure fails the measurement while preserving an original operatio
 error. Without this contract the hooks do nothing. The shared
 `execution/supervision.py` observer uses these events to time an in-progress phase; its
 separate startup and transition guards cover intervals outside a local phase.
-Historical supervisor text remains preserved and is not a current executor.
 The local `load` phase starts after Accelerator setup; a separate startup guard
 must cover process-group initialization. No existing sampled total-device bound
 is relabeled as an allocated-byte bound.

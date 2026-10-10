@@ -148,8 +148,7 @@ def _write_manifest(root: Path, views: list[Path], *, box: list[float] | None = 
     """A capture manifest in --process_gt_latent's own shape, covering ``views``.
 
     Includes ``pad_factor``/``edge`` -- required by ``dataset.CaptureManifest.load``, the one
-    reader since S1(8) of the 2026-09-17 cleanup plan retired ``precompute.manifest_boxes``,
-    which did not need them.
+    manifest reader.
     """
     root.mkdir(parents=True, exist_ok=True)
     (root / CAPTURE_MANIFEST_NAME).write_text(
@@ -322,9 +321,9 @@ def test_enumerate_capture_jobs_replans_a_changed_source(tmp_path: Path) -> None
 
 
 def test_enumerate_capture_jobs_replans_a_bbox_change_with_rgb_untouched(tmp_path: Path) -> None:
-    """F5 (2026-09-18 audit): the box `plan_source` computes comes from bbox.npy, not
-    rgb.mp4, so a corpus re-ingest that only corrects the bbox (RGB file untouched, same
-    ``rgb_fingerprint``) must still miss the cache -- otherwise the OLD box is served forever."""
+    """The box `plan_source` computes comes from bbox.npy, not rgb.mp4, so a corpus
+    re-ingest that only corrects the bbox (RGB file untouched, same ``rgb_fingerprint``) must
+    still miss the cache -- otherwise the cached box is served forever."""
     view = tmp_path / "view00"
     source = _write_capture_source(view, bbox_xyxy=(10.0, 5.0, 40.0, 35.0))
     cache_path = tmp_path / "plan_cache.json"
@@ -362,6 +361,7 @@ def _manifest(
         "model": {"key": "m"},
         "geometry": _GEOM_DICT,
         "edge": edge,
+        "resolution": edge,
         "pad_factor": pad_factor,
         "views": views,
         "sources": sources,
@@ -390,16 +390,13 @@ def test_is_capture_manifest_valid_false_for_mismatched_pad_factor() -> None:
     assert not is_capture_manifest_valid(manifest, geometry=_GEOMETRY, resolution=1024, pad_factor=1.2)
 
 
-def test_is_capture_manifest_valid_handles_resolution_and_edge_keys() -> None:
-    manifest = {
-        "kind": "one_step_raw_capture_target_latents",
-        "geometry": _GEOM_DICT,
-        "resolution": 1024,
-        "pad_factor": 1.2,
-        "sources": [],
-        "windows": [],
-    }
-    assert is_capture_manifest_valid(manifest, geometry=_GEOMETRY, resolution=1024, pad_factor=1.2)
+def test_is_capture_manifest_valid_requires_recorded_resolution_and_kind() -> None:
+    manifest = _manifest(views=[0, 1], sources=[], windows=[], edge=1024, pad_factor=1.2)
+    without_resolution = {key: value for key, value in manifest.items() if key != "resolution"}
+    assert not is_capture_manifest_valid(without_resolution, geometry=_GEOMETRY, resolution=1024, pad_factor=1.2)
+    for kind in (None, "other"):
+        changed = {**manifest, "kind": kind}
+        assert not is_capture_manifest_valid(changed, geometry=_GEOMETRY, resolution=1024, pad_factor=1.2)
 
 
 def test_is_capture_manifest_valid_false_for_none_or_malformed() -> None:
@@ -422,11 +419,6 @@ def test_cli_accepts_process_gt_latent() -> None:
     args2 = parser.parse_args(["--process-gt-latent"])
     assert args2.process_gt_latent is True
     assert args2.process_syn_latent is False
-
-    # Backwards compatibility alias
-    args3 = parser.parse_args(["--capture-only"])
-    assert args3.process_gt_latent is True
-    assert args3.process_syn_latent is False
 
 
 def test_cli_accepts_process_syn_latent() -> None:

@@ -22,7 +22,7 @@ def saved_sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
     vae = tmp_path / "vae.bin"
     vae.write_bytes(b"controlled VAE identity")
     spec = {
-        "schema_version": 1,
+        "schema_version": 2,
         "model": "2.5",
         "tag": "matched",
         "fps": 30,
@@ -48,6 +48,9 @@ def saved_sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
             caps=SimpleNamespace(latent_channels=3), paths=SimpleNamespace(video_vae=lambda: vae)
         ),
     )
+    # These unit controls cover decode/media byte validation. Actual generation-result
+    # binding is covered independently by test_sigma_sweep_results with real public results.
+    monkeypatch.setattr(sigma_sweep.sigma_sweep_results, "resolve_cells", lambda *_args: None)
     calls = []
 
     def session(*_args: object, **_kwargs: object) -> SimpleNamespace:

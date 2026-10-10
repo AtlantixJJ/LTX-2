@@ -525,6 +525,6 @@ def test_reference_helper_requires_d1_guide_before_decode(
 
 
 def test_decoder_output_is_normalized_to_frame_major_video() -> None:
-    """Moved from the retired visualizer tests: both decoder layouts become F,C,H,W."""
+    """Both decoder layouts become F,C,H,W."""
     assert as_fchw(torch.zeros(1, 3, 5, 8, 9)).shape == (5, 3, 8, 9)
     assert as_fchw(torch.zeros(5, 8, 9, 3)).shape == (5, 3, 8, 9)

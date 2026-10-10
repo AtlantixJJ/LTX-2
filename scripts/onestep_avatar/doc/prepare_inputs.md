@@ -67,9 +67,9 @@ physical seven-frame noise is prepared; an explicit span-seven pilot keeps its
 own training settings. Reparse canonical arguments before text/GPU work: an
 explicit span 8 that ordinary evaluation trims to 7 cannot be prepared as
 span 8/output 7, because explicit paired lengths must agree. Ordinary evaluation
-without the new option keeps its historical trimming behavior. Do not rewrite
-historical prepared records: this changes the preparation software identity and
-requires fresh records and acceptance. Generate native-bf16 noise on the selected
+without `--output-latent-frames` keeps its trimming behavior. A changed preparation
+source changes the preparation software identity; prepare fresh records rather than
+rewriting saved ones. Generate native-bf16 noise on the selected
 GPU with the ordinary sampler's seed, or reuse a checked supplied noise
 tensor; save the actual token tensor. Patchify through the same native grid as
 evaluation, and pin capture, guide when used, clean first capture frame, positive
@@ -84,7 +84,7 @@ identity and preparation software. Validate it through the trainer's actual
 `read_preview_inputs` before final publication. Pass that record as
 `train.py --preview-inputs <DIR/preview.json>`; future completed checkpoints
 enqueue generation/rendering outside FSDP. Preparation does not enqueue or
-generate a preview itself. Preserve historical reference/input provenance.
+generate a preview itself. Saved reference and input provenance is never rewritten.
 
 Check input files and software before text models, after preparation and before
 publishing the complete record. Non-tensor preparation inputs are frozen in
@@ -132,7 +132,7 @@ elapsed time and CUDA allocated/reserved peaks separately from quality claims.
 - Crop/background/VAE metadata describe actual operations on actual pixels.
 - A white objective requires an explicit matte; bg never uses one.
 - Failed input/software checks cannot publish a completed preparation record.
-- Current producer software does not restamp historical bundles.
+- Current producer software never restamps saved bundles.
 
 ## Gotchas
 
@@ -154,16 +154,9 @@ before resize. A seven-encoded-frame guide still produces exactly one image
 latent. Native encode/decode and matched capture pixels require separate saved
 GPU evidence; controlled tests do not establish native correctness.
 
-Native acceptance on 2026-10-07 used white source
-`Part_2/0007_01/views/view01_cam57`, frame zero. Prepared RGB was byte-identical
-to capture preprocessing replay, and both real seven-frame product preflights
-accepted the resulting `[128,1,32,32]` image bundle. Independent image encoding
-differed from the continuous capture first frame (RMS 0.00439134, max 0.046875).
-Encode/decode took 6.52 seconds with 3.75 GB peak allocated memory; the shared
-GPU 3 claim was released. Full/narrow rendered review and exact source/input
-hashes are under `expr/onestep_avatar/handoff_implementation_20261007/` in the
-workspace. This is one-image preparation evidence, not generated-video or E2
-adapter acceptance.
+An independently encoded image differs slightly from the continuous capture first
+frame (measured RMS 0.0044, max 0.047 on one white view); product inputs therefore
+always use the supplied-image encoding, never a capture master frame.
 
 Preview controls must cover both modes, D0 without a guide, D1, fixed positive
 and negative text, exact selected noise/image hashes, and trainer/job reader
@@ -175,15 +168,6 @@ null-span/frame-counts `[6,7]` contract. Prepare physical seven-frame inputs,
 roundtrip the emitted arguments through ordinary evaluation and the strict
 adapter checker, and require the trainer reader to accept the unchanged null
 span. Explicit span-seven pilot preparation remains strict under its own
-contract. Check both split and equals flag spellings, no duplicates, historical
+contract. Check both split and equals flag spellings, no duplicates, unchanged
 bidirectional selection, and rejection of transferred settings before weights.
-
-Fresh public fixed preparation passes both modes through the trainer reader
-and strict adapter preflight. Capture, guide, clean image, text and
-`[1,7168,128]` noise tensors match the original fixed inputs; both use
-`[0.725,0]` and checked 49-frame references. The original causal E4 selection
-remains span-null with physical output seven; the separate pilot stays span-seven.
-`current_fixed_preparation_readback_20261008.json` under the workspace handoff
-evidence directory binds this scope. Preparation opens no transformer; preview
-execution and media acceptance are tracked in
-[current acceptance](known_gaps.md#current-acceptance-and-next-step).
+Preparation opens no transformer.

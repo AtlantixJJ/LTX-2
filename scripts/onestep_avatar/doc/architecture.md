@@ -1,80 +1,26 @@
 # Architecture — package layout, ownership and dependencies
 
-Operational GPU and process rules (direct `nvidia-smi`, one shared own-process
-ledger, concurrent runs on GPUs 0–7) are user amendments in the
-[package guidance](../CLAUDE.md). This document does not repeat them.
+This document owns the package layout, the ownership and dependency rules, the
+queue kinds and the boundary checks. GPU and process rules (direct `nvidia-smi`,
+one shared own-process ledger, GPUs 0–7) are in the [package guidance](../CLAUDE.md)
+and the [run guide](../configs/README.md). Do not copy test counts or run status
+into this document.
 
-Status: **Required architecture contract. The owner layout and source moves are
-implemented; the code gate and fresh affected native acceptance require separate
-source-bound evidence.**
-This document is the only owner of the target layout, the ownership and
-dependency rules, and the migration map. The
-[active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md)
-owns progress, work order, acceptance gates and evidence. Do not copy changing
-test counts, run timelines or group status into this document.
-
-Required means the agreed target. Current means inspected source behavior.
-Verified means a check with saved evidence and an explicit scope. Keep these
-meanings separate. A path in this document that does not exist yet is
-**Proposed**. Do not quote an absent path as a runnable command. Current source
-owners below exist; their presence alone does not prove the final acceptance gates.
+Required means the agreed rule. Current means inspected source behavior.
+Verified means a check with saved evidence and an explicit scope.
 
 ## Objective and authority
 
 Keep one shared trainer and the two model modes. Separate this runtime from the
-code that defines a scientific comparison or recovers a historical study. An
+code that defines a scientific comparison. An
 experiment uses the shared runtime. It does not carry another trainer, sampler,
 adapter loader, condition checker or decoder.
 
 [Core algorithm](core_algorithm.md) owns the numerical and conditioning rules.
 [Training choices](training_choices.md) owns the D0/D1, background and history
 settings. `doc/experiments/` is reserved for experiment-module docs.
-Per-module docs explain current calculations. Write or move them before the
-source they describe moves.
-
-## Decisions recorded on 2026-10-08
-
-The user made these decisions after a review of the October 7 handoff.
-They replace any earlier statement that conflicts with them.
-
-1. **Keep every historical study as an experiment module.** All ten root study
-   owners move into `experiments/`. Fusion parity, the eight-block causality
-   diagnostic, future-noise interventions, sigma-sweep metrics, saved-probe
-   metrics, the A1/B1c statistics and legacy adapter conversion also move there,
-   with their behavior unchanged.
-2. **The pruning baseline producer moves to `scripts/prune/`.** The sibling
-   pruning package used `visualize_d1 --whole-clip` to make its baselines and
-   candidates. That producer is now the prune-owned command
-   `scripts.prune.evaluate.whole_clip_baseline` with the same output format.
-   `visualize_d1.py` then retires completely.
-3. **`expr/` cleanup is limited.** Every executor, launcher and runnable source
-   snapshot under `expr/onestep_avatar/` becomes non-executable provenance.
-   Report-only code stays unchanged. Only maintained reports must rebuild from
-   saved results. All other report folders are frozen.
-4. **Commit each verified step.** The refactoring agent commits one owner group
-   at a time on a branch in the LTX-2 submodule. It never updates the
-   workspace's recorded LTX-2 commit and never pushes.
-5. **One `experiment` queue kind.** It replaces the `sigma_sweep` kind. A fixed
-   literal table in `execution/queue.py` selects the experiment module.
-6. **Two more subpackages: `corpus/` and `execution/`.** Corpus producers and
-   readers move into `corpus/`. Queue, process, launch and provenance modules
-   move into `execution/`. Refinement in this design: `hashing.py` stays at the
-   package root as a leaf utility, because `corpus/` and `model/` import it and
-   must not depend on the queue package.
-7. **Split ordinary `evaluate.py` by responsibility.** General measurements go to
-   `metrics.py`, training-preview jobs to `previews.py` and saved-comparison
-   rendering to `comparisons.py`. `evaluate.py` keeps ordinary evaluation.
-8. **The queue is the only launcher for model work.** Every training,
-   evaluation, preview, product, benchmark, decoding, rendering and experiment
-   run is a queue job. Every kind gets bounded supervision and an optional
-   overall deadline that spans startup retries. Hand-written controllers, the
-   pilot caller's monkeypatches and the checkers' self-launch paths retire.
-   Corpus production (`corpus/precompute.py`, `corpus/build_guidance.py`)
-   keeps its documented direct commands.
-9. **One GPU pool: GPUs 0–7 (expanded by the user on 2026-10-09).** Every
-   queue kind draws from one pool constant. Training selects four free GPUs
-   and keeps four ranks. Single-GPU jobs can use the other free devices;
-   two independent four-rank jobs can run when all eight devices are free.
+Per-module docs explain current calculations. Update them in the same change as
+the source they describe.
 
 ## Terms and classification
 
@@ -88,17 +34,17 @@ They replace any earlier statement that conflicts with them.
 - **Execution and provenance:** dispatch, own-process tracking, bounded
   supervision and the identity of source and runtime bytes.
 - **Experiment code:** code that chooses interventions, comparison controls, a
-  study's exact inventory, historical conversions or the interpretation of
+  study's exact inventory or the interpretation of
   study measurements. Acceptance checkers (E1–E4) are experiment code.
 - **Study data:** membership, frame plans, exact schedules, noise, job lists and
   narrative settings. Study data can live under `expr/onestep_avatar/`.
 - **Report code:** code under `expr/` that reads saved evidence and writes a
   report. It never generates a missing result.
 - **Maintained report:** a report that must rebuild from saved results.
-  **Frozen report:** a historical report whose code stays unchanged and is not
+  **Frozen report:** a report whose code stays unchanged and is not
   rebuild-tested.
-- **Retired executor:** an `expr/` file that started model, decoder, training or
-  queue work. Its bytes stay as non-executable provenance.
+- **Archived executor:** an `expr/` file kept as non-executable provenance
+  (`.py.txt`/`.sh.txt`). It is data, never imported or run.
 
 Classify a function by its responsibility, not by its number of callers. A
 general decoder with one caller is still run support. A converter for two fixed
@@ -106,7 +52,7 @@ source views is study-specific even when several jobs use it. Exact mathematics
 and supported default settings belong to their common owner. A study's actor
 list, sigma grid and comparison roles do not.
 
-## Target layout
+## Package layout
 
 All paths are relative to `LTX-2/scripts/onestep_avatar/` unless stated.
 
@@ -134,24 +80,18 @@ execution/           queue, queue_launch, queue_protocol,
 experiments/         training_update_check, training_slice_check,
                      adapter_effect_check, continuation_check, causality,
                      stock_parity, fusion_parity, sigma_sweep,
-                     sigma_sweep_jobs, sigma_sweep_results,
-                     future_noise_study, convert_progress_jobs,
-                     stats, saved_probe_metrics, spec_protocol, legacy_adapters,
+                     sigma_sweep_results, short_causal_check,
+                     stats, saved_probe_metrics, spec_protocol,
                      prune_baseline
 configs/             fsdp.yaml, fsdp_forward_prefetch.yaml, README.md recipes
 doc/                 mirrored module designs and cross-module contracts
 tests/               ordinary tests; tests/experiments/ for experiment tests
 ```
 
-`corpus/`, `execution/` and `experiments/` each get an empty `__init__.py`,
+`corpus/`, `execution/` and `experiments/` each use an empty `__init__.py`,
 like `model/` and `training/`. Do not add `LTX-2/scripts/__init__.py`.
 `scripts` must stay a namespace package, so that `corpus/build_guidance.py`
 can merge ARGAvatar's `scripts.inference` at run time.
-
-Retired without a replacement file: `windows.py`, `visualize_d0.py`,
-`visualize_d1.py`, and the old training runtime and parser symbols listed in
-[retired code](#retired-code). The root `stats.py` is not retired; it moves
-whole to `experiments/stats.py`.
 
 ## Ownership by package
 
@@ -160,10 +100,10 @@ whole to `experiments/stats.py`.
 | `corpus/` | Artifact names and readers, checked membership and splits, crop/mask/pose/VAE producers, guide rendering (the only `argavatar` module) | Mode frame plans beyond shared facts, model calls, study selections |
 | `model/` | Token layout, noise, `c0`, loss, base weights, adapter function, exact denoising steps, both mode algorithms, cache state and diagnostic numerical paths | Settings parsing, optimizer loop, comparison orchestration |
 | `training/` | Typed settings and preflight, the one optimizer loop, checkpoint contract and export, runtime/resource/numerical evidence, preview enqueue | Evaluation, sampling CLIs, studies |
-| Root run support | Ordinary evaluation, product, previews, saved comparisons, decoding, media, preparation, cost and plots | Interventions, historical protocols, study inventories |
+| Root run support | Ordinary evaluation, product, previews, saved comparisons, decoding, media, preparation, cost and plots | Interventions, comparison protocols, study inventories |
 | `execution/` | The only launch path for model work: queue kinds, GPU pool and claims, launch gate, own-process ledger, bounded supervision and deadlines; software manifests | Model calculations, study logic |
 | Root leaf utilities | Repository roots (`__init__.py`) and file/tensor content hashes (`hashing.py`) | Any package import; heavy imports at module load |
-| `experiments/` | Comparison protocols, acceptance checkers, interventions, study-only metrics and historical conversions | A second trainer, sampler, adapter loader, condition checker, decoder, registry, queue or launcher |
+| `experiments/` | Comparison protocols, acceptance checkers, interventions and study-only metrics | A second trainer, sampler, adapter loader, condition checker, decoder, registry, queue or launcher |
 | `expr/` report code | Sections, captions, report plots, saved-result summaries, report validation | Any model, VAE, training or queue execution |
 
 Shared knowledge keeps one spelling. Artifact names live in
@@ -178,7 +118,7 @@ The table lists package-internal imports. Lazy imports inside functions count.
 | Importing package | May import | Must not import |
 |---|---|---|
 | Root leaf utilities (`__init__.py`, `hashing.py`) | The standard library only at module import | Every package module |
-| `corpus/` | `corpus/`, root leaf utilities; lazily `model.causal` only in `subset.convert_legacy` as documented below | Everything else in the package |
+| `corpus/` | `corpus/`, root leaf utilities | Everything else in the package |
 | `model/` | `model/`, `corpus/`, root leaf utilities | `training/`, root run support, `execution/`, `experiments/` |
 | `training/` | `training/`, `model/`, `corpus/`, `execution/`, root leaf utilities; lazily `previews.py` and `evaluate.parse_args` for preview jobs | Other root run support, `experiments/` |
 | Root run support | Any package code outside `experiments/` | `experiments/`, `train.py` |
@@ -190,7 +130,7 @@ The table lists package-internal imports. Lazy imports inside functions count.
 Rules that the table does not show:
 
 1. Core training, ordinary evaluation and product must start and finish when
-   `experiments/` cannot be imported. They do not dispatch a historical
+   `experiments/` cannot be imported. They do not dispatch a scientific
    protocol from an ordinary CLI.
 2. A software profile that requires a file is a dependency, even without an
    import. No ordinary profile lists an `experiments/` or `expr/` file.
@@ -209,15 +149,10 @@ Rules that the table does not show:
    none of these. A command that loads no model and uses no GPU (job builders,
    converters, saved-result metrics) may run directly.
 
-**Documented corpus conversion exception.**
-`corpus.subset.convert_legacy` lazily imports the public
-`model.causal.CausalGeometry` only when reproducing an original block-chain
-subset. The old record contains block indices, not encoded frame ranges;
-recover those ranges through the one canonical block planner. Retaining this
-specific general conversion edge avoids a second spelling of block arithmetic.
-Ordinary `corpus.dataset` and `corpus.subset` imports load no model owner.
-The dependency test names this exact source, destination and function; every
-other corpus-to-model import, including lazy imports, fails the boundary check.
+**Corpus ownership.** `corpus.subset` surveys saved producer files, assigns
+person groups and writes content-pinned membership. Frame selection belongs
+to `training.config`, which calls the canonical model frame planner. Corpus
+imports, including lazy imports, load no model or training owner.
 
 `model.adapters` owns `LORA_TARGETS`. Its loader receives a validated contract
 and its bound adapter SHA-256 as data. Callers use the public
@@ -309,12 +244,7 @@ flowchart LR
 
 ### Repository roots
 
-Moving a file changes every `Path(__file__).parents[N]` calculation. This
-happened before: `dataset.py` used `parents[2]` until the September 15 merge.
-Current sites include `dataset.WORKSPACE_ROOT`, `software.ROOT`, the queue's
-child working directory and the checkers' child working directories.
-
-**Required:** `__init__.py` defines three constants with the standard library only:
+`__init__.py` defines three constants with the standard library only:
 
 ```python
 PACKAGE_ROOT = Path(__file__).resolve().parent   # .../LTX-2/scripts/onestep_avatar
@@ -322,12 +252,10 @@ LTX_ROOT = PACKAGE_ROOT.parents[1]               # .../LTX-2, the cwd for python
 WORKSPACE_ROOT = LTX_ROOT.parent                 # .../VideoDiffusionModels
 ```
 
-Package code and tests use these names. No module calculates a repository root
-from `__file__`. Child processes use `cwd=LTX_ROOT`. Hashing a module's own
-bytes with `sha256(Path(__file__))` is file identity, not a root calculation,
-and stays. Before the moves, `Path(dataset.py).parents[3]` gave
-`.../VideoDiffusionModels` and `Path(software.py).parents[2]` gave
-`.../LTX-2`. The constants preserve those two paths from every module location.
+Package code and tests use these names. No other module calculates a repository
+root from `__file__`, so moving a file cannot change a root. Child processes use
+`cwd=LTX_ROOT`. Hashing a module's own bytes with `sha256(Path(__file__))` is
+file identity, not a root calculation.
 
 ### Queue kinds and experiment dispatch
 
@@ -337,13 +265,13 @@ has a model-free completion check.
 
 | Kind | Module | GPUs | Completion check |
 |---|---|---|---|
-| `train` | `train` through `accelerate launch` | four | `training.engine` scientific verification (current) |
-| `evaluate` | `evaluate` | one | `evaluate.verify_evaluation_conditions` (current) |
-| `preview` | `previews` | one | `previews.verify_completion` (implemented): checked preview state from `verify_preview_job` plus the immutable completion marker |
-| `product` | `infer` | one | `infer.verify_completion` (implemented): raw encoding, records, generated-only MP4 and review match their recorded hashes |
-| `bench` | `bench` | one | `bench.verify_completion` (implemented): the timing record is complete for the requested repetitions and warmup |
-| `decode` | `decode_saved` | one | decoder receipt check (current) |
-| `render` | `comparisons` | one | `comparisons.verify_saved_comparison_completion` (current, moved) |
+| `train` | `train` through `accelerate launch` | four | `training.engine` scientific verification |
+| `evaluate` | `evaluate` | one | `evaluate.verify_evaluation_conditions` |
+| `preview` | `previews` | one | `previews.verify_completion`: checked preview state from `verify_preview_job` plus the immutable completion marker |
+| `product` | `infer` | one | `infer.verify_completion`: raw encoding, records, generated-only MP4 and review match their recorded hashes |
+| `bench` | `bench` | one | `bench.verify_completion`: the timing record is complete for the requested repetitions and warmup |
+| `decode` | `decode_saved` | one | decoder receipt check |
+| `render` | `comparisons` | one | `comparisons.verify_saved_comparison_completion` |
 | `experiment` | the selected experiment module | one | that module's `verify_completion(spec, root)` |
 
 **GPU pool.** The single import-light owner is `execution/devices.py`:
@@ -351,7 +279,6 @@ has a model-free completion check.
 import this policy; the queue's exported names are aliases, not another pool.
 `train` selects four free devices and keeps four processes. Single-GPU kinds
 pick one free device from the same ordered pool. Selections may be noncontiguous.
-The pool and every-kind supervision are implemented; native acceptance is separate.
 
 **Experiment selection.** An `experiment` job carries `experiment` (a
 selector), `spec`, `spec_sha256` and `arguments`. The canonical job hash covers
@@ -401,41 +328,34 @@ descendants in the ledger and proves worker absence at the end.
 the first attempt and is stored in the queue journal. A startup retry or a
 queue restart does not reset it. When it expires, the queue stops the owned
 process tree within the shutdown bound and marks the job failed with reason
-`overall_deadline`. This replaces the pilot caller that monkeypatched
-`queue.run_child` and `supervision.supervise`.
+`overall_deadline`.
 
 **Numerical environment.** A job that needs the deterministic numerical policy
 declares it. The queue applies the child environment from
-`training/numerics.py` before the child starts, as it does for `train` today.
+`training/numerics.py` before the child starts, as it does for `train`.
 
-**Evidence.** Each attempt keeps the files that the hand-written controllers
-wrote: launch request and grant, journal, supervision result with the
-worker-absence proof, and the child log.
+**Evidence.** Each attempt keeps its launch request and grant, journal entry,
+supervision result with the worker-absence proof, and the child log. An owner
+that ends before publishing the supervision result leaves the attempt failed
+with reason `missing_supervision`; recovery never writes a success it did not observe.
 
 **Checkers inside a job.** A checker never claims GPUs, writes a ledger row or
-calls `supervise`. `continuation_check.supervised_run` and
-`training_update_check.supervised_reference` are removed. When a protocol needs a
-separate process (for example the E4 serial reference), that process becomes
-its own queue job, and the step that needs its output depends on it through the
-existing job dependencies.
+calls `supervise`. When a protocol needs a separate process (for example the E4
+serial reference), that process is its own queue job, and the step that needs
+its output depends on it through the job dependencies.
 
-**Historical job lists.** Old lists with `kind: "sigma_sweep"`, and old
-future-noise rows with `kind: "evaluate"` plus intervention options, are
-historical data. They keep their receipts and attribution. A rerun uses a fresh
-job list that the moved builders (`experiments/sigma_sweep_jobs.py`,
-`experiments/future_noise_study.py`) write, with fresh output IDs. The
-`--claims-dir` alias for old reservation files is removed; parsing refuses it
-before reading jobs or writing state.
+**Pinned job lists.** Every supported experiment has a fixed selector and
+content-pinned scientific specification. Generation and dependent decoding use
+explicit current jobs with fresh output IDs and verified prerequisite results.
+Data fields never select executable source or repair missing inputs.
 
 ### Software profiles
 
-The five profiles stay: `training`, `evaluation`, `inference`, `decoding` and
-`preparation`. `execution/software.py` lists `COMMON` and per-profile `ENTRIES`
-with final paths. `__init__.py` joins `COMMON`, because it now defines the roots.
-`hashing.py` stays in `COMMON`.
+There are five profiles: `training`, `evaluation`, `inference`, `decoding` and
+`preparation`. `execution/software.py` lists `COMMON` and per-profile `ENTRIES`.
+`__init__.py` and `hashing.py` are in `COMMON`.
 
-- No ordinary profile lists an `experiments/` or `expr/` file. The stock and
-  sigma study owners are already removed from ordinary profiles. Common
+- No ordinary profile lists an `experiments/` or `expr/` file. Common
   runtime/device/protocol owners bind queue execution without importing studies.
 - An experiment binds its own files with
   `software.capture(<profile>, mode, extra_sources=(<experiment files>,))`.
@@ -443,12 +363,12 @@ with final paths. `__init__.py` joins `COMMON`, because it now defines the roots
 - **Coverage check:** for each profile, a CPU test runs a representative entry
   path with experiments blocked. Every loaded `scripts.onestep_avatar` module
   must be in that profile. A missing file is a profile defect.
-- Every path change makes old manifests non-current. Old receipts keep their
-  original attribution. Fresh affected evidence comes after the code gate.
+- A changed path or byte makes earlier manifests non-current. Earlier receipts
+  keep their attribution; a changed producer needs fresh affected evidence.
 
-### Split of ordinary `evaluate.py`
+### Evaluation function owners
 
-| Current functions in `evaluate.py` | Final owner |
+| Functions | Owner |
 |---|---|
 | `tensor_sha256` | `hashing.py` (same algorithm and bytes) |
 | `encoded_metrics`, `rgb_metrics`, `_check_rgb_pair`, `masked_rgb_transition_steps`, `subject_mask`, `subject_rgb_metrics`, `_lpips_batches`, `lpips_frame_scores`, `lpips_distance` | `metrics.py` |
@@ -476,66 +396,9 @@ encoder or VAE.
 {cache,recompute,joint}` and `--kv-source {refresh,denoise}`. They select
 shared diagnostic paths in `model/causal.py`, are recorded in every output and
 default to `cache` and `refresh`. Product refuses the non-default values.
-`evaluate.py` removes `--changed-noise-file`, `--future-noise-start`,
-`--causality`, `--fusion-parity` and `--saved-metrics`; these become
-experiment CLIs. `--preview-job` moves to `previews.py` and
-`--render-saved-comparisons` moves to `comparisons.py`. A removed option is an
-unknown argument and fails before any write.
-
-## Migration map
-
-Paths are relative to the package. "Move" changes the path and callers only.
-"Extract" moves named symbols out of a mixed file. Write or move the
-destination design before the source change. Update imports, `python -m`
-commands, child working directories, queue strings, software profiles, tests,
-docs and recipes in the same change.
-
-### Moves into subpackages
-
-| Current file | Final path | Notes |
-|---|---|---|
-| `dataset.py`, `subset.py`, `precompute.py`, `build_guidance.py`, `geometry.py`, `motion.py`, `mask_video.py`, `qa.py` | `corpus/<same name>` | `build_guidance` runs as `conda run -n argavatar python -m scripts.onestep_avatar.corpus.build_guidance`. `subset.py` gains the legacy subset hash rule from `windows.py`. |
-| `execution/queue.py`, `execution/queue_launch.py`, `execution/queue_protocol.py`, `execution/process_registry.py`, `execution/supervision.py`, `execution/software.py` | `execution/<same name>` | `execution/queue.py` gets the `experiment`, `preview`, `product` and `bench` kinds, one GPU pool, supervision and deadlines for every kind. |
-| `hashing.py` | stays at the root | Gains `tensor_sha256` from `evaluate.py`. |
-| `training_update_check.py`, `training_slice_check.py` | `experiments/<same name>` | E4 replay and one-rank localization. Update `ENTRY` and `extra_sources`. The serial reference becomes its own queue job. |
-| `adapter_effect_check.py` | `experiments/adapter_effect_check.py` | E2; includes the fused diagnostic. |
-| `continuation_check.py` | `experiments/continuation_check.py` | E3; its future-noise control calls `experiments/causality.py`; `supervised_run` retires. |
-| `stock_parity.py` | `experiments/stock_parity.py` | E1. |
-| `sigma_sweep.py`, `sigma_sweep_jobs.py`, `sigma_sweep_results.py` | `experiments/<same name>` | Queue selector `sigma_sweep`. |
-| `future_noise_study.py`, `convert_progress_jobs.py` | `experiments/<same name>` | CPU job builders; future-noise jobs use selector `causality`. |
-| `stats.py` | `experiments/stats.py` | A1/B1c protocols. Its helpers have no other consumer. |
-
-### Extractions from mixed files
-
-| Current location | Final owner | Kept in the current owner |
-|---|---|---|
-| `evaluate.py` | See [split of ordinary evaluate.py](#split-of-ordinary-evaluatepy) | Ordinary evaluation only |
-| `training/checkpoints.py`: `convert_legacy_adapter`, `main` | `experiments/legacy_adapters.py` | Contract read/validate/check, tensor checks, save/load, `random_segment_selection`, parent initialization |
-| `training/config.py`: `LORA_TARGETS` | `model/adapters.py` | Typed settings |
-| `windows.py`: `subset_sha256` | `corpus/subset.py` as the legacy subset hash rule | Nothing; `windows.py` retires |
-
-The legacy subset hash must keep the exact original rule: the original seven
-keys, `json.dumps(sort_keys=True)` and unchanged spacing.
-
-### Retired code
-
-| Code | Required before deletion |
-|---|---|
-| `train.py` mode-less route; `training/config.py` old `parse_args`; `training/engine.py` `Chain`, `ChainStore`, `window_start_for`, `window_chain`, `check_random_window`, `clip_grid_for`, `assert_subset_matches_geometry`, `train_chain`, `_num_blocks`, `_inner_dim`, `causal_geometry`, `checkpoint_metadata`, old `main` and the eager `windows` import | Trace the typed closure. Keep `build_transformer`, `assert_rank_lockstep`, `timed`, logging and preview helpers that typed code uses. Missing `--mode` fails before writes. |
-| `windows.py` | The legacy subset hash moved; engine and checkpoint callers removed. |
-| `visualize_d0.py`, `visualize_d1.py` | The prune producer moved; needed condition, cache and K/V checks retargeted to `evaluate.py`, `model/causal.py` or experiment tests. |
-| Alpha `.npy` reading and `--migrate-alpha`; unrefined pose fallback; `per_window` log readers in `plot_training.py`; remaining anchor fields and flags | The selected-data inventory proves no selected input needs them, or the existing bit-exact conversion has written checked derived records. Never rerender guides or delete source media. |
-
-**Implemented (G11):** the code rows above are deleted. `train.py` refuses a
-command without `--mode` before any write; `training/engine.py` keeps only the
-typed closure of `run_settings`, `prepare_run`, `verify_training_conditions`,
-`tokens_for_sample`, preview helpers and `build_transformer`. Behavior checks of
-the deleted wrappers moved to their shared owners (`model/causal.py`,
-`model/common.py`, `training/config.py`, `training/checkpoints.py`). The data
-fallbacks row is G12.
-
-Keep both FSDP configurations: `configs/fsdp.yaml` and
-`configs/fsdp_forward_prefetch.yaml` are distinct checked choices.
+Future-noise and fusion interventions belong to experiment CLIs. Fixed-preview
+jobs belong to `previews.py`; saved comparisons belong to `comparisons.py`.
+Unsupported ordinary options fail as unknown arguments before any write.
 
 ### Cross-package caller: `scripts/prune/`
 
@@ -543,22 +406,19 @@ Keep both FSDP configurations: `configs/fsdp.yaml` and
 and `model.causal`. `scripts/prune/data/whole_clip.py` reads the saved
 whole-clip rollout format.
 
-**Implemented:** the whole-clip producer is the prune-owned CLI
+The whole-clip producer is the prune-owned CLI
 `scripts/prune/evaluate/whole_clip_baseline.py`, documented in
-`scripts/prune/doc/evaluate/whole_clip_baseline.md`. It keeps the output
-format and options (`--view`, `--sigmas`, `--prompt`, `--seed`, model and
-guidance options, `--transformer`), and is built on public `corpus/` readers
-and `model/` owners, not on the retired `Chain` types. The `--whole-clip`,
-LoRA, history and trajectory options of the old visualizer are not carried
-over; the design doc records why. After the code gate, one native check must
-reproduce a saved prune baseline with the new producer (see the handoff).
+`scripts/prune/doc/evaluate/whole_clip_baseline.md`. It keeps the saved output
+format and explicit view, sigma, prompt, seed, model, guidance, and transformer options.
+It calls public `corpus/` readers and `model/` owners. It has no adapter or causal
+history setting. Native baseline reproduction requires matched scientific inputs,
+numerical policy, source identity, and successful bounded supervision.
 
 ### Tests and docs
 
-- Experiment tests move to `tests/experiments/`. Other tests stay in `tests/`.
-  Test file names stay unique across both folders.
-- Keep behavior checks by moving them to the final owner. Delete a test only
-  when it checks a retired interface and nothing else.
+- Experiment tests live in `tests/experiments/`. Other tests live in `tests/`.
+  Test file names are unique across both folders.
+- Test public behavior at its current owner; every retained calculation and failure rule needs coverage.
 - Package tests do not import or run `expr/` code. A test that reads `expr/`
   data skips with a stated reason when the data is absent.
 - Docs mirror source paths: `doc/corpus/`, `doc/execution/`,
@@ -566,48 +426,44 @@ reproduce a saved prune baseline with the new producer (see the handoff).
   Files over 100 physical lines need a mirrored doc. Files with 100 or fewer
   lines use a header and have no separate doc.
 - Cross-module docs stay at `doc/`: `architecture.md`, `core_algorithm.md`,
-  `training_choices.md` (renamed from `experiments.md`), `known_gaps.md`,
+  `training_choices.md`, `known_gaps.md`,
   `verification.md` and the index `README.md`.
-- Remove the docs of retired files. Move still-needed explanations first.
+- The index lists only present sources; useful explanations stay with their current owner.
 
-## `expr/` dispositions
+## Saved report ownership
 
-| Class | Folders or files | Required action |
-|---|---|---|
-| Maintained report | `d1_diagnostic/ar_sigma_rollouts/` report code; the post-refactor pilot report | Rebuild from saved results with model, VAE and queue execution disabled. A missing cited artifact fails before any write or child. Discovery, import and rebuild refuse retired executors, even when an old inventory names them. |
-| Frozen report | Report-only code in every other folder, for example `dev_training_20261001/`, `d1_selfrollout_sigma_sweep_20260926/`, `handoff_implementation_20261007/` report code, `runs/*` analysis scripts and the two slide servers | Leave bytes unchanged. Add `FROZEN.md` with the freeze date, the LTX-2 commit needed to rerun it and "not rebuild-tested". |
-| Retired executor | Every executor, launcher or probe, and every runnable source snapshot (`code_snapshot_58dc9c/`, `provenance/source_snapshot/`, `code/legacy/`) | Rename `*.py` to `*.py.txt` and `*.sh` to `*.sh.txt` in place. Clear execute bits. Keep bytes unchanged. Record each file in `expr/onestep_avatar/retired_executors.json` with original path, new path, SHA-256, class and reason. |
-| Mixed file in a maintained report | Files that combine report sections with model or scoring execution | Save the original as `<name>.pre_refactor.py.txt` (recorded in the JSON). Remove the execution branch from the live file. Move execution that must run again into `experiments/`. |
+Report code under `expr/` can read immutable saved settings, observations, metrics,
+media, and provenance. It cannot execute models, decode tensors, launch a queue, or
+repair missing scientific results. A missing cited artifact fails before children
+or writes. Maintained report generators rebuild from checked saved inputs;
+report-specific sections, captions, sheets, and plots belong there.
 
-`.py.txt` is the existing workspace convention for non-executable source
-provenance. `expr/` is not in Git, so renaming in place is the only way to
-keep these bytes. One `expr/onestep_avatar/report_dispositions.json` lists every
-report folder as maintained or frozen.
+Saved observations retain their producer hashes and original scientific meaning.
+A current verifier can reject an observation without changing its recorded bytes.
+Non-executable source provenance is data, never an import or execution fallback.
+The report-disposition inventory controls which reports can be rebuilt.
 
-## Retirement rules
+## Change and acceptance rules
 
-1. **Package code** is deleted after three conditions hold: every current
-   caller has moved (package, prune, tests, recipes, maintained reports); the
-   required behavior exists in its final owner with CPU tests; and the removal
-   inventory records the old path, its SHA-256 and the last LTX-2 commit that
-   contains it. New native evidence is not a deletion condition, because Git
-   keeps the bytes. If a later native check fails, fix the final owner. Never
-   restore the old runtime.
-2. **Data fallbacks** follow the data condition in the retired-code table.
-   They protect readers of saved data, so Git history does not replace the check.
-3. No forwarding module, alias import, `legacy/` copy or compatibility flag
-   remains at an old path.
-4. Old commands fail clearly: `train` without `--mode` exits non-zero before it
-   writes; a removed `evaluate` option is an unknown argument.
-5. Historical results keep their original source hashes and attribution.
-   Never restamp an old result as the output of a moved owner.
+Before removing an interface, audit package, prune, tests, recipes, and maintained
+report callers. Preserve required behavior in a current public owner and check it
+on CPU. A strict saved-data reader also needs an inventory proving that selected
+inputs meet its contract; do not infer missing settings or rewrite evidence to pass.
+No forwarding module, compatibility alias, or second execution owner is permitted.
+Invalid options and unsupported contracts fail before model handles and writes.
+
+Source, import, documentation, and CPU acceptance is separate from native scientific
+acceptance. Changed source profiles require new affected native observations with
+matched inputs. Full workflow, numerical, quality, cost, and pilot acceptance stay
+required even when focused CPU checks pass; see the
+[acceptance gates](verification.md#acceptance-gates).
 
 ## Boundary checks
 
-The handoff's code gate uses these checks. Each must pass on the final source.
+Run these checks after any change to layout, imports, profiles, queue kinds or
+report code. The [run guide](../configs/README.md#10-check-the-code) lists the suites.
 
-- **B1 Layout.** The tree matches [target layout](#target-layout). No file
-  remains at a retired path. `LTX-2/scripts/__init__.py` does not exist.
+- **B1 Layout.** The tree matches the [package layout](#package-layout). Every source has one current owner. `LTX-2/scripts/__init__.py` does not exist.
 - **B2 Experiments blocked.** With an import blocker that refuses
   `scripts.onestep_avatar.experiments*` (for example a `sys.meta_path` finder
   installed by `tests/conftest.py` when `ONESTEP_AVATAR_BLOCK_EXPERIMENTS=1`),
@@ -635,24 +491,21 @@ The handoff's code gate uses these checks. Each must pass on the final source.
   scripts.onestep_avatar.corpus.build_guidance --help` exits zero.
 - **B8 Reports.** The maintained AR report rebuilds byte-identically from saved
   results with model/VAE/queue execution disabled. Removing one cited artifact
-  fails before children or writes. `retired_executors.json` covers every
-  executor and snapshot file; no `.py` or `.sh` executor remains outside
-  maintained report code.
+  fails before children or writes. No executable model or queue owner is present
+  in report code or source provenance.
 - **B9 One launcher.** An AST test finds uses of `ProcessRegistry` and its
   `acquire`, of `supervision.supervise`, and of the `queue_launch` request,
   guard and grant functions only inside `execution/`. Phase notifications
   from a running child (`supervision.notify_phase`) are not launches.
-  Every native run type in the handoff (E1–E4 checkers, preview, product,
-  bench, pilot training) has a job-list template that the queue accepts on
-  CPU, so no hand-written controller is needed.
+  Every native run type (E1–E4 checkers, preview, product, bench, pilot
+  training) is a queue job list that passes the queue's CPU dry run.
 
 ## Worked boundary checks
 
 **Ordinary training.** A checked D1 membership and `--mode causal` select the
 typed engine and `model.causal.train_sample`. With experiments blocked, the
 settings preflight, a small-model CPU update, adapter export and preview
-enqueue still work. The run knows no sweep cells or historical A/B/B2/B3
-labels. Repeat the check for bidirectional mode, which has no cache.
+enqueue still work. The run knows no scientific sweep cells or study labels. Repeat the check for bidirectional mode, which has no cache.
 
 **Queued future-noise experiment.** A job `{"kind": "experiment",
 "experiment": "causality", "spec": ..., "spec_sha256": ...}` with future-noise
@@ -667,11 +520,4 @@ before any claim.
 
 **Maintained saved report.** With complete saved outputs, the AR report
 rebuilds while model, decoder and queue execution are disabled. Removing a
-cited artifact makes the rebuild fail before any child or write. An inventory
-row that names `run_followups_20261004.py` finds only the `.py.txt` file and
-refuses it.
-
-Architecture completion is separate from scientific completion. Overall
-handoff completion still needs E1–E5, the native previews and product outputs,
-the removal dispositions and the bounded pilot report. This document makes no
-claim that those tasks have passed.
+cited artifact makes the rebuild fail before any child or write. A source-provenance file cannot satisfy a missing scientific result or serve as an executor.

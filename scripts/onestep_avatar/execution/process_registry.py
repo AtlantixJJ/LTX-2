@@ -332,6 +332,11 @@ def inspect_record(path: Path, token: str, *, timeout: float = 5) -> dict:
         raise ValueError("saved own process token is absent from the shared ledger")
     row = record["attempts"][token]
     if row["state"] == "closed":
+        if isinstance(row.get("recovery"), dict):
+            # Recovery proved only that the registered handles ended; keep that limited scope.
+            return {"schema_version": 1, "workers_live": False, "complete": True, "identities": [],
+                    "error": None, "basis": "recovered_registered_handles_ended",
+                    "containment_complete": False, "continuous_supervision": False}
         return {"schema_version": 1, "workers_live": False, "complete": True,
                 "identities": [], "error": None, "basis": "saved_complete_empty_containment"}
     return registry._observe(row, timeout)

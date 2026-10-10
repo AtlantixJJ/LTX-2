@@ -3,7 +3,7 @@
 ## Objective
 
 Keep one shared JSON ledger of exact package-owned process identities and GPU
-IDs. Query `nvidia-smi` directly for device occupancy. Do not read legacy GPU
+IDs. Query `nvidia-smi` directly for device occupancy. Do not read GPU
 reservation files or scan unrelated process environments.
 
 ## Data flow
@@ -40,7 +40,7 @@ per-GPU reservation directory. Device inventory remains direct observed input.
 atomic updates. `choose` considers direct memory observations and active own
 records. `acquire` locks the ledger, re-queries direct device occupancy, and
 records a fresh owner before `Popen`. Concurrent package starts cannot both
-register the same requested devices. No historical claim file is consulted.
+register the same requested devices. No claim file is consulted.
 The import-light `execution/devices.py` is the sole pool/topology owner:
 GPUs `(0,1,2,3,4,5,6,7)` and exactly four training processes. Require a complete
 strict-integer memory inventory for all eight devices. Pick the first four
@@ -101,17 +101,17 @@ current device availability; it does not prove absence of unknown descendants
 after containment was lost. Saved scientific results and the interrupted queue
 journal remain separate and unchanged. The queue's existing explicit recovery
 can subsequently verify scientific completion against those original results.
-The legacy closed-row reader currently labels every closed row as saved empty
-containment. For recovered rows, the explicit recovery scope is authoritative;
-that label does not add containment or supervision evidence. Repair that reader
-during code refactoring, preserving original replay/source bytes and recovered
-rows' explicit limited scope. Fresh affected native checks follow the final
-code-validation gate; do not launch a new replay as a prerequisite for this repair.
+
+`inspect_record` reads a closed row without observing processes. A row closed by
+`release` reports basis `saved_complete_empty_containment`. A row closed by recovery
+(it carries a `recovery` record) reports basis `recovered_registered_handles_ended`
+with `containment_complete=false` and `continuous_supervision=false`; it never reads
+as complete saved containment. Both report no live workers.
 
 `observe_workers` returns whether any tracked descendant remains live, the
 complete/incomplete scope, and exact identities. `release` marks this attempt
 closed only when current live-owner containment proves no live descendants.
-It never deletes historical records. A failed or unknown proof preserves the
+It never deletes saved records. A failed or unknown proof preserves the
 active record. `registered_identities` returns the previously recorded exact
 handles as additional conservative stop candidates. The supervisor signals the
 leader and every identified own descendant through individual pidfds. Unknown

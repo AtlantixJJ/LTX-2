@@ -61,9 +61,9 @@ def _check_rgb_pair(prediction: torch.Tensor, target: torch.Tensor) -> None:
 
 
 
-def masked_rgb_transition_steps(video, mask):  # noqa: ANN001, ANN201 -- historical NumPy RGB arrays
+def masked_rgb_transition_steps(video, mask):  # noqa: ANN001, ANN201 -- aligned NumPy RGB arrays
     """Measure absolute frame changes in the supplied union-foreground mask."""
-    import numpy as np  # noqa: PLC0415 -- historical metric arithmetic
+    import numpy as np  # noqa: PLC0415 -- RGB metric arithmetic
 
     if (not isinstance(video, np.ndarray) or video.ndim != 4 or video.shape[0] < 2
             or video.shape[-1] != 3 or min(video.shape[1:3]) < 1

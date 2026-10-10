@@ -1,8 +1,5 @@
 # `experiments/stock_parity.py` — compare the stock video sampling path
 
-Status: Implemented and CPU checked. Native video-component controls and the
-ordinary float32 correction have scoped acceptance; full E1 remains open.
-
 ## Objective
 
 Run the actual stock video state builder, factory denoiser and Euler loop against
@@ -45,8 +42,8 @@ flowchart LR
 ```
 
 The optional reference branch checks ordinary global-sigma precision against a
-verified stock comparison and generates only the missing ordinary arm. Before
-the G12 fix this exposed a bf16 difference; the corrected default must match.
+verified stock comparison and generates only the missing ordinary arm. The
+ordinary default (float32 global sigma) must match the explicit float32 branch.
 
 ## Organization logic
 
@@ -58,7 +55,7 @@ Before GPU work, reject an existing output directory, invalid steps or frame
 counts, malformed image metadata and changed fixed text files. Read the actual
 one-image master through the shared dataset reader. Require one RGB frame,
 `input_role=supplied_image`, native channel count and the current VAE fingerprint.
-Read the fixed preview record as historical input evidence: validate its saved
+Read the fixed preview record as saved input evidence: validate its saved
 software integrity, its text file hash and actual tensor hash. Do not restamp
 the original record. Recover the literal prompt from its evaluation arguments.
 Resolve the real dev checkpoint and construct the exact schedule with
@@ -110,8 +107,7 @@ the reference identity, separate from the new producer identity.
 
 Use the reference's actual saved noise; do not draw noise again. Call the public
 bidirectional sampler without `sigma_dtype`, exactly as ordinary evaluation and
-product do. This now retains float32 token timesteps and float32 global sigma. The historical
-bf16 diagnostic remains saved under its original producer; never restamp it. Save
+product do. This keeps float32 token timesteps and float32 global sigma. Save
 the actual sigma dtype/values and paired call differences against the reference's
 float32-global-sigma bidirectional branch. Compare those two custom outputs,
 which share the exact terminal prediction rule. A precision difference is an
@@ -119,7 +115,7 @@ experimental result, not a failed repeated control or a tolerance to fit away.
 Decode only the saved reference custom encoding and the new default encoding
 with the same VAE and fresh seed. Do not regenerate the already verified stock
 arms. Give each panel its precision and label both as RGB decoding. Record that
-the stock controls are reused historical evidence, not fresh calls in this run.
+the stock controls are reused saved evidence, not fresh calls in this run.
 
 ## Invariants
 
@@ -127,7 +123,7 @@ the stock controls are reused historical evidence, not fresh calls in this run.
 - The first image, prompt context, noise, grid, fps and schedule stay fixed.
 - A repeated stock disagreement is a failed control, never a tolerance estimate.
 - The actual stock loop runs; the module does not reconstruct stock arithmetic.
-- Historical text preparation remains attributable to its original software.
+- Saved text preparation stays attributed to its original software.
 - Intermediate exact equality is distinct from terminal endpoint agreement.
 
 ## Gotchas
@@ -139,16 +135,8 @@ outer pipeline's RGB/text preparation. The stock pipeline source is included in
 the manifest to bind the reviewed calls. A seven-frame trained product pilot
 is separate from this 17-frame base diagnostic. Ordinary product global-sigma
 precision is measured by the reference branch; adapter effect requires its own
-check. The matched stock branch explicitly uses float32 global sigma. Fresh native
-ordinary/default and explicit-float32 outputs and all four calls are exact.
-Stock repeat controls are exact; terminal rounding remains separately measured.
-Saved tensors, source/runtime/input/output hashes and 129-frame media coverage
-were checked. Both custom branches have the same decoded stock-relative RMS
-0.000657139. Native/narrow frame review shows blur in all arms at frame 64.
-These facts establish numerical precision within this scope; they do not establish
-video quality or full E1. Current acceptance evidence is
-`expr/onestep_avatar/handoff_implementation_20261007/native_stock_float32_default_acceptance.json`
-in the workspace. Preserve the original result/software record through migration.
+check. The matched stock branch explicitly uses float32 global sigma. Numerical
+agreement within this scope does not establish video quality or full E1.
 
 ## Tests
 
@@ -166,13 +154,11 @@ include both custom branches alongside stock and stock repeat.
 
 ## Experiment package provenance
 
-The public `EXTRA_SOURCES` tuple retains every pre-move extra owner and
-binds the empty `experiments/__init__.py` marker along with the checker.
-These files are explicit experiment extras; ordinary profiles do not
-include the experiment marker. Existing results retain their original
-source attribution, and affected native checks run again after the code gate.
+The public `EXTRA_SOURCES` tuple binds the checker, its spec helper and the
+empty `experiments/__init__.py` marker as explicit experiment extras; ordinary
+profiles do not include the experiment marker.
 
-## G8 queue interface and completion
+## Queue interface and completion
 
 ```mermaid
 flowchart LR
@@ -190,14 +176,14 @@ flowchart LR
 
 
 The queue owns launch, device selection, process records and bounded supervision.
-The checker accepts a pinned schema-one specification with its literal protocol
-and original scientific `arguments`, plus queue-owned `--output` and local
+The checker accepts a pinned `schema_version: 1` specification with its literal
+protocol and scientific `arguments`, plus queue-owned `--output` and local
 `--gpu-id`. Execution flags in the scientific arguments fail before writes.
 Public `parse_args`, `read_spec`, `runtime_profile`, `verify_completion` and
 `evidence_paths` provide normalization, phase/topology data and saved-only
 completion. The manifest binds exact spec bytes, normalized scientific settings
-and the complete local artifact inventory. Original producer hashes stay intact;
-new runs bind the spec helper as an explicit experiment extra.
+and the complete local artifact inventory. Each run binds
+the spec helper as an explicit experiment extra.
 
 `dependency_outputs(spec)` identifies the saved result directories that need
 earlier queue receipts. An optional stock reference, the E2 update comparison,
@@ -212,4 +198,4 @@ counts. It checks the RGB comparison record and every local byte, without a
 decoder. The saved manifest is excluded from the producer's older raw inventory.
 It loads no model or decoder, starts no child, and never repairs missing output.
 A missing, changed or escaped artifact prevents completion. CPU fixtures prove
-these refusals; final-source native acceptance still requires fresh queue jobs.
+these refusals.

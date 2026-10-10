@@ -1,8 +1,7 @@
 """The ONE implementation of "roll a causal block forward", training and deployment alike.
 
-``plans/2026-09-10-ltx25-one-step-argavatar-lora.md`` §4.4 (revised 2026-09-14). This module
-uses block-causal attention, a clean-latent cache and continuous master latents.
-Three things work together:
+See doc/model/causal.md. This module uses block-causal attention, a clean-latent cache and
+continuous master latents. Three things work together:
 
 1. **Attention is block-causal.** A token attends to its own block and every earlier one,
    never to a later one. Within a block it stays bidirectional -- the block is denoised in
@@ -12,8 +11,8 @@ Three things work together:
    reused. Block causality is necessary for that reuse, but prompt AdaLN's global sigma also
    changes history K/V; zero-sigma refresh is not generally an explicit current-sigma prefix.
 3. **Everything is sliced out of the clip's ONE continuous VAE encode** -- the master latent.
-   There is no per-window encode and no per-window re-keyed frame 0 (§4.4's 2026-09-11 rule,
-   now enforced by construction because a window is no longer a unit of anything).
+   There is no per-segment encode and no re-keyed frame 0: a genuine single-image keyframe
+   exists only at latent frame 0 of the continuous encode.
 
 **The rollout, per block.**
 
@@ -79,8 +78,8 @@ BLOCK_LATENT_FRAMES = 2
 # 30 fps. Read the two numbers together: the flag counts context frames, the memory budget
 # counts the whole cache, and confusing them is an off-by-one worth ~0.8 GB per rank.
 #
-# **This default is set by what fits, not by what would help.** Measured 2026-09-19 on 4x49 GB
-# with LoRA rank 32 and the t2r2 subset: depth 15 (history 16) OOMs in BACKWARD -- not in the
+# **This default is set by what fits, not by what would help.** Measured on 4x49 GB GPUs
+# with LoRA rank 32: depth 15 (history 16) OOMs in BACKWARD -- not in the
 # forward, and not fixed by PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True -- because
 # gradient recompute holds attention over the whole retained history. Depth 7 ran flat at
 # ~45.1 GB of 47.4. Depth 8 sits between a measured-good and a measured-bad point: treat a
@@ -381,8 +380,8 @@ def prime_cache(
         # It presents as a hang, not an error: 100 % GPU utilisation, frozen memory, and a
         # watchdog message 8 minutes later that blames CudaEventDestroy.
         #
-        # Measured on t2 (2026-09-16): 11 of 40 train chains start at the clip start, so
-        # P(4 ranks agree) = 0.28 and a 4-GPU run had a 72 % chance of hanging on step ONE.
+        # Example: when 11 of 40 training samples start at the clip start, P(4 ranks agree) =
+        # 0.28, so a 4-GPU run would hang on step ONE with 72 % probability.
         #
         # So forward anyway, over a single latent frame, with NO cache attached -- `cache=None`
         # leaves `kv_caches` unset and `kv_write` False, so this cannot write what it must not.
@@ -592,13 +591,11 @@ def rollout(  # noqa: PLR0912, PLR0913, PLR0915 -- one AR block loop; every bran
     ``teacher_forcing=True`` to roll it out the way it was trained.
 
     ``teacher_tokens`` is that target, and it is **required** whenever ``teacher_forcing`` is
-    set. It used to be implicit: the refresh read ``guide_tokens``, the tensor the block was
-    noised from. Those are the same tensor for D0 only, where the noising source *is* ``z_y``;
-    for D1 that silently teacher-forced on the render guide, which is not the target, and
-    evaluated a regime training never ran without raising ([G2]). D0 callers pass their
-    ``z_y`` for both arguments and say so; D1 callers pass ``z_g`` as the guide and ``z_y``
-    here. Making it explicit is the whole fix -- an implicit default would restore the bug
-    for the next caller.
+    set. The guide cannot stand in for it: ``guide_tokens`` is the tensor the block was noised
+    from, which equals ``z_y`` for D0 only. For D1, refreshing from the guide would
+    teacher-force on the render, not the target, and evaluate a regime training never ran.
+    D0 callers pass their ``z_y`` for both arguments; D1 callers pass ``z_g`` as the guide and
+    ``z_y`` here. No implicit default exists, so a new caller cannot silently pick the guide.
     """
     if first_frame_condition is None:
         raise ValueError("first_frame_condition is required: supply the clean latent-frame-0 tokens as c0")

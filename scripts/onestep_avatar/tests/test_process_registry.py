@@ -226,3 +226,20 @@ def test_oversized_and_nonregular_ledger_refuse(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="regular JSON file"):
         owner.choose(free(), training=True)
     assert time.monotonic() - started < 1
+
+
+def test_recovered_closed_row_reports_its_limited_scope(tmp_path: Path) -> None:
+    """A row closed by recovery never reads as complete saved containment."""
+    path = tmp_path / "own_processes.json"
+    recovery = {"containment_complete": False, "continuous_supervision": False}
+    path.write_text(json.dumps({"schema_version": 1, "attempts": {
+        "a" * 32: {"state": "closed"},
+        "b" * 32: {"state": "closed", "recovery": recovery},
+    }}))
+    contained = process_registry.inspect_record(path, "a" * 32)
+    recovered = process_registry.inspect_record(path, "b" * 32)
+    assert contained["basis"] == "saved_complete_empty_containment"
+    assert recovered["basis"] == "recovered_registered_handles_ended"
+    assert recovered["containment_complete"] is False
+    assert recovered["continuous_supervision"] is False
+    assert process_registry.workers_live(path, "b" * 32) is False

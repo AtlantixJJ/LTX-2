@@ -1,4 +1,4 @@
-"""Historical measurements use saved evidence and never execute a model."""
+"""Saved-probe measurements use saved evidence and never execute a model."""
 
 import json
 from pathlib import Path

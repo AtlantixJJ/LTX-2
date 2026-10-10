@@ -15,6 +15,7 @@ import torch
 from scripts.onestep_avatar import LTX_ROOT, evaluate
 from scripts.onestep_avatar.execution import devices, queue, runtime
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
+from scripts.onestep_avatar.tests.claims_fixture import GPUClaims
 from scripts.onestep_avatar.training import resources
 
 
@@ -195,7 +196,7 @@ def test_final_transaction_cannot_publish_zero_exit_after_deadline(
     }
     clock = [100.0]
     monkeypatch.setattr(queue.time, "time", lambda: clock[0])
-    claims = queue.GPUClaims(tmp_path / "claims")
+    claims = GPUClaims(tmp_path / "claims")
     assert claims.acquire((0,), job="case")
 
     def launch(*_args, **_kwargs) -> object:

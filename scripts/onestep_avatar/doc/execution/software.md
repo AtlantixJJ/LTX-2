@@ -35,8 +35,8 @@ Current completion verifiers require the same current profile manifest.
 
 Every profile binds `execution/__init__.py`, the empty marker imported
 before an execution owner. It joins `COMMON` with the root package marker.
-Changing either marker invalidates a current manifest; historical integrity
-reading preserves its recorded owner list.
+Changing either marker invalidates a current manifest; integrity validation of a
+saved record keeps its recorded owner list.
 
 Import `LTX_ROOT` from the package marker for every source path. `COMMON`
 includes that marker because its bytes define repository roots. A move into a
@@ -82,16 +82,16 @@ Validate schema, profile/mode, safe relative source paths, digest syntax,
 runtime records and the canonical manifest hash before using the record. Current
 verification then recalculates the same profile and compares all fields. Adding,
 removing or changing an owner and changing a runtime version fails. Read-only
-historical validation checks saved integrity without requiring today's sources;
-it never restamps old results as current. Preserve historical outputs when the
-current verifier rejects them. No research override bypasses software checks.
+`validate` checks a saved record's integrity without requiring today's sources;
+it never restamps a saved result as current. Keep saved outputs when the current
+verifier rejects them. No research override bypasses software checks.
 
 ## Invariants
 
 - No model, decoder, GPU discovery, Git mutation or output repair occurs here.
 - Relative paths identify the declared code owners; hashes bind worktree bytes.
 - Launch and publication use the same saved manifest, not a new replacement.
-- Historical readability and current completion are separate checks.
+- Saved-record integrity and current completion are separate checks.
 - Dtype/application/conditions and weight/input hashes remain separate evidence.
 
 ## Gotchas
@@ -106,31 +106,28 @@ owners rather than assuming only video-VAE source matters.
 ## Tests
 
 Check mode-owner selection, dirty source changes, added/removed dependency files,
-runtime-version changes, malformed/hash-tampered records, and historical reading
+runtime-version changes, malformed/hash-tampered records, and integrity reading
 after a source change. Producer tests must show changed model helpers prevent
 publication and completion while entry files remain unchanged. These are
 software-identity checks; native E1–E5 still require their own evidence.
 
 Worked check: capture an evaluation/causal manifest, then change only
-`model/common.py` bytes while keeping `evaluate.py` unchanged. Historical
-`validate` succeeds for the intact saved record; `check_current` raises before
+`model/common.py` bytes while keeping `evaluate.py` unchanged. `validate`
+succeeds for the intact saved record; `check_current` raises before
 launch, publication or a current receipt. Similarly, changing a video-VAE owner
 during video writing leaves partial media but no accepted rendering record.
 
-The deterministic numerical repair adds `training/numerics.py` to the
-training source inventory. Historical producer profiles keep their original
-bytes and remain integrity-readable; current typed training and replay capture
-the new owner with the current queue, engine and runtime sources.
+The training source inventory includes `training/numerics.py` with the queue,
+engine and runtime sources; typed training and replay capture all of them.
 
 The empty `corpus/__init__.py` marker is part of `COMMON`, so every ordinary
-profile binds the package that its corpus imports actually load. Historical
-manifest validation retains the original source paths and digests unchanged.
+profile binds the package that its corpus imports actually load.
 
-## Experiment boundary after historical owner moves
+## Experiment boundary
 
 The ordinary decoding profile contains media, ordinary evaluation and saved
 decoding owners. It contains no experiment or expr source. Sigma sweep uses
-`extra_sources` to bind its own moved owners and marker. Evaluation likewise
+`extra_sources` to bind its own owners and marker. Evaluation likewise
 contains no stock checker. The B5 coverage test blocks experiments, enters a
 representative ordinary path in a fresh process and checks every loaded avatar
 owner against the selected profile. Empty model/training package markers and

@@ -7,7 +7,7 @@ Four numbers, each of which decides something the design would otherwise be gues
 | | What | Decides |
 |---|---|---|
 | **(a)** | ε-sensitivity: spread of one-step outputs from one `z_g` over N seeds | whether ε is a sampling variable here at all |
-| **(b)** | the excursion `a = ‖Φ(x_σ₀) − z_g‖/√d` | how far the base model moves its own input, in SS1.4's units |
+| **(b)** | the excursion `a = ‖Φ(x_σ₀) − z_g‖/√d` | how far the base model moves its own input, in the same per-dimension RMS units as `r` |
 | **(c)** | latent moments of `z_g` vs `z_y` | whether an affine correction is needed (answer: no) |
 | **(d)** | the gap `r = ‖z_y − z_g‖/√d`, full **and** subject-interior | how much a plain blend has to do |
 
@@ -74,8 +74,8 @@ Use relative video paths for per-video output keys; corpus guide basenames are r
 
 ## Reading the numbers
 
-The numbers below are historical observations from earlier encoded inputs.
-They are retained as context, not current corpus acceptance rules.
+The numbers below are observations from one set of encoded inputs.
+They are context, not corpus acceptance rules.
 Check the original measurement records and regenerate matched coverage before reusing them.
 
 - `r_subject` ≈ 0.89–0.93 against a 0.6 "comfort" threshold: a plain blend asks the LoRA to
@@ -119,22 +119,22 @@ These are arithmetic examples, not observed corpus results.
 After implementation changes, check zero-weight/missing-mask records, coverage counts,
 repeated filenames, and the exact scope of moment summaries before interpreting results.
 
-## G8 queue interface and completion
+## Queue interface and completion
 
 The queue owns launch, device selection, process records and bounded supervision.
-The checker accepts a pinned schema-one specification with its literal protocol
-and original scientific `arguments`, plus queue-owned `--output` and local
+The checker accepts a pinned `schema_version: 1` specification with its literal
+protocol and scientific `arguments`, plus queue-owned `--output` and local
 `--gpu-id`. Execution flags in the scientific arguments fail before writes.
 Public `parse_args`, `read_spec`, `resource_phases`, `verify_completion` and
 `evidence_paths` provide normalization, phase/topology data and saved-only
 completion. The manifest binds exact spec bytes, normalized scientific settings
-and the complete local artifact inventory. Original producer hashes stay intact;
-new runs bind the spec helper as an explicit experiment extra.
+and the complete local artifact inventory. Each run binds
+the spec helper as an explicit experiment extra.
 
 Completion verifies the original scientific controls from actual saved artifacts.
 It loads no model or decoder, starts no child, and never repairs missing output.
 A missing, changed or escaped artifact prevents completion. CPU fixtures prove
-these refusals; final-source native acceptance still requires fresh queue jobs.
+these refusals.
 
 The strict outer output is a directory. The original scientific `--out` setting
 is injected as `analysis_summary.json` inside that directory. Scientific specs

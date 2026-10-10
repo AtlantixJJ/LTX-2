@@ -1,10 +1,8 @@
 # `bench.py` — measure each mode's work
 
-Status: **Partially implemented.** The existing causal per-block diagnostic
-CLI moves here without calculation changes. The shared `measure_generation`
-API measures either mode through `evaluate.sample_case`. The explicit-mode CLI
-uses checked evaluation settings and saves measurements with ordinary raw
-results. Real-weight performance acceptance remains pending.
+The shared `measure_generation` API measures either mode through `evaluate.sample_case`.
+The explicit-mode CLI uses checked evaluation settings and saves measurements with
+ordinary raw results.
 
 ## Objective
 
@@ -45,9 +43,8 @@ Validate CUDA memory baseline/peak/extra relationships when recorded. CPU
 measurements keep null memory fields. `evidence_paths` returns all verified
 ordinary raw records, outputs, text and noise; no model or decoder opens.
 
-Operation timing accepts queue form `--output <directory>` and writes
-`operation_timing.json`. Historical `--out <file>` remains supported and
-normalizes its output to that file's parent. Preserve the existing cache-depth
+Operation timing requires `--output <directory>` and writes
+`operation_timing.json` there. Preserve the existing cache-depth
 sweep and calculations. Record requested settings, actual denoise/refresh
 repetition times, model/software identities and cache geometry with the
 original summary. Completion checks both operation inventories and derives
@@ -70,7 +67,7 @@ cannot certify its requested cache-depth sweep.
 
 The default CLI accepts all ordinary evaluation arguments plus `--repetitions`
 and `--warmup`. It requires an explicit mode. Parse/check these counts before
-input access. Ordinary parsing rejects retired study options; preview jobs have a separate execution/completion contract. Reuse evaluation preflight, prompt/guidance,
+input access. Ordinary parsing rejects study options; preview jobs have a separate execution/completion contract. Reuse evaluation preflight, prompt/guidance,
 adapter loading and fixed noise. For each case/adapter, run the measured sampler
 with fresh cache state, then make one untimed artifact call to save an ordinary
 encoding/result. Require that artifact's tensor hash to equal every measured
@@ -154,8 +151,8 @@ Do not infer gradient-checkpoint work from inference call counts.
 An old causal-block timing result is not a bidirectional speed measurement.
 Removing unused cache work can help, but does not give a reliable numerical speed estimate.
 Check available GPUs before a small real-weight benchmark.
-Real-weight performance acceptance remains pending; CPU checks do not establish
-GPU speed or memory savings.
+CPU checks do not establish GPU speed or memory savings; E5 measures warmed
+real-weight cost.
 
 ## Tests
 

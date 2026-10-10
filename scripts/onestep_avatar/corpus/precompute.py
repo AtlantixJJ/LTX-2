@@ -1,26 +1,23 @@
 """VAE-encode the ARGAvatar guide and the capture target, one continuous encode per view.
 
 Every product this writes lives **beside the source video**, one per view, and the training
-loop reads them directly -- there is no experiment-side latent tree any more:
+loop reads them directly:
 
 * ``ltx_vae_latent.pt``            -- the capture master latent ``z_y`` (``--process_gt_latent``);
 * ``argavatar_ltx_vae_latent.pt``  -- the guide master latent ``z_g`` (``--process_syn_latent``);
-* ``argavatar_alpha.mp4`` and ``capture_mask_crop.mp4`` -- the two loss masks, stored
+* ``argavatar_alpha.mp4`` and ``capture_mask_crop.mp4`` -- the two subject masks, stored
   losslessly at 256**2. Readers pool them to their latent geometry on demand; no derived
   latent-grid bundle is persisted.
 
-**One continuous VAE encode per source, and the master is what is stored.** Revised
-2026-09-11 (plan SS4.4): a genuine causal keyframe only ever exists at latent frame 0 of a
-truly continuous encode, and nothing re-keys mid-rollout past a clip's first window -- so
-independently re-encoding every window was manufacturing an artificial fresh keyframe the
-deployed AR rollout never has. Verified empirically: window 0 sliced vs. independently
-encoded differs by ~0.1 % (bf16 noise floor); a mid-clip window differs by ~24 %.
+**One continuous VAE encode per source, and the master is what is stored.** A genuine causal
+keyframe only exists at latent frame 0 of a truly continuous encode, and nothing re-keys
+mid-rollout -- so independently encoding a later segment would manufacture a fresh keyframe
+the deployed rollout never has. Measured: a clip-start segment sliced from the master versus
+encoded independently differs by ~0.1 % (bf16 noise floor); a mid-clip segment differs by
+~24 %.
 
-Revised again 2026-09-14: the per-window **slices are not stored either**. Under SS4.4's
-causal block scheme a window is not a unit of anything, so the bundle IS the master and
-``train.py`` slices the blocks it wants out of it. That drops the overlap duplication (every
-latent frame was written twice, once per overlapping window) and lets the block geometry
-change without re-encoding a single source.
+The bundle stores only the master; training slices the frames it wants out of it. No latent
+frame is written twice, and block geometry can change without re-encoding a source.
 
 ``z_y`` has exactly one producer (``--process_gt_latent``) and the synthetic pass does not re-encode
 or copy it: the trainer reads that bundle directly.
@@ -68,25 +65,23 @@ BUNDLE_SCHEMA_VERSION = 2
 # rather than accepted merely because their tensor shape happens to match.
 ENCODE_CONTRACT_VERSION = 1
 
-# The corpus root and the manifest filename are `dataset`'s (SS1.2); re-exported here as
-# aliases (the same shape as `ALPHA_NAME = dataset.ALPHA_NAME` below) rather than re-declared,
-# which used to derive from a different WORKSPACE_ROOT (`model_registry`'s) before the
-# 2026-09-15 consolidation put both modules in one tree.
+# The corpus root and the manifest filename are `dataset`'s; re-exported here as aliases
+# (the same shape as `ALPHA_NAME = dataset.ALPHA_NAME` below) rather than re-declared.
 DEFAULT_CORPUS_ROOT = dataset.DEFAULT_CORPUS_ROOT
 CAPTURE_MANIFEST_NAME = dataset.CAPTURE_MANIFEST_NAME
 # Each worker holds one source's raw-frame batch (~3000x4096 px, ~1-2 GB) plus its
 # accumulated resized crops until the whole source returns. `os.cpu_count()` (e.g. 48
 # on this workstation) workers at that footprint can spike host RAM by 50-100+ GB on
-# top of other users' jobs, which is exactly what killed the first --process_gt_latent run
-# on 2026-09-10. Default low; raise explicitly only after checking `free -h` headroom.
+# top of other users' jobs, enough to kill a --process_gt_latent run. Default low; raise
+# explicitly only after checking `free -h` headroom.
 DEFAULT_CROP_WORKERS = 6
 # Written by --process_gt_latent at the corpus root; caches plan_source's per-source output so a
 # restart does not re-open and frame-0-decode all 3360 sources before touching a single bundle
-# (plan §1.3: ~1.5 h with no bundle written and no log line, on 3 crop workers). Keyed off the
+# (~1.5 h with no bundle written and no log line, on 3 crop workers). Keyed off the
 # same rgb_fingerprint AND bbox_fingerprint (size;mtime_ns each) discover_capture_sources
 # already computes, plus the geometry/pad-factor that plan_source's output actually depends
-# on -- so a changed source file, a changed bbox (F5: the box comes from bbox.npy, not
-# rgb.mp4, so rgb_fingerprint alone missed this), or a changed
+# on -- so a changed source file, a changed bbox (the box comes from bbox.npy, not
+# rgb.mp4, so rgb_fingerprint alone would miss it), or a changed
 # --pad-factor/--window-frames/--overlap-frames invalidates only that entry.
 PLAN_CACHE_NAME = ".capture_plan_cache.json"
 LOGGER = logging.getLogger(__name__)
@@ -138,11 +133,9 @@ class CaptureSource:
     rgb: str
     bbox: str
     rgb_fingerprint: str
-    # F5 (2026-09-18 audit): the crop box the plan cache remembers comes from bbox.npy, not
-    # rgb.mp4 -- ``_capture_box`` never reads ``rgb_fingerprint``. Without its own
-    # fingerprint, a corpus re-ingest that corrects a bbox with the RGB file untouched would
-    # reuse the OLD cached box forever: `enumerate_capture_jobs`'s cache-hit check only ever
-    # compared `rgb_fingerprint`.
+    # The crop box the plan cache remembers comes from bbox.npy, not rgb.mp4 --
+    # ``_capture_box`` never reads ``rgb_fingerprint``. Without its own fingerprint, a corpus
+    # re-ingest that corrects a bbox with the RGB file untouched would reuse the cached box.
     bbox_fingerprint: str
 
 
@@ -180,7 +173,7 @@ def bundle_path(source: CaptureSource, objective: str = dataset.DEFAULT_OBJECTIV
     """The single consolidated latent file for one view -- the whole clip, one file.
 
     Persisted beside the source view, not in an experiment-output tree, and written once per
-    source (whole-source atomic save). The two objectives (SS1.2) differ in the pixels that
+    source (whole-source atomic save). The two objectives differ in the pixels that
     were encoded -- unmatted capture vs. capture matted to white -- so they are two files,
     never one file reinterpreted.
     """
@@ -273,8 +266,8 @@ def is_capture_manifest_valid(  # noqa: PLR0911 -- ordered fail-fast manifest ch
 ) -> bool:
     """Check whether an existing capture manifest is valid and compatible with the current run.
 
-    Returns False if manifest is None, not a dict, or if geometry, resolution/edge,
-    or pad_factor differ from the requested run.
+    Returns False if manifest is None, not a dict, has another kind, or if geometry,
+    resolution or pad_factor differ from the requested run.
     """
     if not isinstance(manifest, dict):
         return False
@@ -286,15 +279,13 @@ def is_capture_manifest_valid(  # noqa: PLR0911 -- ordered fail-fast manifest ch
             return False
 
         recorded_resolution = manifest.get("resolution")
-        if recorded_resolution is None:
-            recorded_resolution = manifest.get("edge")
         if recorded_resolution is None or int(recorded_resolution) != int(resolution):
             return False
 
         if "pad_factor" not in manifest or abs(float(manifest["pad_factor"]) - float(pad_factor)) > 1e-4:
             return False
 
-        if "kind" in manifest and manifest["kind"] != "one_step_raw_capture_target_latents":
+        if manifest.get("kind") != "one_step_raw_capture_target_latents":
             return False
 
         return isinstance(manifest.get("sources", []), list) and isinstance(manifest.get("windows", []), list)
@@ -475,15 +466,8 @@ def discover_capture_sources(corpus_root: Path, views: set[int] | None = None) -
 def _capture_box(
     source: CaptureSource, height: int, width: int, pad_factor: float
 ) -> tuple[float, float, float, float]:
-    """This pass is the SINGLE PRODUCER of the crop box (SS1.7), and it computes it with
-    ``geometry``'s rule rather than a copy of it.
-
-    Until 2026-09-15 the arithmetic was transcribed here, because ``crop_geometry`` lived in the
-    other tree and the two conda envs could not import each other; a test pinned the two
-    spellings together. Consolidating the package removed the seam -- and the two were
-    verified identical over all 3360 corpus views x 3 canvas shapes before the copy was
-    deleted, so no recorded box moves.
-    """
+    """This pass is the SINGLE PRODUCER of the crop box, and it computes it with
+    ``geometry``'s rule rather than a copy of it."""
     bbox = np.load(source.bbox, allow_pickle=True).item()
     xyxy = np.asarray(bbox["xyxy"], dtype=np.float64)
     try:
@@ -496,8 +480,8 @@ def plan_source(source: CaptureSource, geometry: CaptureGeometry, pad_factor: fl
     """Plan one continuous VAE-aligned source prefix from RGB and bbox coordinates.
 
     A module-level function so it can run in a worker process: one ``cv2.VideoCapture``
-    open plus a single-frame decode per source, which is cheap in isolation but was
-    previously done for every source strictly one at a time.
+    open plus a single-frame decode per source, which is cheap in isolation but slow when
+    done for every source one at a time.
     """
     reader = VideoReader(source.rgb)
     first = reader.get_batch([0])
@@ -571,7 +555,7 @@ def enumerate_capture_jobs(
     remaining sources are opened and planned. This is what makes a restart of a killed
     ``--process_gt_latent`` run cheap: without it, every restart re-opens and frame-0-decodes all
     selected sources before a single (already-complete) bundle is skipped. Both fingerprints
-    are required (F5, 2026-09-18 audit): ``plan_source`` computes the box from ``bbox.npy``,
+    are required: ``plan_source`` computes the box from ``bbox.npy``,
     so a cache keyed on ``rgb.mp4`` alone would keep serving a stale box after a bbox
     correction that left the RGB file untouched.
     """
@@ -617,7 +601,7 @@ def crop_source(
     Returns ONE array ``(last_needed, edge, edge, 3)`` uint8 **per requested objective** --
     every frame decoded, cropped, and resized exactly once, never duplicated across windows.
     This is what makes the single-encode construction in ``encode_capture_jobs`` possible
-    (revised 2026-09-11, see the module docstring and plan SS1.6): the whole array is
+    (see the module docstring): the whole array is
     VAE-encoded once, and every block's latent is *sliced* from that one encode rather than
     re-derived from a re-cropped, re-encoded pixel range.
 
@@ -636,13 +620,13 @@ def crop_source(
     off-by-a-few-frames errors in OpenCV; true sequential ``.read()`` decode has no such
     ambiguity.
 
-    For the ``white`` objective (SS1.2) the capture is **matted to white** here, in the same
+    For the ``white`` objective the capture is **matted to white** here, in the same
     pass and the same crop: ``frame * a + 255 * (1 - a)``, with ``a`` the view's own
     ``mask.mp4``, decoded in lockstep and cropped identically. It is done at full resolution,
     before the resize, so the matte and the pixels are resampled together -- the same reason
     the guide's composite is built while the full-resolution alpha is still live.
     The matte is used CONTINUOUS, not re-thresholded: the stored mask is already a threshold
-    off lossy video (risk 8), and hardening it a second time would quantise the silhouette
+    off lossy video, and hardening it a second time would quantise the silhouette
     edge that this objective makes the whole task.
 
     Runs in a worker process: pure CPU/numpy, no torch device involved, so many
@@ -701,11 +685,11 @@ def _video_info(path: Path) -> tuple[int, float, int, int]:
 
 
 def load_capture_master(pair: Pair) -> dict:
-    """Read the capture master bundle, requiring regeneration of obsolete per-window bundles.
+    """Read the capture master bundle; a bundle without a schema-two master must be regenerated.
 
     Returns the whole bundle, not just the tensor: ``check_pair_alignment`` reads its
-    ``pixel_frames``/``fps`` fields too. ``dataset.load_master`` supplies the one pointed v1
-    error and is called here for that validation, not for the tensor it returns.
+    ``pixel_frames``/``fps`` fields too. ``dataset.load_master`` owns the schema check and is
+    called here for that validation, not for the tensor it returns.
     """
     bundle = torch.load(pair.bundle, map_location="cpu", weights_only=True)
     if not isinstance(bundle, dict):
@@ -728,7 +712,7 @@ def master_record(
 ) -> dict[str, object]:
     """Serialize one source's ONE continuous encode -- the whole bundle, not a window of it.
 
-    ``objective`` is recorded inside the bundle as well as in its filename (SS1.2), so a
+    ``objective`` is recorded inside the bundle as well as in its filename, so a
     bundle that has been moved or renamed still says which pixels it encodes.
     """
     if master.ndim != 5 or master.shape[0] != 1:
@@ -853,17 +837,15 @@ def encode_pairs(
     boxes: dict[str, tuple[float, float, float, float]],
     objective: str = dataset.DEFAULT_OBJECTIVE,
 ) -> tuple[int, int, list[str]]:
-    """Write each view's guide master latent and its loss-mask grids, beside the render.
+    """Write each view's guide master latent and its mask grids, beside the render.
 
-    Two rules, both SS4.4's continuous-encode rule applied here:
+    Two rules, both from the continuous-encode rule in the module docstring:
 
     * ``z_g`` comes from ONE continuous VAE encode of the whole guide render -- never a
-      per-window encode. Re-encoding each window separately manufactures a fresh causal
-      keyframe at every window's local frame 0, which the deployed AR rollout never produces
-      past a clip's first window (measured: ~24 % off on a mid-clip window).
+      per-segment encode, which would manufacture a fresh causal keyframe at every segment's
+      local frame 0 (measured: ~24 % off on a mid-clip segment).
     * ``z_y`` is not touched at all. The capture pass is its only producer and the trainer
-      reads that bundle directly; copying it into a second tree is what the old
-      ``target_latents/`` did, and a copy is free to disagree with its original.
+      reads that bundle directly; a copy would be free to disagree with its original.
     """
     device = torch.device(f"cuda:{gpu_id}")
     completed = skipped = 0
@@ -958,9 +940,9 @@ def encode_capture_jobs(
 ) -> tuple[int, int, list[str]]:
     """Write each source's ``z_y`` as ONE continuous per-source VAE encode -- the master.
 
-    ``jobs`` still carries the window plan because that is what says how many pixel frames a
-    source needs decoded and which crop box it uses; it no longer says anything about how the
-    latents are stored.
+    ``jobs`` carries the window plan only because it says how many pixel frames a source
+    needs decoded and which crop box it uses; it says nothing about how the latents are
+    stored.
 
     Cropping (decode + crop + resize, pure CPU/numpy) runs for many sources concurrently in a
     worker pool, each returning ONE array per requested objective for its whole source. The
@@ -968,7 +950,7 @@ def encode_capture_jobs(
     entered before the VAE encoder so worker processes never fork after this process has
     touched CUDA.
 
-    **Both objectives in one pass, and resumable per objective** (SS1.6). ``objectives`` is a
+    **Both objectives in one pass, and resumable per objective.** ``objectives`` is a
     set, not a choice: asking for both pays ONE sequential h264 decode of the source and
     writes two bundles beside it. Currency is then checked **per (source, objective)** and a
     source is only decoded for the objectives it is actually missing -- so re-running after
@@ -1017,11 +999,9 @@ def encode_capture_jobs(
                 ),
             )
         )
-        # Per (source, objective) already current, not per window job: the bundle written is
-        # one file per source, since SS4.4 replaced the per-window latent tree, but `jobs`
-        # still carries the old per-window plan (it says how many pixel frames to decode).
-        # `len(source_jobs)` counting sources 8x-14x over was S3's `precompute.encode_
-        # capture_jobs counts sources, not len(source_jobs)` fix (2026-09-17 cleanup plan).
+        # Count per (source, objective) already current, not per window job: the bundle is
+        # one file per source, while `jobs` carries the per-window plan only to say how many
+        # pixel frames to decode. Counting `len(source_jobs)` would count sources 8x-14x over.
         skipped += len(objectives) - len(needed)
         if needed:
             pending.append((source, source_jobs, needed))
@@ -1135,15 +1115,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_CORPUS_ROOT,
         help="Where the paired-run provenance manifest is written (default: DEFAULT_CORPUS_ROOT). "
-        "NOT a latent tree any more: since SS4.4 every latent and mask lives beside its "
-        "source video, and expr/onestep_avatar/precomputed/ is no longer produced or read.",
+        "It is not a latent tree: every latent and mask lives beside its source video.",
     )
     parser.add_argument(
         "--objective",
         nargs="+",
         choices=dataset.OBJECTIVES,
         default=[dataset.DEFAULT_OBJECTIVE],
-        help="SS1.2, and a SET rather than a choice -- pass both to build both in one pass. "
+        help="A SET rather than a choice -- pass both to build both in one pass. "
         "bg (default): the product -- z_y is the unmatted capture, z_g the composite guide; "
         "the UNSUFFIXED bundle names every artifact on disk already uses. white: z_y is the "
         "capture matted to white and z_g the render on white, in *_white.pt bundles beside "
@@ -1155,7 +1134,6 @@ def build_parser() -> argparse.ArgumentParser:
     mode_group.add_argument(
         "--process_gt_latent",
         "--process-gt-latent",
-        "--capture-only",
         action="store_true",
         dest="process_gt_latent",
         help="Encode z_y directly from raw rgb.mp4 crops; persists latents only, no capture video.",

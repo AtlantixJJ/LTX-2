@@ -14,6 +14,7 @@ import pytest
 
 from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.execution.queue_protocol import TOKEN_ENV
+from scripts.onestep_avatar.tests.claims_fixture import GPUClaims
 
 T = TypeVar("T")
 
@@ -46,7 +47,7 @@ if sys.argv[2]=='yes':
 (root/'ready').write_text('ready')
 while not (root/'release').exists(): time.sleep(.01)
 """
-    claims = queue.GPUClaims(tmp_path / "claims")
+    claims = GPUClaims(tmp_path / "claims")
     assert claims.acquire((4,), job="zombie")
     child = subprocess.Popen(
         [sys.executable, "-c", code, str(tmp_path), "yes" if worker_survives else "no"],

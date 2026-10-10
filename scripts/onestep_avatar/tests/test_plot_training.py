@@ -11,12 +11,17 @@ from scripts.onestep_avatar import plot_training as pt
 
 def _write_run(run_dir: Path, records: list[dict]) -> pt.RunData:
     run_dir.mkdir(parents=True, exist_ok=True)
+    records = [{**{k: v for k, v in row.items() if k not in ("source", "per_block", "anchor")},
+                "schema_version": 2,
+                "samples": [{"source": row.get("source", "actor/view"),
+                             "per_block": row.get("per_block", [])}]} for row in records]
     (run_dir / "metrics_rank0.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n")
+    (run_dir / "config.json").write_text(json.dumps({"world_size": 1, "mode": "causal"}))
     return pt.load_run(run_dir)
 
 
 def test_per_position_values_groups_by_chain_position_across_steps(tmp_path: Path) -> None:
-    """Historical causal breakdown, read back the way block_position.png consumes it."""
+    """Current causal sample breakdown grouped by position and update."""
     run = _write_run(
         tmp_path / "run",
         [
@@ -60,11 +65,10 @@ def test_per_position_values_groups_by_chain_position_across_steps(tmp_path: Pat
     assert per_position[1] == {1: [0.6], 2: [0.35]}
 
 
-def test_plot_block_position_returns_none_for_a_run_predating_per_block_logging(tmp_path: Path) -> None:
-    """A run logged before SS7.4(a) has no `per_block` key -- must skip cleanly, not crash,
-    so passing an old and a new run to `--run` together still works."""
+def test_bidirectional_run_has_no_causal_position_figure(tmp_path: Path) -> None:
+    """A current bidirectional update has no causal block-position data."""
     run = _write_run(
-        tmp_path / "old_run",
+        tmp_path / "bidirectional_run",
         [
             {
                 "step": 1,
@@ -80,6 +84,7 @@ def test_plot_block_position_returns_none_for_a_run_predating_per_block_logging(
         ],
     )
 
+    run.config["mode"] = "bidirectional"
     assert pt.plot_block_position([run], smooth=1, output=tmp_path / "figs") is None
 
 

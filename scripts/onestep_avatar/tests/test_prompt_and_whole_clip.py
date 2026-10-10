@@ -2,8 +2,8 @@
 
 Prompt selection must default to ``REFINE_PROMPT`` so every saved run reproduces, and the
 hash recorded in a manifest must be the hash of the text actually encoded. The whole-clip
-producer's one-block plan and option checks moved with it to
-``scripts/prune/tests/test_whole_clip_baseline.py`` (refactor group G10).
+producer's one-block plan and option checks live in
+``scripts/prune/tests/test_whole_clip_baseline.py``.
 """
 
 from __future__ import annotations

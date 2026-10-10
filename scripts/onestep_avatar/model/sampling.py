@@ -20,8 +20,8 @@ ONE_STEP_SIGMA0 = 0.725
 def one_step_schedule(sigmas: list[float], sigma0: float = ONE_STEP_SIGMA0) -> list[float]:
     """``[sigma0, 0.0]`` -- exactly one transformer forward, from a point ON the distilled grid.
 
-    ``sigma0`` is checked against the grid rather than taken on trust. Per the plan's SS2.3(2)
-    the distilled checkpoint is a deterministic map defined at nine sigmas, not on a continuum,
+    ``sigma0`` is checked against the grid rather than taken on trust. The distilled
+    checkpoint is a deterministic map defined at nine sigmas, not on a continuum,
     so an off-grid sigma0 is not "slightly different conditions" -- it is a point the model was
     never trained at, and it would produce plausible-looking output with no baseline to compare
     against.
@@ -107,8 +107,8 @@ def euler_to(sample: torch.Tensor, denoised: torch.Tensor, sigma_from: float, si
     shape this package's bugs have taken.
 
     No noise is injected. A stochastic sampler would make the teacher's endpoint depend on
-    random choices the student cannot reproduce from its own inputs, which is the coupling the
-    plan's endpoint-distillation construction is built to preserve.
+    random choices the student cannot reproduce from its own inputs, which would break the
+    deterministic teacher-endpoint coupling that one-step distillation relies on.
     """
     if not math.isfinite(sigma_from) or not math.isfinite(sigma_to):
         raise ValueError("Euler levels must be finite")

@@ -45,34 +45,6 @@ class TestSquareCropBox(unittest.TestCase):
         assert round(abs((x1 - x0) - (120.0)), 7) == 0
 
 
-class TestCropWithPadding(unittest.TestCase):
-    def test_pure_interior_crop_is_a_plain_slice(self) -> None:
-        frame = np.arange(100 * 100 * 3, dtype=np.uint8).reshape(100, 100, 3)
-        out = geometry.crop_with_padding(frame, (10, 20, 30, 40))
-        np.testing.assert_array_equal(out, frame[20:40, 10:30])
-
-    def test_pads_outside_the_frame_with_pad_value(self) -> None:
-        frame = np.zeros((50, 50, 3), dtype=np.uint8)
-        out = geometry.crop_with_padding(frame, (-10, -10, 40, 40), pad_value=255)
-        assert out.shape == (50, 50, 3)
-        # the top-left 10x10 corner is outside the source frame -> padded white
-        np.testing.assert_array_equal(out[:10, :10], 255)
-        # the rest overlaps the (all-zero) source frame
-        np.testing.assert_array_equal(out[10:, 10:], 0)
-
-    def test_box_entirely_outside_frame_is_all_pad(self) -> None:
-        frame = np.zeros((50, 50), dtype=np.uint8)
-        out = geometry.crop_with_padding(frame, (100, 100, 150, 150), pad_value=0)
-        assert out.shape == (50, 50)
-        assert (out == 0).all()
-
-    def test_single_channel_mask_shape_preserved(self) -> None:
-        mask = np.full((20, 20), 200, dtype=np.uint8)
-        out = geometry.crop_with_padding(mask, (5, 5, 15, 15), pad_value=0)
-        assert out.shape == (10, 10)
-        assert (out == 200).all()
-
-
 if __name__ == "__main__":
     unittest.main()
 
@@ -95,11 +67,8 @@ def test_the_canonical_box_is_pinned_to_exact_values(
 ) -> None:
     """A golden test, and the stakes are why: this box is what every capture latent on disk
     was encoded with. Changing the rule silently re-crops the corpus -- guides and targets
-    would still *look* fine and would no longer be the same pixels.
-
-    Until 2026-09-15 this test instead compared two transcriptions of the rule, because
-    ``precompute.py`` lived in another tree and another conda env. It now calls this very
-    function, so the comparison would be tautological; exact values are what still bites.
+    would still *look* fine and would no longer be the same pixels. Exact values are the
+    check: the producer calls this very function.
     """
     box = geometry.canonical_crop_box(np.array([union], dtype=np.float64), np.array([True]), 3000, 4096, 1.20)
     assert box == expected

@@ -90,7 +90,8 @@ def main() -> None:  # noqa: PLR0912, PLR0915 -- sequential saved-job decoding, 
                 software.check_current(cached.get("software"))
             except ValueError as error:
                 raise ValueError(
-                    "historical decoder software differs; preserve outputs and use a fresh destination"
+                    "saved decoder software differs from the current source; "
+                    "preserve outputs and use a fresh destination"
                 ) from error
     software.check_current(producer_software)
     session = open_decoder_session(args.model, args.gpu_id, script="onestep_avatar.decode_saved")

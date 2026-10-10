@@ -17,7 +17,7 @@ def mask_iou(mask_a: np.ndarray, mask_b: np.ndarray, threshold: int = 128) -> fl
 
     128 matches the dataset's own ``mask_source == "estimated"`` threshold (``meta.json``
     stage ``s6a``), so the render-alpha-vs-``mask.mp4`` IoU this drives is comparable to how
-    the dataset's own mask was made. This is SSB1's decisive number: it tests whether
+    the dataset's own mask was made. This is the decisive alignment number: it tests whether
     ``K_raw`` (the pose's calibrated intrinsics) actually lands the render on the subject.
     """
     a = mask_a >= threshold

@@ -6,7 +6,7 @@ evidence before calling the public queue completion verifier; recheck afterward.
 Only complete verified results supply generated tensor paths/hashes. Missing
 results fail without launching models or writing files. Retain embedded job
 choices in the normalized spec. The caller owns tensor geometry, decoding and
-final publication; schema-one historical tensor specs bypass this helper.
+final publication.
 The ordinary parser rejects intervention flags before cell checks, so this
 reader never requests experiment-only attributes from its parsed settings.
 """

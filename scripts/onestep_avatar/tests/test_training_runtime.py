@@ -412,9 +412,9 @@ def test_one_bounded_update_saves_real_zero_and_updated_lora(
 def test_only_main_rank_archives_a_used_output_after_setup(
     rank: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Moved from the retired engine's CLI tests onto ``run_settings``: an explicit overwrite
-    archives the prior run once, on the main rank only, after model setup and between
-    barriers; another rank never touches the prior contents."""
+    """Through ``run_settings``, an explicit overwrite archives the prior run once, on the
+    main rank only, after model setup and between barriers; another rank never touches the
+    prior contents."""
     view = tmp_path / "corpus" / "actor" / "view"
     view.mkdir(parents=True)
     path = view / dataset.capture_bundle_name("white")

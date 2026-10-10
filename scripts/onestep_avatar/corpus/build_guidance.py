@@ -1,32 +1,31 @@
-"""Render ARGAvatar guides -- the B2 stage of
-``plans/2026-09-10-ltx25-one-step-argavatar-lora.md``.
+"""Render ARGAvatar guide videos into the capture's recorded crop; see doc/corpus/build_guidance.md.
 
 **This stage consumes ``precompute.py --process_gt_latent``'s output; it never re-derives it.**
 The capture side runs first, encodes each view's target latents from a square crop of the raw
 ``rgb.mp4``, and records the exact box it used in ``capture_latent_manifest.json``. This script
 renders the guide into *that recorded box*. There is therefore one producer of the crop box and
-one consumer, rather than two implementations that have to agree -- which is what previously
-went wrong (the two used different off-canvas rules and desynced 12.9 % of views).
+one consumer, rather than two implementations that have to agree (two crop implementations
+with different off-canvas rules would misalign capture and guide).
 
 Per (clip, driving view ``D``):
 
 1. ``motion.build_motion`` converts ``pose3d.npy[D]`` to a ``sam3db``-format motion file
-   (SS3.1's three fixes).
-2. The crop box comes from ``dataset.CaptureManifest.box_for(D)`` (SS4.5). A view the capture
+   (coordinate, axis and scale conversions; see ``motion.py``).
+2. The crop box comes from ``dataset.CaptureManifest.box_for(D)``. A view the capture
    pass has not reached yet is skipped as not-yet-ready (and named as an error if ``--clips``
    asked for it explicitly) -- never a cue to compute a box locally. The box is cross-checked
    against ``geometry.canonical_crop_box`` on the current ``bbox.npy``, so a corpus re-ingest
    that moved a bbox is caught here instead of becoming a silently misaligned pair.
-3. The avatar is reconstructed once per clip from ``R``'s own frame-0 crops (SS4.1's default
+3. The avatar is reconstructed once per clip from ``R``'s own frame-0 crops (default
    ``R = {view00, view02, view04}``), each cropped to *that view's own* recorded box.
 4. ``D``'s motion is rendered into the *same* box (ARGAvatar's ``render_motion_frame_window``,
    via ``pipeline.render_motion_window`` -- ~19x cheaper than rendering the full frame and
    cropping after).
 5. IoU (render alpha vs ``mask.mp4``, cropped/resized identically) is computed here as a cheap
-   read-only QA number -- SSB1's decisive alignment check -- and the alpha is persisted
-   (``argavatar_alpha.mp4``, lossless gray; see ``mask_video.py``) for SS4.3 row 1's masked
-   loss. Stored masks require the lossless MP4.
-6. **The guide is composited in pixel space** (SS1.2, guide contract v2): the renderer's own
+   read-only alignment check, and the alpha is persisted (``argavatar_alpha.mp4``, lossless
+   gray; see ``mask_video.py``) for subject-masked measurements and QA. Stored masks require
+   the lossless MP4.
+6. **The guide is composited in pixel space** (recorded as compositing version 2): the renderer's own
    RGB is already alpha-composited over white (``forward.cu``: ``C[ch] + T * bg_color[ch]``),
    so ``composite_guide_frame`` REPLACES that white background rather than blending a second
    time -- ``guide_t = render_t + (1 - alpha_t) * (background - white)``, using the render's
@@ -82,18 +81,18 @@ DEFAULT_CHECKPOINT_PATH = Path(
 )
 DEFAULT_CONFIG_NAME = "configs/ARGAvatar-Final.yaml"
 
-# SS4.1 of the 09-05 plan: reconstruction inputs 90 degrees apart, driving views maximally
-# distant from every input -- so the render is never trivially good from having "seen" D.
+# Reconstruction inputs 90 degrees apart, driving views maximally distant from every
+# input -- so the render is never trivially good from having "seen" D.
 DEFAULT_RECON_VIEWS = (0, 2, 4)  # front, right, back
 DEFAULT_DRIVING_VIEWS = (1, 5)  # front-right, back-left
 
 ENCODE_ARGS = ["-c:v", "libx264", "-preset", "slow", "-crf", "12", "-pix_fmt", "yuv420p"]
-# Artifact names come from dataset.py, which owns the objective -> filename mapping for
-# both trees (SS1.2). Nothing here spells a corpus filename itself.
-# The render's own alpha (SS4.4 "alpha comes free"), persisted for SS4.3 row 1's masked loss.
+# Artifact names come from dataset.py, which owns the objective -> filename mapping.
+# Nothing here spells a corpus filename itself.
+# The render's own alpha comes free with the RGBA frames; it is persisted for masked metrics.
 ALPHA_NAME = dataset.ALPHA_NAME  # "argavatar_alpha.mp4"
 ALPHA_STEM = dataset.ALPHA_STEM  # suffix-less, for stored-mask lookup
-# Alpha is stored as an area-fraction grid, not at full 1024**2: the loss consumes it at the
+# Alpha is stored as an area-fraction grid, not at full 1024**2: consumers use it at the
 # VAE's latent resolution (32x32 at this geometry), so persisting 1024**2 would be ~157 MB
 # per view to throw 99.9 % of away. 256 is a clean multiple of every plausible latent grid,
 # so `precompute.py` can average-pool it down without ever resampling to a non-integer ratio,
@@ -139,9 +138,9 @@ def encode_frames(frame_dir: Path, out_path: Path, fps: float) -> list[str]:
 def read_cropped_masks(clip: ClipRef, view_idx: int, box: geometry.XYXY, out_size: int) -> Iterator[np.ndarray]:
     """Stream ``mask.mp4[view_idx]``, cropped to ``box`` and resized -- read-only, for IoU.
 
-    ``crop_from_canvas`` rather than ``crop_with_padding``: a manifest box is inside the
-    canvas by construction, so a box that needs padding here did not come from the manifest
-    and the IoU would be computed against a different region than the capture latent.
+    ``crop_from_canvas`` never pads: a manifest box is inside the canvas by construction, so
+    a box that would need padding here did not come from the manifest and the IoU would be
+    computed against a different region than the capture latent.
     """
     for mask_bgr in read_frames(clip.mask_path(view_idx)):
         mask = cv2.cvtColor(mask_bgr, cv2.COLOR_BGR2GRAY)
@@ -164,8 +163,8 @@ def read_cropped_capture(clip: ClipRef, view_idx: int, box: geometry.XYXY, out_s
 def build_recon_crop(clip: ClipRef, view_idx: int, out_size: int, box: geometry.XYXY) -> np.ndarray:
     """Frame 0 of ``view_idx``, cropped to *that view's own* recorded box and resized.
 
-    Only frame 0 is needed -- reconstruction is single/multi-photo, not video (SS4.1: R
-    views' "frame-0 crops"). The box is the caller's, resolved from the capture manifest, so
+    Only frame 0 is needed -- reconstruction is single/multi-photo, not video. The box is
+    the caller's, resolved from the capture manifest, so
     the reconstruction inputs are the same pixel regions the capture latents were built from.
     """
     frame_bgr = next(read_frames(clip.rgb_path(view_idx)))
@@ -181,7 +180,7 @@ def _atomic_write_video(frame_dir: Path, output: Path, fps: float) -> list[str]:
 
 
 def composite_guide_frame(render_bgr: np.ndarray, alpha: np.ndarray, background_bgr: np.ndarray) -> np.ndarray:
-    """Replace the renderer's white background with ``background_bgr`` (guide contract v2).
+    """Replace the renderer's white background with ``background_bgr`` (compositing version 2).
 
     ``render_bgr`` is NOT straight foreground color -- ARG-Avatar's own rasterizer
     (``xlib/render/gaussian_splatting_3d.py`` -> ``diff-gaussian-rasterization-da``'s
@@ -191,11 +190,10 @@ def composite_guide_frame(render_bgr: np.ndarray, alpha: np.ndarray, background_
 
         R_white = alpha * foreground + (1 - alpha) * white
 
-    Blending that a second time as ``alpha * R_white + (1 - alpha) * B`` (guide contract v1,
-    now known wrong) applies alpha twice and leaves a white fringe baked into every
-    partially-covered edge pixel -- confirmed against the renderer's actual convention: with
-    foreground 50, alpha 128/255, background 20, v1 produced 86 instead of 35, and even the
-    ``white`` objective did not reproduce its own already-white render exactly.
+    Blending that a second time as ``alpha * R_white + (1 - alpha) * B`` would apply alpha
+    twice and leave a white fringe baked into every partially-covered edge pixel: with
+    foreground 50, alpha 128/255 and background 20, the double blend gives 86 instead of 35,
+    and even the ``white`` objective would not reproduce its own already-white render.
 
     Algebraically replacing the known white contribution with the requested one instead:
 
@@ -232,7 +230,7 @@ def guide_background(objective: str, clip: ClipRef, driving_view: int, box: geom
     """The frame ``composite_guide_frame`` blends behind the render, for one objective.
 
     Read once per view, outside the per-frame loop -- it is constant over the clip in both
-    objectives (SS1.2: the background is *given*, which is exactly why it does not move).
+    objectives (the background is *given*, which is exactly why it does not move).
     """
     if objective == "white":
         return np.full((out_size, out_size, 3), 255, dtype=np.uint8)
@@ -322,9 +320,9 @@ def _render_is_complete(
     if not output.is_file() or not metadata_path.is_file():
         return False
     if not mask_video.mask_exists(output.parent / ALPHA_STEM):
-        # A render built before the alpha existed is incomplete, not merely old: SS4.3 row 1's
-        # masked loss has no mask without it, and the alpha only exists inside the render's
-        # own temp frames, so it cannot be back-filled without re-rendering.
+        # A render without its alpha is incomplete: masked measurements need it, and the
+        # alpha only exists inside the render's own temp frames, so it cannot be back-filled
+        # without re-rendering.
         return False
     try:
         record = json.loads(metadata_path.read_text())
@@ -338,15 +336,12 @@ def _render_is_complete(
     return (
         record.get("n_frames") == expected_frames
         and record.get("alpha_grid") == ALPHA_GRID
-        # SS1.2: which background is behind the render is what an objective IS, so a
-        # sidecar that does not name this objective describes a different artifact -- stale
-        # in the same sense as a render at the wrong box, and rebuilt rather than re-tagged.
-        # A pre-objective sidecar carries ``composited: true`` and no ``objective``; that is
-        # exactly the ``bg`` render, so it is accepted as one rather than re-rendered.
-        and record.get("objective", "bg" if record.get("composited") else None) == objective
-        # F1: a sidecar with no compositing_version predates the field and was built with the
-        # retired double-alpha formula -- unlike ``objective`` there is no legacy value to
-        # grandfather in, because every render on disk before the fix used the wrong contract.
+        # Which background is behind the render is what an objective IS, so a sidecar
+        # that does not name this objective describes a different artifact -- stale in the
+        # same sense as a render at the wrong box, and rebuilt rather than re-tagged.
+        and record.get("objective") == objective
+        # A sidecar without the current compositing_version was not built with
+        # ``composite_guide_frame``'s formula, so it is rebuilt.
         and record.get("compositing_version") == dataset.GUIDE_COMPOSITING_VERSION
         # The guide's geometry is unchanged when the body trajectory is refined, so the
         # pose input must be part of currency or an old render would be reused silently.
@@ -444,16 +439,16 @@ def render_pair(
             render_path=str(output),
         )
 
-    # -- S1: motion file (SS3.1 conversions) -------------------------------------------------
+    # -- 1: motion file (coordinate conversions in motion.py) ------------------------------
     view_meta = clip.view_meta(driving_view)
-    sam3db = motion.build_motion(pose3d, bbox, frame_height=view_meta["height"], valid=refined_valid)
+    sam3db = motion.build_motion(pose3d, frame_height=view_meta["height"], valid=refined_valid)
 
     with tempfile.TemporaryDirectory(prefix=f"{clip.name}_view{driving_view:02d}_") as tmp:
         tmp_dir = Path(tmp)
         motion_path = tmp_dir / "motion.pth"
         torch.save(sam3db, motion_path)
 
-        # -- S2: render D into the box (ARGAvatar, via pipeline.render_motion_window) --------
+        # -- 2: render D into the box (ARGAvatar, via pipeline.render_motion_window) ---------
         render_frames_dir = tmp_dir / "render_frames"
         pipeline.render_motion_window(avatar, str(motion_path), box, (out_size, out_size), str(render_frames_dir))
         render_paths = sorted(render_frames_dir.glob("*.png"))
@@ -463,15 +458,14 @@ def render_pair(
                 f"meta.json says {expected_frames}"
             )
 
-        # The background this objective blends behind the render (SS1.2). Constant over the
-        # clip in both objectives, so it is read once, outside the per-frame loop.
+        # The background this objective blends behind the render. Constant over the clip in
+        # both objectives, so it is read once, outside the per-frame loop.
         background_bgr = guide_background(objective, clip, driving_view, box, out_size)
 
         # -- QA + alpha + composite: one pass over the RGBA frames does all three -----------
-        # The render alpha vs mask.mp4 IoU is SSB1's decisive number; the alpha channel is
-        # also what the masked loss (SS4.3 row 1) needs and what SS3.4's composite blends
-        # with. Reading the PNGs a second time for any of these would cost another full
-        # decode of the window for nothing.
+        # The render alpha vs mask.mp4 IoU is the alignment check; the same alpha channel is
+        # persisted for masked measurements and is what the composite blends with. Reading
+        # the PNGs a second time for any of these would cost another full decode for nothing.
         ious = []
         alpha_grid = np.empty((len(render_paths), ALPHA_GRID, ALPHA_GRID), dtype=np.uint8)
         # strict=True: `alpha_grid` is np.empty, so a mask.mp4 with fewer frames than the
@@ -490,7 +484,7 @@ def render_pair(
             alpha_grid[i] = cv2.resize(alpha, (ALPHA_GRID, ALPHA_GRID), interpolation=cv2.INTER_AREA)
 
             # Built HERE, in pixel space, while the full-resolution alpha is still live --
-            # deferring this to a later pass would cost a full re-render (SS4.5). Overwriting
+            # deferring this to a later pass would cost a full re-render. Overwriting
             # the PNG in place is what the encoder below then picks up -- a composited frame
             # IS the guide, not a second artifact.
             composite = composite_guide_frame(render_rgba[..., :3], alpha, background_bgr)
@@ -512,22 +506,22 @@ def render_pair(
         "crop_box_source": dataset.CAPTURE_MANIFEST_NAME,
         "padding_factor": pad_factor,
         # What the canvas actually allowed: == padding_factor where the square fits, less
-        # where it was capped, and < 1.0 where the subject itself does not fit (SS4.5's
-        # 0.4 % tail, which must be excluded from training rather than trained on).
+        # where it was capped, and < 1.0 where the subject itself does not fit (about 0.4 %
+        # of views, which must be excluded from training rather than trained on).
         "effective_padding_factor": box_record.effective_pad_factor,
         "clipped_subject": box_record.clipped_subject,
         "out_size": out_size,
         "alpha": ALPHA_NAME,
-        # Lossless gray MP4 since 2026-09-15 (mask_video.py). Recorded so a reader can tell
-        # a migrated view from one that predates the format without opening the file.
+        # Lossless gray MP4 (mask_video.py). Recorded so a reader can check the format
+        # without opening the file.
         "alpha_format": "mp4_lossless_gray",
         "alpha_grid": ALPHA_GRID,
-        # SS1.2: which objective this guide was built for -- i.e. what sits behind the
+        # Which objective this guide was built for -- i.e. what sits behind the
         # render. Checked by _render_is_complete, so a guide built for the other objective
         # is rebuilt rather than silently trained against.
         "objective": objective,
-        # F1: the RGB/alpha contract composite_guide_frame implements. Checked by
-        # _render_is_complete alongside objective, so a render built under a retired
+        # The RGB/alpha contract composite_guide_frame implements. Checked by
+        # _render_is_complete alongside objective, so a render built with another
         # compositing formula is rebuilt rather than silently trained against.
         "compositing_version": dataset.GUIDE_COMPOSITING_VERSION,
         "motion_source": "clip_refined_multiview",
@@ -613,7 +607,7 @@ def parse_args() -> argparse.Namespace:
         "--objective",
         choices=dataset.OBJECTIVES,
         default=dataset.DEFAULT_OBJECTIVE,
-        help="SS1.2. bg (default): the product -- the render composited over the clip's real "
+        help="bg (default): the product -- the render composited over the clip's real "
         "first frame, written as argavatar_render.mp4. white: the render on white, written "
         "as argavatar_render_white.mp4, whose paired target is the capture matted to white "
         "(precompute.py --objective white). The two are separate artifacts beside the same "
@@ -722,7 +716,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915 -- ordered per-clip reconstruction
 
         # A batch of `--limit N` pairs must not die on the first bad one: a single clip's
         # pose-tracking gap (build_motion's own data-quality gate) or a reconstruction failure
-        # is a per-clip exclusion, the same way SS4.5's 0.4 % clipped-subject tail is -- not a
+        # is a per-clip exclusion, the same way a clipped-subject view is -- not a
         # reason to lose every remaining pair the review batch was meant to produce. Failures
         # are collected and reported, never silently swallowed.
         try:

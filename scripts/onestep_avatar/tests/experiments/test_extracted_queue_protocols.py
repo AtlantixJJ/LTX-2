@@ -73,7 +73,6 @@ def completed_eight_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tu
         "load_training_master",
         lambda path: (capture if path.name == dataset.capture_bundle_name("white") else guide, 30),
     )
-    monkeypatch.setattr(causality.checkpoints, "check_adapter_conditions", lambda *_a, **_k: None)
     session = SimpleNamespace(
         device=torch.device("cpu"),
         context=_context().to(torch.bfloat16),

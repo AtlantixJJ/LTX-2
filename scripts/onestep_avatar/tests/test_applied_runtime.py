@@ -13,7 +13,7 @@ from torch.distributed.fsdp import MixedPrecision
 from scripts.onestep_avatar.training import numerics, runtime
 
 
-def inventory(*, numerical: bool = False) -> dict:
+def inventory() -> dict:
     policy = {
         "param_dtype": "torch.bfloat16",
         "reduce_dtype": "torch.bfloat16",
@@ -22,10 +22,9 @@ def inventory(*, numerical: bool = False) -> dict:
         "cast_root_forward_inputs": False,
         "keep_low_precision_grads": False,
     }
-    schema = 2 if numerical else 1
     ranks = [
         {
-            "schema_version": schema,
+            "schema_version": 2,
             "rank": rank,
             "world_size": 4,
             "mixed_precision": "bf16",
@@ -33,13 +32,11 @@ def inventory(*, numerical: bool = False) -> dict:
             "conditioning_precision": "float32",
             "adapter_storage_dtypes": ["torch.float32"],
             "fsdp_policies": [deepcopy(policy)],
+            "numerics": {**numerics.POLICY, "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32},
         }
         for rank in range(4)
     ]
-    if numerical:
-        for rank in ranks:
-            rank["numerics"] = {**numerics.POLICY, "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32}
-    return {"schema_version": schema, "world_size": 4, "mixed_precision": "bf16", "ranks": ranks}
+    return {"schema_version": 2, "world_size": 4, "mixed_precision": "bf16", "ranks": ranks}
 
 
 def test_applied_policy_inventory_agrees() -> None:

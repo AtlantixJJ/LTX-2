@@ -1,4 +1,4 @@
-# `experiments/fusion_parity.py` — historical five-case adapter comparison
+# `experiments/fusion_parity.py` — five-case fused versus unmerged adapter comparison
 
 The module entry calls the shared queue runtime helper. Outside a queue binding,
 it calls the public operation unchanged. In a queued child, the helper measures
@@ -32,11 +32,10 @@ flowchart LR
   class V out;
 ```
 
-Version-one specs contain exactly `schema_version`, `protocol:
-fusion_parity`, absolute `run`, absolute `view` and positive integer
-`step`. Queue arguments select `--spec` and fresh `--output`; the queue
-supplies the device. Historical direct parsing stays at this experiment owner.
-Current recipes live in `configs/README.md`.
+Specs contain exactly `schema_version: 1`, `protocol: fusion_parity`, absolute
+`run`, absolute `view` and positive integer `step`. Queue arguments select
+`--spec` and fresh `--output`; the queue supplies the device. The module has no
+other CLI form. Recipes live in `configs/README.md`.
 
 Inputs are run `config.json`, LTX-2.5 dev, step-zero/trained adapters and
 paired white capture/guide masters. Fixed settings are seed 42, sigma
@@ -50,7 +49,7 @@ paired white capture/guide masters. Fixed settings are seed 42, sigma
 
 Before weights, require a fresh output, valid LoRA target/rank, positive finite
 alpha equal to rank, all six scientific files, paired geometry/fps and block-zero
-coverage. Alpha equals rank so the historical fused loader applies the same
+coverage. Alpha equals rank so the fused loader applies the same
 scale as the unmerged adapter. Hash all input files before execution.
 
 Run `bare`, `step0` and `fused1` through the shared fused x0 session
@@ -63,7 +62,7 @@ noises guide block zero at fixed sigma/seed, restores clean c0 and calls public
 returns fp32 CPU tokens. No VAE opens.
 
 Recheck input hashes before atomic publication. Optional `raw_outputs.pt`
-holds all five tensors; `result.json` preserves historical metric/settings
+holds all five tensors; `result.json` keeps the protocol's metric/settings
 fields and input-file hashes. Queue execution binds both files, spec SHA and
 current evaluation software with `EXTRA_SOURCES` in `manifest.json`, then
 runs saved completion.
@@ -77,10 +76,10 @@ Keep this separate from raw trained-output differences and each effect
 relative to its own no-adapter output. Also record fused step-zero equality
 to bare bitwise.
 
-The historical effect tolerance stays 0.2. Zero denominators yield JSON null.
+The protocol's effect tolerance is 0.2. Zero denominators yield JSON null.
 A zero PEFT effect gives `effect_ratio_status: undefined_zero_peft_effect`
-and a false tolerance flag, never NaN or a false pass. This historical
-tolerance differs from the tighter adapter-effect acceptance gate.
+and a false tolerance flag, never NaN or a false pass. This tolerance differs from
+the tighter adapter-effect acceptance gate (E2).
 
 ### Completion and worked checks
 
@@ -96,7 +95,7 @@ completion does not make it an accepted parity result.
 
 Let `bare = step0 = peft0` for nonzero references and give each generated
 token fused effect 0.18 and PEFT effect 0.20. The effect gap is
-`abs(0.18-0.20)/0.20 = 0.1`; the historical tolerance flag and step-zero
+`abs(0.18-0.20)/0.20 = 0.1`; the tolerance flag and step-zero
 equality are true. If both PEFT cases are equal, the effect gap is undefined
 and its tolerance flag false. Rehashing a reported gap changed to zero fails
 against raw outputs. Changing all five cases' c0 together also fails against
@@ -105,11 +104,11 @@ the actual capture master even when pairwise metrics still agree.
 ## Invariants
 
 - Keep all five roles, original noise/grid mapping, fixed sigma, adapter scale,
-  historical metric names and tolerance.
+  metric names and tolerance.
 - Each case has a new cache; fused residency ends before unmerged residency.
 - Shared owners retain adapter loading, targets, layout and model operations.
-- Fresh artifacts bind current producer bytes; historical attribution does
-  not acquire current defaults/software.
+- Each run binds its current producer bytes; saved results keep their own
+  attribution.
 
 ## Gotchas
 

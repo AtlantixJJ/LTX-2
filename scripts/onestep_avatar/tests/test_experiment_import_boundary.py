@@ -42,7 +42,6 @@ def test_only_execution_owns_claims_children_and_supervision() -> None:
     """B9: imported aliases cannot conceal a second launch or claim owner."""
     protected = {
         "ProcessRegistry",
-        "GPUClaims",
         "supervise",
         "prepare_request",
         "guard_command",

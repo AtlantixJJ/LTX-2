@@ -1,50 +1,44 @@
-# `experiments/sigma_sweep.py` — decode saved sigma-sweep results
-
-The module entry calls the shared queue runtime helper. Outside a queue binding,
-it calls the public operation unchanged. In a queued child, the helper measures
-one actual local resource phase and records any declared numerical policy. The
-queue owns launch, supervision and worker-absence evidence; this module starts
-no child through that helper. See [runtime](../execution/runtime.md).
+# `experiments/sigma_sweep.py` — decode and score a sigma sweep
 
 ## Objective
 
-Move saved sigma-sweep decoding and scoring out of expr. Open one decoder-only
-session after checking every input. Do not regenerate a rollout or prompt.
-Report-specific sheets are assembled separately from saved samples.
+Decode and score the generated outputs of a result-bound sigma sweep: four
+sigma levels by two arms (D0, D1) plus the capture and guide masters. Open one
+decoder-only session after checking every input. Never regenerate a rollout or
+prompt. Report sheets are assembled separately from the saved samples.
 
-`parse_args` is the shared argument owner for the CLI and package queue.
-Parsing alone performs no decoding or GPU discovery. Direct execution requires
-an explicit GPU; queued execution supplies device zero in its claimed physical
-device environment. The queue pins spec bytes and shares this module's complete
-saved-output verifier. Read-only verification cannot be queued as execution.
+The queue runs this module as the `sigma_sweep` experiment. `parse_args` is the
+shared argument owner for the CLI and the queue; parsing alone performs no
+decoding or GPU discovery. Its entry calls the shared
+[runtime](../execution/runtime.md) helper. `--verify` runs the saved-output
+verifier with the same spec and output arguments, rejects `--gpu-id` and opens
+no session.
 
 ## Data flow
 
-A version-one JSON spec names capture/guide master paths and hashes, eight
-generated tensor paths and hashes, tag, model, decode seed, fps, and the VAE
-path/hash. Check the exact four-sigma by two-arm inventory. Decode ten matched
-17-frame tensors, yielding 129 RGB frames each. Save ten videos, selected PNG
-frames, metrics.json and a final manifest. A report reads those artifacts.
+The input spec (`schema_version: 2`) names the capture and guide masters with
+their hashes, model `2.5`, decode seed 42, fps 30 and the VAE path and hash. Each
+of the eight cells embeds its evaluation job as `evaluation_job`.
+`sigma_sweep_results.resolve_cells` requires the exact causal, distilled,
+cached-refresh, unguided 17-frame setup and the same source, prompt, seed and
+saved noise in all eight jobs; job arguments must name the spec's pinned
+masters. It verifies each job's queue scientific completion before it resolves
+`generated.pt` and its hash; a missing result fails and is never regenerated.
+Result, text, noise, membership and original noise-file bytes are bound before
+verification, rechecked after it and included in the decoder's input binding.
+The output manifest keeps the embedded jobs and adds resolved tensor
+identities without rewriting the source spec.
 
-A version-two input spec instead embeds each requested evaluation job as
-`evaluation_job` in its cell. `sigma_sweep_results.resolve_cells` requires the
-exact causal/distilled, cached-refresh, unguided 17-frame setup and matching
-source, prompt, seed and saved noise across all eight jobs. Job arguments must
-name the spec's pinned masters. It verifies ordinary package scientific
-completion before resolving generated.pt and its hash; missing results fail,
-never regenerate. Bind result/text/noise, membership and original noise-file
-bytes before verification, recheck them after verification and include them in
-the decoder's final input binding. The normalized spec in the output manifest
-retains embedded jobs and adds resolved tensor identities without rewriting
-the source spec. The helper's source identity is also bound. Schema-one saved
-historical specs keep their existing behavior.
+Decode ten matched 17-frame tensors, 129 RGB frames each. Save ten videos,
+selected PNG frames, `metrics.json` and a final manifest. A report reads those
+artifacts.
 
 ```mermaid
 flowchart LR
   results[(Verified generation results)] --> resolve[sigma_sweep_results.resolve_cells]
   resolve --> preflight
   queue[Package queue: pinned spec and shared claim] --> preflight
-  spec[(Checked saved sweep spec)] --> preflight[prepare]
+  spec[(Checked sweep spec)] --> preflight[prepare]
   preflight --> decode[media.decode]
   decode --> pixels(Floating RGB)
   pixels --> score[sigma_sweep boundary metrics]
@@ -63,101 +57,77 @@ flowchart LR
 
 ## Organization logic
 
-The public `parse_args(argv)` returns ordinary parsed values plus a `completion`
-mapping derived from its resolved output: `{"manifest": "<output>/manifest.json"}`.
-This is data for the generic queue, not a launcher. The descriptor is checked
-before writes and included in the canonical job identity. `verify_completion`
-rechecks every saved artifact without opening a native handle.
-The decoding software profile stays ordinary; this experiment explicitly adds
-its own module, the empty experiment marker and `sigma_sweep_results.py` through
-`extra_sources`. Historical manifests retain their original source attribution.
+`parse_args(argv)` returns parsed values plus the queue completion descriptor
+`{"manifest": "<output>/manifest.json"}`. The decoding software profile stays
+ordinary; this experiment adds its own module, the experiment package marker
+and `sigma_sweep_results.py` through `extra_sources`. The shared decoding
+software manifest is captured before input preparation, checked before the VAE
+opens, before media writes and before final publication, and saved in the
+manifest.
 
+The cells are sigma 0.421875 (`one_step`, one call), 0.725 (official, two
+calls), 0.909375 (official, three calls) and 1 (official, eight calls), each
+with D0 and D1, in this order. Masters may be longer than 17 frames; generated
+tensors contain exactly 17. Require matching finite bf16 B,C,F,H,W shapes after
+master selection and matching recorded fps. Before a decoder opens, require a
+fresh output, checked input hashes and the registered VAE path and hash. Each
+input decodes through `media.decode` with a new seed-42 generator; no text
+context or transformer is created.
 
-Capture the shared decoding software manifest before input preparation. Check
-it before opening the VAE, before writing media and before final publication;
-save it in the final manifest. Current completion checks the same source/runtime
-identity. Historical artifacts remain readable with their original provenance
-when current completion rejects them; do not rewrite them to today's identity.
+Convert decoded FCHW to floating FHWC, dividing byte-range pixels by 255, and
+require exactly 129 aligned RGB frames. Form one mask from the union of
+min-channel below 0.9 in capture, guide and all eight outputs. Call
+`sigma_sweep_boundary_metrics` and `metrics.masked_rgb_transition_steps` on the
+uncompressed floats. Record the tag, boundary and eviction metadata, `c0`
+equality against sigma-one D0, and sigma-one D0/D1 equality and maximum delta.
 
-The fixed historical cells are sigma 0.421875 (one_step, one call), 0.725
-(official, two calls), 0.909375 (official, three calls), and 1 (official, eight
-calls), each with D0/D1. Keep this order. Masters may be longer than 17 frames;
-generated tensors must contain exactly 17. Require matching finite bf16
-B,C,F,H,W shapes after master selection and matching recorded fps. Before
-opening a decoder, require fresh output, checked input hashes and current
-registered VAE path/hash. The VAE is decoded through media.decode with a new
-seed-42 generator for each input. No text context or transformer is created.
+`sigma_sweep_boundary_metrics` lives here because its fixed 129-frame
+inventory, seven boundary locations, four-neighbor references and
+post-eviction attribution belong to this study; the general aligned-mask
+transition operation stays in `metrics.py`. Zero denominators produce explicit
+undefined statuses; arrays use four decimals.
 
-Convert decoded FCHW to floating FHWC, using the historical 255 divisor for
-byte-range pixels. Require exactly 129 aligned RGB frames. Form one mask from
-the union of min-channel below 0.9 in capture, guide and all eight outputs.
-Call this study owner's boundary measurements and `metrics.masked_rgb_transition_steps` on the uncompressed
-floats. Preserve tag, boundary/eviction metadata, c0 equality against sigma-one
-D0, and sigma-one D0/D1 equality and maximum delta.
+Save each video at 30 fps and PNG samples at frames 0, 16, 17, 48, 49, 63, 64,
+65, 66, 96, 97 and 128. PNGs use `media.frame`'s rounded quantization; scores
+are calculated before any quantization. Record sample indices, media hashes,
+pixel digests, decode settings, input and spec hashes and source hashes. Recheck
+inputs, VAE and sources before atomically publishing the manifest. A partial
+directory is not complete and is never reused.
 
-Save each video at 30 fps and PNG samples at 0,16,17,48,49,63,64,65,66,96,97,128.
-Sample PNGs follow media.frame's rounded quantization; the historical sheet
-used truncation. Do not claim identical historical presentation pixels. Scores
-are calculated before either form of quantization. Record sample indices,
-media hashes, pixel digests, decode settings, input/spec hashes and source hashes.
-Recheck inputs, VAE and sources before atomically publishing the final manifest.
-A partial directory is not complete and is never silently reused.
-
-Before final publication, probe each actual MP4 for 129 frames at 30 fps and
-the declared decoded image size. Check all twelve PNG sample sizes per role.
-Schema two records the exact spec path and output geometry. `verify_completion`
-reconstructs expected spec/input/VAE/source identities without opening a model.
-It requires the exact ten-role inventory, deterministic contained paths,
-video and PNG hashes, sample order, actual frame counts/timebase/size, pixel
-digest syntax and metrics-file hash. Check cell identities/call labels and
-recalculate latent c0/sigma-one controls from the saved input tensors. Scores
-remain uncompressed-pixel producer measurements; do not recompute them from
-MP4 or rounded PNGs. Verification proves saved-artifact binding and structure,
-not independently rerun native VAE numerics.
-
-The report reader calls this read-only verifier before loading samples and
-creating sheets. Missing or changed media outside its chosen poster frames
-must also fail. `--verify` uses the same CLI spec/output arguments and rejects
-`--gpu-id`; no GPU discovery or session is performed in that mode.
+Before publication, probe each MP4 for 129 frames at 30 fps and the declared
+size, and check all twelve PNG sizes per role. `verify_completion` reconstructs
+the expected spec, input, VAE and source identities without a model. It
+requires the exact ten-role inventory, contained paths, video and PNG hashes,
+sample order, actual frame counts, timebase and size, pixel digest syntax and
+the metrics-file hash; it checks cell identities and call labels and
+recalculates the `c0` and sigma-one controls from the saved tensors. Scores stay
+producer measurements and are not recomputed from MP4 or PNG. The report reader
+calls this verifier before loading samples.
 
 ## Invariants
 
-All inputs decode in one session with the same settings and seed. Fail before
-session/output creation on missing, changed, short, nonfinite or mismatched
-inputs. Preserve old outputs and use a fresh destination. A report rebuild
+All inputs decode in one session with the same settings and seed. Missing,
+changed, short, nonfinite or mismatched inputs fail before a session or output
+exists. Old outputs are kept; a rerun uses a fresh destination. A report rebuild
 cannot start decoding or repair missing samples. This is saved decoding only;
-generation, adapter quality and native parity require separate evidence.
+generation, adapter quality and native parity need separate evidence.
 
 ## Gotchas
 
-Original capture/guide paths are read from saved producer manifests, not actor
-names or guessed corpus roots. A new spec must match their recorded hashes.
-The saved old masters can be decoded for historical evidence without relabeling
-them as current training inputs. A VAE mismatch refuses the requested comparison.
+Capture and guide paths come from saved producer manifests, not actor names or
+guessed corpus roots; a spec must match their recorded hashes. A VAE mismatch
+refuses the comparison. A spec without embedded evaluation jobs is refused.
 
 ## Tests
 
-The complete-movie mutation control calls the public completion verifier.
-First verify the unchanged positive control. Change saved movie bytes while
-all poster PNG bytes remain identical, require rejection without a decoder or
-new artifact, then restore the original movie and require success. The older
-`sheets.py` report stays byte-identical and frozen; it is no longer imported
-as an executable test dependency after the source move.
-
-
-Use a controlled decoder and real small media writes to verify ten inputs,
-seed/reset, raw scores, all cell identities, c0 controls and output hashes.
-Missing/changed cells, master geometry/fps, VAE, nonfinite tensors and used output
-must fail before model work. Mutating an input during decoding must prevent final
-manifest publication. Compare the scoring path with the historical analyzer on
-matched decoded floats. Native VAE execution remains separate acceptance.
-
-Version-two checks use eight real small CPU causal evaluations across all
-levels/arms. Verify sigma-one equality, resolve ten tensors without sessions or
-writes, and exercise controlled decoder media and queue receipts. Changed
-seed, arm, paired masters, noise, result metadata, saved text and late evidence
-must fail. Decoder readiness requires all eight unchanged generation receipts.
-
-### Historical boundary metric ownership
-
-`sigma_sweep_boundary_metrics` lives here because its fixed 129-frame inventory, seven boundary locations, four-neighbor references and post-eviction attribution belong to this study. The general aligned-mask transition operation stays in `metrics.py`. The exact historical arithmetic, zero-denominator statuses, four-decimal arrays and worked numeric controls remain unchanged. Ordinary evaluation imports no sweep owner.
+- Eight real small CPU causal evaluations across all levels and arms verify
+  sigma-one equality and resolve ten tensors without sessions or writes; changed
+  seed, arm, paired masters, noise, result metadata, saved text and late
+  evidence fail. Decoder readiness requires all eight unchanged receipts.
+- A controlled decoder with real small media writes checks seed reset, raw
+  scores, cell identities, `c0` controls and output hashes; missing or changed
+  cells, geometry, fps, VAE, nonfinite tensors and used outputs fail before
+  model work, and mutating an input during decoding blocks publication.
+- The complete-movie mutation control changes saved movie bytes while every
+  poster PNG stays identical and requires rejection; restoring the movie passes.
+- A schema-one tensor spec fails before a decoder opens.

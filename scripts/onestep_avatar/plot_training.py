@@ -77,32 +77,39 @@ def load_run(run_dir: Path, label: str | None = None) -> RunData:
     if not by_rank:
         raise SystemExit(f"{run_dir}: metrics_rank*.jsonl are all empty")
     config_path = run_dir / "config.json"
-    config = json.loads(config_path.read_text()) if config_path.is_file() else {}
+    config = json.loads(config_path.read_text())
+    if config.get("mode") not in ("causal", "bidirectional"):
+        raise ValueError("training figures require an explicit current mode")
     return RunData(label=label or run_dir.name, run_dir=run_dir, config=config, by_rank=by_rank)
 
 
 def update_coverage(run: RunData) -> dict[int, dict]:
     """Coverage is evidence separate from the mean; missing ranks are never zeros."""
-    expected = run.config.get("world_size", len(run.by_rank))
+    expected = run.config.get("world_size")
     if type(expected) is not int or expected < 1 or any(rank not in range(expected) for rank in run.by_rank):
         raise ValueError("logged ranks disagree with the expected world size")
     groups = {}
+    for records in run.by_rank.values():
+        for record in records:
+            if (record.get("schema_version") != 2 or not isinstance(record.get("samples"), list)
+                    or not record["samples"] or any(not isinstance(sample, dict)
+                    or not isinstance(sample.get("source"), str) or not sample["source"]
+                    for sample in record["samples"])):
+                raise ValueError("training figures require schema-two update samples with sources")
     for rank, records in run.by_rank.items():
         for record in records:
             groups.setdefault(record["step"], {})[rank] = record
     coverage = {}
     for step, records in sorted(groups.items()):
-        sample_counts = [len(row.get("samples", [])) for row in records.values() if row.get("schema_version") == 2]
-        equal = not sample_counts or (
-            len(sample_counts) == len(records) and min(sample_counts) > 0 and len(set(sample_counts)) == 1
-        )
+        sample_counts = [len(row["samples"]) for row in records.values()]
+        equal = min(sample_counts) > 0 and len(set(sample_counts)) == 1
         coverage[step] = {
             "ranks": sorted(records),
             "expected": expected,
             "missing": sorted(set(range(expected)) - records.keys()),
             "complete": len(records) == expected and equal,
             "equal_accumulation": equal,
-            "world_size_inferred": "world_size" not in run.config,
+            "world_size_inferred": False,
         }
     return coverage
 
@@ -120,7 +127,7 @@ def _per_step_values(run: RunData, field: str) -> dict[int, list[float]]:
                 if not math.isfinite(r[field]):
                     raise ValueError(f"nonfinite {field} at update {r['step']}")
                 per_step.setdefault(r["step"], []).append(r[field])
-    expected = run.config.get("world_size", len(run.by_rank))
+    expected = run.config.get("world_size")
     per_step = {step: values for step, values in per_step.items() if len(values) == expected}
     return per_step
 
@@ -157,12 +164,7 @@ def _smooth(values: np.ndarray, window: int) -> np.ndarray:
 
 
 def _per_position_values(run: RunData, field: str) -> dict[int, dict[int, list[float]]]:
-    """``{chain_position: {step: [values across chains/ranks at that step]}}``.
-
-    Version-two records use samples[].per_block. Older causal records use a
-    top-level per_block list with explicit chain_position. Unmapped historical
-    windows are not relabeled as causal blocks.
-    """
+    """Group current samples' causal block positions by complete update and rank."""
     per_position: dict[int, dict[int, list[float]]] = {}
     if run.config.get("mode") == "bidirectional":
         return per_position
@@ -171,29 +173,19 @@ def _per_position_values(run: RunData, field: str) -> dict[int, dict[int, list[f
         for r in records:
             if r["step"] not in complete:
                 continue
-            if r.get("schema_version") == 2:
-                for sample in r["samples"]:
-                    for position, block in enumerate(sample.get("per_block", [])):
-                        per_position.setdefault(position, {}).setdefault(r["step"], []).append(block[field])
-                continue
-            for w in r.get("per_block") or []:
-                per_position.setdefault(w["chain_position"], {}).setdefault(r["step"], []).append(w[field])
+            for sample in r["samples"]:
+                for position, block in enumerate(sample.get("per_block", [])):
+                    value = block[field]
+                    if not math.isfinite(value):
+                        raise ValueError("nonfinite causal position metric")
+                    per_position.setdefault(position, {}).setdefault(r["step"], []).append(value)
     return per_position
 
 
 def plot_block_position(runs: list[RunData], smooth: int, output: Path) -> Path | None:
-    """SS7.4(c) ``block_position.png``: mean mse by position in the AR chain, over training.
+    """Plot causal block error by position; bidirectional runs have no position plot.
 
-    Named ``plot_window_position`` / ``window_position.png`` before S3 of the 2026-09-17
-    cleanup plan -- a name left over from the sliding-window loop SS4.4 replaced with the
-    causal AR one on 2026-09-14. The unit plotted here has been a **block**, not a window,
-    since that rewrite; see ``doc/plot_training.md`` for the date this rename split at.
-
-    Position means describe training error within sampled sequences. They do not establish
-    correct motion, quality, or the cause of a higher loss at a later position.
-
-    Returns ``None`` (plots nothing) if no run in ``runs`` has per-position data -- an older
-    run predating SS7.4(a)'s logging change, not an error.
+    Position means describe training error, not perceptual quality or motion.
     """
     figure, axis = plt.subplots(figsize=(9, 4.5))
     linestyles = ("-", "--", ":", "-.")
@@ -345,7 +337,7 @@ def _run_summary(run: RunData) -> dict:
         for records in run.by_rank.values()
         for r in records
         if r["step"] in steps_seen
-        for sample in r.get("samples", [{"source": r.get("source")}])
+        for sample in r["samples"]
         if sample.get("source") is not None
     }
     sigma_counts = Counter(

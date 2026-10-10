@@ -99,7 +99,7 @@ def _saved_comparison_inputs(  # noqa: PLR0912 -- all saved RGB/result gates pre
             raise ValueError("saved RGB panels require a reference bundle")
         return [_saved_panel_input(panel, root, span, fps) for panel in panels]
     if "view" in comparison:
-        raise ValueError("saved RGB reference comparisons do not use legacy view metrics")
+        raise ValueError("saved RGB reference comparisons do not accept view metrics")
     path = (root / comparison["reference_bundle"]).resolve()
     manifest_hash = sha256(path)
     references, producer = media.load_training_references(path)
@@ -290,7 +290,7 @@ def render_saved_comparisons(  # noqa: PLR0912, PLR0915 -- preflight, decode, QA
     )
     perceptual = None
     if any("view" in comparison for comparison in spec["comparisons"]):
-        import lpips  # noqa: PLC0415 -- historical RGB QA only
+        import lpips  # noqa: PLC0415 -- RGB QA only
 
         perceptual = lpips.LPIPS(net="alex", verbose=False).to(session.device).eval()
     output.mkdir(parents=True, exist_ok=True)

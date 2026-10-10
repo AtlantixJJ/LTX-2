@@ -40,8 +40,7 @@ Require each generated artifact to remain within the pinned output. Validate
 the raw encoding's shape, finite native precision and clean first-image bytes.
 `evidence_paths` returns the marker, every raw/render record, encoding, video
 and poster after verification. It opens no model or decoder and repairs nothing.
-The direct historical interface can still omit output and retain its raw-only
-behavior; queued completion always requires rendered evidence.
+`--output` is required; completion always requires rendered evidence.
 
 If rendering completed before the process stopped but no queue marker exists,
 the explicit queue CLI verifies the saved complete job and publishes that marker
@@ -145,8 +144,8 @@ panel missing. A changed Torch version or decoder configuration fails before
 opening the decoder; prepare new references for that runtime. Save actual
 decoder identities and link raw-result records in rendering
 settings. Mark complete only through the existing completion gates. Rendering
-failure propagates to the generation stage's failed-job handler. Standalone
-render-owner recovery and real native full-preview acceptance remain pending.
+failure propagates to the generation stage's failed-job handler. There is no
+standalone render-only recovery path; native preview acceptance is part of E4.
 
 `generate_preview(job_path, gpu_id=...)` is the package-owned raw generation
 stage. A `preview` queue job supplies `--preview-job <job.json> --output <output>`
@@ -172,8 +171,8 @@ terminal job. The tensor checker requires all pinned tensor roles; omission
 does not bypass verification.
 Checkpoint and completion-marker bytes remain read-only. A second process
 cannot claim a running job owned by a live process. A failed job can retry in
-the next attempt directory. Automatic rendering with pinned references exists;
-standalone render recovery and full native preview acceptance remain pending.
+the next attempt directory. Rendering with pinned references runs automatically
+after generation.
 
 A failed-state update validates the immutable job identity but does not require
 unchanged input/output bytes: this lets the executor record an input-corruption
@@ -203,3 +202,7 @@ For D1, a reference bundle with no guide is invalid even when a malformed
 guide bundle also omits its render fingerprint. Null values do not establish
 matching guide identity. Reject this before a decoder or transformer is opened.
 
+
+## Current preview publication contract
+
+Every invocation requires an explicit output matching the immutable preview job. Raw-only output omission is unsupported. Completion binds raw results and rendered RGB references; no absent reference data is created by the executor.

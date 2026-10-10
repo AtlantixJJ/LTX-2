@@ -1,181 +1,144 @@
 # `corpus/subset.py` — write a fixed video list
 
-Status: **Version-two conversion, saved-probe membership and typed runtime integration implemented.**
-`convert_legacy` creates membership and reproduction records from an old subset.
-`from_saved_probe` creates one-view membership from original paired evidence.
-Typed training and ordinary evaluation use these version-two records.
-The legacy survey tool `windows.py` retired in refactor group G11. A direct
-version-two survey producer remains unimplemented (see below).
-
 ## Objective
 
-Select video/view files and split people into training and evaluation groups.
-Save their content hashes.
-Both modes reuse this list and select their own encoded frame ranges.
+Create a fixed membership from checked corpus files. Record each selected
+video, person, data group, encoding record and content hash. Training and
+evaluation reuse this membership and choose encoded frame ranges separately.
+This module runs on CPU in the `ltx` environment. It loads no model, renders
+no guide, changes no crop and encodes no pixels.
 
 ## Data flow
 
 ```mermaid
 flowchart LR
-  S[("original block-chain subset")] --> C["convert_legacy"]
-  M[("checked crop records and masters")] --> C
-  C --> O[("fixed video membership")]
-  C --> R[("original selection reproduction record")]
-  O --> P["training.config.build_frame_plan"] --> F(["mode frame selection plan"])
+  M[("crop manifest and clip metadata")] --> S["survey_sources"]
+  E[("capture and optional guide masters")] --> S
+  S --> G["build_membership"]
+  G --> V["verify_prepared_membership"]
+  V --> O[("fixed video membership")]
+  O --> P["training.config.build_frame_plan"]
   classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
   classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
-  classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
-  class C,P proc;
-  class S,M,O,R disk;
-  class F out;
+  class S,G,V,P proc;
+  class M,E,O disk;
 ```
 
-The code calls the fixed video list `membership`.
-The mode's frame selection plan is separate.
-Neither operation changes the crop or runs the VAE again.
+`build_membership` returns a checked record without writing. The command
+publishes that record to a new JSON path after one more content check.
+`record_hash`, `membership_hash` and `validate_membership` are shared by the
+corpus readers, training settings and saved-input preparation owners.
 
 ## Organization logic
 
-Current conversion keeps the old selection, people, groups and content pins.
-It reads encoded frame counts from masters, not raw-video length.
-It adds a separate reproduction record for the old frame selections.
-Saved-probe conversion checks exact paired input pins and records its historical
-group. No current conversion reselects or surveys the corpus.
+### Survey and pin videos
 
-### Select and group videos
+Discover clips and view directories in stable relative-path order. A clip
+must carry complete pipeline metadata and a person ID. Read the crop box
+through `dataset.CaptureManifest`; do not calculate another box.
 
-**Required direct survey; not yet implemented.**
-The following procedure defines the eventual version-two survey producer.
-The current module has no `survey_sources`, `split_actors` or `pin_content`
-functions. Until this producer exists, use checked conversion or saved-probe
-membership. The retired `windows.py` survey was never a version-two producer.
+`pin_content` reads the stored capture master through
+`dataset.load_training_master`. Record its actual encoded shape and frame
+rate, source and objective, VAE identity, encoding contract and crop. The
+recorded source, background and crop must agree with the selected view and
+crop manifest. Pin the raw RGB, master, clip metadata and crop manifest.
 
-1. Discover relative video/view paths in stable order and read the saved crop/master records.
-2. Apply the current crop, completeness, and guide/provenance checks.
-   Record every excluded path and reason before assigning groups.
-3. Use the current bare person ID across corpus parts and all views.
-   Cap a requested person tier in the existing SHA-256 person-ID order, not discovery order.
-4. If explicit train/validation/test lists are supplied, check disjointness and surviving sources.
-   Keep those exact groups. Record sources outside them as excluded.
-5. Otherwise, preserve `windows.split_actors`:
-   sort unique person IDs by SHA-256 of the ID;
-   choose `h=min(max(round(N*f), min(m,N-1)), N-1)` held-out people.
-   Here `N` is person count, `f` the holdout fraction, and `m` the holdout floor.
-   The first `h` IDs in hash order are held out; the remainder train.
-   Fewer than two people is an error. Record when the requested floor cannot fit.
-6. Hash selected producer files and records, then write the fixed list atomically.
+For a paired membership, pin the guide master, rendered RGB and render
+sidecar. Use `dataset.ClipStore` to check capture/guide dimensions, frame
+rate, encoding records, crop, VAE identity and guide compositing provenance.
+Do not repair or re-encode a missing or changed input.
 
-Every view of a person inherits that person's group.
-Do not repartition people after seeing model outputs.
+Automatic discovery records unavailable views and their reasons in
+`excluded`. These exclusions happen before person grouping. An explicitly
+requested `--source` must be available; a failed requested source is an error.
+Selected inputs are checked again before returning or publishing the list.
 
-### Freeze data identity
+### Select and group people
 
-`from_saved_probe` creates a one-view replay membership from a saved paired
-probe manifest. Require every recorded row to identify the same capture/guide
-paths and original bundle hashes. Resolve the corpus root from the capture
-bundle's recorded relative source; never guess it from an actor name. Read
-the actual actor ID from clip metadata. Preserve the original encoded bytes
-and use the canonical source checker for current paired-guide provenance.
-All replay sources use a `historical` group: this is bookkeeping for an exact
-saved comparison, not a new training/validation split. Record the original
-probe hash and current raw/crop metadata identities separately. Current raw
-file pins cannot establish their unrecorded historical byte identities.
-Do not drop any original encoded pin or repair a changed producer artifact.
+Use the bare person ID across every corpus part and camera view. All views
+of that ID receive the same group. A requested `max_people` selects IDs in
+SHA-256 order, with the ID as a stable tie breaker. Views outside the selected
+people are recorded as excluded.
 
-The source checker verifies original bundle hashes, dimensions/fps, paired
-encode records, render/sidecar identities and compositing version before
-returning the membership. Recheck the original probe bytes after those reads.
-Tests require exact source/person/hash retention and fail on changed capture,
-guide or inconsistent manifest rows before any model execution.
+Explicit group lists contain unique nonempty person IDs and disjoint groups.
+Each requested person must have an available selected video. Preserve the
+declared group lists; record other available people as excluded.
 
-Implemented schema version two has kind `onestep_avatar_membership`.
-It records background, corpus root, crop-record identity, sorted video IDs, person/group,
-frame rate, dimensions, encode records, hashes, exclusions, and hash scope.
-It has no attention, cache depth, block size, block chains, or K.
+Without explicit lists, `split_actors` sorts the unique IDs in SHA-256 order.
+At least two people are required. With `N` people, held-out fraction `f` and
+requested minimum `m`, choose
+`h=min(max(round(N*f), min(m,N-1)), N-1)`. The first `h` IDs are held out and
+the remainder train. Record the requested fraction/minimum and whether the
+minimum fits. This keeps training nonempty and makes the grouping independent
+of discovery order and model results.
 
-The list hash covers background, videos, groups, exclusions, and hash rules.
-Video IDs use relative corpus paths.
-Record root-directory changes without changing video/group assignments.
+### Freeze membership identity
 
-Use a declared versioned hash payload with sorted JSON keys and stable video/group ordering.
-Hash content identities and relative paths, not local absolute root paths or modification times.
-Record hash scope so readers can reproduce the exact payload.
-Root relocation changes the locator, not video membership, grouping, or producer bytes.
-Verification resolves the relative paths, recalculates hashes, and returns all missing/mismatched paths.
-It does not repair files or omit a mismatched video.
+The JSON has `schema_version: 2` and kind `onestep_avatar_membership`. It
+records objective, corpus locator, crop-manifest hash, ordered sources,
+person/group lists, selection rules, exclusions and content-pin scope.
+Membership contains no attention mode, cache geometry or block chains.
 
-A separate frame-plan hash covers mode, selection rules, ordered samples, and old index mappings.
-D0 can use a capture-only list.
-Compared D0/D1 runs use the same paired list.
-A D1 run fails before model loading if any required guide is missing or outdated.
-It must not skip videos during training.
+`record_hash` hashes compact sorted-key JSON after removing the top-level
+`sha256` field. `membership_hash` also removes `corpus_root`: relocating
+unchanged files does not change video identities, groups or content pins.
+The established hash payload and validation of saved memberships stay the
+same. Source order and declared lists are part of the identity.
 
-Convert old subsets to new files:
-copy exact videos, groups, and hashes; keep the original hash;
-write the old block indices into a reproduction frame plan.
-[V8](../verification.md) checks this conversion.
-A new selection rule is a new plan, not an undocumented reproduction of old samples.
+The source pins cover raw RGB, capture master and clip metadata. Paired lists
+also cover the guide master, rendered guide RGB and render sidecar. The
+crop-manifest hash applies to the whole list. Encoded-file pins do not prove
+unrecorded inputs to a producer.
 
-`convert_legacy` returns two records without writing. It reads each capture
-bundle to record its actual shape and encoding fields. Existing content pins
-must still match. Missing old encoded-file pins are added with full SHA-256.
-Preserve original raw-video/guide hashes and split lists exactly.
-Move `n_blocks`, `span_latent_frames`, and unused-tail facts into the reproduction
-record. They do not belong to the fixed video list.
-The reproduction plan keeps every old source record, chain index, block index,
-and half-open encoded range. Its hash is separate from the membership hash.
-Membership hashes exclude `corpus_root` so relocation does not change membership.
-The CLI refuses used destinations and writes only new versioned JSON files.
-No conversion re-encodes a master, changes a split, or infers adapter mode.
+`dataset.ClipStore` verifies selected master and guide pins before model
+setup. Membership preparation additionally rechecks raw RGB, clip metadata
+and the crop manifest. A changed source is reported; it is never omitted
+from an already fixed list.
 
-### Original subset digest
+### Keep frame selection separate
 
-`subset_sha256` preserves the exact historical seven-key rule: `objective`,
-`sources`, `chains`, `splits`, `span_latent_frames`, `clip_start_only`, and
-`chain_length`, each selected with `get`. Hash
-`json.dumps(payload, sort_keys=True).encode()` with default spacing and Unicode
-escaping. Missing keys serialize as null. Geometry and extra fields are excluded.
-The modern `record_hash` deliberately uses another payload and compact spacing.
-The retired mode-less engine stamped this digest into legacy adapter metadata;
-explicit legacy conversion is its only current caller. Saved `canonical_rule: "windows.subset_sha256"`
-continues to name the original historical rule, not its current code path.
+Both modes use the same membership. `training.config.build_frame_plan` owns
+their encoded-frame selection, ranges and plan hash. A saved explicit plan
+continues to be checked by the settings owner against membership, requested
+mode, settings and stored master limits. Membership creation produces no
+frame plan and imports no model or training module.
 
-## Invariants
+## Command
 
-- One person and all views belong to one data group.
-- Record both list and frame-plan hashes.
-- Conversion preserves stored crop, VAE, and master data.
-- Report exclusions/errors before loading the model.
-- State which files are hashed. Encoded-file hashes do not prove raw-video identity.
+From the LTX-2 root:
 
-## Gotchas
+```bash
+conda run -n ltx python -m scripts.onestep_avatar.corpus.subset \
+  --corpus-root /path/to/corpus --objective white --require-guide \
+  --held-out-fraction 0.1 --min-held-out 1 --output /path/to/membership.json
+```
 
-Do not change an old subset's schema label in place.
-Bidirectional mode can use final frames that a causal block plan discards.
-Record actual output frame coverage.
-The same video list does not prove the same selected frames.
+Use `--source Part_1/clip/views/view00` repeatedly to select exact views.
+Use `--splits /path/to/groups.json` for explicit group lists, such as
+`{"train":["1"],"held_out":["2"]}`. A single-person evaluation list requires
+an explicit group. `--max-people` caps the available people before grouping.
+The output path must be unused and must not be an input or symbolic link.
+
+## Invariants and gotchas
+
+- One person and all selected views belong to one data group.
+- Read crop geometry and encoded frame counts from their saved owners.
+- D0 can use capture-only membership; matched D0/D1 comparisons use a paired list.
+- Missing or stale required guides fail before model loading.
+- No selected producer artifact, saved membership or frame plan is modified.
+- Changing frame-selection settings creates a separate plan, not another membership.
+- Record exclusions before grouping; never repartition after inspecting model output.
+- A list hash proves its recorded inputs, not identical selected frames across modes.
 
 ## Tests
 
-[V8](../verification.md) defines unchanged people, videos, and encoded data.
-`tests/test_subset.py` checks original seven-key digest values and JSON bytes,
-exact old people, pins and frame ranges, changed
-producer bytes or coverage, duplicate groups, D0 without guides, and CLI
-preservation/refusal behavior. Preserve those controls through source migration.
-Compare two frame-selection rules over one fixed list.
-Reject missing guides and outdated encode records.
-Keep original subset files unchanged.
-Worked check: one person has views in two corpus parts.
-All those views receive the same group. Relocating an unchanged corpus preserves the list identity.
-Changing one capture-master byte fails verification for that video.
-Changing mode leaves this list unchanged and creates a different frame-plan record.
+`tests/test_subset.py` checks deterministic discovery and person grouping,
+person caps, explicit lists, exclusions, actual master coverage, matching
+crop/guide provenance, input change detection and publication refusal. It
+also checks that corpus relocation preserves membership identity and that
+the shared store refuses changed selected masters.
 
-### Lazy legacy frame-range recovery
-
-Only `convert_legacy` imports public `model.causal.CausalGeometry`, lazily. Old
-subsets record block indices; the conversion uses the canonical planner to
-recover exact half-open ranges, preserving original indices and master limits.
-This explicitly recorded architecture exception avoids duplicating block math.
-Ordinary membership validation and module import load no model code. Boundary
-tests permit precisely this function-scoped edge and reject any other corpus
-model/training/support import, including lazy imports.
+The direct current fixtures in `tests/conftest.py` support training and
+evaluation preflight tests. `tests/test_corpus_model_boundaries.py` checks
+that corpus imports, including function-local imports, load no model or
+training owner. Frame-plan tests continue to use the public settings owner.

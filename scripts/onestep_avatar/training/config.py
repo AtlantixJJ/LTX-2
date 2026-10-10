@@ -1,7 +1,7 @@
 """Parse typed training settings and preserve seeded sigma/noise selection.
 
 See doc/training/config.md for checks and mode ownership. ``parse_settings`` is the only
-training parser; the mode-less ``parse_args`` retired in refactor group G11.
+training parser.
 """
 
 from __future__ import annotations
@@ -49,9 +49,9 @@ def training_noise_seed(args: argparse.Namespace, *, step: int, rank: int, slot:
 
     ``fresh``: a function of (noise seed, update, rank, accumulation slot) only -- so a chain
     revisited in a later epoch gets new noise, and two candidates launched with the same seeds
-    and topology draw the identical stream whatever their sigma or arm. ``fixed_per_chain`` is
-    the historical rule (one epsilon per chain for the whole run), kept as the debug control
-    that separates memorising a noise draw from learning the correction.
+    and topology draw the identical stream whatever their sigma or arm. ``fixed_per_chain``
+    keeps one epsilon per chain for the whole run; it is the debug control that separates
+    memorising a noise draw from learning the correction.
     """
     if args.noise_policy == "fixed_per_chain":
         return args.noise_seed * 100003 + chain_index * 101
@@ -64,8 +64,8 @@ def sigma_for_rank(sigmas: tuple[float, ...], rank: int, step: int, seed: int) -
     Each (update, rank) draws independently from its own seeded generator, so a run is
     reproducible and the draw is independent of the epsilon stream, the arm and the data
     order. Levels are mixed within an update (four independent draws) and every level is
-    reached with probability 1/len(sigmas) per sample; unlike the retired rotation, exposure
-    per level is equal only in expectation. A single-level run returns that level.
+    reached with probability 1/len(sigmas) per sample; exposure per level is equal only in
+    expectation, not per update. A single-level run returns that level.
     """
     if len(sigmas) == 1:
         return sigmas[0]
@@ -281,7 +281,7 @@ def build_frame_plan(  # noqa: PLR0912 -- keep each mode's frame-selection check
     scale_factors: SpatioTemporalScaleFactors,
 ) -> dict:
     """Select deterministic mode samples over a checked fixed video list."""
-    from scripts.onestep_avatar.corpus import subset  # noqa: PLC0415 -- the converter also uses mode geometry
+    from scripts.onestep_avatar.corpus import subset  # noqa: PLC0415 -- check membership when preparing mode frames
     from scripts.onestep_avatar.model import bidirectional  # noqa: PLC0415
 
     subset.validate_membership(membership)
@@ -384,7 +384,8 @@ def select_frame_plan(  # noqa: PLR0912 -- check every provenance field before r
         if isinstance(mode, CausalSettings):
             blocks = sample.get("blocks", [])
             if mode.start_policy == "random" and (
-                blocks != [0] or ranges != [[0, mode.block_latent_frames + 1]]
+                blocks != [0]
+                or ranges != [[0, mode.block_latent_frames + 1]]
                 or sample.get("seed_is_clip_start") is not True
             ):
                 raise ValueError("frame-plan random causal segment must be an independent block-zero template")

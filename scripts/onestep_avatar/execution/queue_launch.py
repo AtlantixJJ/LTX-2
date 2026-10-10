@@ -689,7 +689,7 @@ def recover_registered_attempt(  # noqa: PLR0912, PLR0915 -- explicit bounded op
             "original_exitcode": None,
             "scope_limit": "Only exact registered handles were observed ended. Unknown descendants "
             "after owner loss, original exit and scientific success are unproven. "
-            "The legacy closed-row containment label adds no evidence.",
+            "Readers report this closed row as recovered, not as complete containment.",
             "recovered_at": time.time(),
         }
         if time.monotonic() >= deadline:
@@ -971,7 +971,7 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
             "unknown_descendants_unproven": True,
             "original_exitcode": None,
             "scope_limit": "Unknown descendants after original owner loss are not certified absent; "
-            "the legacy closed-row reader basis adds no containment evidence.",
+            "readers report this closed row as recovered, not as complete containment.",
             "recovered_at": time.time(),
         }
         if direct_binding is not None:

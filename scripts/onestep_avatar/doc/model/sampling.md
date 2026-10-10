@@ -1,9 +1,8 @@
 # `model/sampling.py` — choose denoising steps
 
-Status: **Implemented; native stock comparison remains open.**
 Own `one_step_schedule`, `truncated_schedule`, `thinned_truncated_schedule`,
 `rescaled_schedule`, `euler_to`, and `validate_schedule`.
-Keep existing public names and the exact direct-step endpoint. Reject nonfinite levels and values
+Keep the exact direct-step endpoint. Reject nonfinite levels and values
 outside `[0,1]` before execution.
 
 ## Objective

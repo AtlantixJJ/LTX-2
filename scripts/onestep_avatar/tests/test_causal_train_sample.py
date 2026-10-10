@@ -1,8 +1,6 @@
 """CPU tests for causal-mode training through ``model.causal.train_sample``.
 
-These checks moved from the retired mode-less engine tests (refactor group G11). That
-engine's ``train_chain`` only built a token grid from two masters and called
-``train_sample``; these tests now call the model owner directly with the same inputs.
+These tests build a token grid from two masters and call the model owner directly.
 Each one pins which tensor the loop hands to which call:
 
 (i)   ``K = 1`` starting at block 0 reproduces a plain non-AR step exactly.

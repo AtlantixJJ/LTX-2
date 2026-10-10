@@ -1,11 +1,10 @@
-"""Preserve study protocols through public shared owners; see doc/experiments/fusion_parity.md."""
+"""Compare fused bf16 and unmerged fp32 adapter outputs on one causal block; see doc/experiments/fusion_parity.md."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import math
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,7 +29,7 @@ def fusion_probe_block(
     guide: torch.Tensor,
     fps: float,
 ) -> torch.Tensor:
-    """Preserve the historical diagnostic's one empty-cache block, input and seed."""
+    """Run one empty-cache block with the protocol's fixed input, sigma and seed."""
     from scripts.prune.core.session import DTYPE  # noqa: PLC0415 -- native training dtype
 
     geometry = causal.deployed_geometry(session.model.scale_factors)
@@ -111,7 +110,7 @@ def fusion_parity_metrics(outputs: dict[str, torch.Tensor]) -> dict:
 def evaluate_fusion_parity(  # noqa: PLR0915 -- ordered preflight, five native cases and publication
     run: Path, view: Path, output: Path, *, gpu_id: int, step: int = 1, output_tensors_path: Path | None = None
 ) -> dict:
-    """Own the five historical fusion cases and publish only completed diagnostic results."""
+    """Run the five fusion cases and publish only completed diagnostic results."""
     from peft import LoraConfig, get_peft_model  # noqa: PLC0415
 
     from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps  # noqa: PLC0415
@@ -201,21 +200,12 @@ EXTRA_SOURCES = (
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Own the direct diagnostic CLI and its pinned queue specification."""
-    arguments = sys.argv[1:] if argv is None else argv
+    """Parse queue-owned execution arguments and a pinned scientific spec."""
     parser = argparse.ArgumentParser(description=__doc__)
-    if "--spec" not in arguments:
-        parser.add_argument("--fusion-parity", action="store_true")
-        parser.add_argument("--run", type=Path, required=True)
-        parser.add_argument("--view", type=Path, required=True)
-        parser.add_argument("--output", type=Path, required=True)
-        parser.add_argument("--gpu-id", type=int, required=True)
-        parser.add_argument("--step", type=int, default=1)
-        return parser.parse_args(arguments)
     parser.add_argument("--spec", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--gpu-id", type=int, default=0)
-    outer = parser.parse_args(arguments)
+    outer = parser.parse_args(argv)
     outer.completion = {"manifest": str(outer.output.resolve() / "manifest.json")}
     return outer
 
@@ -238,7 +228,7 @@ def read_spec(outer: argparse.Namespace) -> argparse.Namespace:
 
 
 def verify_completion(spec: Path, root: Path) -> dict:
-    """Recompute all five raw comparisons with the unchanged historical tolerance."""
+    """Recompute all five raw comparisons with the protocol tolerance."""
     from ltx_core.components.patchifiers import VideoLatentPatchifier  # noqa: PLC0415 -- model-free native layout
 
     args = read_spec(parse_args(["--spec", str(spec), "--output", str(root)]))
@@ -301,12 +291,8 @@ def evidence_paths(spec: Path, root: Path) -> list[Path]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the preserved five-case protocol and bind queue-mode raw output evidence."""
-    args = parse_args(argv)
-    if not hasattr(args, "spec"):
-        evaluate_fusion_parity(args.run, args.view, args.output, gpu_id=args.gpu_id, step=args.step)
-        return 0
-    args = read_spec(args)
+    """Run the five-case protocol and bind its raw output evidence."""
+    args = read_spec(parse_args(argv))
     if args.output.exists():
         raise ValueError("fusion parity requires a fresh output directory")
     producer_software = software.capture("evaluation", "causal", extra_sources=EXTRA_SOURCES)

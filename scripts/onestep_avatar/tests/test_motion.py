@@ -92,14 +92,6 @@ class TestAssertRawSizeMatchesFrame(unittest.TestCase):
             motion.assert_raw_size_matches_frame(pose3d, frame_height=3000)
 
 
-class TestValidFrameMask(unittest.TestCase):
-    def test_requires_both_pose_and_bbox_valid(self) -> None:
-        pose3d = _fake_pose3d(4, valid=np.array([True, True, False, True]))
-        bbox = _fake_bbox(4, valid=np.array([True, False, True, True]), nan_at=(3,))
-        mask = motion.valid_frame_mask(pose3d, bbox)
-        np.testing.assert_array_equal(mask, [True, False, False, False])
-
-
 class TestFillGaps(unittest.TestCase):
     def test_no_gaps_is_identity(self) -> None:
         valid = np.array([True, True, True])
@@ -131,21 +123,18 @@ class TestFillGaps(unittest.TestCase):
 class TestBuildMotion(unittest.TestCase):
     def test_keys_are_zero_padded_and_sorted(self) -> None:
         pose3d = _fake_pose3d(3)
-        bbox = _fake_bbox(3)
-        sam3db = motion.build_motion(pose3d, bbox, frame_height=4096)
+        sam3db = motion.build_motion(pose3d, frame_height=4096, valid=np.ones(3, dtype=bool))
         assert sorted(sam3db.keys()) == ["frames/000000.png", "frames/000001.png", "frames/000002.png"]
 
     def test_one_entry_per_frame(self) -> None:
         pose3d = _fake_pose3d(5)
-        bbox = _fake_bbox(5)
-        sam3db = motion.build_motion(pose3d, bbox, frame_height=4096)
+        sam3db = motion.build_motion(pose3d, frame_height=4096, valid=np.ones(5, dtype=bool))
         assert len(sam3db) == 5
 
     def test_raises_when_no_valid_frames(self) -> None:
-        pose3d = _fake_pose3d(2, valid=np.array([False, False]))
-        bbox = _fake_bbox(2)
+        pose3d = _fake_pose3d(2)
         with pytest.raises(ValueError, match="no valid frames"):
-            motion.build_motion(pose3d, bbox, frame_height=4096)
+            motion.build_motion(pose3d, frame_height=4096, valid=np.array([False, False]))
 
 
 class TestMergeMultiviewRefinement(unittest.TestCase):
@@ -188,7 +177,7 @@ class TestRepairViewCameraGaps(unittest.TestCase):
         bbox = _fake_bbox(4, valid=np.array([True, True, False, True]), nan_at=(2,))
         repaired = motion.repair_view_camera_gaps(pose, bbox)
 
-        sam3db = motion.build_motion(repaired, bbox, frame_height=4096, valid=np.ones(4, dtype=bool))
+        sam3db = motion.build_motion(repaired, frame_height=4096, valid=np.ones(4, dtype=bool))
 
         assert len(sam3db) == 4
         assert torch.isfinite(sam3db["frames/000002.png"]["K_raw"]).all()

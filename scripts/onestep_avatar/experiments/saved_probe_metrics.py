@@ -14,7 +14,7 @@ from scripts.onestep_avatar.hashing import sha256
 def saved_latent_metrics(
     output: torch.Tensor, capture: torch.Tensor, guide: torch.Tensor, *, long: bool = False
 ) -> dict:
-    """Preserve historical generated-frame measurements separately from training loss."""
+    """Measure generated frames separately from the training loss."""
     if (
         output.ndim != 4
         or output.shape != capture.shape
@@ -78,7 +78,7 @@ def saved_latent_metrics(
 
 
 def measure_saved_probe(directory: Path, *, long: bool = False) -> dict:
-    """Measure verified saved historical encodings, without any model session."""
+    """Measure verified saved encodings, without any model session."""
     manifest = json.loads((directory / "manifest.json").read_text())
     rows, seen = [], set()
     for video in manifest["videos"]:

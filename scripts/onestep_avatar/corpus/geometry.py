@@ -1,7 +1,6 @@
 """Pixel-space crop geometry for the ARGAvatar guidance corpus.
 
-Per ``plans/2026-09-10-ltx25-one-step-argavatar-lora.md`` SS4.5: one square crop box per
-(clip, view), fixed for the whole clip, sized to contain the subject across every frame. A
+One square crop box per (clip, view), fixed for the whole clip, sized to contain the subject across every frame. A
 per-frame rect would inject camera motion the capture never had, and the temporal RoPE would
 learn it -- fixed-for-the-clip is not a simplification.
 
@@ -61,7 +60,7 @@ def canonical_crop_box(
     height: int,
     pad_factor: float = PADDING_FACTOR,
 ) -> XYXY:
-    """The full SS4.5 box in one call: union -> padded square -> fitted into the canvas.
+    """The full crop box in one call: union -> padded square -> fitted into the canvas.
 
     This is the arithmetic ``precompute.py --process_gt_latent`` runs to produce the box it
     records in ``capture_latent_manifest.json``, reproduced here so a consumer can *check*
@@ -110,27 +109,3 @@ def crop_from_canvas(frame: np.ndarray, box_xyxy: XYXY) -> np.ndarray:
         raise ValueError(f"crop {box_xyxy} lies outside canvas {width}x{height}")
     return frame[y0:y1, x0:x1]
 
-
-def crop_with_padding(frame: np.ndarray, box_xyxy: XYXY, pad_value: int | float = 255) -> np.ndarray:
-    """Crop ``frame`` (``H x W`` or ``H x W x C``) to ``box_xyxy``, padding out-of-frame
-    regions with ``pad_value``.
-
-    ``box_xyxy`` is allowed to extend past ``frame``'s bounds in any direction -- the box is
-    fixed for the whole clip and sized to the clip's own subject extent, not this frame's.
-    Pass ``pad_value=255`` for an RGB frame composited onto white (matching the render's own
-    white background) and ``pad_value=0`` for a mask/alpha channel (no subject off-frame).
-    """
-    x0, y0, x1, y1 = (round(v) for v in box_xyxy)
-    out_w, out_h = x1 - x0, y1 - y0
-    h, w = frame.shape[:2]
-    out = np.full((out_h, out_w, *frame.shape[2:]), pad_value, dtype=frame.dtype)
-
-    src_x0, src_y0 = max(x0, 0), max(y0, 0)
-    src_x1, src_y1 = min(x1, w), min(y1, h)
-    if src_x1 <= src_x0 or src_y1 <= src_y0:
-        return out  # box entirely outside the frame
-
-    dst_x0, dst_y0 = src_x0 - x0, src_y0 - y0
-    dst_x1, dst_y1 = dst_x0 + (src_x1 - src_x0), dst_y0 + (src_y1 - src_y0)
-    out[dst_y0:dst_y1, dst_x0:dst_x1] = frame[src_y0:src_y1, src_x0:src_x1]
-    return out

@@ -390,15 +390,13 @@ def test_teacher_forcing_flag_refreshes_the_cache_from_the_teacher_target() -> N
 
 
 def test_teacher_forcing_refreshes_from_the_target_not_the_guide() -> None:
-    """G2: a D1 teacher-forced refresh must receive ``z_y``, never the render ``z_g``.
+    """A D1 teacher-forced refresh must receive ``z_y``, never the render ``z_g``.
 
-    Before the fix the refresh read ``guide_tokens`` unconditionally. That is the target for
-    D0 only; under D1 it teacher-forced on the render and looked exactly like the training
-    ablation while being a regime training never ran. Two assertions pin the fix: the rollout
-    now matches a reference whose refresh is fed ``z_y``, and it *differs* from one fed
-    ``z_g`` -- so a silent regression to the old behaviour cannot pass. The third pins that
-    the argument is required rather than defaulted, which is what stops the next caller from
-    reintroducing it.
+    ``guide_tokens`` is the target for D0 only; under D1, refreshing from it would
+    teacher-force on the render, a regime training never runs. Two assertions pin the rule:
+    the rollout matches a reference whose refresh is fed ``z_y``, and it *differs* from one fed
+    ``z_g``. The third pins that the argument is required rather than defaulted, so no caller
+    can silently refresh from the guide.
     """
     torch.manual_seed(3)
     model = _model()
@@ -484,8 +482,8 @@ def test_teacher_forcing_refreshes_from_the_target_not_the_guide() -> None:
 def test_noise_block_matches_the_gaussian_noiser() -> None:
     """``noise_block`` is ``GaussianNoiser``'s ``lerp(clean, eps, sigma)``, not a lookalike.
 
-    The AR loop no longer routes the init through ``create_noised_state`` (there is no
-    conditioning item left to apply), so the arithmetic is pinned here instead of inherited.
+    The AR loop does not route the init through ``create_noised_state`` (there is no
+    conditioning item to apply), so the arithmetic is pinned here instead of inherited.
     """
     clean = torch.randn(1, 12, CHANNELS)
     seed = 1234
@@ -525,9 +523,9 @@ def test_block_plan_absorbs_the_keyframe_into_block_zero() -> None:
 def test_the_deployed_block_plan_is_pinned_to_exact_bounds(
     latent_frames: int, n_blocks: int, last_block: tuple[int, int]
 ) -> None:
-    """Golden bounds over the encoded lengths the corpus has (moved from the retired subset
-    builder's tests). Saved frame plans index blocks sliced out of one master encode, so a
-    moved bound would silently re-point every saved range."""
+    """Golden bounds over the encoded lengths the corpus has. Saved frame plans index blocks
+    sliced out of one master encode, so a moved bound would silently re-point every saved
+    range."""
     blocks = causal_core.deployed_geometry(SCALE).plan(latent_frames)
     assert len(blocks) == n_blocks
     assert blocks[0] == (0, 1 + causal_core.BLOCK_LATENT_FRAMES)
@@ -790,7 +788,7 @@ def test_the_real_training_loop_runs_a_sample_against_a_real_transformer() -> No
     assert cache.start == kept * grid.tokens_per_latent_frame
 
 
-# --- base_model: unifies train._base_model (FSDP/PEFT) with the deploy-time X0Model walk ---
+# --- base_model: one walk through training and inference wrappers ---
 
 
 class _FSDPPeftWrap(torch.nn.Module):
@@ -804,7 +802,7 @@ class _FSDPPeftWrap(torch.nn.Module):
 
 
 class _X0ModelWrap(torch.nn.Module):
-    """The deploy-time shape: ``X0Model(velocity_model=<LTXModel>)``, no other attribute."""
+    """The inference shape: ``X0Model(velocity_model=...)``, no other attribute."""
 
     def __init__(self, inner: torch.nn.Module) -> None:
         super().__init__()
@@ -816,45 +814,13 @@ def test_base_model_unwraps_bare_and_returns_it_immediately() -> None:
     assert common.base_model(model) is model
 
 
-def test_base_model_agrees_with_both_retired_walks() -> None:
-    """S1(7) of the 2026-09-17 cleanup plan unified ``train._base_model`` (the FSDP/PEFT walk)
-    with the ``while ... hasattr(base, "velocity_model")`` loop three deploy-time call sites
-    each carried a copy of. Checked directly against both original algorithms on real wrapper
-    shapes, rather than assumed, per the plan's own risk note: unifying on the more permissive
-    walk could in principle find a *different* inner module than the retired one did.
-    """
+def test_base_model_unwraps_training_and_inference_wrappers() -> None:
+    """Training (FSDP around PEFT), bare inference and adapter inference reach the same model."""
     model = _model()
-
-    # The retired FSDP/PEFT-only walk (train._base_model, before S1(7)):
-    def old_fsdp_peft_walk(transformer: torch.nn.Module) -> torch.nn.Module:
-        node = transformer
-        for _ in range(8):
-            if hasattr(node, "transformer_blocks"):
-                return node
-            for attribute in ("module", "base_model", "model"):
-                inner = getattr(node, attribute, None)
-                if isinstance(inner, torch.nn.Module):
-                    node = inner
-                    break
-            else:
-                break
-        raise TypeError
-
-    # The retired deploy-time-only walk (onestep_core.rollout / visualize_d0 / bench_forward,
-    # before S1(7)):
-    def old_velocity_model_walk(transformer: torch.nn.Module) -> torch.nn.Module:
-        node = transformer
-        while not hasattr(node, "transformer_blocks") and hasattr(node, "velocity_model"):
-            node = node.velocity_model
-        return node
-
-    fsdp_peft = _FSDPPeftWrap(model)
-    assert common.base_model(fsdp_peft) is model
-    assert old_fsdp_peft_walk(fsdp_peft) is model
-
-    x0 = _X0ModelWrap(model)
-    assert common.base_model(x0) is model
-    assert old_velocity_model_walk(x0) is model
+    assert common.base_model(_FSDPPeftWrap(model)) is model
+    assert common.base_model(_X0ModelWrap(model)) is model
+    # Unmerged-adapter inference: X0Model around a PEFT-shaped velocity model.
+    assert common.base_model(_X0ModelWrap(_FSDPPeftWrap(model).module)) is model
 
 
 def test_base_model_raises_when_no_known_wrapper_shape_matches() -> None:
@@ -1082,8 +1048,8 @@ def test_kv_source_denoise_refuses_teacher_forcing() -> None:
     """The two flags contradict each other, so the combination raises instead of picking one.
 
     Teacher forcing is *defined* as putting the ground-truth target into the cache. The
-    denoising pass never saw the target. Honouring one flag and silently dropping the other is
-    exactly the shape of G2, the defect this module already had once.
+    denoising pass never saw the target. Honouring one flag and silently dropping the other
+    would refresh the cache from a tensor the caller did not choose.
     """
     model = _model()
     geometry = _geometry()

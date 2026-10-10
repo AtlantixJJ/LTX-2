@@ -20,24 +20,35 @@ from scripts.onestep_avatar.training import checkpoints, config, engine
 
 
 @pytest.fixture
-def causal_coverage(old_subset: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
+def causal_coverage(current_membership: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     """Use real checked D1 masters/contracts; no native model or VAE work is allowed."""
-    for source in old_subset["sources"]:
+    membership = current_membership
+    for source in membership["sources"]:
         source["n_latent_frames"] = 18
+        source["shape"] = [2, 18, 2, 2]
         view = tmp_path / source["relative_dir"]
         capture_path = view / dataset.capture_bundle_name("white")
         capture = torch.load(capture_path, weights_only=True)
         capture["master"] = torch.arange(144).reshape(2, 18, 2, 2).to(torch.bfloat16)
+        capture["pixel_frames"] = 137
         torch.save(capture, capture_path)
+        source["capture_latent_sha256"] = sha256(capture_path)
+        source["capture_encode_record"] = {key: value for key, value in capture.items() if key != "master"}
         render = view / dataset.render_name("white")
         render.write_bytes(b"controlled guide RGB " + source["actor"].encode())
         source["guide_sha256"] = sha256(render)
         guide = {**capture, "master": capture["master"] + 1, "input_fingerprint": sha256(render)}
-        torch.save(guide, view / dataset.guide_bundle_name("white"))
-        (view / dataset.render_metadata_name("white")).write_text(
-            json.dumps({"compositing_version": dataset.GUIDE_COMPOSITING_VERSION, "objective": "white"})
+        guide_path = view / dataset.guide_bundle_name("white")
+        torch.save(guide, guide_path)
+        sidecar = view / dataset.render_metadata_name("white")
+        sidecar.write_text(json.dumps({"compositing_version": dataset.GUIDE_COMPOSITING_VERSION, "objective": "white"}))
+        source.update(
+            guide_latent_sha256=sha256(guide_path),
+            guide_sidecar_sha256=sha256(sidecar),
+            guide_encode_record={key: value for key, value in guide.items() if key != "master"},
         )
-    membership, _plan = subset.convert_legacy(old_subset, original_file_sha256="b" * 64, require_guide=True)
+    membership["requires_guide_latent"] = True
+    membership["sha256"] = subset.membership_hash(membership)
     membership_path = tmp_path / "membership.json"
     membership_path.write_text(json.dumps(membership))
     specification = SimpleNamespace(

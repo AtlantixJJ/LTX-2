@@ -25,7 +25,8 @@ if phase=='interrupted_registration':
     from scripts.onestep_avatar.execution.process_registry import ProcessRegistry
     claims=ProcessRegistry(root/'ledger.json',inventory=lambda:dict.fromkeys(range(8),0))
 else:
-    claims=queue.GPUClaims(root/'claims')
+    from scripts.onestep_avatar.tests.claims_fixture import GPUClaims
+    claims=GPUClaims(root/'claims')
 assert claims.acquire((4,),job='case')
 original_popen=subprocess.Popen
 original_wait=queue_launch.wait_registration
@@ -96,7 +97,7 @@ def test_explicit_recovery_of_actual_unapproved_launch_preserves_outputs_and_att
             for item in json.loads((tmp_path / "ledger.json").read_text())["attempts"].values()
         )
         assert not (tmp_path / "model_executed").exists()
-        return  # G8 catches the interruption and stops its exact owned guard.
+        return  # The queue catches the interruption and stops its exact owned guard.
     assert (row["child_pid"] is None) == (phase != "interrupted_registration")
     assert row["child_identity"] is None
     assert row["state"] == "running"

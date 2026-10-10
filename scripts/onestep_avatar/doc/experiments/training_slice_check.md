@@ -1,12 +1,5 @@
 # `experiments/training_slice_check.py` — localize one native update
 
-Status: Bounded R3 diagnostic. Original one-/two-slot controls pass; complete workflow acceptance is separate.
-
-The implemented source owner is `experiments/training_slice_check.py`.
-Original native evidence keeps its original producer hashes and scope.
-Fresh affected native checks follow the complete code gate. Read
-[current acceptance](../known_gaps.md#current-acceptance-and-next-step).
-
 ## Objective
 
 Compare one exact original visit in one-rank FSDP with serial execution before
@@ -114,28 +107,26 @@ do not change tolerances to accommodate an unstable baseline.
 
 ## Experiment package provenance
 
-The public `EXTRA_SOURCES` tuple retains every pre-move extra owner and
-binds the empty `experiments/__init__.py` marker along with the checker.
-These files are explicit experiment extras; ordinary profiles do not
-include the experiment marker. Existing results retain their original
-source attribution, and affected native checks run again after the code gate.
+The public `EXTRA_SOURCES` tuple binds the checker, its spec helper and the
+empty `experiments/__init__.py` marker as explicit experiment extras; ordinary
+profiles do not include the experiment marker.
 
-## G8 queue interface and completion
+## Queue interface and completion
 
 The queue owns launch, device selection, process records and bounded supervision.
-The checker accepts a pinned schema-one specification with its literal protocol
-and original scientific `arguments`, plus queue-owned `--output` and local
+The checker accepts a pinned `schema_version: 1` specification with its literal
+protocol and scientific `arguments`, plus queue-owned `--output` and local
 `--gpu-id`. Execution flags in the scientific arguments fail before writes.
 Public `parse_args`, `read_spec`, `resource_phases`, `resource_budget`, `launch_requirements`, `verify_completion` and
 `evidence_paths` provide normalization, phase/topology data and saved-only
 completion. The manifest binds exact spec bytes, normalized scientific settings
-and the complete local artifact inventory. Original producer hashes stay intact;
-new runs bind the spec helper as an explicit experiment extra.
+and the complete local artifact inventory. Each run binds
+the spec helper as an explicit experiment extra.
 
 Completion verifies the original scientific controls from actual saved artifacts.
 It loads no model or decoder, starts no child, and never repairs missing output.
 A missing, changed or escaped artifact prevents completion. CPU fixtures prove
-these refusals; final-source native acceptance still requires fresh queue jobs.
+these refusals.
 
 The `run` operation retains serial and one-rank FSDP arms. FSDP launch data
 requires the fixed hash-pinned `packages/ltx-trainer/configs/accelerate/fsdp.yaml`,

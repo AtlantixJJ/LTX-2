@@ -118,8 +118,10 @@ def measure_generation(
 
 
 def _operation_args(argv: list[str]) -> argparse.Namespace:
-    """Parse preserved operation timing without reading inputs or opening weights."""
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    """Parse causal operation timing without reading inputs or opening weights."""
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False
+    )
     p.add_argument("--operation-timing", action="store_true", required=True)
     p.add_argument("--mode", choices=("causal",), required=True)
     p.add_argument("--model", choices=model_registry.SUPPORTED_MODELS, default="2.5")
@@ -137,9 +139,7 @@ def _operation_args(argv: list[str]) -> argparse.Namespace:
         "measure denoising and cache refresh separately at each depth.",
     )
     p.add_argument("--latent-frames", type=int, default=18, help="Clip length; the corpus's 150-frame tier.")
-    destination = p.add_mutually_exclusive_group()
-    destination.add_argument("--out", type=Path, default=None)
-    destination.add_argument("--output", type=Path, default=None)
+    p.add_argument("--output", type=Path, required=True)
     args = p.parse_args(argv)
     if args.reps < 1 or args.warmup < 0:
         p.error("benchmark needs positive repetitions and nonnegative warmup")
@@ -151,17 +151,13 @@ def _operation_args(argv: list[str]) -> argparse.Namespace:
         p.error("operation cache depths must be unique and supported")
     if args.latent_frames < 1 + causal_core.BLOCK_LATENT_FRAMES:
         p.error("operation timing needs at least one complete causal block")
-    args.queue_output = args.output is not None
-    if args.output is not None:
-        args.out = args.output / "operation_timing.json"
-    elif args.out is not None:
-        args.output = args.out.parent
+    args.out = args.output / "operation_timing.json"
     args.completion = completion_descriptor(args)
     return args
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Expose ordinary or preserved operation arguments to queue preflight."""
+    """Expose ordinary or operation-timing arguments to queue preflight."""
     from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- ordinary parser owner
 
     arguments = sys.argv[1:] if argv is None else argv
@@ -184,7 +180,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def completion_descriptor(args: argparse.Namespace) -> dict | None:
     """Describe operation output; ordinary case inventory requires input preflight."""
     if args.operation_timing:
-        return None if args.out is None else {"records": [str(args.out.resolve())]}
+        return {"records": [str(args.out.resolve())]}
     return None
 
 
@@ -207,7 +203,7 @@ def _operation_settings(args: argparse.Namespace) -> dict:
 
 def operation_main(argv: list[str]) -> int:
     args = _operation_args(argv)
-    if args.queue_output and args.output.exists() and (not args.output.is_dir() or any(args.output.iterdir())):
+    if args.output.exists() and (not args.output.is_dir() or any(args.output.iterdir())):
         raise ValueError("operation timing output is already used")
     producer_software = software.capture("evaluation", "causal", extra_sources=("scripts/onestep_avatar/bench.py",))
 
@@ -513,7 +509,7 @@ def verify_completion(arguments: list[str], root: Path) -> dict:
     if args.output is None or args.output.resolve() != root.resolve():
         raise ValueError("benchmark completion output differs from the requested execution")
     if args.operation_timing:
-        if args.out is None or not args.out.resolve().is_relative_to(root.resolve()):
+        if not args.out.resolve().is_relative_to(root.resolve()):
             raise ValueError("operation timing evidence escapes its output")
         return _verify_operation(args)
     if args.dry_run:

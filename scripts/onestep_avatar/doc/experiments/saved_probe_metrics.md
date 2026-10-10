@@ -1,8 +1,8 @@
-# `experiments/saved_probe_metrics.py` — model-free historical measurements
+# `experiments/saved_probe_metrics.py` — model-free saved-probe measurements
 
 ## Objective
 
-Preserve historical short/long saved-probe calculations and report row names.
+Compute the short/long saved-probe measurements and their report row names.
 The fixed frame/block inventory belongs to this study, separately from general
 metrics and training's full-frame loss. Read evidence, measure it and publish
 JSON; never generate missing outputs or open transformer, text encoder or VAE.
@@ -12,7 +12,7 @@ This model-free command runs directly in `ltx` and needs no queue job.
 
 ```mermaid
 flowchart LR
-  M[("historical manifest and masters")] --> P["deduplicate view and seed"]
+  M[("saved probe manifest and masters")] --> P["deduplicate view and seed"]
   P --> H["check encoding file SHA"] --> T("aligned output, capture and guide")
   T --> C["short or long metrics"] --> J[("atomic metrics JSON")]
   J --> R(["saved-result report reader"])
@@ -43,7 +43,7 @@ Require one `[1,C,F,H,W]` tensor, align masters to its first F frames and
 call the one metric function. Missing/changed/invalid evidence fails without
 invoking a producer.
 
-Each row keeps the historical three-level view label and seed. Short rows add
+Each row keeps the probe's three-level view label and seed. Short rows add
 sigma, arm, latent file SHA and recorded epsilon SHA. Both summaries retain
 probe/checkpoint/rows; short mode additionally retains off-condition,
 model-variant and the first video's schedule. Atomically write JSON with
@@ -92,7 +92,7 @@ video's encoding rows.
 
 ## Invariants
 
-- Keep generated-frame exclusions, blocks, fp32 arithmetic and historical
+- Keep generated-frame exclusions, blocks, fp32 arithmetic and row
   names; do not substitute training loss.
 - Check output file SHA before loading; the shared corpus owns master reading.
 - Complete successful measurement precedes atomic publication; failures cannot
@@ -102,7 +102,7 @@ video's encoding rows.
 ## Gotchas
 
 Motion measures how much content changes, not whether the action is right.
-Detail/seams do not prove identity or quality. This historical reader pins
+Detail/seams do not prove identity or quality. This reader pins
 output file bytes and forwards epsilon SHA as metadata; that field alone does
 not revalidate the original noise file or prove matched inputs for a new
 comparison. Scientific interpretation still requires matched source/video
@@ -113,5 +113,5 @@ evidence.
 `tests/experiments/test_saved_metrics.py` checks short/long identical-capture
 results, distinct-guide scores, file-SHA refusal, CLI ownership, preservation
 of previous metrics on failure and zero-denominator refusal. Ordinary
-CLI/boundary checks reject retired study flags before writes. These establish
+CLI/boundary checks reject study flags in ordinary evaluation before writes. These establish
 saved calculations, not native generation or quality acceptance.

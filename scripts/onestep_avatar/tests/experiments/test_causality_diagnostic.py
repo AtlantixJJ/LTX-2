@@ -1,4 +1,4 @@
-"""Eight-block diagnostics preserve full-master noise and historical execution."""
+"""Eight-block diagnostics keep full-master noise and the shared cached rollout."""
 
 import json
 from contextlib import nullcontext
@@ -38,10 +38,8 @@ def _original_rollout(
     epsilons: list[torch.Tensor],
     blocks: list[tuple[int, int]],
 ) -> torch.Tensor:
-    """The historical cached D1 rollout, called through the model owner exactly as before.
-
-    The retired visualizer's ``run_chain`` made this one ``causal.rollout`` call with a fresh
-    deployed cache, capture ``c0`` and the guide as noising source.
+    """The cached D1 rollout through the model owner: one ``causal.rollout`` call with a
+    fresh deployed cache, capture ``c0`` and the guide as noising source.
     """
     base = common.base_model(model)
     cache = causal.BlockCache.allocate(
@@ -136,8 +134,18 @@ def fixture_inputs(
         path.write_bytes(b"controlled scientific input")
     capture, guide = torch.zeros(8, frames, 2, 2), torch.ones(8, frames, 2, 2)
     monkeypatch.setattr(evaluate.backbone, "transformer_path", lambda *_args: dev)
-    monkeypatch.setattr(evaluate.backbone, "identity", lambda *_args: {"fixture": "dev"})
-    monkeypatch.setattr(evaluate.checkpoints, "read_adapter_metadata", lambda _path: {"fixture": "adapter"})
+    monkeypatch.setattr(evaluate.backbone, "identity", lambda *_args: {"base_transformer_sha256": "f" * 64})
+    caps = SimpleNamespace(caps=SimpleNamespace(latent_channels=CHANNELS))
+    monkeypatch.setattr(evaluate.backbone, "resolve", lambda *_args: caps)
+    monkeypatch.setattr(
+        evaluate.evaluate,
+        "check_adapter",
+        lambda path, _requested: {"contract": {"fixture": "adapter"}, "adapter_sha256": evaluate.sha256(path)},
+    )
+    monkeypatch.setattr(evaluate.checkpoints, "recheck_adapter", lambda *_args: None)
+    monkeypatch.setattr(
+        evaluate.adapters, "inference_transformer", lambda session, *_args, **_kwargs: session.transformer()
+    )
     monkeypatch.setattr(
         dataset,
         "load_training_master",
@@ -151,20 +159,24 @@ def test_checked_orchestration_and_atomic_saved_fields(tmp_path: Path, monkeypat
     _dev, adapter, view, capture, guide = fixture_inputs(tmp_path, monkeypatch)
     events = []
 
-    def check(meta: dict, **conditions) -> None:
-        assert meta == {"fixture": "adapter"}
+    def check(path: Path, conditions: dict) -> dict:
+        assert path == adapter
         assert conditions["schedule"] == [0.421875, 0.0]
-        assert conditions["geometry"] == {"block_latent_frames": 2, "context_latent_frames": 8, "sink_latent_frames": 1}
-        assert conditions["objective"] == "white"
-        assert conditions["guide_mode"] == "d1"
-        assert conditions["teacher_forcing"] is False
+        assert conditions["mode_settings"]["blocks_per_sample"] == 8
+        assert conditions["task"]["objective"] == "white"
+        assert conditions["task"]["guide_mode"] == "d1"
+        assert conditions["history_mode"] == "cache"
+        assert conditions["kv_source"] == "refresh"
+        assert conditions["global_sigma_dtype"] == "float32"
+        assert conditions["application_method"] == "peft_unmerged_fp32"
         events.append("check")
+        return {"contract": {"fixture": "adapter"}, "adapter_sha256": evaluate.sha256(adapter)}
 
     def open_session(*_args, **_kwargs) -> SimpleNamespace:
         assert events == ["check"]
         events.append("open")
         # Keep the session's keyword spelling while replacing only model work.
-        return SimpleNamespace(transformer=lambda _path, loras: nullcontext(object()))  # noqa: ARG005
+        return SimpleNamespace(transformer=lambda: nullcontext(object()))
 
     def probe(
         _transformer: object, _session: object, target: torch.Tensor, source: torch.Tensor, fps: float, sigma: float
@@ -181,7 +193,7 @@ def test_checked_orchestration_and_atomic_saved_fields(tmp_path: Path, monkeypat
             "later_blocks_max_abs_diff": 0.5,
         }
 
-    monkeypatch.setattr(evaluate.checkpoints, "check_adapter_conditions", check)
+    monkeypatch.setattr(evaluate.evaluate, "check_adapter", check)
     monkeypatch.setattr(sessions, "open_session", open_session)
     monkeypatch.setattr(evaluate, "causality_probe", probe)
     output = tmp_path / "diagnostic.json"

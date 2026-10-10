@@ -1,4 +1,4 @@
-"""Historical boundary measurements preserve offsets, masks and meaningful undefined states."""
+"""Sigma-sweep boundary measurements keep offsets, masks and meaningful undefined states."""
 
 import json
 

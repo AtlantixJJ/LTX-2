@@ -430,9 +430,11 @@ def operation_complete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple
 
 def test_operation_output_normalization_and_saved_completion(operation_complete: tuple, tmp_path: Path) -> None:
     arguments, root, path = operation_complete
-    args = bench.parse_args(["--operation-timing", "--mode", "causal", "--out", str(tmp_path / "legacy.json")])
-    assert args.output == tmp_path
-    assert args.completion == {"records": [str((tmp_path / "legacy.json").resolve())]}
+    args = bench.parse_args(["--operation-timing", "--mode", "causal", "--output", str(tmp_path)])
+    assert args.out == tmp_path / "operation_timing.json"
+    assert args.completion == {"records": [str((tmp_path / "operation_timing.json").resolve())]}
+    with pytest.raises(SystemExit):
+        bench.parse_args(["--operation-timing", "--mode", "causal", "--out", str(tmp_path / "file.json")])
     assert bench.evidence_paths(arguments, root) == [path]
 
 

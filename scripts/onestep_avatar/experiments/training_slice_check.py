@@ -327,7 +327,7 @@ def saved_comparison(left: Path, right: Path) -> dict:
 
 
 def compare(left: Path, right: Path, output: Path) -> dict:
-    """Preserve the historical saved-file interface and its numerical calculation."""
+    """Compare two saved slice results with the update checker's tolerance."""
     if output.exists():
         raise ValueError("slice comparison requires a fresh output file")
     result = saved_comparison(left, right)

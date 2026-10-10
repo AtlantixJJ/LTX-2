@@ -1,4 +1,4 @@
-"""Decode and score saved historical sigma-sweep tensors; see doc/experiments/sigma_sweep.md."""
+"""Decode and score verified sigma-sweep results; see doc/experiments/sigma_sweep.md."""
 
 import argparse
 import json
@@ -16,9 +16,9 @@ from scripts.onestep_avatar.experiments import sigma_sweep_results
 from scripts.onestep_avatar.hashing import sha256
 
 
-def sigma_sweep_boundary_metrics(video, capture, guide, mask) -> dict:  # noqa: ANN001 -- historical NumPy RGB arrays
-    """Preserve historical fixed-129-frame boundary scores, with explicit undefined ratios."""
-    import numpy as np  # noqa: PLC0415 -- historical metric arithmetic
+def sigma_sweep_boundary_metrics(video, capture, guide, mask) -> dict:  # noqa: ANN001 -- aligned NumPy RGB arrays
+    """Measure fixed-129-frame boundary scores, with explicit undefined ratios."""
+    import numpy as np  # noqa: PLC0415 -- explicit saved metric arithmetic
 
     arrays = (video, capture, guide)
     if (any(not isinstance(value, np.ndarray) for value in arrays)
@@ -91,16 +91,16 @@ LEVELS = {0.421875: ("one_step", 1), 0.725: ("official", 2),
 SAMPLES = (0, 16, 17, 48, 49, 63, 64, 65, 66, 96, 97, 128)
 
 
-def prepare(  # noqa: PLR0912 -- ordered historical/result-bound preflight gates
+def prepare(
     spec_path: Path, output: Path, *, require_fresh_output: bool = True
 ) -> tuple[dict, dict, dict, dict]:
     """Check every saved input before opening a decoder or output directory."""
     from scripts.prune.core import model_registry  # noqa: PLC0415 -- metadata resolution only
 
     spec = json.loads(spec_path.read_text())
-    if (spec.get("schema_version") not in (1, 2) or spec.get("model") != "2.5"
+    if (spec.get("schema_version") != 2 or spec.get("model") != "2.5"
             or spec.get("decode_seed") != 42 or spec.get("fps") != 30):
-        raise ValueError("sigma sweep requires schema one or two, model 2.5, decode seed 42 and fps 30")
+        raise ValueError("sigma sweep requires result-bound schema two, model 2.5, decode seed 42 and fps 30")
     if require_fresh_output and (output.exists() or output.is_symlink()):
         raise ValueError("sigma sweep requires a fresh output directory")
     identities = [(cell.get("sigma"), cell.get("arm")) for cell in spec.get("cells", [])]
@@ -108,8 +108,7 @@ def prepare(  # noqa: PLR0912 -- ordered historical/result-bound preflight gates
             or identities != [(sigma, arm) for sigma in LEVELS for arm in ("d0", "d1")]):
         raise ValueError("sigma sweep requires the ordered exact four-level by two-arm cell inventory")
     tensors, hashes = {}, {str(spec_path.resolve()): sha256(spec_path)}
-    if spec["schema_version"] == 2:
-        sigma_sweep_results.resolve_cells(spec, hashes, LEVELS)
+    sigma_sweep_results.resolve_cells(spec, hashes, LEVELS)
     for role in ("capture", "guide"):
         entry = spec[role]
         path = Path(entry["path"])
@@ -141,8 +140,7 @@ def prepare(  # noqa: PLR0912 -- ordered historical/result-bound preflight gates
     sources = {str(Path(module.__file__).resolve()): sha256(Path(module.__file__))
                for module in (media, metrics_ops)}
     sources[str(Path(__file__).resolve())] = sha256(Path(__file__))
-    if spec["schema_version"] == 2:
-        sources[str(Path(sigma_sweep_results.__file__).resolve())] = sha256(Path(sigma_sweep_results.__file__))
+    sources[str(Path(sigma_sweep_results.__file__).resolve())] = sha256(Path(sigma_sweep_results.__file__))
     return spec, tensors, hashes, sources
 
 

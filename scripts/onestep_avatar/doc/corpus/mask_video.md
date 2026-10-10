@@ -95,9 +95,8 @@ removed the copy, but the risk it guarded did not go away — a drift to a lossy
 "tuning storage" would be invisible in every downstream number, so the setting itself is
 pinned.
 
-**`read_mask(stem)` takes a suffix-less path** and requires its lossless MP4.
-Legacy arrays are not supported stored-mask inputs. Their historical storage
-cost was about 42× greater than the lossless MP4.
+**`read_mask(stem)` takes a suffix-less path** and requires its lossless MP4; a raw
+array is not a supported stored mask (it would cost about 42× more storage).
 
 **Writes are atomic** (temp file, then rename), for the same reason every other artifact here
 is: a killed ffmpeg must not leave something that looks complete.
@@ -106,16 +105,11 @@ is: a killed ffmpeg must not leave something that looks complete.
 causal VAE's `1, 8, 8, ...` temporal grouping when a reader asks for coverage. This keeps the
 MP4s as the only mask artifacts and permits a geometry change without mask regeneration.
 
-## Completed storage migration
+## Stored format
 
 Stored-mask readers require the lossless MP4. `mask_exists` checks that file;
-`read_mask` fails if it is absent, even if a legacy array exists. The removed
-migration command is no longer a producer path. Bit-exact MP4 round-trip tests
-remain the format requirement. The all-objective inventory checked 70 existing
-guides with no legacy-only selected masks. No original array or source media
-was deleted by the reader cleanup.
-
-Run on the 19 views on disk: **240 MB → 5.9 MB**, 0 failures.
+`read_mask` fails if it is absent, even if a raw array exists. Bit-exact MP4
+round-trip tests are the format requirement.
 
 ## Invariants
 

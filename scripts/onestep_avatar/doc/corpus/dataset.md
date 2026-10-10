@@ -1,8 +1,7 @@
 # `corpus/dataset.py` — find and load encoded video data
 
-Status: path, filename, and crop-record functions are **Current**.
-`load_training_master` is the shared checked reader extracted from `train.py`.
-`ClipStore` reads the fixed-video list and is integrated with typed training, evaluation and preparation.
+`load_training_master` is the shared checked master reader. `ClipStore` reads the
+membership for typed training, evaluation and preparation.
 
 ## Objective
 
@@ -43,8 +42,10 @@ Current functions follow these rules:
 - `CaptureManifest` reads the saved crop box. It does not calculate a replacement crop.
 - `capture_master_latent_frames` reads the actual encoded frame count.
 - `ClipRef` resolves video/view paths and person IDs for train/evaluation groups.
-- `atomic_write` writes to a temporary sibling file and replaces the destination only after success.
-  On failure, remove the temporary file and keep the old destination.
+- `atomic_write` writes to a temporary sibling file and publishes complete content after success.
+  Its default replaces the destination. `replace_existing=False` uses atomic hard-link publication
+  and refuses an existing destination, including one created concurrently. On failure, remove
+  the temporary file and preserve the destination.
 
 `load_training_master(path)` checks a nonempty floating array `[C,F,H,W]` and finite positive frame rate.
 Keep the current loader calculations.
@@ -95,12 +96,12 @@ Never import the ARGAvatar renderer or training CLI here.
 
 ## Gotchas
 
-Masks and alpha use the lossless video codec. The old `.npy` fallback is retired after checked data conversion.
+Masks and alpha use the lossless video codec; raw arrays are not read.
 Use person IDs that prevent the same person from entering both data groups.
 A guide file can exist and still have outdated encode records.
 Equal shape alone is insufficient for D1.
 
-G9 is caused by frame selection, not this reader.
+The [random-start first-image difference](../known_gaps.md#random-start-first-image-distribution) is caused by frame selection, not this reader.
 Do not replace a stored frame with a new image encoding silently.
 
 ## Tests

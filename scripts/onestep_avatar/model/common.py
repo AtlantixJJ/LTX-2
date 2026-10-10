@@ -225,24 +225,16 @@ def block_modality(
 
 
 def base_model(module: torch.nn.Module) -> torch.nn.Module:
-    """Peel a wrapper off to reach the ``LTXModel`` underneath -- whichever of the two wrapper
-    families this package actually produces.
+    """Peel wrappers off to reach the ``LTXModel`` underneath; this is the only such walk.
 
-    * **Training-time**: FSDP/DDP and PEFT wrap the velocity model itself, reachable through
+    * **Training**: FSDP/DDP and PEFT wrap the velocity model, reachable through
       ``.module`` / ``.base_model`` / ``.model``.
-    * **Deploy-time**: the inference session hands back a bare
-      ``X0Model(velocity_model=<LTXModel>)`` -- no FSDP, no PEFT (the LoRA is fused at load,
-      not applied as an adapter) -- reachable through ``.velocity_model`` alone.
+    * **Inference**: the session wraps the velocity model (bare, or with an unmerged PEFT
+      adapter) in ``X0Model``, reachable through ``.velocity_model``.
 
-    One implementation since S1(7) of the 2026-09-17 cleanup plan: ``train.py`` had this exact
-    depth-capped walk as ``_base_model``, and ``onestep_core.rollout``, ``visualize_d0`` and
-    ``bench_forward`` each carried their own copy of an unbounded
-    ``while not hasattr(base, "transformer_blocks") and hasattr(base, "velocity_model")`` loop
-    that only ever handled the second shape. The two algorithms agreed at every existing call
-    site only because each site's wrapper matches exactly one of the two families -- checked
-    directly (``tests/test_causal_core.py::test_base_model_agrees_with_both_retired_walks``)
-    rather than assumed, since a wrapper matching a *different* attribute here would silently
-    size the K/V cache from the wrong module.
+    The walk follows the first present attribute in that order and stops at the first module
+    with ``transformer_blocks``, at most eight levels deep. A wrapper exposing a different
+    attribute would size the K/V cache from the wrong module, so an unknown shape raises.
     """
     model = module
     for _ in range(8):

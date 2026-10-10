@@ -3,8 +3,7 @@
 Inputs: command-line options with an explicit ``--mode bidirectional|causal``, a
 version-two fixed video list, and a fresh output path.
 Logic: a command without ``--mode`` is refused before any environment change, import of
-native libraries or write; the mode-less runtime retired in refactor group G11. A typed
-command configures the shared numerical environment before native imports, then the
+native libraries or write. A typed command configures the shared numerical environment before native imports, then the
 engine checks settings and inputs, prepares distributed training, updates weights,
 records numeric logs and saves completed adapters.
 Outputs: run settings, numeric logs and adapter checkpoints.
@@ -20,7 +19,7 @@ import sys
 from scripts.onestep_avatar.execution.queue_protocol import LAUNCH_ENV
 from scripts.onestep_avatar.training import numerics
 
-MODE_REQUIRED = "train requires --mode bidirectional or --mode causal; the mode-less training runtime is retired"
+MODE_REQUIRED = "train requires --mode bidirectional or --mode causal"
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -214,7 +214,7 @@ def _context(settings: config.RunSettings, saved: dict) -> torch.Tensor:
 
 
 def native_numerics(saved: dict) -> dict:
-    """Require explicit actual native policy; historical absence never picks a default."""
+    """Require the explicit recorded native policy; an absent record never selects a default."""
     from scripts.onestep_avatar.training import runtime  # noqa: PLC0415 -- one original applied-policy reader
 
     return runtime.numerical_policy(saved.get("runtime"))

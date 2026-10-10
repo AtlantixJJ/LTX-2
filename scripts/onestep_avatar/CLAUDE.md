@@ -1,79 +1,44 @@
 # CLAUDE.md — `LTX-2/scripts/onestep_avatar/`
 
-**Current GPU dispatch policy — user amendment, 2026-10-07:** query
-`nvidia-smi` directly and use one shared JSON file to record only processes this
-pipeline starts (PID, start ticks, command, GPU IDs and owned descendants).
-New launches do not consult reservation files or unrelated process environments.
-No privileged access is required. Preserve original claim,
-launch, result and acceptance files unchanged. Scientific inputs, budgets,
-tolerances and native E1–E5 gates remain unchanged.
+This package owns the LTX-2.5 one-step avatar renderer, corpus tooling, model training, and scientific checks.
+Model execution belongs in this package. Code under `expr/` reads saved results to build reports.
+The [architecture contract](doc/architecture.md) defines source ownership and required boundaries.
+The [run guide](configs/README.md) gives every workflow and experiment command; the
+[verification contract](doc/verification.md#acceptance-gates) defines acceptance. The workspace
+[handoff](../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md)
+records current progress and next steps.
 
-**Concurrent runs — user amendment, 2026-10-09:** independent runs may execute
-at the same time on any GPUs 0–7. Query direct occupancy before each launch and
-register each original owner in the shared process ledger. Keep the prescribed
-four-rank training topology, selecting four free devices from the shared pool;
-concurrent ordinary checks do not change it. This expands the October 8 pool.
-
-Guidance for Claude Code when working inside this package: the one-step LTX-2.5 avatar
-renderer, corpus tooling and model training in **one tree**.
-
-**Implementation authorization (2026-10-05):** the user directed execution of the revised
-two-mode plan. The review boundary is passed. Read `doc/README.md` for the current
-source/design mapping. Model execution and launchers belong in this package;
-`expr/` code only generates reports from saved results.
-The user-directed 2026-10-07 [architecture amendment](doc/architecture.md)
-defines the implemented internal boundary, including the `experiments/` subpackage.
-The latest October 8 user direction requires code refactoring first: move
-experiment owners, retire duplicate execution after caller/data/code checks,
-and validate the final layout. Run fresh affected native checks and the unchanged
-E5 pilots afterward. Missing learning or longer-video evidence does not block
-reversible source moves. Scientific acceptance requirements remain unchanged.
-The active handoff owns implementation progress; do not describe proposed
-paths as shipped.
-
-**Refactor design decisions — user, 2026-10-08:** the
-[architecture contract](doc/architecture.md#decisions-recorded-on-2026-10-08)
-is the required contract. The implemented layout has `corpus/`, `execution/` and `experiments/`
-subpackages and splits ordinary `evaluate.py` into `evaluate.py`, `metrics.py`,
-`previews.py` and `comparisons.py`, keeps every historical study as an
-experiment module, replaces the `sigma_sweep` queue kind with one `experiment`
-kind, moves the whole-clip pruning producer to `scripts/prune/`, and limits
-`expr/` cleanup to retiring executors and freezing old reports. The queue
-becomes the only launcher for model work, with bounded supervision and an
-overall deadline for every kind and one GPU pool (GPUs 0–7); do not write
-hand-written launch controllers. The refactoring agent commits one verified
-owner group at a time on LTX-2 branch `onestep-avatar-refactor`; it never
-pushes and never updates the workspace's recorded LTX-2 commit. The handoff's
-owner groups G0–G14 order the work.
+Use the package queue for all native model work. It checks direct `nvidia-smi` occupancy
+and records only its own processes in one shared JSON ledger: PID, start ticks,
+command, GPU IDs, and owned descendants. Independent runs can use free GPUs 0–7.
+Training selects exactly four free devices. Each phase has explicit time and
+allocated-memory bounds; an optional overall budget adds a deadline across phases.
+Keep scientific inputs, budgets, tolerances, original attempts, and acceptance evidence unchanged.
+Do not create a second launcher or consult reservation files or unrelated process environments.
 
 ## Reading order — binding
 
 Before editing anything here, in this order:
 
 1. [`doc/architecture.md`](doc/architecture.md) — common versus experiment owners, allowed
-   dependencies, source destinations, code checks and post-refactor native acceptance.
+   dependencies, queue kinds and boundary checks.
 2. [`doc/core_algorithm.md`](doc/core_algorithm.md) — symbols, the conditioning contract, the
    block-by-block algorithm, train/probe/deploy parity.
 3. [`doc/training_choices.md`](doc/training_choices.md) — D0/D1, `bg`/`white`, teacher/self forcing, and
-   what is implemented, deferred or historical.
-4. [`doc/known_gaps.md`](doc/known_gaps.md) — the open contract violations.
+   the other supported settings.
+4. [`doc/known_gaps.md`](doc/known_gaps.md) — current limits.
 5. [`doc/README.md`](doc/README.md) — the per-module index, and the module doc for the file you
    are touching.
 6. [`configs/README.md`](configs/README.md) — before writing or quoting any run command.
 
 Items 1–4 and 6 are **required** before changing conditioning, noising, the cache, the loss,
-configuration, a probe, or deployment. The single active workspace handoff in
-`plans/` owns progress, acceptance and work order.
-Algorithm and ownership explanations live here. Superseded plans are under
-`plans/history/`; `SS…` markers in older prose are historical citations.
+configuration, a probe, or deployment. Algorithm and ownership explanations live in this
+package; a plan reference never replaces an explanation of a module contract.
 
 ## One package, two conda envs
 
-The package was split across two directories until 2026-09-15 (`scripts/onestep_avatar/` in
-the workspace for the corpus half, this one for the model half) because the ARGAvatar renderer
-and the LTX VAE cannot share a process. That reasoning confuses a **runtime** constraint with a
-**layout** one: exactly one module imports ARGAvatar, and the split cost four transcribed
-copies of shared knowledge plus the tests to pin them. It is one package now.
+ARGAvatar guide rendering and LTX model work use separate processes and conda environments.
+The package layout keeps their shared data contracts in one tree.
 
 | Env | Runs |
 |---|---|
@@ -110,12 +75,10 @@ LTX-2 package. Code under `expr/onestep_avatar/` is only for report generation: 
 captions, report-specific plots, saved-result summaries, and report validation. Study settings,
 saved runs, metrics, media, and logs can remain there as data. Package code accepts their paths
 and does not import executable study code. Report rebuilds read saved results; missing results
-fail instead of launching training, generation, evaluation, or decoding. Move required logic
-out of current `expr/` executors during the reviewed implementation and remove obsolete copies
-and their docs. Do not leave forwarding execution wrappers in `expr/`.
+fail instead of launching training, generation, evaluation, or decoding. No execution or forwarding wrapper belongs in `expr/`.
 
 **Internal boundary:** core training and ordinary evaluation/product must not
-depend on experiment modules. Comparison orchestration and historical converters
+depend on experiment modules. Comparison orchestration and scientific interventions
 live in `experiments/`; they call shared public
 owners. Numerical diagnostic kernels can stay with their model owner. The existing
 queue can explicitly dispatch an experiment job without making ordinary jobs
@@ -139,9 +102,9 @@ standalone module docs. Cross-module contracts and the documentation index are s
 | **`doc/<relative-source-path>.md`** for larger files | *what this file is for, what flows through it, how it fits the other files, what breaks if you change it* |
 | **Small-file header** | objective, ordered logic, inputs/outputs and important invariants |
 
-The second is what a reader cannot reconstruct from one file, and it is where this pipeline
-has gone wrong before — every past bug has been **two producers of something that must have
-one**, which is invisible from inside either producer.
+The second is what a reader cannot reconstruct from one file, and it is where bugs in this
+pipeline hide: **two producers of something that must have one** look correct from inside
+either producer.
 
 **When to update a doc.** Any change to a module's *objective*, *data flow*, *invariants*, or
 *contract with another module*. A pure refactor that moves no tensor and changes no artifact
@@ -161,8 +124,7 @@ screen positions, labels, timing, size/readability rules, and the exact text sel
 Tests must check those decisions and results, not only file existence or diagram syntax.
 
 Proposed modules are labeled Proposed and their absent source paths are text, not broken links.
-For planned small files, draft responsibilities/header content in the index's migration notes
-before editing the header. Once implemented, update the status/index and actual doc/header.
+For a new small file, establish its responsibilities and ordered logic before editing its header. Once implemented, update the status/index and actual doc/header.
 When a file shrinks to at most 100 lines, preserve its useful explanation in its header and
 delete its separate doc. When it grows past 100, write the matching design doc first.
 Source moves/deletions update doc ownership and remove obsolete copies. Do not split or pad
@@ -226,8 +188,7 @@ at them.
   `known_gaps.md` owns defect status; `configs/README.md` owns the runnable recipes. A module doc
   summarises and links; it does not restate a parameter table or the whole algorithm.
 - **Core behavior and runnable configuration are self-contained in this package.** Do not write a
-  doc whose explanation is "see the plan", and do not leave a bare `SS1.6` where a reader needs
-  the substance.
+  doc whose explanation is "see the plan", and do not substitute a plan identifier for the required substance.
 - **A contract change updates everything at once**, in the same commit: the core docs, the
   affected module docs, the recipes in `configs/README.md`, and the gap status. The per-module
   documentation contract below and the two-environment rule still apply.
@@ -236,10 +197,10 @@ at them.
   timestep, what it can attend to, whether it is retained in the cache, its role in the loss, and
   whether deployment can supply it at all.
 - **The clean first-frame condition `c0` is invariant across arm and forcing policy.** "The sink
-  is pinned", "`keyframes_mask` marks frame 0", and "training and deployment share `causal_core`"
+  is pinned", "`keyframes_mask` marks frame 0", and "training and deployment share a model owner"
   are **not** evidence that it holds; assert the assembled block-0 input and its timesteps.
 - **Configuration changes document defaults, explicit recipes and saved metadata together**, and
-  keep implemented, proposed, deprecated and historical settings distinguishable. Never invent a
+  keep supported settings and pending requirements distinguishable. Never invent a
   flag or a loadable config file; `train.py` is CLI-driven.
 - **Verification matches the change.** For docs-only changes: check links, cited symbols, and that
   each recipe matches `train.parse_args`. For behavior changes: the focused and full test runs
@@ -251,8 +212,7 @@ at them.
 0. **Every generated block, including block 0, must have the supplied first-frame clean latent
    as initial conditioning** — independent of D0/D1 and of teacher/self forcing. This is the
    product contract, implemented as `clean_c0_v1`
-   ([G1](doc/known_gaps.md#g1--the-supplied-first-frame-is-not-a-model-condition), verified
-   2026-09-19). Cache-parity tests do not cover it; the dedicated conditioning tests in
+   ([conditioning contract](doc/core_algorithm.md)). Cache-parity tests do not cover it; the dedicated conditioning tests in
    `tests/test_causal_train_sample.py` and `tests/test_bidirectional.py` do.
 1. **Current:** `model/common.py` owns shared conditioning/noise/loss helpers;
    `model/bidirectional.py` and `model/causal.py` own their mode calculations.
@@ -265,8 +225,7 @@ at them.
    they raise with a pointed error.
 3. **Shared knowledge has exactly one spelling.** Artifact names live in `corpus/dataset.py`, the
    crop box in `corpus/geometry.py`, the block plan in `model/causal.py`, the mask codec in
-   `corpus/mask_video.py`. These were four transcribed pairs before the merge; do not reintroduce a
-   copy "to avoid an import".
+   `corpus/mask_video.py`. Do not introduce a copy to avoid an import.
 4. **Both objectives (`bg`, `white`) share every code path**, differing only in which pixels
    were encoded and which filename holds them. An objective is never a second pipeline.
 5. **No synthetic pixels ever enter a loss target** — shift-and-cap, never white-pad, and
@@ -277,6 +236,6 @@ at them.
 ## Before calling a change done
 
 - docs-only work checks links, source symbols, mode logic, worked design checks and inspected diagrams;
-- behavior changes pass `conda run -n ltx python -m pytest scripts/onestep_avatar/tests -q`;
+- behavior changes pass the suites and Ruff in the [run guide](configs/README.md#10-check-the-code);
 - touched modules' mirrored docs or small-file headers reflect the change;
 - shared whole-clip input or export changes follow [`../prune/CLAUDE.md`](../prune/CLAUDE.md).

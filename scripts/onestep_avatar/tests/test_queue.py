@@ -1,13 +1,12 @@
-"""Current own-process dispatch plus retained historical GPUClaims compatibility controls."""
+"""Own-process dispatch, claims and child lifecycle controls for the package queue."""
 
 import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import IO, Never
+from typing import Never
 
 import pytest
 import torch
@@ -18,6 +17,7 @@ from scripts.onestep_avatar import decode_saved, evaluate, media
 from scripts.onestep_avatar.execution import queue, supervision
 from scripts.onestep_avatar.execution.process_registry import ProcessRegistry
 from scripts.onestep_avatar.hashing import sha256
+from scripts.onestep_avatar.tests.claims_fixture import GPUClaims
 from scripts.onestep_avatar.tests.test_previews import _completed
 from scripts.prune.core import model_registry
 
@@ -27,92 +27,6 @@ def test_inventory_requires_all_allowed_devices() -> None:
     for text in ("", "0, 0", "0, unavailable", "\n".join(f"{gpu}, 0" for gpu in [0, 1, 2, 3, 4, 5, 5])):
         with pytest.raises(ValueError, match="GPU"):
             queue.parse_gpu_memory(text)
-
-
-def test_partial_acquisition_rolls_back_owned_claims(tmp_path: Path) -> None:
-    (tmp_path / "2").write_text("other job")
-    claims = queue.GPUClaims(tmp_path)
-    assert not claims.acquire((0, 1, 2, 3), job="training")
-    assert not (tmp_path / "0").exists()
-    assert not (tmp_path / "1").exists()
-    assert (tmp_path / "2").read_text() == "other job"
-    assert not claims.owned
-
-
-@pytest.mark.parametrize("failure", ["write", "link", "busy", "interrupt"])
-def test_acquisition_failures_publish_no_partial_claims(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
-) -> None:
-    claims = queue.GPUClaims(tmp_path)
-    original_link = queue.os.link
-    original_dump = queue.json.dump
-    calls = 0
-
-    def link(source: str | Path, destination: str | Path) -> None:
-        nonlocal calls
-        calls += 1
-        assert json.loads(Path(source).read_text())["token"] == claims.token
-        if calls == 2:
-            if failure == "busy":
-                destination.write_text("foreign reservation")
-                raise FileExistsError("destination became busy")
-            if failure == "link":
-                raise OSError("injected publication failure")
-            if failure == "interrupt":
-                original_link(source, destination)
-                raise KeyboardInterrupt()
-        return original_link(source, destination)
-
-    def dump(record: object, handle: IO[str]) -> None:
-        if failure == "write" and calls == 1:
-            handle.write("{partial")
-            assert not (tmp_path / "1").exists()
-            raise OSError("injected serialization failure")
-        return original_dump(record, handle)
-
-    monkeypatch.setattr(queue.os, "link", link)
-    monkeypatch.setattr(queue.json, "dump", dump)
-    if failure == "busy":
-        assert not claims.acquire((0, 1, 2, 3), job="training")
-        assert (tmp_path / "1").read_text() == "foreign reservation"
-    elif failure == "interrupt":
-        with pytest.raises(KeyboardInterrupt):
-            claims.acquire((0, 1, 2, 3), job="training")
-        assert not (tmp_path / "1").exists()
-    else:
-        with pytest.raises(OSError, match="injected"):
-            claims.acquire((0, 1, 2, 3), job="training")
-        assert not (tmp_path / "1").exists()
-    assert not claims.owned
-    assert not (tmp_path / "0").exists()
-    assert not list(tmp_path.glob(".claim-*"))
-
-
-def test_refresh_and_release_preserve_foreign_token(tmp_path: Path) -> None:
-    claims = queue.GPUClaims(tmp_path)
-    assert claims.acquire((4, 5), job="evaluation")
-    claims.refresh()
-    assert json.loads((tmp_path / "4").read_text())["token"] == claims.token
-    foreign = {"token": "other", "owner_pid": os.getpid()}
-    (tmp_path / "5").write_text(json.dumps(foreign))
-    with pytest.raises(ValueError, match="ownership changed"):
-        claims.refresh()
-    claims.release()
-    assert not (tmp_path / "4").exists()
-    assert json.loads((tmp_path / "5").read_text()) == foreign
-
-
-def test_expired_live_child_claim_cannot_be_stolen_or_released(tmp_path: Path) -> None:
-    claims = queue.GPUClaims(tmp_path, ttl=1)
-    assert claims.acquire((5,), job="evaluation")
-    claims.refresh(child_pid=os.getpid())
-    claims.refresh()
-    old = time.time() - 100
-    os.utime(tmp_path / "5", (old, old))
-    assert not queue.GPUClaims(tmp_path, ttl=1).acquire((5,), job="other")
-    with pytest.raises(ValueError, match="live child"):
-        claims.release()
-    assert (tmp_path / "5").is_file()
 
 
 def test_job_list_requires_explicit_mode_and_matching_outputs() -> None:
@@ -464,7 +378,7 @@ def test_child_requires_verified_outputs_and_releases_reaped_claims(
 ) -> None:
 
     output = tmp_path / "result"
-    claims = queue.GPUClaims(tmp_path / "claims")
+    claims = GPUClaims(tmp_path / "claims")
     assert claims.acquire((5,), job="case")
     job = {
         "id": "case",
@@ -515,7 +429,7 @@ def test_refused_child_preserves_existing_running_journal(tmp_path: Path) -> Non
     with queue.queue_state(path, [job]) as state:
         state["jobs"]["case"].update(state="running", child_pid=12345)
     original = path.read_bytes()
-    claims = queue.GPUClaims(tmp_path / "claims")
+    claims = GPUClaims(tmp_path / "claims")
     assert claims.acquire((5,), job="case")
     with pytest.raises(ValueError, match="pending saved job"):
         queue.run_child(job, claims, tmp_path / "child.log", state_path=path, jobs=[job])
@@ -524,7 +438,7 @@ def test_refused_child_preserves_existing_running_journal(tmp_path: Path) -> Non
 
 
 def test_interrupted_owner_preserves_claim_for_live_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    claims = queue.GPUClaims(tmp_path / "claims")
+    claims = GPUClaims(tmp_path / "claims")
     assert claims.acquire((5,), job="case")
     job = {
         "kind": "evaluate",
@@ -794,7 +708,7 @@ def test_persistent_child_cannot_start_with_pending_dependency(tmp_path: Path, m
     with queue.queue_state(path, [source, job]):
         pass
     original = path.read_bytes()
-    claims = queue.GPUClaims(tmp_path / "claims")
+    claims = GPUClaims(tmp_path / "claims")
     assert claims.acquire((5,), job="case")
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("blocked child started"))
     with pytest.raises(ValueError, match="dependencies are not verified"):

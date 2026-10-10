@@ -1,200 +1,29 @@
 # `execution/queue.py` — run saved package jobs
 
-## G8 launch design
-
-The queue is the only launch owner. Its ordinary kinds include preview, product
-and benchmark work. Public selected-owner parsers normalize their arguments;
-model-free owner completion checks bind every required saved artifact. Preview
-identity uses immutable job facts, because rendering updates the job's state.
-All kinds use the existing supervisor and the single import-light
-`execution/devices.py` policy: physical GPUs 0–7, with four-rank training.
-The queue imports and exports that policy; it does not define a second pool.
-Training selects four free devices and retains four ranks. Independent queue
-owners use separate journals and the same own-process ledger. Concurrent
-training jobs declare distinct rendezvous ports.
-
-Every prepared job binds an effective budget: its exact explicit file, or the
-canonical scientific default of 1,800 seconds per phase and 48,000,000,000
-allocated bytes. The launch environment passes that same budget to the actual
-child. Ordinary owners call `execution.runtime.run` at their module entry;
-this measures a single runtime phase in that child. Existing checker phase
-inventories remain unchanged. No runtime helper creates another child.
-
-An explicit `overall_seconds` budget starts at the first launch attempt. Store
-the first start and absolute deadline in the journal before child registration.
-Retries and restarts retain both values. Waiting for free GPUs before the first
-attempt does not start a clock. Once started, expired pending retries fail
-before claiming or launching. Registration and supervision use the remaining
-time. Expiry also prevents recovery or a zero-exit observation from publishing
-success. A failed deadline has the machine reason `overall_deadline`.
-
-Each attempt retains its supervision result and hash, immutable runtime
-contract/result and worker-absence proof. The queue releases an active ledger
-row only after complete owned-worker absence. Resource and numerical evidence
-do not replace the selected scientific owner checks.
-
-Worked deadline check: a first attempt starts at wall time 100 with an explicit
-ten-second overall limit. Its retry at 106 retains deadline 110. A restarted
-queue at 111 fails that pending retry without a claim or child. It cannot create
-a new deadline of 121. Jobs with no explicit overall bound still have bounded
-startup, gap and phase supervision; no total limit is inferred from phase count.
-
-Current saved-decoder completion requires each decoded row and comparison to
-pass the shared software manifest checker. Missing or stale software cannot
-produce a current receipt. The checker preserves historical artifacts and does
-not restamp them; a decoder rerun uses a fresh destination.
-
-Status: **Implemented; the final code gate and fresh affected native acceptance remain open.** GPU inventory parsing, selection and shared
-own-process tracking, initial job-list schema checks, package argument parsing, canonical job
-identities, command construction, initial checkpoint/raw-result/decoder checks and
-state identity/transaction primitives and decoder reuse-identity checks exist.
-Raw evaluation now verifies scientific settings, exact source/variant inventory,
-checked masters/adapters, saved text/noise, clean c0, diagnostic calculations and
-all published artifact bytes. Real small-transformer CPU checks cover both modes
-and D0/D1 inputs. Training now binds the full typed settings, checked frame plan,
-data/base/parent identities, queue/source digests and config/plan bytes. Controlled
-checks exercise both modes, parent lineage and actual small-model update markers.
-Fresh final-source native integration remains incomplete. Guarded unapproved-launch recovery exists;
-old unguarded launch windows still refuse takeover. Execution
-supports one dispatch (`--execute --once`) or continuous dispatch
-(`--execute --loop`). Both require the explicit shared own-process ledger.
-Persistent child journaling gates execution on saved registration and records running attempts and verified
-terminal states. Refused jobs preserve existing state.
-Explicit dead-owner recovery transactions verify recorded child handles and
-saved artifacts; the CLI exposes them through `--recover` and does not invoke
-recovery automatically.
-For a current approved attempt that has no original supervisor result or hash,
-explicit recovery can record failure before its overall deadline. It requires
-the matching bounded `queue_launch --recover-owned` closure first. That closure
-certifies only exact registered handles; it does not prove unknown descendants
-or continuous supervision. Recovery rechecks the request, approval, unchanged
-journal, original owned-row hash and ended handles. It then sets the machine
-reason `missing_supervision`, preserves the prior attempt inside the attributed
-recovery record, and retains all saved outputs and the original deadline.
-The selected owner still checks saved scientific files. Corrupt scientific
-files refuse recovery. Valid saved outputs cannot replace the supervisor;
-this branch writes no success receipt.
-Present or partial supervisor fields still use ordinary verification; corrupt
-evidence refuses the transaction. A fresh native attempt uses a fresh job and
-output identity when the interrupted outputs must be preserved.
-Incomplete outputs keep the original interrupted-failure behavior. Old
-unguarded attempts do not enter the new branch. This extension classifies only
-valid saved scientific output from a current, approved, ended owned attempt.
-Worked check: the original deadline is 3,700 and recovery runs at 105. The exact
-owned handles are ended and the bounded closure matches. Missing supervisor
-fields produce `failed` with `missing_supervision`; they never produce a
-completion receipt. The first start remains 100 and the deadline remains 3,700.
-The original attempt is preserved under `interruption_recovery.prior_attempt`.
-The CPU controls in `tests/test_queue_missing_supervision_recovery.py` check
-this outcome and refusal of changed closure/request/approval/journal bytes,
-live or reused handles, partial supervisor fields and corrupt present evidence.
-Choose `--dry-run` for read-only review. Execution requires `--execute` and exactly
-one of `--once` or `--loop`,
-and `--process-ledger <SHARED_PROCESS_LEDGER.json>`. All current queue processes
-use the same file. Old per-GPU claim files are preserved as historical data and
-are not read by new dispatch.
-
 ## Objective
 
-Current dispatch follows the user's process-ledger policy. Query `nvidia-smi`
-directly and record only package-owned PID/start/command/GPU identities in one
-shared JSON ledger. New jobs do not read per-GPU reservation files or unrelated
-process environments. The original reservation implementation and saved records
-remain historical until the gated cleanup. `--process-ledger PATH` selects this
-single shared record; the retired `--claims-dir` spelling fails before reading jobs or writing state.
-The launch owner enables child-subreaper tracking before dispatch. Exact targeted
-descendant observations include orphan ranks in new sessions without SSH scans.
+The queue is the only launcher for package model work. It reads a saved job
+list, checks every job's identity and dependencies, selects free GPUs by direct
+`nvidia-smi` query, starts one package child at a time under bounded
+supervision, verifies the child's saved evidence and publishes a terminal state.
+It records only its own processes in one shared ledger (PID, start ticks,
+command, GPUs and owned descendants) through
+[`process_registry`](process_registry.md). It never reads reservation files or
+unrelated process environments. Commands are in the
+[run guide](../../configs/README.md#2-the-queue).
 
-Every kind uses the shared `execution/supervision.py` observer. Before launch,
-the queue freezes the selected owner's phase inventory beside the launch
-records. Training binds its per-rank load/update/export phases; ordinary owners
-bind their single runtime phase. The existing budget's per-phase wall limit also supplies
-explicitly named startup and between-phase guards; these are distinct observed
-intervals. The observer retains finite wait/signal/inventory evidence and never
-closes process records itself. Only complete own-worker absence permits closing
-the active ledger record; preserve its history.
-A failed or ambiguous stop stays failed/running as applicable, preserves evidence
-and cannot publish a receipt. Every current kind uses its explicit effective
-budget or the bound scientific defaults. Sampled total-device occupancy is
-named separately; no allocated
-limit is silently reused as a device-memory stop threshold.
-
-When typed training requests `--save-update-state`, normal completion also binds
-the saved training text, named Adam moments and JSON records for every update.
-Receipts include these files. This extends evidence for the existing training
-job; it adds no job kind, registry, device policy or automatic experiment launch.
-
-Execute saved training, evaluation and decoder jobs inside the package.
-Keep study choices as JSON data. Report rebuilds read saved artifacts separately.
-Do not execute Python or shell implementations from `expr/`.
-
-The `experiment` kind reads one literal `EXPERIMENTS` table. Its first selector,
-`sigma_sweep`, names `scripts.onestep_avatar.experiments.sigma_sweep`.
-The `prune_baseline` selector calls the pruning-owned raw baseline through
-`experiments/prune_baseline.py`, using the same generic one-rank bounded phase.
-It accepts one view and one seed because checker specs retain their repeated
-option refusal. The direct prune CLI keeps its broader options. Its original
-manifest stays in `baseline/`; root completion pins inputs and software, checks
-the saved producer outputs and inventories all local evidence.
-Ordinary kinds never read that table or import an experiment. An unknown
-selector fails the model-free job schema before input reads, claims, state
-writes or children. There is no discovery or registration API.
-
-Every experiment row carries `experiment`, `spec`, `spec_sha256` and arguments.
-The declared spec path must equal the single `--spec` argument. Preparation
-normalizes the path, verifies its required SHA-256, lazily imports the selected
-public parser, and checks its public `completion` descriptor. This descriptor
-is a nonempty mapping containing a `manifest` string and/or nonempty `records`
-list; every evidence path must stay inside the output. It must exactly match
-the normalized job completion fields. The parser descriptor and every job
-field enter the canonical job hash. A prepared row reconstructs the same hash;
-a changed descriptor, selector or spec digest cannot round-trip as that row.
-
-The selected module owns its evidence layout. For sigma sweep, the descriptor
-requires exactly `output/manifest.json`, so another manifest is refused before
-writes. Its unchanged ten-role decoder and metric producer runs on one GPU.
-Before constructing a command and before completion, recheck the saved spec
-hash. Missing final evidence remains pending. Present evidence must pass the
-selected module's `verify_completion(spec, output)`, with no model or decoder
-session. Receipts bind each descriptor path after complete owner verification.
-Dependency receipts continue to govern readiness.
-
-Old `kind: "sigma_sweep"` rows remain immutable historical data with their
-original receipts. The current queue rejects that retired kind. A rerun uses
-a fresh list from the moved builder with the `experiment` fields and fresh
-output paths; it does not update old jobs or producer attribution.
-
-**Historical reservation scanner, not used by new dispatch:** the retained
-`GPUClaims` recovery code follows the observation rules in this paragraph.
-Current attempts use [own-process tracking](process_registry.md), targeted
-descendant identities and [bounded supervision](supervision.md).
-Historical process enumeration tolerates ENOENT and ESRCH when a handle vanishes during
-inspection. If reading an eligible process environment is denied, reobserve
-its stat: skip only a now-absent handle or the same start-tick handle in a
-terminal state. An exiting process can briefly retain a live stat while denying
-environment access. Retry observation at most ten times, ten milliseconds apart;
-a readable environment continues ordinary token/identity checks. Live handles
-still unreadable after that bound and reused identities fail closed.
-Neither access denial nor a vanished session leader establishes worker death;
-the existing two-pass session/token scans remain required.
-
-The active historical evaluation set is
-`expr/onestep_avatar/dev_training_20261001/configs/package_eval_jobs.json`.
-Its 417 jobs use explicit causal mode, converted membership/frame-plan files,
-split selection and package output paths. The 52 progress jobs in
-`package_progress_jobs.json` select the original two fixed sources across
-splits, seed 42 and the exact one/four-call schedules. Their explicit research
-override records historical off-condition diagnostics. The data-only package
-converter is `experiments/convert_progress_jobs.py`; the original rows remain evidence in
-`historical_visualization_jobs.json`. Queue dry runs prove command preparation;
-scientific completion and native execution require separate evidence.
+Kinds are `train`, `evaluate`, `preview`, `product`, `bench`, `decode`,
+`render` and `experiment`. Each kind starts one fixed module with
+`python -m scripts.onestep_avatar.<module>` from `LTX_ROOT` and has a
+model-free completion check. Study choices stay JSON data; the queue never runs
+Python or shell code from `expr/` and never runs report commands.
 
 ## Data flow
 
 Read a versioned job list → validate package arguments and dependencies → check
-completed evidence → query GPU memory and register our attempt → start one package
-child → verify its artifacts and owned-worker absence → publish terminal state
-and close our process record.
+completed evidence → query GPU memory and register the attempt → start one
+package child → verify its artifacts and owned-worker absence → publish the
+terminal state and close the process record.
 
 ```mermaid
 flowchart LR
@@ -220,405 +49,247 @@ flowchart LR
   class complete,recovery,pending output
 ```
 
-The completed-state path requires verified output bytes. Explicit recovery
-classifies process handles and checks saved completion artifacts; automatic
-recovery remains proposed.
+A completed state requires verified output bytes. Recovery runs only when the
+CLI requests it with `--recover`.
 
 ## Organization logic
 
-### Original training launch binding
+### Job list and identity
 
-`prepare_job` is the single-job normalization owner. `prepare_jobs` calls it
-after list-level dependency checks. Replay calls the same owner with the saved
-job's directory. Resolve path arguments, parse owner defaults, pin Accelerate
-bytes and optional resource-budget bytes, and calculate the same canonical job
-SHA-256. Store the budget digest as `resource_budget_sha256`; reject a supplied
-digest that differs from the actual file. An absent budget cannot carry a budget
-digest. Command construction rechecks the budget before creating child logs or
-launch records. Training may omit an explicit budget file; the prepared job then binds the
-canonical scientific defaults and the child records those effective limits. A supplied prepared digest
-must match the reconstructed digest. Do not accept a digest copied from a result.
-List-level duplicate output and dependency-order checks remain in `prepare_jobs`.
+The list has `schema_version: 1` and ordered `jobs`. Each job has a unique
+`id`, a `kind`, an `arguments` array of strings, `output`, `dependencies`
+(earlier job IDs) and `completion` evidence. Train jobs also specify
+`accelerate_config`, `processes` (exactly four) and `port`. Train and evaluate
+arguments contain exactly one `--mode bidirectional|causal`.
 
-Before dispatch, `training_launch_record` captures the exact prepared job,
-command, physical devices, and original Accelerate bytes in base64. Write that
-record beside the child log, outside the scientific output directory. Pass its
-path through `ONESTEP_AVATAR_QUEUE_LAUNCH`. Training copies this same record into
-its checked config and completion evidence. `verify_training_launch` reconstructs
-the job and command and compares original bytes with the current file. It rejects
-changed arguments, processes, port, command, claimed hash or YAML before models.
-Training and replay recheck the binding before publishing completion.
+`prepare_job` is the single-job normalization owner; `prepare_jobs` calls it
+after list-level checks, and replay calls it with the saved job's directory.
+It resolves path arguments against the job-list directory, parses them with the
+selected owner's public parser (no input or model access), rejects
+`--gpu-id`, `--dry-run`, `--help`, `--overwrite`, `--saved-metrics`,
+`--verify` and (outside `preview`) `--preview-job`, and requires the recorded
+output to equal the parsed `--output`. The canonical job SHA-256 hashes the
+normalized job together with the resolved parser settings, including omitted
+defaults: adding a seed changes identity, preparing the same list twice does
+not. A supplied prepared digest must match the reconstructed one. Distinct
+textual outputs that resolve to the same directory fail. A list revision may
+append jobs; changing an existing job's hash fails.
 
-Worked check: a four-process prepared job records bf16 YAML. Changing its YAML to
-`mixed_precision: no` changes the canonical digest. Reusing the original claimed
-YAML digest fails normalization. Changing only whitespace in a budget JSON file
-also changes the canonical digest and rejects an already prepared launch. Removing
-the YAML claim still fails comparison with
-the original launch. A two-process substitution fails the queue's four-process
-rule. An unchanged raw or already prepared job reconstructs the same identity.
+Kind-specific pins enter the identity:
 
-These checks establish requested launch facts. The engine separately records
-actual world, autocast/FSDP dtype policies and rank agreement after setup.
-Missing historical launch or applied-runtime facts cannot pass current replay.
+- `train`: the Accelerate file's full SHA-256 (`accelerate_config_sha256`) and
+  the final completion step, which must equal the parsed `--steps`.
+- `decode`: the resolved `--jobs` path and its content hash.
+- `render`: the resolved `--render-saved-comparisons` path and hash; the
+  completion manifest must be `<output>/render_manifest.json`.
+- `experiment`: the selector, the spec path (equal to the single `--spec`
+  argument) and its required `spec_sha256`.
+- `preview`, `product`, `bench`, `experiment`: the owner parser's `completion`
+  descriptor — a nonempty mapping with a `manifest` string and/or a nonempty
+  `records` list, every path inside the output — must equal the job's
+  `completion`. `preview` also pins its immutable `preview_identity`.
+- Every kind: the effective resource budget. `train` names it with
+  `--resource-budget`; other kinds use `resource_budget` and
+  `resource_budget_sha256`. A supplied digest must match the file; a digest
+  without a file fails. Without a file, the job binds the scientific default of
+  1,800 seconds per phase and 48,000,000,000 allocated bytes. An experiment
+  owner that declares its own scientific budget must receive exactly that budget.
+- `numerical_policy` is absent or `"deterministic"`.
 
-`read_training_marker(checkpoint, step)` owns the checkpoint readiness check for
-queue completion, training provenance and serial replay. Read the companion
-`.complete.json` record and require integer schema two, integer expected step,
-with a nonnegative value,
-`state="complete"`, the exact checkpoint path and the current checkpoint byte
-hash. Boolean values do not substitute for integer versions or steps. A malformed
-or stale record fails before scientific replay inputs or models. Queue completion
-still treats an absent checkpoint or marker as pending before calling this reader.
-Replay requires valid step-zero and step-one readiness records in addition to
-their scientific adapter contracts; provenance alone does not imply readiness.
+Worked check: a four-process prepared job records bf16 YAML. Changing the YAML
+to `mixed_precision: no` changes the canonical digest, and reusing the original
+claimed digest fails normalization. Changing only whitespace in a budget file
+also changes the digest. A two-process substitution fails the four-process
+rule. An unchanged raw or prepared job reconstructs the same identity.
 
-Evaluation completion first checks record/tensor existence, output hashes and
-finite shapes. It then calls the evaluation owner's scientific verifier. The
-owner reconstructs expected sources, variants and settings from the requested
-CLI, rechecks input/adapter identities and verifies saved noise/text evidence.
-Require the exact complete result inventory; one matching-mode result cannot
-complete a different schedule, seed, source or adapter job. Saved historical
-records without the required provenance remain evidence for their original run,
-not a completion receipt for new work. These checks load no model sessions.
+### Experiment selection
 
-### Launch registration
+The `experiment` kind reads one literal `EXPERIMENTS` table that maps each
+selector (`stock_parity`, `adapter_effect_check`, `continuation_check`,
+`training_update_check`, `training_slice_check`, `causality`, `fusion_parity`,
+`sigma_sweep`, `stats`, `prune_baseline`) to its module. Only this branch reads
+the table, importing the selected module at the point of use. An unknown
+selector fails before input reads, claims, state writes or children. Ordinary
+kinds never import an experiment. There is no discovery or registration API.
+The selected module owns its evidence layout and its
+`verify_completion(spec, root)`; for `sigma_sweep` the descriptor is exactly
+`<output>/manifest.json`. `prune_baseline` runs the prune-owned whole-clip
+producer for one view and one seed under the generic one-rank phase.
 
-The [launch gate](queue_launch.md) is integrated with persistent dispatch.
-It registers a waiting child and requires a durable matching journal and grant
-before exec. Inspection checks the approved command transition on the same
-PID/start ticks. Guarded recovery can mark an interrupted unapproved launch
-failed after proving its original owner is gone, approval is absent and saved
-bindings match. Token inspection alone cannot prove death between fork and exec.
-Old unguarded entries remain conservative; recovery never grants or retries work.
-Protocol names now come from `execution/queue_protocol.py`, which imports no model library;
-training.startup keeps its imported constant names for existing consumers.
+### Commands and environment
 
-### Interface and settings
+`job_command` builds argument arrays only for the fixed owners. Training uses
+the current Python with `-m accelerate.commands.launch`, the recorded
+configuration, `--num_processes 4` and the recorded port. Every child gets
+`CUDA_VISIBLE_DEVICES` set to its claimed physical IDs; single-GPU children
+receive `--gpu-id 0`, their local device after masking, and the state keeps the
+physical ID. Training also sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+A deterministic job receives the numerical environment from
+`training/numerics.py`. The queue records only the environment changes, the
+attempt token (`ONESTEP_AVATAR_QUEUE_TOKEN`), the job hash
+(`ONESTEP_AVATAR_QUEUE_JOB_SHA256`) and the supervision and runtime contract
+paths. Children run with `cwd=LTX_ROOT`, an argument array and no shell.
 
-The CLI is `python -m scripts.onestep_avatar.execution.queue --jobs <JSON> --state <JSON>`.
-`--loop` rereads and validates the append-only job list and state before each
-dispatch, verifies completed dependency receipts, selects evaluation/decode
-before training, and queries GPU memory directly each time. Run one child at a
-time in this process; separate queues share the own-process ledger. A successful
-child must publish verified artifacts before its dependent job becomes eligible.
-After a child completes, immediately review the next job-list revision. When no
-idle GPU is available, wait `--poll-seconds` (default 30, finite and greater
-than zero, at most 60) without an active process record. Check dependencies again after
-waiting. Appended jobs retain the original saved job identities; edits to an
-existing job fail before another launch. Exit zero only when every job is
-verified complete. A completed state with missing evidence fails; a state label
-alone cannot end the loop successfully. Stop on failures except the proven,
-bounded startup contention path described below. Refuse a
-running journal rather than adopting or relaunching its child: use the explicit
-recovery owner first. Empty lists exit zero without checking GPU inventory or
-creating state. Interruption while waiting changes no claim or state; child
-interruption retains its existing live-child claim rules.
+Device policy comes from `execution/devices.py`: the pool is GPUs 0–7 and
+training uses four processes. A GPU is free when `nvidia-smi` reports less than
+1,024 MiB used and no active own-process row claims it. Training takes the
+first four free devices in pool order, which may be noncontiguous; other kinds
+take one. A malformed or failed `nvidia-smi` read selects nothing.
 
-`--once` executes at most one ready job; `--dry-run` validates and lists work
-without claiming devices, making directories or starting children.
-The dry-run route prints
-normalized job identities, saved states and planned command/environment changes.
-Planned GPU IDs illustrate the fixed policy; they are not availability claims.
-Dry-run validates arguments and identity, not scientific input bytes.
-Execution checks ready jobs in evaluation-first order and chooses the first job
-with available devices. An unavailable evaluation card does not prevent an
-eligible training job. Return 2 when ready work has no available idle GPU.
-Logs use unique attempt names outside the output directory. Execution does not
-adopt unknown running children. Typed training can use only the startup retry
-protocol below; other failures stop.
-The list has `schema_version: 1` and ordered `jobs`. Each job has a unique `id`,
-`kind` (`train`, `evaluate`, `preview`, `product`, `bench`, `decode`, `render`, or `experiment`), an `arguments` array of strings,
-`output`, `dependencies` (earlier job IDs), and `completion` evidence.
-Train jobs also specify `accelerate_config`, `processes` and `port`.
-The `render` kind owns saved-comparison VAE work through the package comparisons
-CLI. It requires `--render-saved-comparisons`, explicit output and optional seed;
-it does not require a model-generation mode. Pin the spec's resolved path and
-file SHA in canonical job identity. Reject changed specs before child launch.
-Its completion manifest must be the output's `render_manifest.json`.
-Verify its exact spec/decoder/software identity, comparison order and fields,
-every current input hash/shape, source coverage, fps, panel titles/layout, and
-named video/poster hashes and containment. Missing files are incomplete;
-conflicting evidence fails. A historical unbound manifest is not adopted.
-The manifest is the completion receipt; verification rechecks its media and
-source bytes. Rendering shares evaluation/decoder priority and the existing
-single-device own-process registration rules. Pending render jobs wait for every saved panel
-file before reserving a device; dependencies remain explicit. It never runs report code.
-Training preparation requires an existing Accelerate file and records its full
-SHA-256 in the normalized job. Include this content hash in canonical identity.
-Command construction rechecks the hash before launch; replacing a YAML file
-in place cannot preserve the saved launch identity. This pins content, not YAML
-semantics or successful distributed execution.
-Decoder preparation requires its saved `--jobs` JSON and includes the resolved
-path and full content hash in normalized job identity. Recheck this file before
-command construction and completion verification. A changed list invalidates
-the old job, even when new outputs match the changed list. This pins the list;
-encoded sources still require their declared content checks.
-Paths are resolved relative to the job-list directory once, before execution.
-The command arguments contain explicit absolute data/output paths; the executor
-never guesses a study subset, mode, sigma, view, seed or adapter from a run name.
-`prepare_jobs` uses each package owner's parser without input/model access.
-It resolves path arguments against the list directory and rejects GPU/dry-run/
-help/overwrite/preview/measurement-route overrides. Hash canonical normalized
-job data together with resolved parser settings, including omitted defaults.
-Thus adding a seed changes identity, while preparing the same list twice does
-not. Distinct textual output paths that resolve to the same directory fail.
-Train/evaluate arguments require explicit mode. Reject duplicate output paths,
-unknown dependencies, dependency cycles, forbidden executor options, a mismatch
-between recorded and parsed output, or arbitrary executable/module names.
-Ordinary commands select `train`, `evaluate`, `previews`, `infer`, `bench`,
-`decode_saved` or `comparisons`;
-experiment commands use the explicit checked experiment owner.
-A list revision may append jobs; changing an existing job's canonical hash fails.
+### Dispatch loop
 
-The train command uses the current environment's Accelerate executable with
-one recorded configuration, process count, port and the package module.
-Required by the 2026-10-09 user amendment: every kind draws from one shared
-pool of GPUs 0–7; training selects four free devices and keeps four processes.
-The implemented `execution/devices.py` owner selects the first four free members in pool order,
-or the first one for ordinary single-GPU work. It accepts noncontiguous sets.
-`job_command` constructs only argument arrays for the fixed owners. Use the
-current Python with `-m accelerate.commands.launch` for training. Set
-`CUDA_VISIBLE_DEVICES` to claimed physical IDs. Single-GPU children receive
-`--gpu-id 0`, their local device after masking; state retains the physical ID.
-Training also sets the historical expandable-segments allocator option.
-Return environment changes separately; do not record the entire environment.
-Preserve the historical study's forward-prefetch configuration when converting
-its jobs; do not substitute the new generic FSDP template into old runs.
-Do not run report commands as queue jobs. Stage-two report completion is no
-longer a training/evaluation completion condition.
+`--dry-run` validates arguments and identities and prints normalized jobs,
+saved states and planned commands. It writes nothing, claims no device and
+checks no scientific input bytes; planned GPU IDs are not availability claims.
+
+`--execute --loop` rereads and validates the append-only job list and the state
+before each dispatch, verifies completed dependency receipts, and queries GPU
+memory directly each time. `ready_jobs` returns pending jobs whose dependencies
+have verified receipts, non-training kinds first and saved order within each
+group; a `render` job also waits for every saved panel file. `dispatch_ready`
+tries each ready job in that order: it builds a `ProcessRegistry`, chooses
+devices from the inventory, acquires one token-bound ledger row, queries
+occupancy again and starts the child only if every selected device is still
+free. A busy device leaves that job pending, so a later ready job can start
+first. One queue owner runs one child at a time; independent owners use
+separate journals and the same ledger, and concurrent training jobs need
+distinct ports. When nothing can start, the loop waits `--poll-seconds`
+(default 30, at most 60) without an active process record.
+
+The loop exits zero only when every job is verified complete; a completed
+state with missing evidence fails. It returns 1 when any job has failed and
+refuses a state with a `running` job until `--recover` has checked it.
+`--execute --once` starts at most one job; it returns 2 when ready work had no
+free GPU or when a preserved startup retry is pending. Empty lists exit zero
+without a GPU query or state file.
+
+### Registered child launch
+
+Persistent `run_child` (the CLI always supplies a state path) launches the
+model-free guard of [`queue_launch`](queue_launch.md) for each job. It refuses
+a nonempty output, publishes the immutable request in `launches/<token>/`,
+writes a running attempt with the request hash and protocol, then creates the
+guard in a new Linux session. It waits at most 45 seconds for the guard's
+bootstrap while refreshing the owned ledger row, and requires the bootstrap PID
+to equal Popen's PID, the exact guard command, stable live start ticks and
+matching token, job and request hashes. It saves that identity in the row and
+the latest attempt before it publishes approval; the guard then execs the
+fixed command. Inspection checks the granted command transition on the same
+PID and start ticks. Queue JSON publication flushes and fsyncs bytes and the
+containing directory before returning; request, bootstrap and grant files are
+published exclusively the same way. Failed registration publishes no approval.
+A live guard keeps its process record and running attempt; a timeout is not
+startup contention.
+
+Logs use unique attempt names outside the output directory. A zero exit must
+pass artifact verification before a receipt is published. Ordinary failures
+become failed after the child and all owned workers exit. An interrupted owner
+keeps the running state and the record for live or uncertain workers. Only
+complete owned-worker absence closes the active ledger row. `run_child` called
+without a state path executes directly; tests use it, and it carries no
+recovery authority.
+
+### Supervision and budgets
+
+Every kind uses [`supervision`](supervision.md). Before launch, the queue
+freezes the selected owner's phase inventory beside the launch records:
+training binds per-rank load, update and export phases; ordinary owners bind
+the single runtime phase that `execution.runtime.run` measures at their module
+entry. The budget's per-phase wall limit also bounds the startup interval and
+the gaps between phases. The observer keeps finite wait, signal and inventory
+evidence and never closes process records itself. A failed or ambiguous stop
+stays failed or running, keeps its evidence and publishes no receipt.
+Sampled total-device occupancy is recorded separately; the allocated-memory
+limit is never reused as a device-memory stop threshold.
+
+An explicit `overall_seconds` starts at the first launch attempt; waiting for
+GPUs before it does not start the clock. The journal stores the first start
+and the absolute deadline before child registration, and retries, restarts and
+recovery keep both values. An expired job fails before claiming or launching
+with reason `overall_deadline`. Registration and supervision use the remaining
+time, and expiry prevents recovery or a zero exit from publishing success.
+
+Worked deadline check: a first attempt starts at wall time 100 with a
+ten-second overall limit. Its retry at 106 keeps deadline 110. A restarted
+queue at 111 fails that pending retry without a claim or child and cannot
+create a new deadline of 121. A job without an overall bound still has bounded
+startup, gap and phase supervision; no total is inferred from the phase count.
 
 ### State and completion
 
-`verify_completion` checks each of the eight kinds through its saved-artifact
-owner. Execution receipts additionally bind the successful bounded attempt and
-worker absence. Missing files return false; malformed or changed evidence raises an
-error. Resolve evidence paths under the recorded output directory and reject
-escape paths. Training checks marker schema/state/path/hash/final step plus
-the version-two contract and actual adapter matrices.
-Training also requires the contract mode to match the explicit command and the
-declared final step to match parsed training settings. It then calls the engine's
-scientific verifier to bind all typed settings, data/base/parent identities,
-frame plan and queue/source digests. Markers and receipts bind the saved config
-and frame plan bytes as well as the checkpoint. Evaluation checks complete
-state/mode, encoding file hash, recorded tensor shape and finite B,C,F,H,W
-content, then the scientific settings and saved-input checks described above.
-Evaluation receipts include text/noise tensors, raw outputs and future-noise
-diagnostics as well as result records. Decoder completion checks a declared manifest under the output path,
-the exact requested job/comparison IDs, matching source/input records and all
-video/sample hashes. Missing artifacts remain pending; changed inventories or
-bytes fail. Decoder identity also requires the selected model's actual VAE
-hash, current native decoder settings and source-code hash, seed and effective
-encoded tensor shape. Recompute its decode key and RGB frame count from the
-saved encoding. Require exactly the requested in-range poster frames. These
-checks load saved tensors and hash VAE files; they open no model or decoder.
-Native training and scientific/media coverage remain integration checks.
-Decoder completion also probes the actual saved video for exact frame count,
-playback rate and positive dimensions after checking all artifact hashes.
-Individual decoder sample PNGs are now loaded and checked for RGB format and
-dimensions equal to the actual saved video. The selected model's probed scale
-factors determine expected RGB dimensions and frames: `(F-1)*time+1`,
-`H*height`, `W*width`. Encoded channels must match its probed latent capability.
-Actual video size must match these values; matching video/poster size alone is
-insufficient. Comparison-poster layout checks remain separate requirements.
-These initial checks establish artifact format/content. Binding results to the
-full persisted job identity and expected source/adapter inventory remains an
-execution integration requirement; do not use them alone to skip arbitrary
-pre-existing outputs.
-`completion_receipt` verifies all current evidence before capturing the job hash
-and hashes of every declared checkpoint/marker/result/decoder manifest.
-`verify_receipt` requires the same job identity and unchanged evidence records,
-then reruns artifact verification. Missing bytes fail; changed records cannot
-be silently accepted by replacing their self-declared output hashes. Receipts
-must be published only after the owned child completes; lifecycle enforcement
-and complete scientific input matching remain execution requirements.
+The state file records each job hash, state, attempts, owner PID, child PID and
+identity, start and end times, physical GPUs, exit code, log and error. States
+are pending → running → complete or failed. `read_queue_state` checks the
+schema, state names and exact persisted job hashes without writing; only new
+IDs may be appended after the original order. `queue_state` locks the state
+file, refuses another live owner or a surviving recorded child, and publishes
+updates atomically; an exception keeps the previous bytes.
 
-The state file records each job hash, state, attempts, owner PID, child PID,
-start/end timestamps, chosen physical GPUs, exit code, log path and error.
-States are pending → running → complete or failed. A completed job is skipped
-only after its declared evidence verifies. A missing marker or result is not a
-successful job, even when the child returned zero. Training evidence is a
-checkpoint plus its complete marker, file hash and requested final step;
-evaluation evidence is complete raw result records plus their encoding hashes;
-decoder evidence is rendering records plus all output hashes. Do not use a fixed
-sleep as proof that a checkpoint save finished. Dependencies require verified
-complete states. Missing dependencies leave a job pending, not failed.
+`verify_completion` checks each kind through its saved-artifact owner. Missing
+files return false (the job stays pending); malformed or changed evidence
+raises. Evidence paths must stay inside the recorded output.
 
-`ready_jobs` checks saved job identities and every completed receipt before
-selecting work. A completed row without a receipt is invalid. Missing receipt
-artifacts leave that job unverified and block its dependents; changed evidence
-raises an error. Only pending jobs whose dependencies are verified complete
-are ready. Return evaluation/decoder jobs before training, preserving saved
-order within each group. This helper changes no state and starts no process.
-Persistent `run_child` publication uses this gate inside its locked transaction.
+- `train`: the checkpoint and its `.complete.json` marker (integer schema two,
+  `state="complete"`, exact path, current byte hash and the expected final
+  step), the typed adapter contract and actual matrices, a contract mode equal
+  to the command's mode, and the engine's scientific verifier for typed
+  settings, data/base/parent identities, frame plan and queue/source digests.
+  With `--save-update-state` the receipt also binds training text, Adam moments
+  and per-update records.
+- `evaluate`: every listed `result.json` with complete state and the command's
+  mode, its encoding hash, recorded shape and finite content, then
+  `evaluate.verify_evaluation_conditions` for the exact source/variant
+  inventory, adapters, saved text/noise and clean `c0`. One matching result
+  cannot complete a different schedule, seed, source or adapter.
+- `decode`: the declared manifest, exact job and comparison IDs, matching
+  source records, the selected model's VAE hash, native decoder settings,
+  source-code hash, seed and encoded shape; every video and sample hash; the
+  saved video's frame count, rate and size `(F-1)*time+1`, `H*height`,
+  `W*width`; sample PNG format and size. It loads saved tensors and hashes VAE
+  files but opens no decoder.
+- `render`: the exact spec, decoder and software identity, comparison order
+  and fields, every input hash and shape, coverage, fps, panel titles and
+  layout, and video/poster hashes.
+- `preview`, `product`, `bench`, `experiment`: the selected owner's
+  `verify_completion`; a benchmark inventory must equal the owner's.
 
-Serialize state changes with a file lock and atomic JSON replacement.
-`read_queue_state` verifies schema, state names and exact persisted job hashes,
-including object-shaped rows and a list of object-shaped attempts. A persisted
-null row is corruption, not an absent appended job. Owner/child PIDs, when
-present, must be positive integers or null. Reject malformed rows before any
-ownership or lifecycle operation; preserve original journal bytes.
-Only permit appending new IDs after the original ordered list. The reader reads
-without writing. `queue_state` locks the state file, rejects another live owner
-or a surviving recorded child, then atomically publishes successful updates.
-An exception preserves the previous state bytes. Automatic child recovery is
-not invoked by the CLI. A foreign dead owner with running jobs requires an
-explicit `queue_state(..., recover=True)` transaction. Inspect every recorded
-child before changing any row. Surviving or unidentified/reused handles refuse
-the whole transaction. Missing or matching terminal handles permit recovery:
-verified completion publishes a receipt; absent artifacts mark the attempt
-failed with an interruption reason. Corrupt evidence refuses recovery and
-preserves the prior state bytes. Failed outputs stay in place; recovery does
-not retry, move files, release claims or start processes.
+`completion_receipt` verifies all evidence before capturing the job hash and
+the hash of every declared file. `verify_receipt` requires the same identity
+and unchanged evidence and reruns the artifact checks. A completed row without
+a receipt is invalid; missing receipt artifacts block dependents; changed
+evidence raises.
 
-`--recover --jobs <JSON> --state <JSON>` is an explicit CLI route, mutually
-exclusive with `--execute` and `--dry-run`. It requires an existing saved
-journal. Read and validate job identities first, then recover all running
-entries in one locked transaction. Check child handles even when this process
-is the journal's current owner: explicit recovery cannot mark its own live
-child failed or complete. Unguarded missing PIDs, unreadable/reused identities,
-surviving children or a live foreign owner refuse the transaction. Matching
-terminal or missing registered child handles permit artifact verification.
-A proven unapproved guarded launch becomes failed without artifact adoption. A valid receipt marks
-the entry complete; absent completion marks it failed. Print job IDs/states
-and whether a recovery transaction ran. A journal with no running entries
-gets a read-only summary. This route never queries GPU memory or modifies
-reservation files and never restarts failed work. Startup retries are a separate
-path. Old unguarded unknown launch windows still refuse recovery.
-An owner must hold that lock while deciding/claiming a ready job. A live recorded owner
-cannot be replaced. After owner death, inspect its exact child PID and recorded
-command before recovery. A surviving child remains owned; do not launch another
-copy. If both are terminal/missing, verify completed artifacts first; otherwise
-record interruption and require a fresh attempt directory. Preserve original
-failed outputs under an attributed superseded location, never overwrite them.
-Do not infer process death from an observation timeout or a claim file alone.
+### Training launch binding
 
-Process identity uses Linux `/proc/<pid>/stat` start ticks and exact NUL-separated
-command arguments. Parse the stat fields after the last closing parenthesis,
-because the process name can contain spaces or parentheses. Read stat before
-and after command arguments; a changed start tick rejects the observation.
-A zombie or dead process is terminal, even if signal zero still succeeds.
-Missing process files mean the handle disappeared. Permission or other I/O
-errors remain errors; they never prove death. Journal the child identity after
-launch before approval. Recovery requires matching start ticks and bound arguments,
-not a matching PID alone. A reused PID cannot authorize adopting or killing
-the unrelated process. Old unguarded missing-PID launch recovery still refuses takeover.
-`inspect_child` first compares the saved PID and start ticks to the current
-handle. Live handles must also match the saved command. For a matching terminal
-handle, accept either the saved command or an empty command: Linux clears
-`/proc/<pid>/cmdline` after exit, before the parent reaps the zombie. A changed
-nonempty command still refuses recovery. Missing saved commands and identities,
-empty live commands and changed start ticks cannot establish termination.
-Check surviving session/token workers before returning terminal. A zombie
-launcher with a live worker stays live for ownership purposes.
-
-Worked check: save PID 42, start ticks 100 and command `python worker.py` while
-live. After exit, observe PID 42, ticks 100, terminal true and command `[]`.
-With no owned workers the result is terminal; with a live token-bound worker
-it is live. Ticks 101 refuse recovery in both cases.
- A live PID with no saved identity or different
-start ticks/arguments requires explicit recovery and raises an error.
-
-### GPU ownership and child execution
-
-`run_child` executes one prepared job with an active own-process record. Refuse
-nonempty outputs and foreign records before starting. Create an exclusive log,
-start only the fixed command array, record its PID, and refresh its owned tree
-while polling. A zero exit must pass artifact verification before a receipt is
-returned. Failures preserve the output and log. Close the process record only
-after the child is reaped and owned descendants are absent. An interrupted owner
-retains the record for live or uncertain workers.
-With `state_path` and the complete prepared `jobs` list, the helper publishes
-running command/attempt ownership before launch, then records the child PID.
-On success it publishes the verified receipt and complete state; ordinary
-failures become failed after the child and all owned workers exit. Interruptions with a live child
-retain running state and PID for recovery. Call this helper outside an existing
-state transaction. Require the child job to match its prepared list entry before
-publishing an attempt. Only the attempt published by this call can be marked
-failed; refusing an existing running job must preserve its saved state. Logs
-must stay outside the child output directory so log creation does not make a
-fresh output nonempty. Process-start crash-window recovery and scientific binding
-remain required for native loop acceptance and historical live handoff.
-
-Read `nvidia-smi` successfully before choosing a device. Malformed/failed output
-means no device can be selected, not an empty GPU. Require memory below 1024 MiB.
-Current dispatch uses `process_registry` for targeted own-process tracking and
-direct GPU availability. It never calls the legacy scanner below.
-
-#### Current dispatch ownership
-
-Current `dispatch_ready` constructs `ProcessRegistry`, chooses devices from
-direct inventory and acquires one token-bound ledger row. It queries occupancy
-again before creating a child. A busy device leaves the job pending; an invalid
-query refuses without a launch. Only this attempt's record can be released.
-Independent queue owners may use GPUs 0–7 concurrently with separate journals
-and one shared own-process ledger. Training requires four
-free devices with unchanged four-rank topology. External programs can still start after a
-query; the ledger coordinates only this pipeline's own starts.
-
-The retained `GPUClaims` helper and original reservation files are historical
-compatibility code/data, awaiting gated retirement. New dispatch neither reads
-nor creates those files and never uses their TTL as permission to adopt a GPU.
-Current worker observations use exact owned handles and descendant containment.
-
-Pass an argument array to `subprocess.Popen`; use no shell interpolation.
-Use the package marker's `LTX_ROOT` as the child working directory with the current
-conda environment. Record the complete
-command, environment changes and log identity. Poll in short intervals so
-claims can be refreshed and state can be recorded. Default execution starts
-no campaign beyond the supplied list. On termination, record the live child
-and release nothing it still uses; do not kill unrelated processes.
-
-Retry only a startup contention failure before any logged weight update, at
-most three times, preserving every attempt and error. Failure after an update,
-or an input/adapter/checkpoint-validation failure, stops that job with its
-reason. Do not repeatedly retry a broken specification. Evaluation jobs for
-already completed checkpoints take precedence over the next training launch,
-matching the historical queue's gap policy.
+Before dispatch, `training_launch_record` captures the exact prepared job,
+command, physical devices, the Accelerate bytes in base64 and the numerical
+environment (`schema_version: 2`). The record is written beside the child log
+and passed through `ONESTEP_AVATAR_QUEUE_LAUNCH`; training copies it into its
+checked config and completion evidence. `verify_training_launch` accepts only
+schema two, reconstructs the job and command, compares the original bytes with
+the current file and rejects changed arguments, processes, port, command,
+claimed hash or YAML before models load. These checks bind requested launch
+facts; the engine separately records the actual world size, FSDP dtype policies
+and rank agreement after setup. A record without these facts cannot pass replay.
 
 ### Startup contention retries
 
-Each launched child gets a new `ONESTEP_AVATAR_QUEUE_TOKEN` and its prepared
-`ONESTEP_AVATAR_QUEUE_JOB_SHA256`. Training emits plain JSON lines with prefix
-`AVATAR_QUEUE_EVENT `. The engine reports `updates_begin` before any sample or
-optimizer update. A CUDA `OutOfMemoryError` before that boundary reports
-`startup_contended` with reason `cuda_oom`. A typed `OSError` with
-`errno.EADDRINUSE` before that boundary can report reason `port_in_use`. Other
-exceptions report nonretryable `startup_failed`. Traceback text, including
-network-library messages, cannot authorize a retry. Each event binds
-the attempt token, job hash and global rank. Text traceback matching is insufficient.
+Training emits JSON lines with prefix `AVATAR_QUEUE_EVENT `, bound to the
+attempt token, job hash and global rank. The engine reports `updates_begin`
+before any sample or optimizer update. A CUDA `OutOfMemoryError` before that
+boundary reports `startup_contended` with reason `cuda_oom`; a typed `OSError`
+with `errno.EADDRINUSE` before it can report `port_in_use`. Other exceptions
+report nonretryable `startup_failed`. Traceback text never authorizes a retry.
 
-The child starts in its own Linux session. Record its session and exact
-PID/start/command identity with the attempt. Current rows also bind the shared
-process-ledger path. The launch owner acts as a Linux subreaper and observes
-only registered children and targeted descendants, including orphan ranks in
-new sessions. A leader's exit cannot prove workers ended.
-
-`owned_workers_live` selects the targeted ledger observation for current rows.
-Incomplete or live-worker observations retain the active record and block
-completion/retry. Historical rows without a ledger keep their conservative
-original session/token reader; that reader is not a new-dispatch procedure.
-Observation errors or timeouts cannot authorize takeover. Pass token/job
-identity to each child, and preserve all original identities on interruption.
-
-Before retry, require a reaped nonzero child, a complete absent owned-worker observation,
-at least one valid matching contention event, no update-boundary event from any
-rank, and no nonempty `metrics_rank*.jsonl`. Unknown or malformed event evidence
-refuses retry. Typed training only can use this automatic path. Decoder/evaluation,
-validation failures, missing-completion failures and owner interruptions stop.
-
-Allow three retries after the initial failed launch (four attempts maximum).
-Preserve each terminal attempt's error, return code, environment, log and log SHA.
-Under the queue-state lock, create an exclusive archive below the output parent's
-`superseded_startup_contention/`. Move any partial output into its `output/`, copy
-the child log, and write a README and hashed preservation record. Check source
-bytes before and after the move. Publish the archive identity and reset the job
-to pending only after preservation succeeds. A failed publication restores the
-original output location; never replace a newly occupied output path. All previous
-attempts remain in the journal. Retry requires fresh own-process registration and both GPU checks;
-it can wait without holding devices. The loop still prioritizes ready evaluations.
-`--once` performs one launch and may leave an eligible retry pending. It does not
-execute the retry itself. Exit 2 means an eligible retry is pending, not successful
-completion.
+A retry requires a reaped nonzero child, complete owned-worker absence, at
+least one valid matching contention event, no `updates_begin` from any rank and
+no nonempty `metrics_rank*.jsonl`. Only typed training uses this path; every
+other failure stops. At most three retries follow the first failure. Under the
+state lock, `retry_startup_failure` creates an exclusive archive below the
+output parent's `superseded_startup_contention/`, moves any partial output into
+it, copies the log, writes a README and a hashed preservation record, checks
+source bytes before and after, and only then resets the job to pending with the
+same identity. A failed publication restores the original output location.
 
 ```mermaid
 flowchart LR
@@ -635,146 +306,120 @@ flowchart LR
   class pending mutable
 ```
 
-Worked outcome: rank 2 runs out of CUDA memory while loading weights. No rank
-has emitted `updates_begin`, and no numeric update was written. After all child
-session processes terminate, preserve attempt one and leave its unchanged job
-pending. If rank 0 already crossed the update boundary, keep the job failed even
-when rank 2 reports startup contention. The fourth failed launch cannot retry.
+Worked outcome: rank 2 runs out of CUDA memory while loading weights, no rank
+has emitted `updates_begin` and no update was written. After all child session
+processes end, attempt one is preserved and the unchanged job is pending. If
+rank 0 had crossed the update boundary, the job stays failed. The fourth failed
+launch cannot retry.
 
-Worked outcome: an idle GPU is eligible only when no active own-process row
-conflicts with it. An old reservation file has no authority for a new attempt.
-If any GPU in a required four-rank set is busy at the second query, close only
-the fresh unlaunched record and leave training pending; start no child.
-If a training child exits zero with a missing final checkpoint marker, the job
-fails and dependent evaluation remains pending.
+### Recovery
+
+`--recover` is mutually exclusive with `--execute` and `--dry-run` and needs an
+existing journal. It validates job identities, then recovers every running
+entry in one locked transaction. It never queries GPU memory, retries failed
+work, moves files or starts processes. A journal without running entries gets
+a read-only summary.
+
+For each running entry it inspects the recorded child, even when this process
+owns the journal. Surviving, unidentified or reused handles and a live foreign
+owner refuse the whole transaction. Matching terminal or missing handles permit
+artifact verification: a valid receipt marks the entry complete; absent
+completion marks it failed with an interruption reason; corrupt evidence
+refuses recovery and keeps the prior bytes. Failed outputs stay in place; a new
+attempt uses a new job ID and output.
+
+- **Unapproved guarded launch.** A row of the registered-child protocol with no
+  PID or identity is classified `unapproved` only when the launch owner is gone,
+  request and attempt bindings match, no grant exists, any saved bootstrap is a
+  known terminated matching guard and no owned worker survives. It is marked
+  failed without adopting output. A row without the registered-child protocol
+  and an unknown launch window refuses takeover.
+- **Missing supervision.** An approved attempt whose owner ended before it
+  published a supervisor result can be recorded as failed before its deadline,
+  after the matching bounded `queue_launch --recover-owned` closure. That closure
+  certifies only exact registered handles, not unknown descendants or continuous
+  supervision. Recovery rechecks the request, approval, unchanged journal,
+  original owned-row hash and ended handles, sets reason `missing_supervision`,
+  keeps the prior attempt under `interruption_recovery.prior_attempt` and keeps
+  all outputs and the original deadline. The selected owner still checks the
+  saved scientific files; corrupt files refuse recovery. Valid outputs never
+  replace the supervisor, and this branch writes no success receipt.
+
+Worked check: the deadline is 3,700 and recovery runs at 105. The exact owned
+handles are ended and the bounded closure matches. Missing supervisor fields
+produce `failed` with `missing_supervision`, never a completion receipt; the
+first start stays 100 and the deadline 3,700.
+
+### Process identity
+
+Identity uses `/proc/<pid>/stat` start ticks and exact NUL-separated command
+arguments. Parse the stat fields after the last closing parenthesis, because
+the process name can contain spaces or parentheses. Read stat before and after
+the command; a changed start tick rejects the observation. A zombie or dead
+process is terminal even if signal zero succeeds. Missing process files mean
+the handle disappeared; permission and other I/O errors stay errors and never
+prove death. `inspect_child` compares the saved PID and start ticks, requires
+the saved command for a live handle and accepts the saved or an empty command
+for a matching terminal handle (Linux clears `cmdline` before the parent reaps
+a zombie). It checks surviving owned workers before returning terminal.
+
+`owned_workers_live` uses the targeted ledger observation for rows that record a
+process ledger; rows without one use the two-pass session and token scan. Both
+fail closed on unreadable or reused handles, and a vanished session leader never
+proves that workers ended.
+
+Worked check: save PID 42, start ticks 100 and command `python worker.py` while
+live. After exit, observe PID 42, ticks 100, terminal true and command `[]`.
+With no owned workers the result is terminal; with a live token-bound worker it
+is live. Ticks 101 refuse recovery in both cases.
+
+`run_child` takes a claim object with the `ProcessRegistry` interface (`token`,
+`owned`, `started_ticks`, `refresh`, `release`). Tests use the file-based
+`tests/claims_fixture.GPUClaims` with that interface to drive it without a ledger.
 
 ## Invariants
 
-Study configuration and original scientific records retain their identities.
-Completed checkpoints are immutable. Report code cannot start jobs. The shared
-own-process ledger and queue state have explicit owners. Stage D must remove
-remaining compatibility executors from expr. The current handoff orders
-structural refactoring and CPU/caller/profile checks before new native
-experiments on the final layout. Update lazy, explicitly selected experiment
-dispatch and completion together; ordinary jobs remain independent. Original
-launch/result identities remain unchanged, and native lifecycle acceptance is
-not inferred from a path move.
-The live historical handoff occurs only after command/data conversion and
-child ownership have been verified; this design is not evidence of that handoff.
+- The queue is the only launcher; checkers and run-support modules never claim
+  GPUs, write ledger rows or supervise children.
+- Study configuration and saved scientific records keep their identities;
+  completed checkpoints are immutable.
+- Every receipt is published only after the owned child completes and its
+  evidence verifies; a state label alone is never completion.
+- Recovery and retries never overwrite outputs, never adopt unknown children and
+  never infer process death from a timeout or a claim file.
+- Experiment dispatch and completion change together through the literal table;
+  ordinary jobs stay independent of experiments.
 
 ## Gotchas
 
-The old queue's `metrics.json` and `.stage2_report_complete` flags combine model
-work with reporting. Separate them during migration. Mode-less training jobs
-cannot run, because `train` requires `--mode`; version-one adapters need
-conversion before this executor can run them.
-Saved-result report rebuilds must fail on missing inputs, not enqueue recovery.
-A GPU-count override does not authorize changing a recorded FSDP configuration.
+- A queue owner started in a terminal or tool session ends with that session
+  and leaves its attempt without a supervisor result; start long owners with
+  `setsid` (see the run guide).
+- External programs can start on a GPU after the second query; the ledger
+  coordinates only this package's own starts.
+- A GPU-count override never authorizes changing a recorded FSDP configuration.
+- Saved-result report rebuilds must fail on missing inputs, not enqueue recovery.
 
 ## Tests
 
-Current dispatch controls exercise direct inventory, exact owned-process
-registration, the second occupancy query, guarded bootstrap/grant ordering and
-persistent journals. Busy/malformed/failed inventory starts no child or attempt.
-Check all-or-nothing four-device selection and ownership-safe release. These
-CPU controls cannot prove isolation from external programs.
+- Dispatch controls exercise direct inventory, exact owned-process registration,
+  the second occupancy query, guarded bootstrap and grant ordering, persistent
+  journals, all-or-nothing four-device selection and ownership-safe release.
+  Busy, malformed or failed inventory starts no child.
+- Scientific completion tests use serialized settings, tensors and markers and
+  reject changed schedules, inputs, adapters, runtime, budgets, incomplete phase
+  journals, redirected artifacts and missing evidence.
+- Startup tests check bound events, pre-update-only authority, ended-worker
+  evidence, the three-retry limit, exclusive preservation and rollback.
+- Loop controls check append-only jobs, dependencies, immutable identities,
+  waiting without an active record and refusal of failed or unrecovered work.
+- Recovery controls distinguish valid completion, incomplete output, unknown
+  launch windows, changed, reused or live handles and missing journals;
+  `tests/test_queue_missing_supervision_recovery.py` covers the
+  missing-supervision branch.
+- Real Linux zombie cases leave the child unreaped while inspecting its empty
+  command line. Guarded-recovery cases cover owner exits before fork, before
+  bootstrap, after bootstrap and after interrupted registration.
 
-Scientific completion tests use actual serialized settings, tensors and
-markers. They reject changed schedules, input/source/adapter/runtime/budget
-identities, incomplete rank phase journals, redirected artifacts and missing
-completion evidence. Saved-render controls cover exact spec/VAE/software/media
-bindings, geometry, labels, timing and readable full/compact output.
-
-Startup tests check token/job/rank-bound events, pre-update-only authority,
-complete ended-worker evidence, three-retry limit, exclusive preservation of
-each attempt and rollback on failed archive publication. Validation failure,
-any update boundary, surviving worker or unknown evidence forbids retry.
-Real owned Linux children prove that leader exit cannot authorize another job.
-
-Loop controls check append-only jobs, dependencies, immutable prior identities,
-waiting without an active record and refusal of failed/unrecovered work.
-Recovery controls distinguish valid saved completion, incomplete output,
-unknown launch windows, changed/reused/live handles and missing journals.
-Controlled historical `GPUClaims` fixtures test only the retained compatibility
-helper. Their reservation files and environment scans do not describe current
-dispatch or establish current native acceptance. Native receipts retain their
-explicit launch, scientific and supervision scopes.
-
-Real Linux zombie regression cases leave the child unreaped while inspecting
-its empty command line. They verify explicit failed-attempt recovery, changed
-handle/command refusal and claim retention while a worker in another session
-survives. Tests reap only their own child and terminate their own saved worker.
-
-### Registered persistent child dispatch
-
-Persistent `run_child` now launches the model-free guard for each prepared job.
-Publish the immutable request in `launches/<token>/`, write a running attempt
-with request hash and protocol, then create the guard. Wait at most 45 seconds
-for its bootstrap while refreshing the owned process-ledger record. Require the bootstrap
-PID to equal Popen's PID, exact guard command, stable live start ticks and
-matching token/job/request hashes. Save that identity in both the row and latest
-attempt before publishing approval. Keep the bootstrap identity after exec;
-inspection checks the granted command transition through immutable launch files
-and the running journal. No such exception exists for old direct-launch rows.
-
-Queue JSON publication flushes and fsyncs the temporary bytes before atomic
-replacement and fsyncs the containing directory before returning. Exclusive
-request/bootstrap/grant publication likewise fsyncs bytes and directory entries.
-Approval follows completed journal publication, never a merely yielded mutable
-state. Failed registration does not publish approval. A live guard retains its
-process record and running attempt; timeout is not startup contention. Guarded unapproved recovery handles the otherwise unresolved launch window.
-Old unguarded unknown handles still refuse takeover.
-
-Transient `run_child` calls without a state path still execute directly and do
-not provide persisted recovery authority. CLI dispatch always supplies a journal.
-Controlled fake-Popen receipt/retry tests use an explicit test-only fixture that
-bypasses registration; those tests cannot establish launch correctness. Separate
-actual CPU-process tests exercise the unchanged production guard and dispatcher.
-
-### Recover an unapproved guarded launch
-
-Implemented: a missing-PID or missing-identity row with the registered-child protocol
-may be classified `unapproved` only after the launch owner is gone, request and
-latest-attempt bindings match, no grant exists, any saved bootstrap has a known
-terminated matching guard, and no owned worker survives. Missing bootstrap alone
-cannot prove death during fork-to-exec; absence of approval and a terminated
-original owner prove that this guard cannot start model work. Explicit recovery
-marks it failed and records why, without verifying or adopting output. Preserve
-all artifacts and attempts; do not retry or release claims from recovery.
-Old unknown launches and inconsistent granted launches still refuse takeover.
-
-
-Twenty focused guarded-recovery checks include actual owner exits before fork,
-before bootstrap, after bootstrap and after an interrupted registration. They
-verify preserved output and original attempt records, no grant/model execution,
-explicit-only failure publication, a paused live guard and a surviving worker in
-another session. Changed bindings, dangling control symlinks, live/reused owners
-and denied observations leave journals unchanged. These are CPU-control checks;
-they do not establish native model/FSDP or legacy queue handoff acceptance.
-
-## Numerical launch binding
-
-Current typed training uses a version-two launch record that adds the exact
-`numerical_environment` from the import-light shared numerical owner. Pass these
-values to the guarded child with the existing physical-device environment.
-Reconstruct version-one historical records using their original field set and
-version-two records using the current field set. Both readers remain strict;
-missing historical numerical facts are never replaced with current defaults.
-Current typed execution and serial native acceptance require version two.
-These fields bind numerical kernel settings, not new scientific inputs or limits.
-CPU controls verify the exact environment and strict readers for both schemas.
-Both original four-rank numerical comparisons pass. Complete workflow and
-final-source acceptance remain separate; see the active handoff.
-
-### Saved comparison command owner
-
-The `render` kind launches `scripts.onestep_avatar.comparisons` with the saved
-specification, exact seed/output and child-visible GPU index. Preparation and
-completion call that same owner directly; ordinary evaluation retains its own
-module. The decoder and preview owners stay separate explicit commands.
-
-### Extracted causality and fusion selectors
-
-The literal experiment table now also names `causality` and `fusion_parity`. Their `parse_args` methods expose spec/output/device and a contained manifest descriptor without reading scientific input paths; this preserves both passes of relative queue path normalization. The selected owner reads and checks its scientific spec after canonicalization, executes through shared model owners, and verifies saved scientific controls without native loading.
-
-An explicit selected owner may expose `evidence_paths(spec, root)` for its complete verified artifact inventory. The queue uses it only in the experiment receipt branch, after scientific completion, and requires every returned path to stay inside output. This records raw tensors, branch summaries, text and noise without making ordinary jobs know their roles. The sigma-sweep receipt remains unchanged.
+These CPU controls cannot prove isolation from external programs or native
+model and FSDP behavior.

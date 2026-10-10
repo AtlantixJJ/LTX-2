@@ -1,4 +1,4 @@
-"""Corpus and model imports obey the G3 ownership rows, including lazy imports."""
+"""Corpus and model imports obey their ownership rows, including lazy imports."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from scripts.onestep_avatar import LTX_ROOT, PACKAGE_ROOT
 
 PREFIX = "scripts.onestep_avatar"
 ROOT_NAMES = {"PACKAGE_ROOT", "LTX_ROOT", "WORKSPACE_ROOT"}
-CONVERSION_EDGE = ("corpus/subset.py", "scripts.onestep_avatar.model.causal", "convert_legacy")
 
 
 def internal_imports(source: str, module: str) -> list[tuple[str, str | None]]:
@@ -58,8 +57,6 @@ def violations(source: str, relative: str) -> list[tuple[str, str | None]]:
     failures = []
     module = PREFIX + "." + relative.removesuffix(".py").replace("/", ".")
     for target, function in internal_imports(source, module):
-        if (relative, target, function) == CONVERSION_EDGE:
-            continue
         if (
             not any(
                 target == permitted or target.startswith(permitted + ".")
@@ -86,8 +83,6 @@ def test_boundary_finds_lazy_relative_and_root_named_back_edges() -> None:
     assert violations("def f():\n from ..training import checkpoints\n", "model/adapters.py")
     assert violations("def f():\n from scripts.onestep_avatar import evaluate\n", "corpus/dataset.py")
     assert violations("from scripts.onestep_avatar.model.causal import CausalGeometry\n", "corpus/subset.py")
-    allowed = "def convert_legacy():\n from scripts.onestep_avatar.model.causal import CausalGeometry\n"
-    assert not violations(allowed, "corpus/subset.py")
     assert violations("def f():\n from scripts.onestep_avatar.model.causal import CausalGeometry\n", "corpus/subset.py")
 
 

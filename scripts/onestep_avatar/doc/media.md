@@ -4,16 +4,18 @@ The checked reference CLI captures the decoding software profile before input
 preflight, checks it before opening the VAE and before publishing references,
 and saves it with the producer record. A supplied software manifest on any
 render/reference save is checked before media writing and final record publication.
-Low-level RGB assembly does not invent a decoder identity. Historical reference
-loading preserves saved provenance; it does not require today's decoder software.
+Low-level RGB assembly does not invent a decoder identity. Loading saved references
+keeps their saved provenance; it does not require today's decoder software.
 
-Saved historical comparisons use the `comparison` layout. Preserve supplied panel
+Saved comparisons use the `comparison` layout. Preserve supplied panel
 order, use at most three columns, and pad the last row with explicitly unused cells.
 Panel roles must be unique and cannot use the reserved `unused` role. The same
 frame mapping, title readability, aspect-preserving padding and saved-record replay
 checks apply as for the fixed training and inference layouts.
 
-Status: **Partially implemented.** Decoder normalization, decode identity, checked RGB panel layouts, video/poster saves, and rendering records with RGB content hashes exist. `render_from_record` reproduces saved titles, mappings, layout, and poster selection, and rejects changed pixels. Pinned-reference preview rendering is integrated; full native preview acceptance remains pending.
+Decoder normalization, decode identity, checked RGB panel layouts, video/poster
+saves and rendering records with RGB content hashes live here. `render_from_record`
+reproduces saved titles, mappings, layout and poster selection, and rejects changed pixels.
 
 `native_decoder_settings()` returns the settings of the shared native decode
 path: bfloat16, no tiling, a fresh generator for each decode, and the current
@@ -21,7 +23,7 @@ Torch version. Reference assembly records this identity. Preview rendering
 requires the reference settings to equal this current identity before opening
 a decoder. For example, references prepared under another Torch version fail
 instead of labeling new decoded pixels with that older runtime.
-`decode_saved` uses the public decoder. Historical presentation helpers remain until evaluation callers move.
+`decode_saved` uses the public decoder.
 
 `open_decoder_session(model, gpu_id, script)` owns saved-only session setup.
 Call the shared CUDA/model preflight, which checks device headroom and sets the
@@ -427,22 +429,13 @@ An inference video can be judged against the supplied image and guide, but not a
 
 ## Tests
 
-The handoff repair has CPU integration coverage using the actual
-`prepare_training_references` titles and the real renderer/MP4 writer. It checks
+CPU integration tests use the actual `prepare_training_references` titles and the
+real renderer/MP4 writer. It checks
 compact selection, D0 with no guide, D1 refusing absent references, no-fit
 failure before decoder creation, and failed jobs preserving saved adapters.
 The reference CLI checks unknown sources, invalid ranges, changed capture/VAE,
 broken optional guides, changed membership/matte during decode, and saved
 absence replay without reconstruction.
-
-Native reference acceptance on 2026-10-07 used the checked pilot source
-`Part_2/0007_01/views/view01_cam57`, white objective, seven encoded frames,
-LTX-2.5 VAE and seed 42. It prepared 49 RGB frames and rendered the real titles
-in `compact_training`. Full and 480-pixel posters were inspected; actual MP4
-coverage is 49 frames at 30 fps, 664 × 1242. Evidence is under workspace
-`expr/onestep_avatar/handoff_implementation_20261007/`. This verifies reference
-preparation and presentation for one source. It does not verify transformer
-generation, a native end-to-end preview job, LoRA effects or distributed work.
 
 
 Worked design check: preview steps 100 and 200 use the same video, first-image, text, and noise hashes.
@@ -497,9 +490,7 @@ rate. Fractional-rate MP4 support remains an explicit limitation.
 
 The normal saved presentation retains its requested viewing width (1280 by
 default). The producer also emits a measured compact reading format at width
-480, using the same RGB data and exact labels. Its required record and media
-checks close [G10](known_gaps.md#g10--saved-comparisons-have-unreadable-titles-at-narrow-widths).
-The initial unreadable wide-only artifact remains historical evidence.
+480, using the same RGB data and exact labels; completion requires both formats.
 
 ### Checked compact saved comparisons
 

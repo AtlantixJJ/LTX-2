@@ -17,10 +17,10 @@ def _dtype(value: torch.dtype | None) -> str | None:
 
 
 def numerical_policy(record: dict) -> dict:
-    """Read an explicit supported original policy, never a current-default substitute."""
+    """Read the explicit recorded policy; never substitute the current default."""
     if (not isinstance(record, dict) or record.get("schema_version") != 2
             or not isinstance(record.get("ranks"), list) or not record["ranks"]):
-        raise ValueError("current numerical policy requires explicit schema-two runtime evidence")
+        raise ValueError("numerical policy requires explicit schema-two runtime evidence")
     observed = record["ranks"][0].get("numerics")
     numerics.validate(observed, required=True)
     for rank in record["ranks"]:
@@ -85,7 +85,7 @@ def validate(record: dict, world: int, precision: str, *, native: bool = False,
             or not isinstance(record, dict)
             or set(record) != {"schema_version", "world_size", "mixed_precision", "ranks"}
             or type(record.get("world_size")) is not int or type(record.get("schema_version")) is not int
-            or record.get("schema_version") not in (1, 2)
+            or record.get("schema_version") != 2
             or record.get("world_size") != world or record.get("mixed_precision") != precision
             or not isinstance(record.get("ranks"), list) or len(record["ranks"]) != world):
         raise ValueError("applied runtime world size or mixed precision differs from launch")
@@ -93,9 +93,7 @@ def validate(record: dict, world: int, precision: str, *, native: bool = False,
     reference = None
     for rank, observed in enumerate(ranks):
         fields = {"schema_version", "rank", "world_size", "mixed_precision", "distributed_type",
-                  "conditioning_precision", "adapter_storage_dtypes", "fsdp_policies"}
-        if record["schema_version"] == 2:
-            fields.add("numerics")
+                  "conditioning_precision", "adapter_storage_dtypes", "fsdp_policies", "numerics"}
         if (not isinstance(observed, dict) or set(observed) != fields or type(observed.get("rank")) is not int
                 or observed.get("rank") != rank or type(observed.get("world_size")) is not int
                 or type(observed.get("schema_version")) is not int
@@ -106,11 +104,8 @@ def validate(record: dict, world: int, precision: str, *, native: bool = False,
                 or not isinstance(observed.get("fsdp_policies"), list)
                 or not isinstance(observed.get("adapter_storage_dtypes"), list)):
             raise ValueError("applied runtime rank inventory is malformed")
-        if record["schema_version"] == 2:
-            numerics.validate(observed["numerics"], required=bool(numerical_policy),
-                             expected=numerical_policy if isinstance(numerical_policy, dict) else None)
-        elif numerical_policy:
-            raise ValueError("current numerical policy requires explicit schema-two runtime evidence")
+        numerics.validate(observed["numerics"], required=bool(numerical_policy),
+                         expected=numerical_policy if isinstance(numerical_policy, dict) else None)
         current = {key: value for key, value in observed.items() if key != "rank"}
         if reference is not None and current != reference:
             raise ValueError("ranks disagree on applied precision policy")

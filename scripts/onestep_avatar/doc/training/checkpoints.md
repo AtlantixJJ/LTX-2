@@ -1,30 +1,20 @@
 # `training/checkpoints.py` — save adapters and check their settings
 
-Status: **Version-two saves, reads, tensor checks, parent initialization gates and evaluation preflight implemented; explicit legacy conversion is experiment-owned. Bulk original-adapter conversion and ambiguous legacy evidence remain pending.**
-Own `save_lora`, `load_stage_init`, `assert_exported_lora_is_noop`,
-`read_adapter_metadata`, and the adapter condition checker.
-The typed engine writes version-two contracts. The old metadata producer is removed.
-The historical condition checker reads original flat metadata only for the
-experiment-owned eight-block causality protocol.
-Historical conversion orchestration now lives in `experiments/legacy_adapters.py`.
-Shared contract and tensor checks do not import it. Structural/CPU/caller checks
-precede new native experiments on final owners. Normal save/load, contract and tensor validation stay shared.
-Preserve original conversion conditions and refuse unknown evidence; missing
-native scope does not justify retaining unrelated orchestration in this owner.
-Product generation requires the version-two record described below.
-The unused `assert_one_step_conditions` is removed; its permissive missing-record
-rule is not part of the current checker. Schedule checks live in `model/sampling.py`.
+Own adapter saves, parent initialization, typed contract checks and tensor
+validation. Normal training, evaluation and product execution require the
+version-two record described below. The eight-block causality diagnostic has a
+separate flat-metadata condition checker. Schedule validation belongs to
+`model/sampling.py`; this owner starts no model or CLI execution.
 
 ## Objective
 
-**Precision contract (G12).** New records declare `training.global_sigma_dtype`
-from the shared ordinary runtime constant, and execution requests declare the
-same condition. Historical records lacking it remain readable. Current execution
-rejects unknown/malformed precision even with a research override. Explicit
+**Precision contract.** Every record declares `training.global_sigma_dtype` from
+the shared ordinary runtime constant, and execution requests declare the same
+condition. A contract without it, or with an unknown value, is invalid and is
+refused even with a research override. Explicit
 `bfloat16` calibration may differ under a recorded research override; product
-refuses the difference. Legacy conversion can declare precision only when both
-original config and adapter metadata explicitly agree; no inference from weight
-dtype or current defaults. Parent tensor initialization does not inherit an old
+refuses the difference. Do not infer calibration from weight dtype or current
+defaults. Parent tensor initialization does not inherit another stage's
 calibration: the new stage records its own actual training precision.
 
 Parent-stage tensor initialization delegates to `model.adapters.load_weights`,
@@ -87,8 +77,8 @@ The engine's completion marker binds the saved config and its original
 `queue_launch` record, plus the observed applied-runtime evidence. Adapter
 metadata describes scientific conditions; it cannot prove which launcher or
 FSDP policy was applied. Current queue completion/replay therefore checks both
-the adapter contract and these original config/marker facts. Historical missing
-launch facts remain readable but cannot pass current replay acceptance.
+the adapter contract and these original config/marker facts; a record without
+launch facts cannot pass replay.
 The shared `queue.read_training_marker` reader validates actual completion state,
 integer schema/step, checkpoint path and checkpoint byte hash. Queue completion,
 training provenance and replay use this one readiness check. Adapter contracts
@@ -108,8 +98,8 @@ The JSON has these exact objects: `model`, `task`, `shape`, `training`, `data`,
 coverage contains window templates, not a claim that every update started at
 zero. The required `segment_selection` record stores each master's frame count,
 inclusive allowed start bounds, window length, the exact seed key and draw rule,
-and the accepted G9 first-image difference. This record is also emitted for new
-random-start training. Readers validate its consistency with the templates,
+and the accepted random-start first-image difference (recorded as
+`known_gap: "G9"`). Readers validate its consistency with the templates,
 mode settings and noise seed. A saved frame plan must have the matching
 `start_draw`; changing its seed/key with a newly calculated hash still fails.
 Causal random-start records also require one block and window length B+1.
@@ -141,8 +131,8 @@ numerical equality; record the actual application method in result records.
 Check mode, base weights, task, sigma levels, schedule, and mode-specific frame settings.
 Keep training records distinct from evaluation inputs.
 Evaluation can use people excluded from training.
-A random-start-trained adapter can be evaluated from frame zero if the difference is recorded.
-G9 still applies.
+A random-start-trained adapter can be evaluated from frame zero if the difference is
+recorded; the [random-start first-image gap](../known_gaps.md#random-start-first-image-distribution) still applies.
 
 An adapter trained with capture past frames uses that history for an evaluation under the same conditions.
 Generated-history evaluation changes those conditions and must be labeled.
@@ -214,22 +204,15 @@ For a parent-initialized stage, step zero preserves the loaded adapter values an
 It is not a zero-adapter/no-op control.
 Loading parent weights starts a new stage; exact optimizer/random-state resume is outside this design.
 
-Old adapters require explicit conversion to a new derived file.
-Keep the original file and hash.
-An old `block_causal` label alone cannot identify a bidirectional adapter.
-Check original frame ranges, start policy, and unused-cache evidence.
-Reject missing or ambiguous records in the product API.
-The conversion record names the original path/hash and the evidence used to classify it.
-It changes metadata ownership; it does not change tensor values or claim cross-mode calibration.
+Normal execution requires a complete typed contract. Missing or ambiguous
+conditions fail before model loading. A mode label alone cannot establish
+frame selection, conditioning or calibration.
 
-### Historical conversion owner
+### Contract and tensor ownership
 
-Explicit checked legacy conversion lives in
-[experiments/legacy_adapters](../experiments/legacy_adapters.md). This shared
-module keeps normal reads, saves, condition checks, tensor validation and
-`random_segment_selection`. Public `require_digest(value, label)` is the one
-full lowercase SHA-256 syntax checker used by both current adapter contracts
-and the explicit converter. It retains the original error messages and rules.
+Normal reads, saves, condition checks, tensor validation and
+`random_segment_selection` stay shared here. Public `require_digest` is the
+one full lowercase SHA-256 syntax checker used by current adapter contracts.
 
 ## Invariants
 
@@ -242,8 +225,8 @@ and the explicit converter. It retains the original error messages and rules.
 
 ## Gotchas
 
-G8 records a numerical difference between fused bf16 and unmerged training LoRA.
-Metadata does not fix this difference.
+Fused bf16 and unmerged training LoRA differ numerically
+([known gaps](../known_gaps.md#fused-adapter-application)); metadata does not fix this.
 Matching exported keys does not prove equal predictions.
 
 ## Tests
@@ -254,12 +237,9 @@ matrix ownership and exact PEFT payload equality, and refuses full state-dict
 collection. Native one-rank export-zero followed by forward/backward and
 export-one checks the actual Torch hierarchy separately.
 
-Legacy conversion and original-payload/mutation/publication controls belong to
-[the experiment owner](../experiments/legacy_adapters.md#tests).
-
-[V7–V8](../verification.md) check incompatible requests and unchanged converted data.
+[V7–V8](../verification.md) check incompatible requests and fixed data identity.
 After implementation, test record read/write, missing fields, mixed levels, and override records.
-Test zero initialization, alpha scaling, and ambiguous old adapters.
+Test zero initialization, alpha scaling and incomplete adapter contracts.
 Worked check: an adapter records bidirectional/dev/D1/white and direct sigma `.5`.
 A causal request names the mode difference; a request at `.7` names the sigma difference.
 Evaluation without an override and all product requests fail before loading weights.

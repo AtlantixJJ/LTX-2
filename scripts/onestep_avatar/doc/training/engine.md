@@ -12,24 +12,16 @@ non-tensor preparation inputs. The producer is `prepare_inputs.py preview`;
 training consumes its checked record and does not prepare text/reference pixels
 inside FSDP.
 
-Status: **Typed two-mode runtime, version-two data/adapters, numeric logs, completed-checkpoint markers and scientific queued-completion checks implemented. CPU checks cover full settings, data/parent provenance, config/plan bytes and small-model update markers. Native numerical updates pass in both modes; complete workflows remain pending. The mode-less runtime retired in refactor group G11. Preview scheduling is implemented. Read [current acceptance](../known_gaps.md#current-acceptance-and-next-step).**
-The training body moves from `train.py` into this owner. The CLI delegates to it.
+The `train.py` CLI delegates to `run_settings`.
 Typed preflight compares every checked capture/guide encoding VAE fingerprint
 with the selected base's VAE, using the producer's file identity rule. Missing
 or mismatched identities fail before transformer hashing, model setup or output
 archiving. D0 checks capture only; D1 checks both. Shape equality and parent
 adapter compatibility do not replace this input-provenance check.
 
-The mode-less chain runtime (`Chain`, `ChainStore`, `clip_grid_for`,
-`train_chain`, its subset readers, flat checkpoint metadata and old `main`)
-retired in refactor group G11. `train_chain` only wrapped
-`model.causal.train_sample`; its behavior tests now call that owner directly
-(`tests/test_causal_train_sample.py`). Preserve original scientific results and
-issue fresh affected acceptance on the final source; deletion does not
-establish native parity.
-The original trainer module doc is removed because the CLI is under 100 physical lines.
-Its conditioning/loss/cache explanations remain in the common and mode docs.
-The checkpoint and startup rules remain here and in the config/checkpoint docs.
+`train.py` is under 100 physical lines and has no separate design; the
+conditioning, loss and cache explanations live in the common and mode docs.
+The checkpoint and startup rules live here and in the config/checkpoint docs.
 
 `prepare_run(RunSettings)` checks the version-two video list and frame plan,
 actual selected input bytes, base-supported sigma levels, frame dimensions,
@@ -57,8 +49,8 @@ The typed runtime snapshots the training software profile before setup and check
 it before opening prompt/model sessions. Store it in `config.json` and each
 completed-checkpoint marker; verify it before saving a checkpoint/marker and
 before publishing initial config/plan bytes. The queued scientific verifier
-requires matching current software in both config and marker. Old markers remain
-historical evidence; missing manifests cannot certify a new current completion.
+requires matching current software in both config and marker; a marker without a
+manifest cannot certify completion.
 
 `model.adapters.attach` owns the shared PEFT configuration. Training passes its
 existing initialization seed and retains velocity output and trainable fp32
@@ -168,7 +160,7 @@ completion marker alone proves correct distributed gradient averaging.
 The typed runtime records the queue job digest and engine source digest in its
 resolved configuration. A completed checkpoint marker records those same digests
 and the exact hashes of `config.json` and `frame_plan.json`. A nonqueued run keeps
-a null queue identity; historical files are preserved. These fields prove only
+a null queue identity. These fields prove only
 the recorded producer and inputs, not independent numerical correctness.
 
 `prepare_run(..., require_fresh_output=False)` supports read-only completion
@@ -194,9 +186,9 @@ unchanged, but must fail the saved-config comparison. Replacing the parent at
 the same path changes its digest and must fail. A checkpoint from an older
 job cannot complete a new job just because both ended at update 200.
 Tests use checked small masters and real safetensors records; synthetic queue
-lifecycle tests explicitly substitute only the scientific verifier. Existing
-small-model optimizer tests check the producer's new marker/config bindings.
-Native FSDP updates and historical caller migration remain separate checks.
+lifecycle tests explicitly substitute only the scientific verifier. Small-model
+optimizer tests check the producer's marker/config bindings. Native FSDP updates
+are E4 checks.
 
 After initial checks, build Accelerator and text inputs.
 Load the frozen bf16 base transformer directly on the local GPU.
@@ -217,10 +209,10 @@ remained above 2% after global-conditioning repair. `CustomPolicy` changes only
 the selected trainable leaves' mixed precision, not their wrapping membership.
 Applied runtime and consumer traces must verify this on native weights.
 No mixed-precision policy means there is no root cast to disable. Every caller
-passes typed `RunSettings`; the old namespace path without this policy retired in G11.
-For sigma 0.725, the typed model must observe float32 0.7250000238418579 rather
-than bf16 0.7265625. Tests exercise the shared builder's actual policy and the
-installed root-casting function; native distributed acceptance remains required.
+passes typed `RunSettings`. For sigma 0.725, the typed model must observe float32
+0.7250000238418579 rather than bf16 0.7265625. Tests exercise the shared builder's
+actual policy and the installed root-casting function; E4 checks native
+distributed behavior.
 
 For each update:
 
@@ -245,9 +237,8 @@ Do not divide the loss again.
 Keep warmup and the step-zero adapter check.
 Logs record video/sample IDs, selected start frames, exact sigma, loss, gradient norm, and time.
 Causal logs also record block positions.
-The unsupported anchor data path is removed. Samples hold capture/guide masters
-and fps only. The engine produces no anchor loss columns or adapter metadata.
-Historical saved records retain their original fields; readers may ignore them.
+Samples hold capture/guide masters and fps only; there is no anchor data path,
+anchor loss column or anchor adapter metadata.
 
 ### Update results and save order
 
@@ -387,14 +378,11 @@ Accelerator, prompt or model work. Record actual flags through runtime schema
 two and require the supported policy across ranks. Recheck observed flags before
 updates, exports and publication.
 The policy changes no data, seed, sigma, budget, optimizer or tolerance.
-Focused CPU controls verify the current path. Original four-rank/serial
-numerical comparison passes in both modes. The active handoff records complete
-workflow and final-source requirements separately.
+Focused CPU controls verify the path; E4 compares the four-rank update with the
+serial reference.
 
-## Historical subset identity
+## Fixed data identity
 
-The retired mode-less runtime stamped `corpus.subset.subset_sha256` into flat
-adapter metadata and run config. G11 removed those stamps with that runtime;
-typed adapters record version-two membership and frame-plan hashes instead.
-Explicit legacy conversion (`experiments/legacy_adapters.py`) is the digest's
-only current caller, and saved `canonical_rule` attribution is unchanged.
+Typed adapters and run records bind the fixed membership hash and separate
+mode frame-plan hash. Membership creation belongs to `corpus/subset.py`;
+this owner reads the checked files and does not change videos or groups.

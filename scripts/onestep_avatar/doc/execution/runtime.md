@@ -76,4 +76,4 @@ a nested checker belongs to that checker's existing phase records.
 Use controlled CPU operations and fake phase observations to verify exact one
 call, outside-queue behavior, immutable contract bindings, success/failure
 publication, numerical requests, changed results and owned-phase handling.
-Actual CUDA resource evidence requires post-refactor native runs.
+Actual CUDA resource evidence comes from native queue runs.

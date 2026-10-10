@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,9 +16,10 @@ from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.corpus.dataset import atomic_write
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.model import backbone, causal, common
+from scripts.onestep_avatar.model import adapters, backbone, causal, common
 from scripts.onestep_avatar.model.sampling import validate_schedule
 from scripts.onestep_avatar.training import checkpoints
+from scripts.onestep_avatar.training.config import CausalSettings
 
 if TYPE_CHECKING:
     from scripts.prune.core.session import Session
@@ -187,6 +188,31 @@ def causality_probe(
     }
 
 
+def _checked_eight_block_adapter(checkpoint: Path, capture: torch.Tensor, sigma: float) -> tuple[dict, dict]:
+    """Use the same typed contract and byte recheck for execution and saved completion."""
+    dev = backbone.transformer_path("2.5", "dev")
+    specification = backbone.resolve("2.5", "dev", dev)
+    base = backbone.identity(dev, "dev", "2.5")
+    requested = {
+        "mode": "causal",
+        "mode_settings": asdict(CausalSettings(blocks_per_sample=8)),
+        "schedule": [sigma, 0.0],
+        "model": {"version": "2.5", "variant": "dev", "base_sha256": base["base_transformer_sha256"]},
+        "task": {"objective": "white", "guide_mode": "d1",
+                 "first_frame_conditioning": "clean_c0_v1", "loss": common.FULL_FRAME_X0_MSE},
+        "shape": {"channels": capture.shape[0], "frames": 17,
+                  "height": capture.shape[2], "width": capture.shape[3]},
+        "global_sigma_dtype": common.SIGMA_PRECISION,
+        "application_method": adapters.UNMERGED,
+        "history_mode": "cache", "kv_source": "refresh",
+    }
+    if capture.shape[0] != specification.caps.latent_channels:
+        raise ValueError("eight-block channels differ from the selected base")
+    checked = evaluate.check_adapter(checkpoint, requested)
+    checkpoints.recheck_adapter(checkpoint, checked["contract"], checked["adapter_sha256"])
+    return requested, checked
+
+
 def evaluate_causality(
     checkpoint: Path,
     view: Path,
@@ -197,8 +223,7 @@ def evaluate_causality(
     output_tensors_path: Path | None = None,
     input_tensors_path: Path | None = None,
 ) -> dict:
-    """Check scientific inputs before weights, then publish the historical comparison."""
-    from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps  # noqa: PLC0415
+    """Check typed adapter conditions before weights, then publish the eight-block comparison."""
     from scripts.prune.core.session import open_session  # noqa: PLC0415
 
     validate_schedule([sigma, 0.0])
@@ -214,26 +239,18 @@ def evaluate_causality(
     guide, guide_fps = dataset.load_training_master(guide_path)
     if capture.shape != guide.shape or fps != guide_fps or capture.shape[1] < 17:
         raise ValueError("causality diagnostic requires matching masters, fps and eight complete blocks")
-    meta = checkpoints.read_adapter_metadata(checkpoint)
-    checkpoints.check_adapter_conditions(
-        meta,
-        base=backbone.identity(dev, "dev", "2.5"),
-        objective="white",
-        guide_mode="d1",
-        schedule=[sigma, 0.0],
-        geometry={"block_latent_frames": 2, "context_latent_frames": 8, "sink_latent_frames": 1},
-        teacher_forcing=False,
-    )
+    requested, checked = _checked_eight_block_adapter(checkpoint, capture, sigma)
     identities = {str(path.resolve()): sha256(path) for path in paths}
     session = open_session(
         argparse.Namespace(model="2.5", gpu_id=gpu_id, seed=42),
         script="onestep_avatar.experiments.causality",
         transformer_path=dev,
     )
-    loras = (LoraPathStrengthAndSDOps(str(checkpoint), 1.0, LTXV_LORA_COMFY_RENAMING_MAP),)
     raw_outputs = []
     raw_inputs = {}
-    with session.transformer(dev, loras=loras) as transformer:
+    with adapters.inference_transformer(
+        session, checkpoint, checked["contract"], adapter_sha256=checked["adapter_sha256"]
+    ) as transformer:
         diagnostic = causality_probe(
             transformer,
             session,
@@ -258,6 +275,9 @@ def evaluate_causality(
         "checkpoint": str(checkpoint),
         "view": str(view),
         "sigma": sigma,
+        "conditions": requested,
+        "adapter_contract": checked["contract"],
+        "application_method": adapters.UNMERGED,
         **diagnostic,
         "input_sha256": identities,
     }
@@ -422,31 +442,19 @@ def execute_evaluation(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse a pinned queue specification or the preserved direct diagnostic interface."""
-    arguments = sys.argv[1:] if argv is None else argv
-    if "--spec" not in arguments:
-        if "--causality" not in arguments:
-            return parse_future_args(arguments)
-        parser = argparse.ArgumentParser(description=__doc__)
-        parser.add_argument("--causality", action="store_true", required=True)
-        parser.add_argument("--checkpoint", type=Path, required=True)
-        parser.add_argument("--view", type=Path, required=True)
-        parser.add_argument("--sigma", type=float, required=True)
-        parser.add_argument("--gpu-id", type=int, required=True)
-        parser.add_argument("--output", type=Path, required=True)
-        return parser.parse_args(arguments)
+    """Parse only queue-owned execution arguments and a pinned scientific spec."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spec", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--gpu-id", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
-    outer = parser.parse_args(arguments)
+    outer = parser.parse_args(argv)
     outer.completion = {"manifest": str(outer.output.resolve() / "manifest.json")}
     return outer
 
 
 def read_spec(outer: argparse.Namespace) -> argparse.Namespace:
-    """Read scientific settings only after queue path normalization or direct CLI parsing."""
+    """Read scientific settings only after queue path normalization."""
     spec = json.loads(outer.spec.read_text())
     if spec.get("schema_version") != 1 or spec.get("protocol") not in ("future_noise", "eight_block"):
         raise ValueError("causality requires a version-one future_noise or eight_block specification")
@@ -584,6 +592,10 @@ def _verify_eight_block_outputs(args: argparse.Namespace, root: Path) -> list[Pa
     ):
         raise ValueError("eight-block saved output shape, c0 or values differ")
     delta = float((outputs[0][:, :, 9:] - outputs[1][:, :, 9:]).abs().max())
+    requested, checked = _checked_eight_block_adapter(args.checkpoint, capture, args.sigma)
+    if (result.get("conditions") != requested or result.get("adapter_contract") != checked["contract"]
+            or result.get("application_method") != adapters.UNMERGED):
+        raise ValueError("eight-block typed adapter conditions differ from saved results")
     expected = {
         "checkpoint": str(args.checkpoint),
         "view": str(args.view),
@@ -679,11 +691,6 @@ def evidence_paths(spec: Path, root: Path) -> list[Path]:
 def main(argv: list[str] | None = None) -> int:
     """Run only the explicitly selected protocol."""
     args = parse_args(argv)
-    if not hasattr(args, "spec"):
-        if getattr(args, "causality", False):
-            evaluate_causality(args.checkpoint, args.view, args.output, gpu_id=args.gpu_id, sigma=args.sigma)
-            return 0
-        return execute_evaluation(args)
     args = read_spec(args)
     producer_software = software.capture(
         "evaluation", args.mode if args.protocol == "future_noise" else "causal", extra_sources=EXTRA_SOURCES

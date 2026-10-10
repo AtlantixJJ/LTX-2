@@ -1,8 +1,8 @@
-"""CPU tests for typed-engine helpers kept when the mode-less runtime retired (G11).
+"""CPU tests for typed-engine helpers.
 
 They cover output archiving, the sigma and noise streams, step-zero LoRA export, W&B
-settings, the legacy adapter condition reader, random segment starts and the startup
-refusal of a defective second video before any model, accelerator or output mutation.
+settings, random segment starts and the startup refusal of a defective second video
+before any model, accelerator or output mutation.
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ def test_multilevel_sigma_is_an_iid_uniform_draw() -> None:
         assert abs(draws.count(level) - 4000) < 300
     assert draws == [config.sigma_for_rank(levels, rank, step, 42) for step in range(3000) for rank in range(4)]
     assert draws != [config.sigma_for_rank(levels, rank, step, 43) for step in range(3000) for rank in range(4)]
-    # Not the retired rotation: some update repeats a level across ranks or skips one.
+    # Independent draws, not a rotation: some update repeats a level across ranks or skips one.
     assert any(len({config.sigma_for_rank(levels, rank, step, 42) for rank in range(3)}) < 3 for step in range(50))
     assert config.sigma_for_rank((0.725,), 3, 17, 42) == 0.725
 
@@ -176,80 +176,10 @@ def test_init_wandb_calls_wandb_init(monkeypatch: pytest.MonkeyPatch) -> None:
     assert called_with["config"] == {"test_key": 123}
 
 
-# --- legacy adapter condition reader ---------------------------------------------------
-
-# Flat safetensors metadata exactly as the retired mode-less engine stamped it for a step-1
-# D1 dev adapter (captured from its checkpoint_metadata before G11 removed that writer).
-LEGACY_METADATA = {
-    "lora_alpha": "16",
-    "lora_rank": "16",
-    "lora_target": "attn",
-    "model_key": "2.5",
-    "onestep_avatar_attention": "block_causal",
-    "onestep_avatar_base_transformer_file": "dev.safetensors",
-    "onestep_avatar_base_transformer_fingerprint": "abcdabcdabcdabcd",
-    "onestep_avatar_base_variant": "dev",
-    "onestep_avatar_block_latent_frames": "2",
-    "onestep_avatar_chain_length": "8",
-    "onestep_avatar_chains_per_update": "4",
-    "onestep_avatar_context_latent_frames": "8",
-    "onestep_avatar_data_seed": "42",
-    "onestep_avatar_first_frame_conditioning": "clean_c0_v1",
-    "onestep_avatar_guide_mode": "d1",
-    "onestep_avatar_history_computation": "cached_refresh_global_sigma0",
-    "onestep_avatar_init_seed": "42",
-    "onestep_avatar_loss": "full_frame_x0_mse",
-    "onestep_avatar_noise_policy": "fresh",
-    "onestep_avatar_noise_seed": "42",
-    "onestep_avatar_objective": "white",
-    "onestep_avatar_parent_adapter": "",
-    "onestep_avatar_schedule": "ONE_STEP",
-    "onestep_avatar_sigma0": "0.421875",
-    "onestep_avatar_sigma_levels": "0.421875",
-    "onestep_avatar_sigma_sampling": "iid_uniform_v1",
-    "onestep_avatar_sink_latent_frames": "1",
-    "onestep_avatar_subset_full_sha256": "7d6f65636e660e72a8ed284bc68b689aca72845b6f0765d4ca9ecae279a491c6",
-    "onestep_avatar_subset_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-    "onestep_avatar_teacher_forcing": "False",
-    "onestep_avatar_window": "clip_start",
-    "step": "1",
-}
-_BASE = {
-    "model_key": "2.5",
-    "base_variant": "dev",
-    "base_transformer_file": "dev.safetensors",
-    "base_transformer_fingerprint": "abcd" * 4,
-}
-
-
-def test_condition_reader_refuses_a_dev_adapter_on_distilled_weights() -> None:
-    """A dev adapter is refused on distilled weights, at another sigma, or as a multi-step model."""
-    ok = {
-        "base": _BASE,
-        "objective": "white",
-        "guide_mode": "d1",
-        "schedule": [0.421875, 0.0],
-        "geometry": {"block_latent_frames": 2, "context_latent_frames": 8, "sink_latent_frames": 1},
-        "teacher_forcing": False,
-    }
-    assert checkpoints.adapter_condition_problems(LEGACY_METADATA, **ok) == []
-    distilled = {**_BASE, "base_variant": "distilled", "base_transformer_fingerprint": "ffff" * 4}
-    problems = checkpoints.adapter_condition_problems(LEGACY_METADATA, **{**ok, "base": distilled})
-    assert any("base variant" in p for p in problems)
-    assert any("base weights" in p for p in problems)
-    sigma = checkpoints.adapter_condition_problems(LEGACY_METADATA, **{**ok, "schedule": [0.725, 0.0]})
-    assert any("sigma" in p for p in sigma)
-    schedule = checkpoints.adapter_condition_problems(LEGACY_METADATA, **{**ok, "schedule": [0.421875, 0.2, 0.0]})
-    assert any("schedule" in p for p in schedule)
-    with pytest.raises(SystemExit):
-        checkpoints.check_adapter_conditions(LEGACY_METADATA, **{**ok, "base": distilled})
-    assert checkpoints.check_adapter_conditions(LEGACY_METADATA, override=True, **{**ok, "base": distilled})
-
-
 # --- random segment starts -------------------------------------------------------------
 
-# Starts the retired window_start_for drew for (seed, frames, span) over steps 0-5, ranks 0-3,
-# slots 0-1, captured before G11. plan_samples must keep that exact stream.
+# Recorded random starts for (seed, frames, span) over steps 0-5, ranks 0-3 and slots 0-1.
+# plan_samples must reproduce this exact stream, so saved random-start runs stay reproducible.
 ORIGINAL_STARTS = {
     (42, 28, 17): [7, 7, 11, 6, 7, 9, 2, 3, 10, 7, 11, 6],
     (7, 29, 18): [8, 0, 9, 9, 6, 0, 11, 8, 10, 7, 5, 6],
@@ -292,25 +222,33 @@ def test_random_start_is_uniform_reproducible_and_bounded() -> None:
 # --- startup refusal of a defective second video ---------------------------------------
 
 
-def _write_guides(old: dict) -> None:
+def _write_guides(membership: dict) -> None:
     """Give each saved view a current guide encode, render and compositing sidecar."""
-    root = Path(old["corpus_root"])
-    for source in old["sources"]:
+    root = Path(membership["corpus_root"])
+    for source in membership["sources"]:
         view = root / source["relative_dir"]
         render = view / dataset.render_name("white")
         render.write_bytes(b"render" + source["actor"].encode())
-        (view / dataset.render_metadata_name("white")).write_text(
-            json.dumps({"compositing_version": dataset.GUIDE_COMPOSITING_VERSION, "objective": "white"})
-        )
+        sidecar = view / dataset.render_metadata_name("white")
+        sidecar.write_text(json.dumps({"compositing_version": dataset.GUIDE_COMPOSITING_VERSION, "objective": "white"}))
         capture = torch.load(view / dataset.capture_bundle_name("white"), weights_only=True)
         guide = {**capture, "master": capture["master"] + 1, "input_fingerprint": sha256(render)}
-        torch.save(guide, view / dataset.guide_bundle_name("white"))
+        guide_path = view / dataset.guide_bundle_name("white")
+        torch.save(guide, guide_path)
+        source.update(
+            guide_sha256=sha256(render),
+            guide_latent_sha256=sha256(guide_path),
+            guide_sidecar_sha256=sha256(sidecar),
+            guide_encode_record={key: value for key, value in guide.items() if key != "master"},
+        )
+    membership["requires_guide_latent"] = True
+    membership["sha256"] = subset.membership_hash(membership)
 
 
 @pytest.fixture
-def two_videos(old_subset: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
-    _write_guides(old_subset)
-    membership, _ = subset.convert_legacy(old_subset, original_file_sha256="a" * 64, require_guide=True)
+def two_videos(current_membership: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
+    membership = current_membership
+    _write_guides(membership)
     path = tmp_path / "membership.json"
     path.write_text(json.dumps(membership))
     specification = SimpleNamespace(

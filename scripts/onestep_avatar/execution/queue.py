@@ -8,18 +8,20 @@ import json
 import math
 import os
 import time
-import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from scripts.onestep_avatar import LTX_ROOT
 from scripts.onestep_avatar.execution.devices import (
     GPU_POOL,
     TRAIN_PROCESSES,
-    select_devices,
     validate_selection,
 )
 from scripts.onestep_avatar.execution.queue_protocol import LAUNCH_PROTOCOL
+
+if TYPE_CHECKING:
+    from scripts.onestep_avatar.execution.process_registry import ProcessRegistry
 
 # Fixed reviewed selectors; ordinary kinds never consult this table.
 EXPERIMENTS = {
@@ -302,149 +304,6 @@ def parse_gpu_memory(output: str) -> dict[int, int]:
     return result
 
 
-class GPUClaims:
-    """Serialize reservations and remove only claims carrying this attempt's token."""
-
-    def __init__(self, directory: Path, *, ttl: float = 600):
-        if not math.isfinite(ttl) or ttl <= 0:
-            raise ValueError("claim TTL must be positive")
-        self.directory = directory
-        self.ttl = ttl
-        self.token = uuid.uuid4().hex
-        self.started_ticks = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf("SC_CLK_TCK"))
-        self.owned: set[int] = set()
-
-    @contextmanager
-    def _lock(self):  # noqa: ANN202 -- private context manager
-        self.directory.mkdir(parents=True, exist_ok=True)
-        with (self.directory / ".claims.lock").open("a") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle, fcntl.LOCK_UN)
-
-    def _read(self, gpu: int) -> tuple[dict | None, float] | None:
-        path = self.directory / str(gpu)
-        try:
-            # Use one open inode for both content and age.
-            with path.open() as handle:
-                stamp = os.fstat(handle.fileno()).st_mtime
-                raw = handle.read()
-        except FileNotFoundError:
-            return None
-        try:
-            record = json.loads(raw)
-        except json.JSONDecodeError:
-            record = None  # Historical text claims use the established TTL.
-        return (record if isinstance(record, dict) else None), stamp
-
-    def _active(self, claim: tuple[dict | None, float]) -> bool:
-        record, stamp = claim
-        if time.time() - stamp < self.ttl:
-            return True
-        return (
-            record is not None and (
-                process_alive(record.get("owner_pid")) or process_alive(record.get("child_pid"))
-                or (record.get("child_session") is not None and bool(live_session_processes(record["child_session"])))
-                or (record.get("token") is not None and bool(live_attempt_processes(
-                    record["token"], started_ticks=record.get("attempt_started_ticks")
-                )))
-            )
-        )
-
-    def choose(self, memory: dict[int, int], *, training: bool) -> tuple[int, ...] | None:
-        """Choose only eligible unclaimed cards; acquisition still rechecks claims."""
-        if not set(GPU_POOL).issubset(memory) or any(value < 0 for value in memory.values()):
-            raise ValueError("incomplete or invalid GPU memory inventory")
-        free = set()
-        with self._lock():
-            for gpu in GPU_POOL:
-                claim = self._read(gpu)
-                if memory[gpu] < 1024 and (claim is None or not self._active(claim)):
-                    free.add(gpu)
-        return select_devices(memory, training=training, busy=set(GPU_POOL) - free)
-
-    def acquire(self, gpus: tuple[int, ...], *, job: str) -> bool:
-        """Reserve every requested GPU exclusively, or roll back this attempt."""
-        import tempfile  # noqa: PLC0415 -- complete exclusive claim publication
-
-        if not gpus or len(set(gpus)) != len(gpus) or not set(gpus).issubset(GPU_POOL) or self.owned:
-            raise ValueError("claim request must name unique allowed GPUs on a fresh attempt")
-        record = {"token": self.token, "owner_pid": os.getpid(), "child_pid": None, "job": job,
-                  "attempt_started_ticks": self.started_ticks}
-        with self._lock():
-            try:
-                for gpu in gpus:
-                    path = self.directory / str(gpu)
-                    claim = self._read(gpu)
-                    if claim is not None and self._active(claim):
-                        self._release_owned()
-                        return False
-                    if claim is not None:
-                        path.unlink(missing_ok=True)
-                    with tempfile.NamedTemporaryFile(mode="w", dir=self.directory, prefix=".claim-") as handle:
-                        json.dump(record, handle)
-                        handle.flush()
-                        self.owned.add(gpu)
-                        try:
-                            os.link(handle.name, path)
-                        except FileExistsError:
-                            self._release_owned()
-                            return False
-            except BaseException:
-                self._release_owned()
-                raise
-        return True
-
-    def refresh(self, *, child_pid: int | None = None) -> None:
-        """Refresh only token-matched claims; loss of ownership fails visibly."""
-        with self._lock():
-            for gpu in self.owned:
-                claim = self._read(gpu)
-                if claim is None or claim[0] is None or claim[0].get("token") != self.token:
-                    raise ValueError("GPU reservation ownership changed")
-                record = {**claim[0], "child_pid": claim[0].get("child_pid") if child_pid is None else child_pid}
-                if child_pid is not None:
-                    record["child_session"] = child_pid
-                path = self.directory / str(gpu)
-                # Update through the open inode; never replace a foreign path.
-                with path.open("r+") as handle:
-                    current = json.load(handle)
-                    if current.get("token") != self.token:
-                        raise ValueError("GPU reservation ownership changed")
-                    handle.seek(0)
-                    json.dump(record, handle)
-                    handle.truncate()
-                    os.utime(handle.fileno(), None)
-
-    def _release_owned(self) -> None:
-        for gpu in self.owned:
-            claim = self._read(gpu)
-            if claim is not None and claim[0] is not None and claim[0].get("token") == self.token:
-                (self.directory / str(gpu)).unlink(missing_ok=True)
-        self.owned.clear()
-
-    def release(self) -> None:
-        """Release this attempt; preserve reservations replaced by another owner."""
-        with self._lock():
-            for gpu in self.owned:
-                claim = self._read(gpu)
-                if (
-                    claim is not None
-                    and claim[0] is not None
-                    and claim[0].get("token") == self.token
-                    and (process_alive(claim[0].get("child_pid")) or (
-                        claim[0].get("child_session") is not None
-                        and live_session_processes(claim[0]["child_session"])
-                    ) or (claim[0].get("token") is not None and live_attempt_processes(
-                        claim[0]["token"], started_ticks=claim[0].get("attempt_started_ticks")
-                    )))
-                ):
-                    raise ValueError("cannot release a GPU used by a live child")
-            self._release_owned()
-
-
 def validate_job_list(record: dict) -> list[dict]:  # noqa: PLR0912 -- ordered saved-job schema gates
     """Check explicit package jobs and dependency order without touching inputs."""
     if record.get("schema_version") != 1 or not isinstance(record.get("jobs"), list):
@@ -717,10 +576,8 @@ def prepare_jobs(path: Path) -> list[dict]:
     return jobs
 
 
-def training_launch_record(
-    job: dict, gpus: tuple[int, ...] = GPU_POOL[:TRAIN_PROCESSES], *, schema_version: int = 2
-) -> dict:
-    """Capture original requested launch facts before dispatch, with exact YAML bytes."""
+def training_launch_record(job: dict, gpus: tuple[int, ...] = GPU_POOL[:TRAIN_PROCESSES]) -> dict:
+    """Capture the requested launch facts before dispatch, with exact YAML bytes."""
     import base64  # noqa: PLC0415 -- lossless original configuration snapshot
     import hashlib  # noqa: PLC0415 -- validate snapshot against canonical pinned hash
 
@@ -729,18 +586,14 @@ def training_launch_record(
     prepared = prepare_job(job, Path.cwd())
     if prepared["kind"] != "train":
         raise ValueError("training launch binding requires a training job")
-    if type(schema_version) is not int or schema_version not in (1, 2):
-        raise ValueError("training launch binding has an unsupported schema")
     command, _environment = job_command(prepared, gpus)
     original = Path(prepared["accelerate_config"]).read_bytes()
     if hashlib.sha256(original).hexdigest() != prepared["accelerate_config_sha256"]:
         raise ValueError("queue Accelerate configuration changed during launch snapshot")
-    record = {"schema_version": schema_version, "job": prepared, "command": command, "gpus": list(gpus),
+    return {"schema_version": 2, "job": prepared, "command": command, "gpus": list(gpus),
             "accelerate_config_bytes_base64": base64.b64encode(original).decode("ascii"),
-            "accelerate_config_sha256": prepared["accelerate_config_sha256"]}
-    if schema_version == 2:
-        record["numerical_environment"] = dict(numerics.ENVIRONMENT)
-    return record
+            "accelerate_config_sha256": prepared["accelerate_config_sha256"],
+            "numerical_environment": dict(numerics.ENVIRONMENT)}
 
 
 def verify_training_launch(record: dict, job: dict) -> dict:
@@ -749,15 +602,14 @@ def verify_training_launch(record: dict, job: dict) -> dict:
     import binascii  # noqa: PLC0415 -- malformed original snapshot failure
     import hashlib  # noqa: PLC0415 -- original-byte integrity
 
-    if (not isinstance(record, dict) or type(record.get("schema_version")) is not int
-            or record.get("schema_version") not in (1, 2)):
+    if not isinstance(record, dict) or type(record.get("schema_version")) is not int or record["schema_version"] != 2:
         raise ValueError("original training launch evidence is missing or malformed")
     prepared = prepare_job(job, Path.cwd())
     gpus = record.get("gpus")
     if not isinstance(gpus, list):
         raise ValueError("original training launch GPU inventory is missing")
     validate_selection(tuple(gpus), training=True)
-    expected = training_launch_record(prepared, tuple(gpus), schema_version=record["schema_version"])
+    expected = training_launch_record(prepared, tuple(gpus))
     try:
         original = base64.b64decode(record["accelerate_config_bytes_base64"], validate=True)
     except (KeyError, TypeError, ValueError, binascii.Error) as error:
@@ -1016,7 +868,7 @@ def read_training_marker(checkpoint: Path, step: int) -> dict:
 
 
 def verify_completion(job: dict) -> bool:  # noqa: PLR0911, PLR0912, PLR0915 -- artifact-specific completion gates
-    """Verify saved training/evaluation evidence; missing artifacts remain pending."""
+    """Verify saved training/evaluation evidence; a job with missing artifacts stays pending."""
     import torch  # noqa: PLC0415 -- saved tensor verification only
 
     from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- artifact identities
@@ -1612,7 +1464,7 @@ def ready_jobs(jobs: list[dict], state: dict) -> list[dict]:
 
 def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journal
     job: dict,
-    claims: GPUClaims,
+    claims: ProcessRegistry,
     log_path: Path,
     *,
     poll_seconds: float = 1,

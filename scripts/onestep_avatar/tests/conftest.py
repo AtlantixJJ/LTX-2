@@ -1,7 +1,7 @@
 """Shared test fixtures.
 
 Controlled lifecycle substitutions (real launch-gate checks never use them) and the shared
-saved-input fixtures `old_subset` and `checked_settings`, registered here once instead of
+saved-input fixtures and `checked_settings`, registered here once instead of
 being imported into every test module that needs them.
 """
 
@@ -93,71 +93,94 @@ def controlled_queue_observation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def old_subset(tmp_path: Path) -> dict:
-    from scripts.onestep_avatar.corpus import dataset  # noqa: PLC0415 -- fixture-only saved-input producer
+def current_membership(tmp_path: Path) -> dict:
+    """Author current capture records directly, independently of membership discovery."""
+    from scripts.onestep_avatar.corpus import dataset, subset  # noqa: PLC0415 -- fixture-only saved inputs
 
-    sources = []
-    chains = []
+    sources, windows = [], []
     for actor, group in (("1", "train"), ("2", "held_out")):
         name = f"Part_1/{actor}/views/view00"
         view = tmp_path / name
         view.mkdir(parents=True)
         (view / "rgb.mp4").write_bytes(b"saved capture bytes" + actor.encode())
-        torch.save(
-            {
-                "schema_version": 2,
-                "master": torch.arange(56).reshape(2, 7, 2, 2).float(),
-                "fps": 30.0,
-                "objective": "white",
-                "source": name,
-                "vae_fingerprint": "saved VAE identity",
-                "box_xyxy": [0, 0, 64, 64],
-                "edge": 64,
-                "encode_contract_version": 1,
-            },
-            view / dataset.capture_bundle_name("white"),
+        metadata = view.parent.parent / "meta.json"
+        metadata.write_text(
+            json.dumps({"actor": {"id": actor}, "_pipeline": {"state": "done"}, "fps": 30.0, "n_frames": 49})
         )
+        encoding = {
+            "schema_version": 2,
+            "fps": 30.0,
+            "objective": "white",
+            "source": name,
+            "vae_fingerprint": "saved VAE identity",
+            "box_xyxy": [0, 0, 64, 64],
+            "edge": 64,
+            "encode_contract_version": 1,
+            "pixel_frames": 49,
+            "input_fingerprint": "saved pixel inputs",
+        }
+        capture = view / dataset.capture_bundle_name("white")
+        torch.save({**encoding, "master": torch.arange(56).reshape(2, 7, 2, 2).float()}, capture)
         sources.append(
             {
                 "relative_dir": name,
                 "actor": actor,
+                "split": group,
                 "fps": 30.0,
                 "n_latent_frames": 7,
-                "n_blocks": 3,
+                "shape": [2, 7, 2, 2],
                 "rgb_sha256": sha256(view / "rgb.mp4"),
-                "guide_sha256": None,
+                "capture_latent_sha256": sha256(capture),
+                "capture_encode_record": encoding,
+                "clip_metadata_sha256": sha256(metadata),
             }
         )
-        chains += [
-            {"source": name, "actor": actor, "split": group, "blocks": [0, 1], "seed_is_clip_start": True},
-            {"source": name, "actor": actor, "split": group, "blocks": [1, 2], "seed_is_clip_start": False},
-        ]
-    return {
-        "kind": "one_step_argavatar_block_chains",
-        "schema_version": 1,
+        windows.append(
+            {
+                "bundle": f"{name}/{dataset.capture_bundle_name('white')}",
+                "index": 0,
+                "start": 0,
+                "end": 49,
+                "box_xyxy": [0, 0, 64, 64],
+            }
+        )
+    manifest = tmp_path / dataset.CAPTURE_MANIFEST_NAME
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "one_step_raw_capture_target_latents",
+                "pad_factor": 1.2,
+                "edge": 64,
+                "resolution": 64,
+                "windows": windows,
+            }
+        )
+    )
+    membership = {
+        "schema_version": 2,
+        "kind": subset.KIND,
         "objective": "white",
         "corpus_root": str(tmp_path),
-        "capture_manifest": {"sha256": "original crop record"},
-        "splits": {"train": ["1"], "held_out": ["2"]},
+        "capture_manifest": {"sha256": sha256(manifest)},
         "sources": sources,
-        "chains": chains,
-        "geometry": {
-            "latent_time_scale": 8,
-            "block_latent_frames": 2,
-            "context_latent_frames": 1,
-            "sink_latent_frames": 1,
-        },
-        "chain_length": 2,
+        "splits": {"train": ["1"], "held_out": ["2"]},
+        "excluded": {},
+        "content_pin_scope": "raw_and_latents",
+        "requires_guide_latent": False,
     }
+    membership["sha256"] = subset.membership_hash(membership)
+    subset.validate_membership(membership)
+    return membership
 
 
 @pytest.fixture
-def checked_settings(old_subset: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
+def checked_settings(current_membership: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
     from ltx_core.types import SpatioTemporalScaleFactors  # noqa: PLC0415 -- needed only by preflight fixtures
-    from scripts.onestep_avatar.corpus import precompute, subset  # noqa: PLC0415 -- fixture-only saved-input producers
+    from scripts.onestep_avatar.corpus import precompute  # noqa: PLC0415 -- fixture-only saved-input producers
     from scripts.onestep_avatar.training import config, engine  # noqa: PLC0415 -- import after the architecture blocker
 
-    membership, _ = subset.convert_legacy(old_subset, original_file_sha256="a" * 64)
+    membership = current_membership
     path = tmp_path / "membership.json"
     path.write_text(json.dumps(membership))
     settings = config.parse_settings(

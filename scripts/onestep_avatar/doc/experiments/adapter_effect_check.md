@@ -1,12 +1,5 @@
 # `experiments/adapter_effect_check.py` — preserve the saved adapter correction
 
-Status: Bounded E2 owner. Full two-view and trained-step acceptance remains incomplete.
-
-The implemented source owner is `experiments/adapter_effect_check.py`.
-Original native evidence keeps its original producer hashes and scope.
-Fresh affected native checks follow the complete code gate. Read
-[current acceptance](../known_gaps.md#current-acceptance-and-next-step).
-
 ## Objective
 
 Compare the trainer's unmerged velocity function, ordinary evaluation and product
@@ -81,7 +74,7 @@ protocol. This decision does not alter the strict product checker: a pilot
 request must match its own span-seven contract; an original one-update request
 keeps that contract's span-null mode setting with seven frames of physical input.
 
-`--inputs` is version-one JSON with kind `onestep_avatar.adapter_effect_inputs`,
+`--inputs` is `schema_version: 1` JSON with kind `onestep_avatar.adapter_effect_inputs`,
 an exact direct schedule, a seed and a nonempty `cases` list. Each case gives
 `source`, `guide`, `first_image`, `image_preparation`, `noise` and `frames`.
 Paths resolve relative to that JSON. By default each source belongs to the
@@ -122,8 +115,8 @@ near-zero reference does not demonstrate a learned effect, so its comparison
 may match numerically while learned-effect acceptance stays open. Report raw
 output difference, correction norms/RMS and maximum absolute differences too.
 The zero output must be bit-identical to its own path's base output. Fused
-metrics use this same reporting rule as a separate diagnostic and never use
-the historical 20% flag.
+metrics use this same reporting rule as a separate diagnostic and never use a
+looser fusion tolerance.
 
 Worked check: reference base is `[100,100]`. Step 20 adds `[0.001,0.001]`;
 step 60 adds `[0.01,0.01]`. Matching ordinary paths pass both steps. Swapping
@@ -134,7 +127,7 @@ Step 60 can still pass separately; it cannot establish step-20 acceptance.
 One-update records retain their original `paths` summary. Pilot records give
 one such summary per trained state under `steps`; aggregate acceptance requires
 both step comparisons. A matched near-zero one-update control can satisfy the
-October 8 short-pilot prerequisite without becoming full E2 acceptance.
+pilot launch prerequisite without becoming full E2 acceptance.
 
 Measure synchronized per-process load/sample phases and optional decoding with
 the original allocated-byte and wall-time budget. Save actual forward counts,
@@ -235,7 +228,7 @@ The current supplied-image producer is independent of video encoding. Existing
 preview preparation stores guide-prefix token hashes but keeps the full guide
 master path; it does not publish a separate short product guide bundle. For a
 causal contract whose training `span_latent_frames` is null and frame count is
-seven, product CLI `--span-latent-frames 7` now selects physical guide coverage
+seven, product CLI `--span-latent-frames 7` selects physical guide coverage
 without changing that training-selection setting. A recorded explicit training
 span remains compatible only when it equals the selected complete frames. The
 helper/API comparison records the explicit prefix under unchanged settings.
@@ -257,8 +250,7 @@ comparisons must reject a 5% boundary, large effect error hidden by small raw
 error, changed zero controls and malformed/nonfinite arrays; near-zero metrics
 must never invent a ratio. Check the independent preparation and E4 failure gates
 before model work, plus input/source mutation and fresh-output refusal. Native
-two-view correction, resources, decoded inspection and external supervision
-remain required after these CPU controls.
+two-view correction, resources, decoded inspection and supervision are E2 checks.
 Saved-reader controls use real serialized tensors and process journals to reject
 changed/missing/redirected outputs, altered numerical summaries, input identities,
 call records, resource summaries and false completeness. Pilot controls cover
@@ -266,20 +258,18 @@ both real saved trained-array inventories. They isolate the native producer gate
 they do not claim a full-weight pilot. Separate controls check actual checkpoint
 contracts, matrices, markers and snapshot bytes, including a foreign step-20 run
 and changed launch/runtime/config binding. Real small LTX/PEFT controls compare
-both trained steps independently through all three shared API paths. Applied original policy
-controls reject schema-one history, missing policies and rank disagreement.
+both trained steps independently through all three shared API paths. Applied policy
+controls reject schema-one runtime records, missing policies and rank disagreement.
 
 Every reference, evaluation and product adapter arm rechecks the exact pinned file, checked metadata and tensor slices before loading a backbone. Reference checks precede `load_transformer`. Pass the same bound identity to the shared inference loader.
 
 ## Experiment package provenance
 
-The public `EXTRA_SOURCES` tuple retains every pre-move extra owner and
-binds the empty `experiments/__init__.py` marker along with the checker.
-These files are explicit experiment extras; ordinary profiles do not
-include the experiment marker. Existing results retain their original
-source attribution, and affected native checks run again after the code gate.
+The public `EXTRA_SOURCES` tuple binds the checker, its spec helper and the
+empty `experiments/__init__.py` marker as explicit experiment extras; ordinary
+profiles do not include the experiment marker.
 
-## G8 queue interface and completion
+## Queue interface and completion
 
 ```mermaid
 flowchart LR
@@ -297,14 +287,14 @@ flowchart LR
 
 
 The queue owns launch, device selection, process records and bounded supervision.
-The checker accepts a pinned schema-one specification with its literal protocol
-and original scientific `arguments`, plus queue-owned `--output` and local
+The checker accepts a pinned `schema_version: 1` specification with its literal
+protocol and scientific `arguments`, plus queue-owned `--output` and local
 `--gpu-id`. Execution flags in the scientific arguments fail before writes.
 Public `parse_args`, `read_spec`, `runtime_profile`, `verify_completion` and
 `evidence_paths` provide normalization, phase/topology data and saved-only
 completion. The manifest binds exact spec bytes, normalized scientific settings
-and the complete local artifact inventory. Original producer hashes stay intact;
-new runs bind the spec helper as an explicit experiment extra.
+and the complete local artifact inventory. Each run binds
+the spec helper as an explicit experiment extra.
 
 `dependency_outputs(spec)` identifies the saved result directories that need
 earlier queue receipts. An optional stock reference, the E2 update comparison,
@@ -319,4 +309,4 @@ Resource phase names stay in case, path and state order: load, sample, then
 optional decode. The queue does not replace those measurements with one timer.
 It loads no model or decoder, starts no child, and never repairs missing output.
 A missing, changed or escaped artifact prevents completion. CPU fixtures prove
-these refusals; final-source native acceptance still requires fresh queue jobs.
+these refusals.

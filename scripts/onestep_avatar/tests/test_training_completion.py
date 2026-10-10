@@ -76,7 +76,7 @@ def completed(checked_settings: tuple, monkeypatch: pytest.MonkeyPatch) -> tuple
         jobs_path.write_text(json.dumps({"schema_version": 1, "jobs": [raw_job]}))
         job = queue.prepare_jobs(jobs_path)[0]
         launch = queue.training_launch_record(job)
-        applied_runtime = inventory(numerical=True)
+        applied_runtime = inventory()
         settings.world_size = 4
         budget = job["effective_budget"]
         contract = checkpoints.make_contract(settings, store.membership, plan, settings.steps)

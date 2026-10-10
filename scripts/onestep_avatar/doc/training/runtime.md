@@ -47,8 +47,7 @@ an ordinary serial process from the original distributed reference.
 
 `validate` checks the complete rank inventory and requested world/precision.
 Native replay requires FSDP, fp32 adapter masters and the preserved float32
-conditioning policy. Missing historical facts fail current acceptance; they
-remain readable historical evidence. A serial reference records its own ordinary
+conditioning policy. A record without these facts fails. A serial reference records its own ordinary
 policy and compares the explicitly relevant requested precision separately.
 Policy records establish setup, not numerical equivalence or actual consumer
 field precision. Native acceptance also requires observations inside the model
@@ -65,7 +64,7 @@ cannot replace the observed wrapped-module inventory.
 - Rank count and process indices agree exactly with the launch.
 - Adapter master storage and FSDP compute policy are separate facts.
 - No model call, optimizer update or experiment import occurs here.
-- Metadata validates applied setup; native gradient controls remain required.
+- Metadata validates applied setup; native gradient controls are E4 checks.
 
 ## Gotchas
 
@@ -80,11 +79,6 @@ world/rank mismatch and old root-cast policies. CPU integration checks the norma
 trainer's publication and marker binding; it does not prove native FSDP.
 
 ## Deterministic training policy
-
-Status: Implemented; original four-rank/serial numerical comparisons pass in
-both modes. Complete workflow acceptance remains separate; read
-[current acceptance](../known_gaps.md#current-acceptance-and-next-step). Keep
-original failed records and their applied-runtime schemas unchanged.
 
 The small shared owner `training/numerics.py` declares one required
 child environment: `CUBLAS_WORKSPACE_CONFIG=:4096:8`. It applies strict Torch
@@ -105,26 +99,24 @@ detection only when the required workspace was already inherited correctly.
 Apply before reserved CUDA buffers, Accelerator, prompt/model sessions or
 cuBLAS work.
 
-Runtime capture produces schema version two and adds observed numerical
-flags to every rank. Validate exact field types, full rank agreement and the
-required current policy when the caller explicitly requests it. A historical
-version-one record remains readable under its original validation scope; it
-cannot satisfy an explicit current numerical-policy requirement. Never fill
-missing historical flags from current defaults.
+Runtime capture produces schema version two with observed numerical flags on
+every rank. `validate` accepts only schema two: it checks exact field types, full
+rank agreement and, when the caller requests it, the required numerical policy.
+Missing flags are never filled from current defaults.
 
 Public serial replay requires the original native record to declare the
 supported policy. Its supervised launch carries the original required
 workspace. Apply the shared policy before Accelerator/CUDA, capture the serial
 runtime after preparation and compare every numerical flag with the original
 native ranks. Save the serial observation in the replay protocol/result and
-recheck the applied policy before update, export and publication. The new native
+recheck the applied policy before update, export and publication. The native
 four-rank reference and its serial replay must use the same current source
-profile; old failed native updates remain historical evidence.
+profile.
 
 CPU controls cover real Torch flag setters/readers, strict warning mode,
-environment binding and late-application refusal; launch schemas one and two;
-missing, malformed or differing rank observations; engine failure before model
-loading for a wrong inherited workspace; and replay refusal of an undeclared or
-different original policy. Numerical acceptance additionally requires the actual
-four-rank updates and fixed serial comparisons; both modes' saved receipts pass.
-These checks do not establish preview/product or learned video quality.
+environment binding and late-application refusal; refusal of a schema-one launch
+or runtime record; missing, malformed or differing rank observations; engine failure
+before model loading for a wrong inherited workspace; and replay refusal of an
+undeclared or different original policy. Numerical acceptance additionally requires
+the actual four-rank updates and fixed serial comparisons (E4). These checks do not
+establish preview/product or learned video quality.

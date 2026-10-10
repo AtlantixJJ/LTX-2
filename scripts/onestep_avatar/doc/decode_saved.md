@@ -21,7 +21,7 @@ before opening the decoder and before each manifest publication. Record it in
 every decoded row and comparison. Reuse requires a current saved manifest in
 addition to the existing file/VAE checks. If a cached row's software is absent
 or stale, preserve it and require a fresh destination instead of overwriting
-historical evidence. Read-only reuse returns false for such a row.
+saved evidence. Read-only reuse returns false for such a row.
 
 Native decoding settings come from `media.native_decoder_settings`; queue
 verification uses that same identity rather than maintaining a second copy.

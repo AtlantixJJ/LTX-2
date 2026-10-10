@@ -1,6 +1,5 @@
 # `model/bidirectional.py` — process a video segment together
 
-Status: **Training and generation functions, typed engine, and explicit-mode training/evaluation CLI integration implemented. Product inference and final real-weight checks remain pending.**
 Matched reference: `model.causal.train_sample` with one block starting at frame zero
 (`tests/test_bidirectional.py`), and the pruning producer `scripts.prune.evaluate.whole_clip_baseline`.
 
@@ -110,7 +109,8 @@ Neither rule creates a causal block plan.
 
 Worked selection check: `F=19`, `L=17` permits starts 0, 1, or 2.
 The start-at-beginning result is `[0,17)`; start 2 selects `[2,19)`.
-The latter takes encoded frame 2 as its clean first-image input and records the G9 difference.
+The latter takes encoded frame 2 as its clean first-image input and records the
+[random-start first-image difference](../known_gaps.md#random-start-first-image-distribution).
 
 Check frame counts and memory needs before model loading.
 GPU processes must make the same number of model and backward calls.
@@ -132,7 +132,7 @@ Keep `c0` unchanged after every step.
 
 For `s>0`, the first selected encoded frame represents eight RGB frames.
 A supplied-image encoding represents one RGB frame.
-This is the accepted G9 difference. Record it.
+This is the accepted random-start first-image difference. Record it.
 
 `history_mode=joint` tests attention between past frames and a current block.
 It is a separate diagnostic, not this mode.
@@ -140,8 +140,8 @@ An old one-block adapter needs its original run records before mode conversion.
 
 ## Tests
 
-[V1–V3](../verification.md) check the input and loss equations before implementation.
-After implementation, compare old and new outputs, losses, and gradients on identical inputs.
+[V1–V3](../verification.md) check the input and loss equations. Tests compare outputs,
+losses and gradients with the one-block causal reference on identical inputs.
 Check that no cache helper is called.
 Check positions, random starts, and agreement between direct training and generation.
 Compare one real-weight case with the stock pipeline.

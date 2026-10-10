@@ -1,8 +1,6 @@
 # `plot_training.py` — make readable training curves
 
-Status: **Two-mode complete-update aggregation implemented. Focused aggregation tests pass; synthetic PNG/PDF figures and raw summaries were rebuilt and inspected.**
-Current code includes `step_mean`, `scalar_series`, `_smooth`, and four plot functions.
-Original logs stay unchanged. Existing top-level causal `per_block` logs remain readable.
+The module includes `step_mean`, `scalar_series`, `_smooth`, and four plot functions.
 
 ## Objective
 
@@ -83,13 +81,13 @@ elapsed minutes, and distinct input videos.
 Record process coverage, sigma counts, smoothing settings, and the actual loss definition.
 Do not use a smoothed minimum as evidence of the best checkpoint.
 
-### Old records
+### Required log format
 
-Current logs/readers can contain zero anchor fields and `per_window` records.
-New training removes disabled anchor logging.
-Convert required old position records to versioned block records with original ranges/meaning
-before deleting the legacy reader. Keep original logs and conversion hashes.
-Do not relabel an old window as a causal block without its frame mapping.
+`load_run` requires `config.json` with an explicit `mode` and `world_size`. Every
+update record must be schema two with a nonempty `samples` list whose entries name
+their `source`; causal position values come from each sample's `per_block` list.
+A log without these fields fails with a pointed error rather than being reinterpreted;
+a window position is never relabeled as a causal block.
 
 ## Invariants
 
@@ -105,7 +103,7 @@ Do not relabel an old window as a causal block without its frame mapping.
 A lower training loss alone does not prove better identity or motion.
 Random sigma draws give equal exposure only in expectation; show actual counts when comparing runs.
 Learning rate and gradient norm have different units and need separate axes.
-No historical constant is a reference floor for a new video list or task.
+No constant from another run is a reference floor for a new video list or task.
 Use current saved controls if a report needs a reference line.
 
 ## Tests
@@ -119,7 +117,7 @@ Removing one process record makes that update incomplete, not a two-process mean
 Worked mode check: bidirectional logs produce loss, learning-rate/gradient, and timing figures.
 They produce no causal-position figure. Causal logs label sequence positions from saved records.
 
-After implementation, verify raw aggregation, incomplete coverage, legacy conversion, and summary formulas.
+Tests verify raw aggregation, incomplete coverage, refusal of logs without the required fields, and summary formulas.
 Inspect axes, legends, and smoothing disclosure at normal and narrow display widths.
 Rebuild the same figures/summary from unchanged logs without training, transformer, or VAE execution.
 
@@ -142,3 +140,7 @@ are removed. Evidence lives in the workspace restructure evidence directory.
 The figure set includes PNG and PDF files. Raw batch means, coverage, position
 values and timing are saved in `training_summary.json`. Incomplete updates have
 a dotted marker on the loss figure. Their available process traces remain visible.
+
+## Current metric input contract
+
+Require config.json with explicit positive world_size and supported mode. Each update is schema-two, with nonempty sample records and explicit sources. Position values are read only from samples[].per_block, missing ranks remain incomplete updates, and equal accumulation is checked before averaging.

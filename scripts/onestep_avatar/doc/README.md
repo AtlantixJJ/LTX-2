@@ -1,430 +1,120 @@
-# `onestep_avatar` — current design and acceptance limits
-
-**Current GPU dispatch policy — user amendment, 2026-10-07:** query
-`nvidia-smi` directly and use one shared JSON file to record only processes this
-pipeline starts (PID, start ticks, command, GPU IDs and owned descendants).
-New launches do not consult reservation files or unrelated process environments.
-No privileged access is required. Preserve original claim,
-launch, result and acceptance files unchanged. Scientific inputs, budgets,
-tolerances and native E1–E5 gates remain unchanged.
-
-Status: **Implementation authorized and in progress.**
-The user directed execution of the revised plan. Shared input helpers, schedules,
-the checked master reader, and bidirectional functions now exist.
-The final source owners are implemented. The code gate verifies one frozen
-source; native and scientific acceptance require separate evidence.
-The required work order is code refactor, CPU/import/boundary validation, fresh
-affected native checks, then GPU experiments on the final source. The active
-handoff records verified owner groups and the next unfinished group.
+# `onestep_avatar` — current design index
 
 ## Review reading order
 
-Start with the [package README](../README.md#terms-used-here).
-It defines terms and shows file flow.
-Then read the separate [bidirectional](../README.md#bidirectional-workflow)
-and [causal](../README.md#causal-workflow) workflows and [mode selection](../README.md#selecting-a-mode).
-
-1. [Architecture](architecture.md): common versus experiment code, dependencies, migration destinations and gates.
-2. [Core algorithm](core_algorithm.md): input, first-image, loss, and cache rules.
-3. [Bidirectional model](model/bidirectional.md): process one video segment together.
-4. [Causal model](model/causal.md): process blocks in order; keep past-frame data.
-5. [Common inputs](model/common.md) and [denoising steps](model/sampling.md).
-6. [Engine](training/engine.md), [settings](training/config.md), and [adapter records](training/checkpoints.md).
-7. [Video list](corpus/subset.md), [evaluation](evaluate.md), [visualization](media.md), and [timing](bench.md).
-8. [Worked checks](verification.md) and [known gaps](known_gaps.md).
-
-Training visualization is in [engine](training/engine.md#visualization-during-training)
-and [training previews](media.md#training-previews).
-Product visualization is in [inference output](media.md#inference-output).
-The [screen layouts](media.md#visualization-layout) specify panel order and readable size.
-The [video text rules](media.md#text-inside-the-video) specify roles and changed values.
-The [cleanup list](../README.md#remove-old-code-and-docs) names old files and replacement docs.
-The [repository boundary](../README.md#code-ownership) keeps training and model execution in LTX-2.
-`expr/` code is only for report generation from saved results.
-
-Explicit-mode training/evaluation/product, shared fp32 adapters, input preparation,
-preview rendering and software manifests are implemented. Read
-[current acceptance and next step](known_gaps.md#current-acceptance-and-next-step)
-for verified scope and remaining gates. The
-[active handoff](../../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#current-progress--2026-10-08)
-owns exact current evidence; source presence alone does not establish acceptance.
-Individual docs explain module behavior and link to that status instead of
-repeating a changing run timeline.
-`subset.py` converts old records into new files without repairing input bytes.
-The workspace plan records migration progress; these docs explain the module logic.
+Read [architecture](architecture.md) for ownership and dependencies, then
+[core algorithm](core_algorithm.md) for shapes, conditioning, and mode calculations.
+[Training choices](training_choices.md) defines supported settings;
+[verification](verification.md) defines worked checks and the acceptance gates;
+[known gaps](known_gaps.md) defines current limits.
+The [run guide](../configs/README.md) owns runnable commands.
 
 ## Documentation rule
 
-A production source file over 100 physical lines requires a doc at the matching relative path.
-Example: `model/causal.py` → `doc/model/causal.md`.
-Count blank lines, comments, and headers.
-A file with 100 lines or fewer describes its logic in its header.
-Empty package markers and tests need no separate module doc.
-Indexes and shared-rule documents are separate.
+A production file over 100 physical lines has a mirrored design doc at
+`doc/<relative-source-path>.md`. Count blanks, comments, and headers. A file
+with at most 100 lines explains objective, ordered logic, input/output, failure,
+and invariants in its header. Empty markers and tests need no module document.
+Do not split or pad source to alter this rule.
 
-Large-file docs use Objective, Data flow, Organization logic, Invariants, Gotchas, and Tests.
-Organization logic must explain the core behavior: decisions, ordered steps, actual calculations
-or state changes, output meaning, and failure cases.
-A function list or flow diagram alone is incomplete.
-Do not send the reader to source comments for the main algorithm.
-Give a worked input and expected result.
-For visual outputs, specify what is displayed, screen layout, labels, units/time mapping,
-and how the renderer selects important text.
-Show core data flow with Mermaid.
-Put equations, array shapes, state facts, and worked checks beside the diagrams.
-Use the [shared legend](core_algorithm.md#7-end-to-end-data-flow).
-Render and inspect each diagram.
+Large-file docs use Objective, Data flow, Organization logic, Invariants,
+Gotchas, and Tests. Explain actual decisions, calculations, state changes, and
+output/failure meaning; a symbol list cannot replace the core logic.
+Give a worked input and expected result. For visual output, state selected data,
+positions, labels, time mapping, and readability. Use small left-to-right Mermaid
+flows with the [shared legend](core_algorithm.md#7-end-to-end-data-flow), then
+render and inspect them. Diagrams cannot certify numerical or distributed behavior.
 
-Use about 80% ASD-STE100 style.
-Write short sentences with direct verbs.
-Define technical terms and use one term for each concept.
-Keep code names and equations exact.
-A proposed rule is not a passing code test.
+## Current source owners
 
-Final source size decides whether a module keeps a separate doc.
-Do not split or pad code to avoid this rule.
-Old large-file docs stay until their source moves.
-Small existing files already have logic docstrings; three redundant docs were removed.
-This phase does not edit source headers.
+The index lists present sources only. Corpus owns data production and checked
+membership; model owns numerical kernels; training owns the optimizer and typed
+contracts; execution owns the one queue and bounded supervision; ordinary root
+owners supply evaluation, product, media, preparation, plots, and cost.
+Experiments orchestrate scientific comparisons through those public owners.
+Ordinary imports and profiles exclude experiments. Report code under `expr/`
+reads saved inputs and cannot run models, decoding, or queue work.
+
+| Source | Design | Physical lines |
+|---|---|---:|
+| `__init__.py` | source header | 13 |
+| `bench.py` | [bench.md](bench.md) | 574 |
+| `comparisons.py` | [comparisons.md](comparisons.md) | 501 |
+| `corpus/build_guidance.py` | [corpus/build_guidance.md](corpus/build_guidance.md) | 778 |
+| `corpus/dataset.py` | [corpus/dataset.md](corpus/dataset.md) | 397 |
+| `corpus/geometry.py` | [corpus/geometry.md](corpus/geometry.md) | 111 |
+| `corpus/mask_video.py` | [corpus/mask_video.md](corpus/mask_video.md) | 181 |
+| `corpus/motion.py` | [corpus/motion.md](corpus/motion.md) | 187 |
+| `corpus/precompute.py` | [corpus/precompute.md](corpus/precompute.md) | 1390 |
+| `corpus/qa.py` | source header | 29 |
+| `corpus/subset.py` | [corpus/subset.md](corpus/subset.md) | 400 |
+| `decode_saved.py` | [decode_saved.md](decode_saved.md) | 192 |
+| `evaluate.py` | [evaluate.md](evaluate.md) | 740 |
+| `execution/devices.py` | source header | 50 |
+| `execution/process_registry.py` | [execution/process_registry.md](execution/process_registry.md) | 353 |
+| `execution/queue.py` | [execution/queue.md](execution/queue.md) | 2011 |
+| `execution/queue_launch.py` | [execution/queue_launch.md](execution/queue_launch.md) | 1045 |
+| `execution/queue_protocol.py` | source header | 11 |
+| `execution/runtime.py` | [execution/runtime.md](execution/runtime.md) | 173 |
+| `execution/software.py` | [execution/software.md](execution/software.md) | 195 |
+| `execution/supervision.py` | [execution/supervision.md](execution/supervision.md) | 508 |
+| `experiments/adapter_effect_check.py` | [experiments/adapter_effect_check.md](experiments/adapter_effect_check.md) | 956 |
+| `experiments/causality.py` | [experiments/causality.md](experiments/causality.md) | 763 |
+| `experiments/continuation_check.py` | [experiments/continuation_check.md](experiments/continuation_check.md) | 916 |
+| `experiments/fusion_parity.py` | [experiments/fusion_parity.md](experiments/fusion_parity.md) | 329 |
+| `experiments/prune_baseline.py` | [experiments/prune_baseline.md](experiments/prune_baseline.md) | 199 |
+| `experiments/saved_probe_metrics.py` | [experiments/saved_probe_metrics.md](experiments/saved_probe_metrics.md) | 141 |
+| `experiments/short_causal_check.py` | [experiments/short_causal_check.md](experiments/short_causal_check.md) | 573 |
+| `experiments/sigma_sweep.py` | [experiments/sigma_sweep.md](experiments/sigma_sweep.md) | 329 |
+| `experiments/sigma_sweep_results.py` | source header | 70 |
+| `experiments/spec_protocol.py` | [experiments/spec_protocol.md](experiments/spec_protocol.md) | 139 |
+| `experiments/stats.py` | [experiments/stats.md](experiments/stats.md) | 469 |
+| `experiments/stock_parity.py` | [experiments/stock_parity.md](experiments/stock_parity.md) | 653 |
+| `experiments/training_slice_check.py` | [experiments/training_slice_check.md](experiments/training_slice_check.md) | 461 |
+| `experiments/training_update_check.py` | [experiments/training_update_check.md](experiments/training_update_check.md) | 704 |
+| `hashing.py` | source header | 34 |
+| `infer.py` | [infer.md](infer.md) | 688 |
+| `media.py` | [media.md](media.md) | 714 |
+| `metrics.py` | [metrics.md](metrics.md) | 151 |
+| `model/adapters.py` | [model/adapters.md](model/adapters.md) | 145 |
+| `model/backbone.py` | source header | 68 |
+| `model/bidirectional.py` | [model/bidirectional.md](model/bidirectional.md) | 141 |
+| `model/causal.py` | [model/causal.md](model/causal.md) | 899 |
+| `model/common.py` | [model/common.md](model/common.md) | 326 |
+| `model/sampling.py` | [model/sampling.md](model/sampling.md) | 150 |
+| `plot_training.py` | [plot_training.md](plot_training.md) | 481 |
+| `prepare_inputs.py` | [prepare_inputs.md](prepare_inputs.md) | 381 |
+| `previews.py` | [previews.md](previews.md) | 605 |
+| `train.py` | source header | 38 |
+| `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | 584 |
+| `training/config.py` | [training/config.md](training/config.md) | 406 |
+| `training/consumer_trace.py` | [training/consumer_trace.md](training/consumer_trace.md) | 492 |
+| `training/engine.py` | [training/engine.md](training/engine.md) | 962 |
+| `training/numerics.py` | source header | 79 |
+| `training/resources.py` | [training/resources.md](training/resources.md) | 234 |
+| `training/runtime.py` | [training/runtime.md](training/runtime.md) | 132 |
+| `training/startup.py` | source header | 63 |
+| `training/update_state.py` | source header | 93 |
 
 ## Core logic review map
 
-Review these decisions and expected results, rather than only the file-flow diagrams:
+- [Common model operations](model/common.md): tokens, exact clean `c0`, noise, full-frame loss.
+- [Causal computation](model/causal.md): block zero, block one, mid-clip start, cache retention and refresh.
+- [Bidirectional computation](model/bidirectional.md): whole segment, clean first image, target and reduction.
+- [Adapter application](model/adapters.md): frozen bf16 base, fp32 PEFT tensors, unmerged operation order.
+- [Training engine](training/engine.md): rank/sample exposure, update order, distributed reduction, exports.
+- [Queue](execution/queue.md): direct occupancy, owned process identity, bound startup/phases and completion.
+- [Media](media.md): aligned RGB references, labeled panels, full and narrow reading formats.
 
-| Design doc | Core behavior to review |
-|---|---|
-| [Common inputs](model/common.md#core-array-calculations) | token order, fp32 noise/velocity/loss calculations, exact first-image replacement |
-| [Bidirectional](model/bidirectional.md#organization-logic) | frame-range selection, full attention, one direct backward, fixed first image across steps |
-| [Causal](model/causal.md#organization-logic) | block ranges, priming, immediate backward, refresh/removal, retained frame positions |
-| [Sampling](model/sampling.md#build-the-exact-schedule) | exact schedule construction/validation and deterministic Euler advancement |
-| [Settings](training/config.md#core-resolution-logic) | omitted versus explicit mode options, checked records, seed formulas, side-effect order |
-| [Checkpoints](training/checkpoints.md#read-and-decide-before-model-loading) | field comparisons, override decision, atomic save readiness |
-| [Engine](training/engine.md#update-results-and-save-order) | sample/block averaging, one optimizer update, checkpoint step, preview job states |
-| [Dataset](corpus/dataset.md#checked-reader-procedure) | unsliced master loading, D0/D1 checks, no producer repair or sample selection |
-| [Video list](corpus/subset.md#select-and-group-videos) | deterministic person groups, exclusions, stable content identity, conversion |
-| [Evaluation](evaluate.md#define-the-comparison-before-execution) | one-factor matching, saved noise reuse, reference/metric definitions |
-| [Media](media.md#visualization-layout) | exact panel positions, important video text, synchronized frames, readable compact layout |
-| [Training plots](plot_training.md#read-and-aggregate-logs) | process aggregation, incomplete updates, axes, smoothing, raw summary values |
-| [Benchmark](bench.md#measurement-boundaries) | timer boundaries, cache reset, repetition/call counts, actual frame-rate arithmetic |
-| [Crop](corpus/geometry.md#core-crop-calculation) | union, padded square, rounded shift/cap, subject-fit exclusion |
-| [Motion](corpus/motion.md#convert-one-frame) | all three format conversions, body/camera ownership, exact gap holding and timing |
-| [Masks](corpus/mask_video.md#derive-encoded-frame-coverage) | lossless bytes, spatial pooling, first-frame/eight-frame temporal groups |
-| [Statistics](experiments/stats.md#core-measurement-calculations) | RMS/weighted gaps, moment scope, pairwise noise spread, declared diagnostic inputs |
-| [Capture/guide encoding](corpus/precompute.md#core-pixel-and-encoding-transformations) | full-resolution target preparation, fixed crop, VAE-aligned prefix and stored shapes |
-| [Guide rendering](corpus/build_guidance.md#organization-logic) | refined body plus view camera, one-pass RGBA work, exact background replacement |
+## Artifact and evidence boundaries
 
-Each doc contains a worked check or links to the numeric algorithm checks.
-Proposed behavior remains distinct from the current implementation.
+The same content hash, schedule, geometry, noise, image, context, and source identity
+must be checked at preflight, model boundary, and saved-only completion as applicable.
+A changed file fails; readers do not reconstruct missing scientific artifacts.
+The queue alone launches native work and owns supervision. Child-local runtime
+receipts measure declared phase scope; they do not replace continuous supervision.
+Saved completion verifies identity and structure without model handles.
+Report rebuilds are saved-only and fail before writes when cited evidence is missing.
 
-## Target source and design ownership
-
-The user-directed [architecture contract](architecture.md) defines the target
-layout: implemented `corpus/`, `execution/` and `experiments/` subpackages beside
-`model/` and `training/`, and a split of ordinary `evaluate.py` into
-`evaluate.py`, `metrics.py`, `previews.py` and `comparisons.py` (user decisions
-of 2026-10-08). It defines the ownership map, allowed dependencies and the
-complete migration map. The latest user instruction puts Stage D source moves
-and duplicate-runtime removal first. Preserve required behavior and callers,
-validate the final source with CPU/import/boundary checks, then publish fresh
-affected native checks before GPU experiments. The tables
-below describe current owners; their presence alone is not final gate acceptance.
-Every queue kind now uses bounded supervision and the shared GPU pool. Final
-CPU owner-group checks are recorded in the handoff. Whole-package final validation and fresh native acceptance still follow its work order.
-The architecture migration map gives their required destinations. New larger
-experiment sources require designs under `doc/experiments/` before source changes.
-
-All source owners below are inside this LTX-2 package.
-This includes training/evaluation execution, previews, decoding, and reusable metrics.
-Report-specific sections, captions, plots, and validation belong to `expr/`.
-Study settings and result files can remain there as data.
-Neither report scripts nor forwarding wrappers in `expr/` may launch model work.
-Package code does not import executable study code from `expr/`. Core training
-and ordinary support do not depend on experiment modules. Explicit experiment
-queue dispatch follows the exception in the architecture contract.
-Model helpers, bidirectional functions, schedules, training owners, and the fixed-list
-converter exist. Checked supplied-image and fixed preview preparation are
-implemented. Their native preparation evidence does not certify model output.
-Complete input production and native model acceptance remain pending.
-
-| Source owner | Doc | Size rule and purpose |
-|---|---|---|
-| `model/common.py` | [model/common.md](model/common.md) | >100; token layout, noise, first-image input, output conversion |
-| `model/adapters.py` | [model/adapters.md](model/adapters.md) | >100; shared unmerged fp32 PEFT configuration/loading, x0 inference wrapper and explicit fusion diagnostic |
-| `execution/software.py` | [software.md](execution/software.md) | >100; explicit worktree owner hashes/runtime versions, current verification and historical integrity reading |
-| `execution/runtime.py` | [execution/runtime.md](execution/runtime.md) | >100; immutable queue runtime binding, child-local resource observations and applied numerical policy |
-| `prepare_inputs.py` | [prepare_inputs.md](prepare_inputs.md) | >100; fixed preview assembly/pinned text-noise-image tensors and actual one-RGB supplied-image VAE preparation |
-| `experiments/stock_parity.py` | [stock_parity.md](experiments/stock_parity.md) | >100; actual stock video sampling components, repeated controls, checked-reference precision comparison and decoded traces; native acceptance open |
-| `experiments/spec_protocol.py` | [experiments/spec_protocol.md](experiments/spec_protocol.md) | >100; pinned data-only checker specifications, artifact manifests and saved completion inventory |
-| `experiments/prune_baseline.py` | [experiments/prune_baseline.md](experiments/prune_baseline.md) | >100; queued one-case pruning reproduction through the public prune producer, pinned inputs/software and saved completion |
-| `experiments/short_causal_check.py` | [experiments/short_causal_check.md](experiments/short_causal_check.md) | >100; repeated short causal evaluation/product, supplied-image and future-noise controls through shared numerical owners |
-| `model/bidirectional.py` | [model/bidirectional.md](model/bidirectional.md) | >100; segment training and generation |
-| `model/causal.py` | [model/causal.md](model/causal.md) | >100; block and cache operations |
-| `model/sampling.py` | [model/sampling.md](model/sampling.md) | >100; exact denoising levels and steps |
-| `training/config.py` | [training/config.md](training/config.md) | >100; typed settings and initial checks |
-| `training/engine.py` | [training/engine.md](training/engine.md) | >100; setup, weight updates, logs, saves, preview jobs |
-| `training/runtime.py` | [training/runtime.md](training/runtime.md) | >100; actual Accelerator/FSDP policy capture, rank agreement and replay validation |
-| `training/resources.py` | [training/resources.md](training/resources.md) | >100; exact budget identity, synchronized local CUDA phase peaks/time and complete rank/phase validation |
-| `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | >100; save/read/check settings and shared digest/tensor validation |
-| `experiments/legacy_adapters.py` | [experiments/legacy_adapters.md](experiments/legacy_adapters.md) | >100; explicit checked legacy metadata conversion |
-| `corpus/subset.py` | [subset.md](corpus/subset.md) | >100; fixed videos, person groups, hashes |
-| `evaluate.py` | [evaluate.md](evaluate.md) | >100; ordinary matched evaluation; study branches moved to experiment owners in G7 |
-| `metrics.py` | [metrics.md](metrics.md) | >100; reusable encoded, RGB, subject and LPIPS measurements |
-| `previews.py` | [previews.md](previews.md) | >100; fixed-preview validation, state, generation and rendering |
-| `comparisons.py` | [comparisons.md](comparisons.md) | >100; checked saved comparison rendering and completion |
-| `media.py` | [media.md](media.md) | >100; training/inference visualization |
-| `bench.py` | [bench.md](bench.md) | >100; actual mode cost |
-| `corpus/dataset.py` | [dataset.md](corpus/dataset.md) | >100; checked unsliced master reader and corpus names |
-| `train.py` | header design below | ≤100; thin CLI |
-| `infer.py` | [infer.md](infer.md) | >100; product CLI/API, strict preflight and generated-only rendering |
-| `model/backbone.py` | header design below | ≤100; resolve base weights |
-
-If a thin file needs over 100 lines, write its matching doc before implementation.
-
-## Small-file header designs and migration notes
-
-- **`__init__.py`:** the standard-library-only root owner. Resolve `PACKAGE_ROOT`
-  once; derive `LTX_ROOT` and `WORKSPACE_ROOT` from it. All source readers and
-  child launchers import these constants. The B4 AST checks filename aliases and
-  helpers; root import needs no tensor/model dependency. Keep `scripts/` a
-  namespace package.
-
-- **[`execution/devices.py`](../execution/devices.py):** one import-light GPU
-  policy for the queue and process ledger. Select from GPUs 0–7 in pool order;
-  require four unique free devices for training or one for another kind. Busy
-  owned devices and observations at or above 1,024 MiB are excluded. This
-  helper grants no ownership; the registry rechecks under its lock. Its
-  small-file header owns the design.
-
-- **[`training/numerics.py`](../training/numerics.py):** one import-light
-  deterministic training policy and required cuBLAS child environment. Configure
-  that environment before native imports, apply the proven Torch/cuDNN/matmul
-  flags before model work, and capture complete actual native/serial settings.
-  Refuse late workspace configuration after CUDA initialization. Preserve and
-  compare cuDNN's separate observed TF32 setting. Historical missing policy facts
-  cannot acquire current defaults. The implemented small-file design lives in
-  its header. Both modes pass the original four-rank numerical comparison;
-  complete workflow acceptance remains separate. See the current gap summary.
-
-- **`training/update_state.py`:** reusable optional named Adam-state export.
-  Gather unsharded optimizer moments through native FSDP, or map ordinary
-  optimizer parameters to model names. Write only main-rank finite fp32 adapter
-  moments with exact optimizer/step metadata. No frozen-weight gathering, training
-  loop, experiment imports or resume protocol. Small-file design lives in its header.
-
-- **`experiments/training_update_check.py` (implemented experiment owner):** bounded
-  serial replay of one saved distributed update using public shared preparation,
-  model-loading, token construction and mode functions. Reuse original rank/slot
-  noise seeds. Compare named clipped gradients, gradient norm, loss and actual
-  exported adapters under predeclared tolerances. G4 moved this owner into
-  `experiments/`. Both modes' original numerical evidence keeps its recorded
-  source attribution; fresh affected native checks follow the final code gate.
-  Preview/product scope remains separate. [Design](experiments/training_update_check.md).
-
-- **`experiments/sigma_sweep_jobs.py` (generation/dependent decoder preparation implemented;
-  native acceptance pending):** [design](experiments/sigma_sweep_jobs.md).
-  Preserve original paired masters, schedules, prompts and saved noise as
-  explicit package evaluation jobs. Preparation never starts a model or queue.
-
-- **`experiments/sigma_sweep.py` (saved decoding and queue dispatch implemented; native acceptance
-  pending):** [design](experiments/sigma_sweep.md). Read hashed saved tensors, use one
-  decoder-only session and shared metrics, publish ten videos and checked
-  samples. Report-specific sheets read saved samples under expr and cannot
-  invoke models. Historical launchers/analyzer are retired; exact source bytes
-  remain as non-executable producer provenance text.
-  The `experiment` queue kind with selector `sigma_sweep` pins specs, uses one shared evaluation-device
-  claim and delegates complete output verification to this owner. Four saved
-  historical decoder jobs are available; future generated-result binding is
-  implemented through version-two result-bound specs. `experiments/sigma_sweep_results.py`
-  describes its small-file design in its header: check frozen/shared cell
-  conditions, verify scientific completion and bind all result/text/noise bytes
-  without models or writes.
-
-- **`experiments/future_noise_study.py` (preparation implemented; fresh native parity pending):**
-  [design](experiments/future_noise_study.md). Reconstruct exact saved noise and prepare
-  package jobs for the historical intervention/repeat/causal controls. Current
-  real conversion refuses a changed guide-render pin in the old subset. Keep
-  original source attribution as non-executable provenance. The owner lives in
-  `experiments/`; queued jobs use the `causality` selector and pin all five
-  scientific specifications. A failed historical data pin is never repaired by a reader.
-
-- **`experiments/convert_progress_jobs.py`:** data-only conversion of historical progress
-  rows to package evaluation jobs. Preserve both fixed views, seed 42, sigma
-  0.8977352380752563 and exact one/four-call schedules from the shared scheduler.
-  Read the run's arm and causal geometry; use an explicit research override for
-  these off-condition diagnostics. Require both sources in checked membership.
-  Publish a fresh JSON job list; never open models or start a queue. Tests check
-  row coverage, source order, schedules, checkpoint paths and completion paths.
-
-- **`execution/queue_protocol.py` (implemented):** small constant owner for queue token/job
-  environment names and the startup-event prefix. Import no model libraries.
-  `training/startup.py` retains its public imported names for existing consumers.
-- **`experiments/training_slice_check.py` (bounded numerical localization controls pass):**
-  [One-rank update localization](experiments/training_slice_check.md) calls shared training
-  owners with exact original visits. G4 moved this owner into `experiments/`.
-  Original controls retain their recorded source attribution; fresh affected
-  native checks follow the final code gate. Ordinary runtime does not import it.
-- **`experiments/adapter_effect_check.py` (bounded E2 comparison; full E2 incomplete):**
-  [Saved adapter correction](experiments/adapter_effect_check.md) compares the shared training
-  reference, ordinary evaluation and product APIs with independent supplied c0,
-  fixed guide/text/noise and original native numerical policy. It checks the fixed
-  under-5% effect criterion and measures original-budget process resources. Fusion
-  stays diagnostic. Saved verification performs no model/decoder work. G4
-  moved this owner into `experiments/`; fresh affected native E2 evidence
-  follows the final code gate. Ordinary runtime does not import it.
-- **`experiments/continuation_check.py` (bounded E3 observation; native acceptance pending):**
-  [Native history observations](experiments/continuation_check.md) delegate unchanged cached
-  and recomputed sampling, snapshot real K/V and observe native attention inputs
-  before/after eviction. Public future/capture controls use the ordinary evaluator.
-  Shared resources and own-process supervision preserve the original E3 limits.
-  CPU preflight and tiny-native controls do not prove full-weight or seven-frame
-  pilot acceptance. G4 moved this owner into `experiments/`; fresh affected
-  native E3 evidence follows the final code gate. Ordinary runtime does not
-  import it.
-- **`execution/process_registry.py` (implemented, native launch evidence in progress):**
-  [Own-process tracking](execution/process_registry.md) in one shared JSON file, direct GPU
-  queries and exact targeted descendant identities. No privilege or unrelated
-  environment scans. Closed attempt history remains immutable.
-- **`execution/supervision.py` (implemented, native acceptance in progress):**
-  [Bounded observation](execution/supervision.md) of registered children, rank phases and
-  exact descendant shutdown. Resource journals own allocator measurements.
-- **`training/consumer_trace.py` (implemented, native comparison in progress):**
-  [Consumer observations](training/consumer_trace.md) record actual transformed
-  conditioning, adapter storage and forward compute separately. Failed runs keep
-  incomplete observations; trace hashes alone do not prove gradient agreement.
-- **`execution/queue_launch.py` (implemented and integrated with persistent dispatch):** launch gate, with [queue_launch.md](execution/queue_launch.md).
-  A child registers its stable process identity, waits for a journal-bound grant,
-  then replaces itself with the exact recorded command. Import no models.
-  Persistent dispatch saves registration before approval and checks command transitions.
-  Guarded recovery proves absent approval before marking interrupted work failed.
-  Explicit ended-attempt recovery has limited bookkeeping scope and cannot
-  manufacture continuous supervision. Exact current receipts are in the active handoff.
-
-- **`train.py`:** parse/check settings through `training.config`.
-  Print dry runs or call `training.engine`.
-  Own no model/cache/update loop or checkpoint-record construction.
-- **`infer.py`:** require guide data, supplied-image encoding, background, frame rate,
-  mode, frame dimensions, and adapter settings.
-  Check D1 and supported conditions before calling the selected generation function.
-  Save output records and optionally call `media.py`.
-  Product generation has no capture target or capture past frames.
-  This implemented large file has [doc/infer.md](infer.md).
-- **`model/backbone.py`:** resolve version and dev/distilled weight paths once.
-  Keep registry defaults and return the actual weight hash.
-  This small source explains its resolver rules in the header.
-- **`training/startup.py` (implemented):** the small-file header owns queued startup events.
-  Bind an optional attempt token/job hash and rank; mark updates before training.
-  Propagate exceptions and emit only the defined contention/failure events.
-  Own no retry, archive, model or process launch.
-- **`hashing.py`:** stream file bytes and hash tensor shape, dtype and original
-  contiguous bytes through one leaf owner. Keep module import standard-library
-  only; tensor hashing imports Torch inside its function. Do not substitute
-  size/time for a content hash. The small-file header owns the design.
-- **`corpus/qa.py`:** compare masks with the declared threshold and calculate overlap.
-  This score is not a loss weight. Its small-file header explains the inputs and empty-mask rule.
-  Compare raw alpha and capture mask in the same crop, not composited RGB.
-  Low overlap requires inspection.
-- **`decode_saved.py`:** read hashed jobs and call `media`.
-  Do not regenerate model output.
-  The current large source has the mirrored [decoding design](decode_saved.md).
-
-These notes describe the intended ownership. Implemented small-file headers
-explain their logic; larger sources use the mirrored docs above.
-
-## Current source owners and final gate
-
-The index above names current files. The [architecture migration map](architecture.md#migration-map)
-records their original locations and required ownership. Corpus, execution and
-experiment owners have moved; ordinary evaluation, metrics, previews and
-comparisons are separate. Legacy adapter conversion belongs to experiments.
-The typed trainer is the only training runtime. The pruning baseline producer
-belongs to `scripts/prune/evaluate/whole_clip_baseline.py`.
-
-The final gate checks the entire layout, imports, software profiles, commands,
-documentation and removal records. It remains separate from source presence and
-from fresh native acceptance. Current commands are in [configs/README](../configs/README.md).
-
-## External code and doc migration
-
-`expr/` contains study settings, saved evidence and report code. Retired model
-executors, launchers, monitors and runnable source snapshots are non-executable
-`.py.txt` or `.sh.txt` provenance. The [retirement record](../../../../expr/onestep_avatar/retired_executors.json)
-keeps their paths, hashes and reasons. The [report dispositions](../../../../expr/onestep_avatar/report_dispositions.json)
-identify maintained and frozen reports.
-
-Maintained report builders read saved results only. They refuse missing or
-changed cited evidence before writes and children; discovery and rebuild cannot
-restore retired execution. The maintained AR report has saved B8 acceptance;
-the future pilot report needs its own saved-only checks when results exist.
-Historical producer records retain their original paths and hashes. The current
-implementation-status update is an explicitly authorized exception to its
-historical folder's freeze; archived scientific reports remain frozen.
-
-Only the package queue launches model work. Execution requires `--execute`,
-one of `--once` or `--loop`, and the shared `--process-ledger`. It uses direct
-GPU inventory, bounded supervision, owned process identities and the one device
-pool. Native retry and scientific acceptance use fresh output IDs after the
-final code gate. No historical launcher is restored to satisfy a later failure.
-
-## Artifact owners
-
-Capture precompute writes crop records and `z_y`.
-ARGAvatar writes guide RGB/alpha.
-Guide precompute writes `z_g` and cropped masks.
-Dataset code owns filenames and record access.
-
-Subset code writes the fixed video list without changing source data.
-Modes select frames.
-Checkpoint code writes adapter settings.
-Evaluation writes model-result records; media writes rendering records.
-`expr/` report code reads those saved records and media; it does not generate missing results.
-Readers check missing producer output instead of reconstructing it.
-
-## Verification and evidence
-
-[verification.md](verification.md) lists V1–V8 and their expected results.
-The [current gap summary](known_gaps.md#current-acceptance-and-next-step) separates
-CPU behavior, scoped native acceptance and remaining full requirements. Exact
-receipts and preserved failed attempts belong to the active handoff.
-Diagram checks and documentation links do not prove numerical or video quality.
-
-The final gate rechecks `expr/` imports and subprocess calls for model execution
-and verifies retirement records against the current tree. Import and rebuild
-must not restore retired execution. Maintained reports rebuild from saved
-results with training, generation and decoder loaders disabled; missing results
-fail without starting a job.
-
-### G3 corpus and adapter layering
-
-The eight corpus owners and their larger-file docs now live in `corpus/` and
-`doc/corpus/`. Small `qa.py` uses its header. Corpus commands use the new module
-paths; guide production remains in `argavatar`. Model adapters own the LoRA
-target list; checked contracts and file identity reach the model as data.
-Only explicit legacy subset conversion lazily calls the canonical causal
-planner, under the documented dependency exception. CPU boundary tests enforce
-that exception and model-free ordinary corpus imports.
-
-G4 keeps the ordinary Adam, numerical-policy, dispatch and typed-update tests
-outside `tests/experiments/`. Replay cases use their unchanged checker
-through experiment tests. The blocked ordinary suite enables the single
-test-only import finder and passes its hook to children through preserved
-`PYTHONPATH`; supported production commands do not change their import policy.
-
-G5 preserves all six historical study owners under `experiments/` and their
-scientific tests under `tests/experiments/`. Only fresh sigma-sweep job builders
-use the current experiment dispatch. Original job lists and the fixed original
-producer Git blob remain historical attribution. Frozen report bytes are not
-rewritten or imported to provide moved execution; shared saved-artifact controls
-exercise the public completion owner directly.
-
-### Ordinary output owners
-
-[metrics.py](metrics.md) owns reusable array measurements. [previews.py](previews.md) owns fixed preview records and rendering. [comparisons.py](comparisons.md) owns saved comparison rendering and completion. The ordinary evaluator calls an explicitly supplied fixed-preview tensor validator; it imports no previews module.
-
-### Extracted study owners
-
-- [Causality](experiments/causality.md): saved-noise interventions and the preserved eight-block comparison, with queued specs and model-free full completion.
-- [Fusion parity](experiments/fusion_parity.md): the original five-case block-zero adapter protocol, with queued raw-tensor completion.
-- [Saved probe metrics](experiments/saved_probe_metrics.md): direct model-free short/long historical measurements.
-- [Sigma sweep](experiments/sigma_sweep.md): fixed 129-frame boundary score inventory; general transitions stay in the ordinary metrics owner.
-
-Ordinary evaluation keeps no retired study parser or intervention branch. Native scope and final architecture acceptance remain in the active handoff.
+The [verification contract](verification.md) describes controls and acceptance gates;
+no entry in this index claims native acceptance.

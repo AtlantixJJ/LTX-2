@@ -1,12 +1,9 @@
 # Core algorithm — shared rules and two modes
 
-Status: **Shared helpers, both mode functions and typed training implemented;
-the final code gate and full native/scientific acceptance remain open.** Read
-[current acceptance](known_gaps.md#current-acceptance-and-next-step) for scope.
-The training CLI requires an explicit mode. The mode-less loop retired in
-refactor group G11.
-Start with the [design index](README.md).
-Required means an agreed rule. Current means inspected code. Proposed means planned code.
+This document owns the numerical and conditioning rules that both modes share.
+The training CLI requires an explicit mode. Start with the [design index](README.md).
+Required means an agreed rule. Current means inspected code. The
+[known gaps](known_gaps.md) list where current code and native evidence fall short.
 
 ## 1. Symbols
 
@@ -57,8 +54,7 @@ Reserve room for the current write before removing old entries.
 Typed [bidirectional](model/bidirectional.md) training processes one segment
 directly with full attention. It has no cache, prime or refresh call.
 Typed [causal](model/causal.md) training uses the block/cache calculations above.
-The mode-less engine retired in refactor group G11. The pruning whole-clip
-producer is `scripts.prune.evaluate.whole_clip_baseline`.
+The pruning whole-clip producer is `scripts.prune.evaluate.whole_clip_baseline`.
 Select the mode explicitly. D0/D1 and dev/distilled remain separate choices.
 Joint attention over past frames and a current block is a diagnostic, not a third training mode.
 
@@ -76,7 +72,7 @@ The current rule is `clean_c0_v1`: the first image must be a real model input.
 For an independent random-start segment, take its first capture encoding as `c0` and reset positions to zero.
 At a nonzero start, that encoding represents eight RGB frames.
 A supplied-image encoding represents one RGB frame.
-This is accepted [G9](known_gaps.md#g9--a-random-window-c0-is-not-a-keyframe-encode).
+This is an accepted [known gap](known_gaps.md#random-start-first-image-distribution).
 
 For training that starts at a later causal block, prime from capture past frames.
 Keep their original positions. This applies to both history policies.
@@ -109,8 +105,7 @@ For multi-step generation, `model.sampling.euler_to` owns each update. At a
 positive next level it uses the stock Euler step and its dtype conversions.
 At zero it returns the model prediction exactly, preserving direct-step
 training/generation equality. The stock bf16 reconstructed endpoint can differ;
-[G11](known_gaps.md#g11--euler-rounding-differs-from-the-stock-step) records the
-measured base video-component endpoint difference and the remaining E1 scope.
+see [direct endpoint and stock terminal rounding](known_gaps.md#direct-endpoint-and-stock-terminal-rounding).
 
 See [common](model/common.md), [bidirectional](model/bidirectional.md),
 [causal](model/causal.md), and [engine](training/engine.md) for the ordered steps.
@@ -134,7 +129,6 @@ Product generation must generate block 0 first.
 Those two histories can differ.
 
 [Verification V1–V6](verification.md) gives arithmetic, cache, priming, and call-count checks.
-These are design checks, not new implementation results.
 
 ## 6. Train / probe / deploy
 
@@ -144,7 +138,7 @@ These are design checks, not new implementation results.
 | `model.causal.train_sample` | D0/D1; K blocks; capture or generated past frames; one prime; immediate gradients; no last refresh. |
 | Both mode `sample` functions | Explicit first-image input and exact schedule; causal capture history requires an explicit target. |
 | `evaluate.py` | Explicit mode, checked saved inputs/adapter, recorded diagnostic history and research overrides. |
-| `infer` | Product D1 with supplied-image input and generated past frames; version-two pre-weight adapter checks. |
+| `infer` | Product D1 with supplied-image input and generated past frames; typed pre-weight adapter checks. |
 
 Causal training has `2K` explicit model calls.
 Direct causal generation has K denoises and K refreshes.
@@ -156,8 +150,7 @@ backward calculations, reductions and saves; equal K alone is not sufficient.
 Typed FSDP disables root-input casting to preserve float32 modality sigma,
 timesteps and positions. Keep the bf16 parameter/reduction policy and fp32
 adapter storage. These are actual runtime settings, not merely checkpoint
-fields. Original four-rank updates in both modes pass their fixed E4 serial
-comparisons. Current complete workflow and final-source checks remain separate.
+fields. E4 compares the four-rank update with a fixed serial reference.
 
 Typed evaluation and product files use one [adapter checker](training/checkpoints.md).
 They call the selected mode's generation function.
@@ -169,17 +162,17 @@ zero. Recomputed history at the active denoise sigma and joint-history paths
 are diagnostic computations. Prompt AdaLN and, after eviction, changed old-frame
 context make them different from the cache; numerical equality is not assumed.
 For a causal adapter, the checker maps `cached_refresh_global_sigma0` to the
-explicit cache/refresh request. Changed history/K/V choices require the existing
+explicit cache/refresh request. Changed history/K/V choices require the
 research override and recorded differences. Product permits only cache/refresh.
-Quality and cost before/after eviction still need native E3 measurements.
+E3 measures quality and cost before and after eviction.
 
 Required adapter application is frozen bf16 base weights with unmerged fp32 PEFT
-adapters, matching training. Current typed evaluation/inference use the shared
-`model.adapters` path. [G8](known_gaps.md#g8--bf16-lora-fusion-weakens-the-trained-adapter)
-remains open for full E2 views/trained steps and cost verification. Fusion remains
-an explicitly changed research condition. Do not silently fall back to it.
-Current product acceptance is limited to clip-start inputs and the recorded
-frame counts. The pilot uses seven encoded frames in both modes; longer or
+adapters, matching training. Typed evaluation and inference use the shared
+`model.adapters` path; E2 measures its effect (see
+[fused adapter application](known_gaps.md#fused-adapter-application)). Fusion is
+an explicitly changed research condition; nothing falls back to it.
+Product support is scoped to clip-start inputs and the recorded frame counts.
+The pilot uses seven encoded frames in both modes; longer or
 random-start-trained product support needs separate validation.
 
 ## 7. End-to-end data flow
@@ -210,11 +203,11 @@ Each mode selects frames. Checkpoint code records training settings.
 
 ## Boundaries that remain unverified
 
-[G7](known_gaps.md#g7--cached-history-can-disagree-with-a-causal-prefix):
-sigma-zero refresh can differ from recalculation at the active noise level because of prompt AdaLN.
-G8: fused bf16 LoRA can differ from training LoRA.
-G9: a random-start segment can have a different first-image encoding.
-Moving code does not fix these differences.
+- [Cached history](known_gaps.md#cached-history-and-causal-recomputation): sigma-zero
+  refresh can differ from recalculation at the active noise level because of prompt AdaLN.
+- [Fused adapter](known_gaps.md#fused-adapter-application): fused bf16 LoRA can differ from training LoRA.
+- [Random start](known_gaps.md#random-start-first-image-distribution): a random-start
+  segment can have a different first-image encoding.
 
 Documentation size rules are in [README](README.md).
 Required checks are in [verification](verification.md).

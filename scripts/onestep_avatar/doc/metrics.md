@@ -88,13 +88,13 @@ PSNR 6.0206 dB regardless of selected area.
 
 `lpips_frame_scores` returns ordered Python floats, one per aligned frame,
 using an already-loaded perceptual model. Its default batch is sixteen,
-matching the historical full-resolution analyzer; it does not exclude c0 or
+matching the reference full-resolution analyzer; it does not exclude c0 or
 average frames. The caller explicitly selects any excluded frames. One shared
 batch iterator owns RGB validation, [-1,1] conversion, model calls and output
 checks for this helper and `lpips_distance`. Neither loads or downloads weights.
 Require an integer positive batch, a tensor output with one finite score per
 frame and preserved order across the final short batch. The helper's per-frame
-list must match the historical FHWC-to-FCHW scoring path exactly on controlled
+list must match the reference FHWC-to-FCHW scoring path exactly on controlled
 pixels. That parity verifies measurement plumbing, not native VAE or identity.
 
 `lpips_distance` takes an already-loaded perceptual model and the same checked

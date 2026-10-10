@@ -1,6 +1,5 @@
 # `execution/queue_launch.py` — register the child before model execution
 
-Status: **Persistent dispatch uses the launch gate. Real CPU-process dispatch and guarded recovery checks pass; full native integration remains separate; read [current acceptance](../known_gaps.md#current-acceptance-and-next-step).**
 Transient internal calls without a journal are outside the persisted protocol.
 
 ## Objective
@@ -178,8 +177,9 @@ bytes. Set `registered_processes_absent=true`, `continuous_supervision=false`,
 `containment_complete=false`, `unknown_descendants_unproven=true` and
 `original_exitcode=null`. This is stale own-process bookkeeping cleanup. It does
 not prove unknown descendants absent, original continuous supervision or a
-scientific acceptance result. The legacy closed-row reader's containment label
-adds no evidence. Source/profile owners and scientific artifacts stay unchanged.
+scientific acceptance result. `process_registry.inspect_record` reports such a row
+with basis `recovered_registered_handles_ended`, `containment_complete=false` and
+`continuous_supervision=false`. Source/profile owners and scientific artifacts stay unchanged.
 
 Worked case: an original `adapter_effect_check` owner and its one registered
 child are absent, the saved complete observation covers that child, exact original
@@ -276,8 +276,8 @@ approval evidence and cannot authorize takeover.
 If a bootstrap exists, require its exact token/job/request identity and guard
 command. Inspect its PID/start ticks. A live guard or changed handle refuses;
 a terminal matching guard may have an empty Linux zombie command line. Require
-complete owned-worker absence through the current targeted ledger observation;
-historical rows retain their original conservative reader. Observation errors
+complete owned-worker absence through the targeted ledger observation; rows
+without a recorded ledger use the conservative session and token scan. Observation errors
 remain errors.
 Without a bootstrap, absence of a token alone does not prove no child exists:
 a child can still be between fork and exec. The missing grant plus terminated
@@ -309,7 +309,7 @@ in `launch_recovery.prior_attempt`. This preserves its original interruption
 error, state, PID fields, command, log and environment. Recovery's new error
 explains its own decision; it must not erase the original failure observation.
 
-G8 dispatch bounds registration by the remaining original job deadline. A
+Dispatch bounds registration by the remaining original job deadline. A
 registration or grant failure invokes the same owned-tree supervisor before
 ledger release. Current registered non-training recovery permits the literal
 ordinary and experiment module set; device validation uses the single shared

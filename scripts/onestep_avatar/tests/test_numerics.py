@@ -86,7 +86,7 @@ def test_original_observed_cudnn_tf32_must_match_without_changing_it(monkeypatch
 
 @pytest.mark.parametrize("field", list(numerics.POLICY))
 def test_runtime_rejects_each_wrong_original_numerical_setting(field: str) -> None:
-    record = inventory(numerical=True)
+    record = inventory()
     for rank in record["ranks"]:
         value = rank["numerics"][field]
         rank["numerics"][field] = not value if isinstance(value, bool) else ":16:8"
@@ -95,7 +95,7 @@ def test_runtime_rejects_each_wrong_original_numerical_setting(field: str) -> No
 
 
 def test_observed_schema_two_runtime_requires_complete_rank_agreement() -> None:
-    record = inventory(numerical=True)
+    record = inventory()
     expected = runtime.numerical_policy(record)
     runtime.validate(record, 4, "bf16", native=True, numerical_policy=expected)
     record["ranks"][2]["numerics"]["cudnn_allow_tf32"] = not expected["cudnn_allow_tf32"]
@@ -105,7 +105,7 @@ def test_observed_schema_two_runtime_requires_complete_rank_agreement() -> None:
 
 @pytest.mark.parametrize("change", ["missing", "integer_flag"])
 def test_schema_two_never_default_fills_missing_or_malformed_flags(change: str) -> None:
-    record = inventory(numerical=True)
+    record = inventory()
     if change == "missing":
         del record["ranks"][0]["numerics"]
     else:

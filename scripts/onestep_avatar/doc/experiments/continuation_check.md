@@ -1,12 +1,5 @@
 # `experiments/continuation_check.py` — bounded native history observations
 
-Status: Tiny native CPU attention/cache checks pass. Full-weight before/after-eviction E3 acceptance remains pending.
-
-The implemented source owner is `experiments/continuation_check.py`.
-Original native evidence keeps its original producer hashes and scope.
-Fresh affected native checks follow the complete code gate. Read
-[current acceptance](../known_gaps.md#current-acceptance-and-next-step).
-
 ## Objective
 
 Measure the selected causal cache against a current-sigma reference using the
@@ -51,7 +44,7 @@ base, first image, text, noise, one-step schedule and B=2/D=8 geometry. Check
 current masters and saved text against the original tensor/file identities
 before weights. Use the existing checked `execute_evaluation` input path and
 `sample_case` runner. Capture a current software profile with this diagnostic
-and resource owner included. Never restamp the historical producer manifest.
+and resource owner included. Never restamp a saved producer manifest.
 The native `ltx_core.components.patchifiers.VideoLatentPatchifier` converts
 capture and guide arrays to tokens. Import it from its owner; the evaluator
 does not publish that class. Check these converted values against the saved
@@ -218,17 +211,15 @@ from another owner cannot replace these observations.
 
 ## Experiment package provenance
 
-The public `EXTRA_SOURCES` tuple retains every pre-move extra owner and
-binds the empty `experiments/__init__.py` marker along with the checker.
-These files are explicit experiment extras; ordinary profiles do not
-include the experiment marker. Existing results retain their original
-source attribution, and affected native checks run again after the code gate.
+The public `EXTRA_SOURCES` tuple binds the checker, its spec helper and the
+empty `experiments/__init__.py` marker as explicit experiment extras; ordinary
+profiles do not include the experiment marker.
 
 ### Shared intervention owner
 
-E3 reads ordinary settings and future-noise choices through the public `experiments.causality.parse_future_args`, `prepare_evaluation`, `execute_evaluation` and `verify_evaluation_conditions` entrypoints. Those methods complete the unchanged pair preflight and full saved scientific checks, then use ordinary evaluation once for loading and shared sampling. The checker adds causality to its explicit software source owners. Observed-prefix callbacks still use ordinary evaluation directly. Historical original records keep their attribution.
+E3 reads ordinary settings and future-noise choices through the public `experiments.causality.parse_future_args`, `prepare_evaluation`, `execute_evaluation` and `verify_evaluation_conditions` entrypoints. Those methods complete the unchanged pair preflight and full saved scientific checks, then use ordinary evaluation once for loading and shared sampling. The checker adds causality to its explicit software source owners. Observed-prefix callbacks use ordinary evaluation directly. Saved records keep their attribution.
 
-## G8 queue interface and completion
+## Queue interface and completion
 
 ```mermaid
 flowchart LR
@@ -246,14 +237,14 @@ flowchart LR
 
 
 The queue owns launch, device selection, process records and bounded supervision.
-The checker accepts a pinned schema-one specification with its literal protocol
-and original scientific `arguments`, plus queue-owned `--output` and local
+The checker accepts a pinned `schema_version: 1` specification with its literal
+protocol and scientific `arguments`, plus queue-owned `--output` and local
 `--gpu-id`. Execution flags in the scientific arguments fail before writes.
 Public `parse_args`, `read_spec`, `runtime_profile`, `verify_completion` and
 `evidence_paths` provide normalization, phase/topology data and saved-only
 completion. The manifest binds exact spec bytes, normalized scientific settings
-and the complete local artifact inventory. Original producer hashes stay intact;
-new runs bind the spec helper as an explicit experiment extra.
+and the complete local artifact inventory. Each run binds
+the spec helper as an explicit experiment extra.
 
 `dependency_outputs(spec)` identifies the saved result directories that need
 earlier queue receipts. An optional stock reference, the E2 update comparison,
@@ -263,4 +254,4 @@ fails CPU queue preparation, before claims or launch.
 Completion verifies the original scientific controls from actual saved artifacts.
 It loads no model or decoder, starts no child, and never repairs missing output.
 A missing, changed or escaped artifact prevents completion. CPU fixtures prove
-these refusals; final-source native acceptance still requires fresh queue jobs.
+these refusals.

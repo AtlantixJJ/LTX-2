@@ -351,17 +351,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse the pinned preview job; its evaluator arguments come from the record."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--preview-job", type=Path, required=True)
-    parser.add_argument("--output", type=Path)
+    parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--gpu-id", type=int, default=0)
     args = parser.parse_args(argv)
     args.completion = completion_descriptor(args)
     return args
 
 
-def completion_descriptor(args: argparse.Namespace) -> dict | None:
+def completion_descriptor(args: argparse.Namespace) -> dict:
     """Expose queue records without reading the mutable preview job."""
-    if args.output is None:
-        return None
     return {"records": [str((args.output / "preview_completion.json").resolve())]}
 
 
@@ -370,7 +368,7 @@ def queue_identity(arguments: list[str]) -> dict:
     args = parse_args(arguments)
     job = verify_preview_job(args.preview_job, verify_files=False)
     output = Path(job["output"]).resolve()
-    if args.output is None or args.output.resolve() != output:
+    if args.output.resolve() != output:
         raise ValueError("queued preview output differs from its pinned job")
     return {
         "id": job["id"],
@@ -576,33 +574,28 @@ def evidence_paths(arguments: list[str], root: Path) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.output is not None:
-        arguments = ["--preview-job", str(args.preview_job), "--output", str(args.output)]
-        identity = queue_identity(arguments)
-        if (args.output / "preview_completion.json").exists():
-            verify_completion(arguments, args.output)
-            return 0
-        complete = verify_preview_job(args.preview_job).get("state") == "complete"
-    else:
-        complete = False
-    if not complete:
+    arguments = ["--preview-job", str(args.preview_job), "--output", str(args.output)]
+    identity = queue_identity(arguments)
+    if (args.output / "preview_completion.json").exists():
+        verify_completion(arguments, args.output)
+        return 0
+    if verify_preview_job(args.preview_job).get("state") != "complete":
         generate_preview(args.preview_job, gpu_id=args.gpu_id)
-    if args.output is not None:
-        job = verify_preview_job(args.preview_job)
-        paths = _completion_evidence(job, args.output)
-        record = {
-            "schema_version": 1,
-            "state": "complete",
-            "identity": identity,
-            "results": job["results"],
-            "renderings": job["renderings"],
-            "evidence": [{"path": str(path.resolve()), "sha256": sha256(path)} for path in paths],
-            "producer_source_sha256": sha256(Path(__file__)),
-        }
-        destination = args.output / "preview_completion.json"
-        if destination.exists():
-            raise ValueError("queued preview completion marker already exists")
-        atomic_write(destination, lambda temporary: temporary.write_text(json.dumps(record, indent=2) + "\n"))
+    job = verify_preview_job(args.preview_job)
+    paths = _completion_evidence(job, args.output)
+    record = {
+        "schema_version": 1,
+        "state": "complete",
+        "identity": identity,
+        "results": job["results"],
+        "renderings": job["renderings"],
+        "evidence": [{"path": str(path.resolve()), "sha256": sha256(path)} for path in paths],
+        "producer_source_sha256": sha256(Path(__file__)),
+    }
+    destination = args.output / "preview_completion.json"
+    if destination.exists():
+        raise ValueError("queued preview completion marker already exists")
+    atomic_write(destination, lambda temporary: temporary.write_text(json.dumps(record, indent=2) + "\n"))
     return 0
 
 

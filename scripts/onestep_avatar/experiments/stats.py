@@ -35,14 +35,14 @@ def rms_gap(a: torch.Tensor, b: torch.Tensor, weights: torch.Tensor | None = Non
     """``||a - b|| / sqrt(d)`` -- a per-dimension RMS difference, not a raw norm.
 
     Dividing by ``sqrt(d)`` is what makes the number comparable across geometries and
-    directly usable in SS4.2's viability arithmetic: the LoRA must move the model's output by
+    directly usable in the D1 viability arithmetic: the LoRA must move the model's output by
     ``r / (sigma_0 * sqrt(2))``, which at sigma_0 = 0.725 is ``r`` times its natural scale.
 
-    ``weights`` is a ``[F, H, W]`` latent-grid coverage mask, and passing one is not optional
-    for the number SS4.2 actually wants. **Measured 2026-09-12:** the subject occupies only
-    12.4 % of the 1024**2 crop, the ARGAvatar render's background is white (255) and the
-    capture's is a dark dome (51), so an unweighted ``r`` is ~88 % a background flip and says
-    nothing about the task. See ``measure_pairs``.
+    ``weights`` is a ``[F, H, W]`` latent-grid coverage mask, and the task-relevant number
+    needs one. Measured on the corpus: the subject occupies only 12.4 % of the 1024**2 crop,
+    the ARGAvatar render's background is white (255) and the capture's is a dark dome (51),
+    so an unweighted ``r`` is ~88 % a background flip and says nothing about the task. See
+    ``measure_pairs``.
     """
     diff = (a.float() - b.float())
     if weights is None:
@@ -86,22 +86,19 @@ def measure_pairs(
 ) -> dict:
     """(r) and (c) from the corpus's paired master latents -- CPU only, no model of any kind.
 
-    Reads the same three per-view files ``train.py`` reads (SS4.4, 2026-09-14): the capture
-    master, the guide master, and the clip's loss-mask grids. Both halves of every comparison
-    come out of the same view directory at the same frame index, so a mismatch in indexing
-    cannot make ``r`` look better than it is -- and it is now measured over whole clips
-    rather than over windows that overlapped, which double-counted every second latent frame.
+    Reads the same per-view files training reads: the capture master, the guide master, and
+    the clip's mask grids. Both halves of every comparison come out of the same view directory
+    at the same frame index, so a mismatch in indexing cannot make ``r`` look better than it
+    is. Each clip is measured once over its whole length, so no latent frame counts twice.
 
-    **Two ``r``s, and only one of them answers SS4.2.** ``r_full`` is over the whole crop and
+    **Two ``r``s, and only one of them measures the task.** ``r_full`` is over the whole crop and
     ``r_subject`` is weighted by the subject coverage ``precompute.py`` stores. They are very
     different numbers here and the difference is not subtle: the render composites the avatar
     on WHITE and the capture is a dark capture dome, while the subject covers ~12 % of the
     frame. Under ``bg`` therefore ``r_full`` largely measures a background convention while
     ``r_subject`` measures the task; under ``white`` both sides agree on the background by
-    construction and the two converge. Quote ``r_subject`` either way.
-    Take the D1-vs-D2 decision on ``r_subject``; report ``r_full`` next to it, because the
-    background flip is real and is the reason SS4.3 row 1's masked loss is mandatory rather
-    than a refinement.
+    construction and the two converge. Quote ``r_subject`` either way and base the D1
+    viability decision on it; report ``r_full`` next to it, because the background flip is real.
     """
     guide_name = dataset.guide_bundle_name(objective)
     capture_name = dataset.capture_bundle_name(objective)
@@ -159,8 +156,8 @@ def measure_pairs(
         "r_subject": subject,
         "r_subject_mask": mask_kind,
         "subject_coverage": _summary(coverage) if coverage else None,
-        # SS4.2's decision, stated rather than left for a reader to derive from a percentile --
-        # and taken on the SUBJECT-weighted r, which is the only one about the task.
+        # The viability decision, stated rather than left for a reader to derive from a
+        # percentile -- and taken on the SUBJECT-weighted r, the only one about the task.
         "d1_viable": None if subject is None else subject["p90"] < 0.6,
         "by_source": {source: _summary(values) for source, values in per_source.items()},
         "moments": {
@@ -168,10 +165,10 @@ def measure_pairs(
             "guide_std": float(guide[1]),
             "capture_mean": float(capture[0]),
             "capture_std": float(capture[1]),
-            # The reference SS4.2 warns about: Var(x_sigma) = (1-s)^2 + s^2 by design, NOT 1.
+            # The reference variance: Var(x_sigma) = (1-s)^2 + s^2 by design, NOT 1.
             "expected_var_at_sigma0": (1 - DEFAULT_SIGMA0) ** 2 + DEFAULT_SIGMA0**2,
         },
-        # SS4.2 caveat, still live: these are ONE clip's channel moments, not the corpus's.
+        # These are ONE clip's channel moments, not the corpus's.
         # Widen the sample before relying on the tail.
         "channel_moments": {
             "guide": channel_moments(first_pair[0]),
@@ -303,7 +300,7 @@ def scientific_args(argv: list[str]) -> argparse.Namespace:
         "--objective",
         choices=dataset.OBJECTIVES,
         default=dataset.DEFAULT_OBJECTIVE,
-        help="SS1.2. Which objective's (z_g, z_y) pair r and the moments are measured over. "
+        help="Which objective's (z_g, z_y) pair r and the moments are measured over. "
         "The two give genuinely different numbers -- under 'white' both sides agree on the "
         "background by construction, so r_full stops measuring a background convention.",
     )
@@ -312,7 +309,7 @@ def scientific_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--eps-samples", type=int, default=DEFAULT_EPS_SAMPLES)
     p.add_argument("--max-videos", type=int, default=4, help="A1 needs a handful, not all 16")
     p.add_argument("--max-sources", type=int, default=None,
-                   help="cap the pair scan (a source is a whole clip, since SS4.4 -- not a window)")
+                   help="cap the pair scan (a source is a whole clip)")
     p.add_argument(
         "--subject-mask",
         choices=("render", "capture", "union", "intersection"),

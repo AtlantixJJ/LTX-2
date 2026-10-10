@@ -19,7 +19,8 @@ Two directories under `scripts/` are real packages with their own rules, and eac
 * **`scripts/onestep_avatar/`** -- the one-step LTX-2.5 avatar renderer: corpus tooling *and* model training in one package. Read `scripts/onestep_avatar/CLAUDE.md` and its `doc/` folder. It uses **two conda envs**: `argavatar` for `corpus/build_guidance.py` alone and `ltx` for everything else. Production files over 100 physical lines require mirrored designs at `doc/<relative-source-path>.md`; smaller files explain their logic in the header. Update the design or header with changes to objective, data flow, organization or invariants. These changes live in this submodule's worktree. A commit changes submodule history; update the workspace's recorded commit pin only when explicitly authorized.
 
 The avatar package separates `corpus/`, `model/`, `training/`, `execution/` and
-`experiments/`; its architecture doc owns the dependency rules. The workspace's
+`experiments/`; its architecture doc owns the dependency rules, and its run guide
+(`scripts/onestep_avatar/configs/README.md`) gives every workflow and experiment command. The workspace's
 `plans/2026-10-07-onestep-avatar-development-experiment-handoff.md` is the sole
 active handoff. Model work uses the package queue with bounded supervision and
 the shared owned-process ledger. Training keeps four ranks selected from GPUs

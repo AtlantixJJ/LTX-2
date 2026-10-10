@@ -1,59 +1,38 @@
-# `onestep_avatar` — prepare video data and train an avatar model
+# `onestep_avatar` — prepare avatar data, train and run an avatar renderer
 
-**Current GPU dispatch policy — user amendment, 2026-10-07:** query
-`nvidia-smi` directly and use one shared JSON file to record only processes this
-pipeline starts (PID, start ticks, command, GPU IDs and owned descendants).
-New launches do not consult reservation files or unrelated process environments.
-No privileged access is required. Preserve original claim,
-launch, result and acceptance files unchanged. Scientific inputs, budgets,
-tolerances and native E1–E5 gates remain unchanged.
+The renderer receives one real first image and an ARGAvatar guide video. It
+generates a video with LTX-2.5 and a LoRA adapter. A LoRA adapter is a small
+set of trainable weights added to the frozen base model.
 
-The model receives a real first image and an ARGAvatar guide video.
-It uses an LTX-2.5 LoRA adapter to generate video.
-A LoRA adapter is a small set of trainable weights added to the base model.
-
-**The shared runtime and final source owners are implemented. Source-bound code checks and native acceptance are separate gates.**
-See [doc/README.md](doc/README.md) for current source and design owners.
-Read [the architecture contract](doc/architecture.md) for common versus experiment
-code, allowed dependencies and the source-separation validation. Corpus,
-execution and experiments have separate implemented subpackages.
-Shared mode functions, typed training, strict adapter checks, fixed-input
-preparation, preview rendering and product review are implemented.
-[Known gaps](doc/known_gaps.md#current-acceptance-and-next-step) gives current
-acceptance scope and the next unmet gate. Numerical distributed-update acceptance
-is separate from complete workflows, learned quality and the final code gate.
-Finish documentation and final CPU/import/boundary checks before fresh affected
-native checks and GPU experiments. The handoff owns current progress and the
-[active work order](../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#next-actions).
+**Start here:** the [run guide](configs/README.md) gives the command for each
+workflow and each experiment. The [design index](doc/README.md) links every
+module design.
 
 ## Terms used here
 
 - **Capture video:** the recorded real video. Training uses it as the correct output.
 - **Guide video:** the ARGAvatar render. It provides motion input for D1.
 - **Encoded frame:** a frame in the VAE's compressed video data. It is not an RGB video frame.
-- **Video segment:** consecutive encoded frames taken from one video. It can be the complete video or a shorter part.
+  Seven encoded frames cover 49 RGB frames; seventeen cover 129.
+- **Video segment:** consecutive encoded frames taken from one video.
 - **First-image input (`c0`):** encoded first-image data with no added noise.
-  Training uses the first capture frame in its segment. Product generation uses the supplied image.
+  Training uses the first capture frame of its segment. Product generation uses the supplied image.
 - **Block:** the group of encoded frames processed together in causal mode.
-- **Token:** the model's input vector for one encoded image position.
-- **Cache:** memory that keeps model data for past frames.
-- **Training sample:** one bidirectional video segment or one sequence of causal blocks.
-- **Master:** the saved VAE encoding of a continuous video. Both modes read the same master.
-- **Fixed video list:** a JSON record of video files, train/evaluation groups, and file hashes.
-  The design calls this record `membership`.
+- **Cache:** memory that keeps model data for past frames in causal mode.
+- **Master:** the saved VAE encoding of a whole continuous video. Both modes read the same master.
+- **Membership (fixed video list):** a JSON record of video files, person groups and file hashes.
+- **D0 / D1:** D0 adds noise to capture frames and tests model capacity. D1 adds noise to
+  guide frames and is the product task. Both train against capture frames and keep `c0` clean.
+- **Objective (`bg` / `white`):** the background of capture and guide: the real background,
+  or both matted to white.
 
-D0 adds noise to capture frames. It tests model capacity.
-D1 adds noise to guide frames. It is the product training task.
-Both train against capture frames and keep the first-image input unchanged.
-Dev/distilled weights and `bg`/`white` backgrounds are separate settings.
-
-## Current workflow
+## Workflows
 
 Blue boxes name code files. Grey cylinders name saved data.
-Arrows show the data passed between files.
 See the [shared legend](doc/core_algorithm.md#7-end-to-end-data-flow).
 
-Prepare capture data, render guide frames, then encode the guide:
+**1. Prepare data.** Encode capture masters and record crop boxes, render guides
+into those boxes, encode the guides, then write a membership file.
 
 ```mermaid
 flowchart LR
@@ -61,308 +40,112 @@ flowchart LR
   G -->|"guide RGB and alpha"| S["corpus/precompute.py<br/>--process_syn_latent"]
   Y -->|"capture master and crop record"| C[("prepared video data")]
   S -->|"guide master and encode records"| C
+  C --> W["corpus/subset.py"]
+  W --> M[("membership")]
   classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
   classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
-  class Y,G,S proc;
-  class C disk;
+  class Y,G,S,W proc;
+  class C,M disk;
 ```
 
-Train an adapter, then evaluate it:
+**2. Train an adapter** in one of two modes, then **evaluate** it with the same mode.
+
+- **Bidirectional mode** processes all encoded frames of a segment together.
+  Each token attends to every token in the segment. There is no cache.
+- **Causal mode** processes blocks in time order. Each block reads its own
+  frames and cached data for past frames, never a future block. Training primes
+  the cache once, computes gradients after each block and refreshes the cache
+  between blocks. Generation starts with an empty cache and uses its own
+  generated past frames.
 
 ```mermaid
 flowchart LR
-  C[("prepared video data")] --> W["corpus/subset.py"]
-  W -->|"fixed video list"| T["train.py<br/>--mode bidirectional or causal"]
-  T -->|"saved adapter and conditions"| E["evaluate.py<br/>--mode matches adapter"]
-  E --> R[("encoded output, records, videos")]
+  S[("membership")] --> T["train.py --mode bidirectional or causal"]
+  T --> E["training/engine.py"]
+  E -->|"train_sample"| MT["model/bidirectional.py or model/causal.py"]
+  E --> C["training/checkpoints.py"]
+  C --> A[("adapter and training conditions")]
+  A --> V["evaluate.py --mode matches adapter"]
+  V -->|"sample"| MV["model/bidirectional.py or model/causal.py"]
+  V --> R[("encoded outputs and result records")]
   classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
   classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
-  class W,T,E proc;
-  class C,R disk;
+  class T,E,MT,C,V,MV proc;
+  class S,A,R disk;
 ```
 
-Training and evaluation also read the fixed list's checked masters.
-The shared checker binds mode, geometry, noising, first image, history, and adapter
-application before weights load. The mode-less trainer, `windows.py` and both old
-visualizers retired in refactor group G11.
-`decode_saved.py` reads saved encoded outputs through a jobs JSON and creates videos.
-It does not run the transformer again.
-Evaluation can also use the base model without an adapter.
+The adapter records its mode and every training condition. Evaluation and
+product generation check these conditions before any weights load. Evaluation
+can record an explicit research override; product generation refuses every
+difference.
 
-Current runnable commands are in [configs/README.md](configs/README.md).
-Check each selected guide's encode records before D1 training.
-D0 does not require guide files.
-
-## Explicit training and generation workflows
-
-Prepare the video data once. Use `corpus/subset.py` to write one fixed video list.
-Then select `--mode bidirectional` or `--mode causal` in `train.py`.
-Use the same mode in `evaluate.py` or `infer.py`.
-
-These owners and mode flags are implemented. CPU checks establish routing and
-contracts; scoped native numerical checks are recorded separately. Complete
-workflows, learned quality and longer-cache checks remain open. The active
-handoff records the code gate's outcome on its frozen source.
-See [known gaps](doc/known_gaps.md) for the limits of saved acceptance.
-
-Start a separate run when you change modes.
-Reuse the masters and fixed video list.
-Use a new frame selection plan and output directory.
-Changing the mode does not convert an existing adapter.
-
-### Bidirectional workflow
-
-Process all encoded frames in one video segment together.
-Each token can attend to every token in that segment.
-There is no cache for past frames.
+**3. Generate the product video** from a supplied image and a guide.
 
 ```mermaid
 flowchart LR
-  S["subset.py"] -->|"fixed video list"| T["train.py --mode bidirectional"]
-  T -->|"checked frame settings"| E["training/engine.py"]
-  E -->|"train on the video segment"| MT["model/bidirectional.py"]
-  E -->|"updated adapter and run settings"| C["training/checkpoints.py"]
-  C --> A[("bidirectional adapter and settings")]
-  A --> V["evaluate.py --mode bidirectional"]
-  V -->|"generate the video segment"| MV["model/bidirectional.py"]
-  V -->|"saved encoded output"| D["media.py"]
-  D --> R[("videos and result records")]
-  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
-  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
-  class S,T,E,MT,C,V,MV,D proc;
-  class A,R disk;
-```
-
-### Causal workflow
-
-Process blocks in time order.
-Each block reads its own frames and cached data for past frames.
-It cannot read a future block.
-
-Before training, prepare the cache with one priming call.
-Calculate gradients after each block.
-Update the cache between training blocks.
-Generation starts with an empty cache and uses generated past frames.
-
-```mermaid
-flowchart LR
-  S["subset.py"] -->|"fixed video list"| T["train.py --mode causal"]
-  T -->|"checked block settings"| E["training/engine.py"]
-  E -->|"train block by block"| MT["model/causal.py"]
-  MT -->|"prepare, read, and update"| KT{{"cache for past training frames"}}
-  E -->|"updated adapter and run settings"| C["training/checkpoints.py"]
-  C --> A[("causal adapter and settings")]
-  A --> V["evaluate.py --mode causal"]
-  V -->|"generate block by block"| MV["model/causal.py"]
-  MV -->|"read and update"| KV{{"cache for generated past frames"}}
-  V -->|"saved encoded output"| D["media.py"]
-  D --> R[("videos and result records")]
-  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
-  classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
-  classDef state fill:#fdecc8,stroke:#b07d18,color:#3d2a05;
-  class S,T,E,MT,C,V,MV,D proc;
-  class A,R disk;
-  class KT,KV state;
-```
-
-Each diagram shows the same model file twice because training and generation call different functions.
-The engine calls `train_sample`. Evaluation calls `sample`.
-The engine updates weights and exports adapters.
-The model files assemble inputs and run the model.
-
-Evaluation saves encoded outputs and result records before optional video rendering.
-`decode_saved.py` calls `media.py` to render those outputs later.
-
-### Selecting a mode
-
-These are training job `arguments`; replace paths, validate the queue list and
-launch through the [queue recipes](configs/README.md). Each pilot uses four
-ranks with the documented Accelerate configuration. The first acceptance pilot uses seven
-encoded frames (49 RGB frames), with clip-start inputs in both modes.
-Both examples use the same video list, D1 input, white background, and dev base.
-They select different frame groups.
-
-```text
---mode bidirectional \
-  --subset <video-list.json> --guide-mode d1 --objective white --variant dev \
-  --span-latent-frames 7 --start-policy clip_start --output <bidirectional-run>
-
---mode causal \
-  --subset <video-list.json> --guide-mode d1 --objective white --variant dev \
-  --span-latent-frames 7 --block-latent-frames 2 --blocks-per-sample 3 --context-latent-frames 8 \
-  --start-policy clip_start --output <causal-run>
-```
-
-| Setting | Meaning |
-|---|---|
-| `--span-latent-frames 7` | Train on a segment of seven encoded frames. |
-| `--start-policy clip_start` | Start that segment at encoded frame zero. |
-| `--block-latent-frames 2` | Use two new encoded frames per causal block; block zero also includes the first-image frame. |
-| `--blocks-per-sample 3` | Train on three consecutive causal blocks per sample. |
-| `--context-latent-frames 8` | Keep up to eight past encoded frames, plus the first-image frame. |
-
-Bidirectional mode rejects block, cache, and history-policy options.
-Causal mode checks its block and cache settings.
-One block does not automatically select bidirectional mode.
-Accelerate settings specify GPU processes separately.
-
-The saved adapter records its training mode.
-The shared checker rejects an evaluation or product request with a different mode.
-A research override can permit the difference and record it.
-Product generation rejects that difference.
-`infer.py` accepts only D1, a supplied first image, and generated past frames.
-Both modes use the saved unmerged fp32 PEFT adapter by default. Evaluation's fused
-bf16 method is an explicit research condition. Causal matching conditions use
-cached past frames with clean global-sigma-zero refresh; quality and cost across
-cache eviction still require native comparison. Product accepts neither override.
-
-### Product workflow
-
-```mermaid
-flowchart LR
-  I[("supplied-image VAE bundle")] --> P["infer.py --mode matches adapter"]
-  G[("checked guide bundle")] --> P
+  I[("supplied-image encoding")] --> P["infer.py --mode matches adapter"]
+  G[("checked guide encoding")] --> P
   A[("D1 adapter and conditions")] --> P
   P -->|"unmerged fp32 adapter"| M["model/bidirectional.sample or model/causal.sample"]
   M --> R[("encoding and result record")]
-  R --> D["media.py native decoder and renderer"]
-  D --> O[("generated video and optional input review")]
+  R --> D["media.py decoder and renderer"]
+  D --> O[("generated video and input review")]
   classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
   classDef disk fill:#eceff3,stroke:#6b7280,color:#1f2937;
   class P,M,D proc;
   class I,G,A,R,O disk;
 ```
 
-The image bundle must come from one actual RGB image encoded by the declared VAE.
-Taking the first frame of a video master and changing its metadata cannot establish
-supplied-image provenance. Use the checked standalone
-[`prepare_inputs.py supplied-image`](doc/prepare_inputs.md) producer: supply an
-RGB image in the guide crop's original canvas and, for white, a matching matte.
-It saves `image.pt`, prepared RGB and optional native decoded RGB. This prepares
-an input; it does not run product generation.
-The product pilot starts at clip zero; seven-frame training does not certify
-17-frame output or longer causal coverage. Random-start product support is outside
-this acceptance scope. Product has no capture target or GT history.
+`prepare_inputs.py supplied-image` encodes one real RGB image for this step.
+Product generation uses D1, generated history and no capture target.
 
-`execution/software.py` records actual source bytes and installed runtime versions for each
-producer. Launch, publication and current completion check the saved manifest;
-historical validation preserves recorded evidence without restamping it.
+**4. Inspect results.** Fixed previews show the same inputs at each saved
+checkpoint. `decode_saved.py` and `comparisons.py` render saved encodings
+without running the transformer again. `plot_training.py` draws loss, gradient
+size and time by update. `bench.py` measures warmed generation cost.
 
-**New commands require an explicit `--mode` switch.**
-Bidirectional training uses its own segment function with no cache or discarded
-priming call. Causal training uses immediate per-block backward and its existing
-cache calculations. The mode-less training path and old visualizers retired in
-refactor group G11 after their behavior checks moved to the typed owners.
-Fresh affected native checks follow validation of the final source.
-See [current commands](configs/README.md) and the
-[configuration](doc/training/config.md), [bidirectional](doc/model/bidirectional.md),
-and [causal](doc/model/causal.md) designs.
+**5. Run experiments.** Acceptance checks and studies are modules in
+`experiments/`; the queue runs each one from a pinned specification. The
+[run guide](configs/README.md#9-experiments) lists them; the
+[verification contract](doc/verification.md#acceptance-gates) defines the gates.
 
-## Visualization during training and inference
+## Entry points
 
-Training plots show loss, gradient size, and elapsed time by update.
-The engine writes the logs; `plot_training.py` draws the curves.
-Optional video previews use fixed inputs and a completed checkpoint.
-`prepare_inputs.py preview` assembles those fixed inputs from a checked video
-list, one source and prepared reference pixels. It pins native image/text/noise
-tensors, including negative text for guided previews, before training consumes
-the resulting `preview.json`. Preparation does not run the transformer.
-Run `evaluate.py` outside the training loop, then render its outputs with `media.py`.
-Show capture, guide, base-model, and adapter panels with clear labels and matching frame times.
-See [training visualization](doc/training/engine.md#visualization-during-training)
-and [preview rendering](doc/media.md#training-previews).
+| Task | Command or queue kind | Recipe |
+|---|---|---|
+| Encode capture masters | `corpus.precompute --process_gt_latent` | [§3](configs/README.md#3-prepare-the-corpus) |
+| Render guides (`argavatar`) | `corpus.build_guidance` | [§3](configs/README.md#3-prepare-the-corpus) |
+| Encode guide masters | `corpus.precompute --process_syn_latent` | [§3](configs/README.md#3-prepare-the-corpus) |
+| Create a membership | `corpus.subset` | [§3](configs/README.md#3-prepare-the-corpus) |
+| Train | queue `train` (`train.py`) | [§4](configs/README.md#4-train-an-adapter) |
+| Evaluate | queue `evaluate` (`evaluate.py`) | [§5](configs/README.md#5-evaluate-an-adapter) |
+| Training previews | `media --prepare-training-references`, `prepare_inputs preview`, queue `preview` | [§6](configs/README.md#6-fixed-training-previews) |
+| Product video | `prepare_inputs supplied-image`, queue `product` (`infer.py`) | [§7](configs/README.md#7-product-generation-from-a-supplied-image) |
+| Decode, render, cost, plots | queue `decode`, `render`, `bench`; `plot_training` | [§8](configs/README.md#8-decoding-comparison-media-cost-and-plots) |
+| Experiments E1–E5 and studies | queue `experiment` | [§9](configs/README.md#9-experiments) |
 
-For inference, save the generated encoding and run record before rendering.
-`media.py` creates the generated video and poster.
-The implemented `infer.py --decode --review` view compares guide and generated
-video and shows the supplied image separately. Complete product/media and learned
-quality acceptance remain pending; input preparation has its own scoped evidence.
-No capture target is available in product inference.
-See [inference output design](doc/media.md#inference-output).
+## Rules
 
-## Remove old code and docs
+- Run from the LTX-2 root as `python -m scripts.onestep_avatar.<module>` in the
+  `ltx` environment. Only `corpus/build_guidance.py` uses `argavatar`. Keep
+  `LTX-2/scripts/` a namespace package (no `__init__.py`).
+- The package queue starts all model work except corpus production and input
+  preparation. Query `nvidia-smi` first; use free GPUs 0–7; training uses four.
+- Each saved data type has one producer. Readers fail on missing or changed
+  inputs; they never recreate them.
+- Code under `expr/` only builds reports from saved results. It never starts
+  training, generation, evaluation or decoding.
+- Keep datasets, weights, videos and logs out of version control.
 
-The target layout, the complete migration map and the retirement conditions are
-in [the architecture contract](doc/architecture.md#migration-map). The
-[active handoff](../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md#refactor-work-order--owner-groups)
-orders the work in owner groups G0–G14, one LTX-2 commit per verified group.
-This section keeps only the removals that are already complete.
+## Design documents
 
-| Removed source and doc | Replacement |
-|---|---|
-| `causal_core.py`, `doc/causal_core.md` | `model/common.py`, `model/causal.py`, `model/sampling.py`, and their matching docs |
-| root `sampling.py`, `doc/sampling.md` | `model/sampling.py`, `training/checkpoints.py`, and their matching docs |
-| `onestep_core.py`, `doc/onestep_core.md` | `infer.py`, `doc/infer.md`, model docs, and `doc/media.md` |
-| `bench_forward.py`, `doc/bench_forward.md` | `bench.py` and `doc/bench.md` |
-| `report_d0.py`, `doc/report_d0.md` | current evaluation/media outputs; useful historical evidence keeps its original records |
-| large-trainer `doc/train.md` | `doc/training/` and model docs; `train.py` stays a small CLI with a header |
-| root `backbone.py` | `model/backbone.py`, with its logic in the header |
-| `doc/backbone.md`, `doc/hashing.md`, `doc/corpus/qa.md` | headers of the matching source files (each at most 100 lines) |
-| `windows.py`, `visualize_d0.py`, `visualize_d1.py` and their docs | typed model/training/evaluation owners; the whole-clip baseline producer belongs to `scripts/prune/evaluate/whole_clip_baseline.py` |
+- [Architecture](doc/architecture.md): package layout, ownership, dependencies and queue kinds.
+- [Core algorithm](doc/core_algorithm.md): symbols, conditioning, both modes and data flow.
+- [Training choices](doc/training_choices.md): D0/D1, backgrounds, history and schedules.
+- [Verification](doc/verification.md): worked checks and the E1–E5 acceptance gates.
+- [Known gaps](doc/known_gaps.md): current limits.
+- [Package guidance](CLAUDE.md): rules for changing this package.
 
-The active training anchor path and its CLI flag, data fields, loading,
-metadata, loss placeholders and logs are removed. Historical saved records keep
-their original fields. Do not keep forwarding files or a second old
-implementation in a `legacy/` folder.
-
-## Environment and ownership
-
-### Code ownership
-
-The [architecture contract](doc/architecture.md) separates core runtime, reusable
-support, experiment comparison/conversion code and report code. Experiments must
-call public shared owners; ordinary runtime must not depend on experiments.
-The source moves and duplicate-runtime removal are implemented. Complete the
-final documentation, CPU, import, command and source-boundary gate, then
-publish fresh affected native checks and run the seven-frame E5 pilots on
-the final source. Preserve all scientific gates and original evidence; do not
-restamp earlier outputs as evidence for moved owners.
-
-All avatar training code stays in this LTX-2 package.
-That includes training launchers, required queues, evaluation, model probes, and adapter saves.
-Generation and reusable visualization also stay here.
-`training/engine.py` runs updates. `evaluate.py` runs ordinary evaluation;
-`previews.py` owns fixed training previews and `comparisons.py` owns saved comparisons.
-`media.py` and `decode_saved.py` own decoding and reusable video outputs.
-Every code-file box in the workflows above is inside LTX-2.
-
-Code under `expr/onestep_avatar/` is only for report generation.
-It owns report sections, captions, report-specific plots, saved-result summaries, and report validation.
-It reads saved metrics, videos, posters, and run records.
-It does not start training, generation, evaluation, or VAE decoding.
-Missing results cause an error; generate them with the package commands first.
-
-Study settings, narratives, saved runs, media, and logs can remain under `expr/`.
-Package commands accept their paths as inputs or outputs.
-Package code does not import executable study code from `expr/`.
-
-Retired `expr/` executors and runnable snapshots remain as non-executable
-`.py.txt`/`.sh.txt` provenance. The disposition records identify maintained and
-frozen reports. Maintained report code rebuilds from saved evidence and refuses
-retired execution; it cannot restore missing results through an old source snapshot.
-
-### Runtime environment
-
-Run `python -m scripts.onestep_avatar.<module>` from the LTX-2 root.
-Use `argavatar` for `corpus/build_guidance.py`. Use `ltx` for all other files and tests.
-Keep `scripts/` a namespace package so ARGAvatar imports can resolve.
-
-Each saved data type has one producer.
-Readers fail if its output is missing; they do not recreate it.
-Keep datasets, weights, videos, and logs outside version control.
-Do not change the workspace's recorded LTX-2 submodule commit during this review.
-
-## Documentation and verification
-
-Aim for 80% ASD-STE100 style: short sentences, direct verbs, and defined technical terms.
-Use one term for each concept. Keep code names and equations exact.
-
-Files over 100 lines require design docs at matching paths.
-Smaller files use a header description.
-Write the design before changing source. See [CLAUDE.md](CLAUDE.md).
-[verification.md](doc/verification.md) gives worked checks and lists tests needed after implementation.
-
-[Known gaps](doc/known_gaps.md) remain visible:
-cache refresh can differ from recalculation; fused LoRA can differ from training LoRA;
-a random-start segment can have a different first-image encoding.
-Diagrams do not prove output quality, speed, or distributed execution correctness.
+Files over 100 lines have a design at `doc/<source path>.md`; smaller files
+describe their logic in their header. Documents use short sentences and one
+term for each concept (about 80% ASD-STE100 style).

@@ -2,7 +2,7 @@
 
 ## Objective
 
-SS1.7's crop geometry, as one callable rule: **one square box per (clip, view), fixed for the
+The crop geometry as one callable rule: **one square box per (clip, view), fixed for the
 whole clip**, sized to contain the subject across every frame, resized to 1024².
 
 Fixed-for-the-clip is not a simplification. A per-frame rect would inject camera motion the
@@ -33,24 +33,18 @@ two conda envs.
 7. Calculate effective padding `s/max(w,h)`.
    A value below one means the subject union does not fit; the corpus caller excludes that view.
 
-Use Python's existing rounding rule. Keep exactly the same arithmetic for old recorded boxes.
+Use Python's rounding rule. Recorded boxes depend on this exact arithmetic.
 `canonical_crop_box` calculates/checks geometry; capture precompute is the producer of the saved box.
 Guide generation reads that saved box and reports a disagreement rather than choosing another crop.
 
-`canonical_crop_box` is **the whole rule in one call**, and since 2026-09-15 it is the *only*
-copy of it. `precompute.py --process_gt_latent` calls it to compute the box it records, and
+`canonical_crop_box` is **the whole rule in one call** and the only copy of it.
+`precompute.py --process_gt_latent` calls it to compute the box it records, and
 `build_guidance.py` renders into that recorded box — one producer, one arithmetic.
+`test_geometry.py` is a golden test on exact box values: changing the rule would silently
+re-crop a corpus whose latents are already encoded.
 
-It used to be transcribed into `precompute.py`, with a test pinning the two spellings,
-because the two modules lived in different trees and different conda envs. Consolidating the
-package removed that seam; the two were verified identical over **all 3,360 corpus views × 3
-canvas shapes** before the copy was deleted, so no recorded box moved. `test_geometry.py` is
-now a golden test on exact box values, which is what still bites: changing the rule would
-silently re-crop a corpus whose latents are already encoded.
-
-The legacy `crop_with_padding` helper can still fill out-of-frame areas for older callers.
-It is not the rule for producing capture training targets.
-Inventory callers before removing it; never replace shift-and-cap with synthetic target pixels.
+`crop_from_canvas` crops a fitted box and never pads; capture targets never receive
+synthetic pixels (shift-and-cap, then exclude a subject that does not fit).
 
 ## Invariants
 
@@ -71,9 +65,8 @@ Inventory callers before removing it; never replace shift-and-cap with synthetic
 
 ## Tests
 
-`tests/test_geometry.py` — golden tests on exact box values. There is no longer a pin against
-`precompute.py`'s arithmetic: `precompute._capture_box` calls `canonical_crop_box`, so the two
-cannot disagree and a test comparing them would be tautological.
+`tests/test_geometry.py` — golden tests on exact box values. `precompute._capture_box` calls
+`canonical_crop_box`, so the two cannot disagree.
 Worked check: canvas `100x80`, union `[0,20,40,60]`, and padding `1.2`
 request `[-4,16,44,64]`. Fitting returns `[0,16,48,64]` with no synthetic pixels.
 A 90-pixel-wide union on that canvas gets square side 80 and effective padding `80/90 < 1`.

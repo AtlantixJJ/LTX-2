@@ -1,4 +1,4 @@
-# `corpus/build_guidance.py` — render the guide (stage B2b)
+# `corpus/build_guidance.py` — render the guide
 
 ## Objective
 
@@ -7,9 +7,6 @@ The per-view record still supplies camera and crop fields. Load both records,
 repair camera gaps, merge same-shaped refined body arrays, and use refined
 validity for motion conversion. Missing refined data fails; there is no
 per-view-only producer option. Both file hashes contribute to motion identity.
-The removal prerequisite was checked across 70 existing bg/white guides in
-`all_objective_guide_legacy_inventory.json`: all refined shapes pass and none
-records a per-view-only producer. Original guide media and sidecars are unchanged.
 
 Produce, for one (clip, driving view) and **one objective**, the guide video the model is
 conditioned on — plus the alpha and QA the rest of the pipeline needs. This is the expensive
@@ -72,18 +69,12 @@ ARG-Avatar's own rasterizer (`forward.cu`: `C[ch] + T * bg_color[ch]`, with
 `bg_color=torch.ones(3)`) blends over white before this module ever sees a pixel, so
 `composite_guide_frame` does background *replacement* —
 `guide = R_white + (1 - alpha) * (B - white)` — not a second alpha blend on top of what it
-is handed. Guide contract **v2** (2026-09-18, 2026-09-18 audit finding F1); v1 treated the
-input as straight foreground and blended it again, which applied alpha twice and left a
-white fringe on every soft edge, including in the `white` objective, which should have been
-a no-op. `dataset.GUIDE_COMPOSITING_VERSION` is stamped into every sidecar's
-`compositing_version` and checked by `_render_is_complete` the same way `objective` is — a
-render built under the retired formula is rebuilt, not silently trained against. Unlike
-`objective`, a missing `compositing_version` is never inferred as current: every render
-built before this fix used the wrong formula, so there is no legacy value to grandfather in.
-**The 19 renders on disk predate this fix and are stale under it** — they were reviewed and
-accepted only under the retired v1 contract; the next step in the September 18 plan is one
-reviewed real bg/white pair under v2, then a rebuild of the affected guides (capture bundles
-are unaffected — only the guide's own compositing changed).
+is handed. Treating the input as straight foreground and blending it again would apply alpha
+twice and leave a white fringe on every soft edge, even in the `white` objective, which must
+be a no-op. This formula is compositing version 2: `dataset.GUIDE_COMPOSITING_VERSION` is
+stamped into every sidecar's `compositing_version` and checked by `_render_is_complete` the
+same way `objective` is. A render with a missing or different version is rebuilt, never
+silently trained against. Capture bundles do not depend on guide compositing.
 
 **Failures are per-pair exclusions, never batch-fatal.** A gap in the multiview body trajectory
 or a reconstruction failure loses that pair (or that clip's pairs), is collected, and is
@@ -105,23 +96,18 @@ the manifest crop. A review batch over many actors must not die on one bad clip.
 
 **The alpha is stored as a lossless grayscale MP4**, not a raw array — 42× smaller, bit-exact,
 and the soft edge survives untouched. See [mask_video.md](mask_video.md) for the measurements
-and why lossy was rejected. Supported stored masks are MP4 only. The completed
-all-objective inventory found no legacy-only mask among 70 existing guides, so
-the old alpha-migration command and legacy array reader are removed. Original
-arrays, when present beside MP4s, stay untouched; guide renders are not rebuilt.
+and why lossy was rejected. Stored masks are MP4 only; a `.npy` array beside a render is
+ignored and does not make the render complete.
 
 ## Resumability
 
 `_render_is_complete` accepts a view only if its sidecar and its video agree on frame count,
 geometry, alpha grid, **objective, and compositing_version**, so a killed ffmpeg never looks
 finished, a render built for the other objective is rebuilt rather than trained against, and
-a render built under the retired v1 compositing formula is rebuilt rather than accepted as
-current. The alpha check accepts **either** storage form: a render is not stale merely for
-predating the MP4 format.
-
-A sidecar with `composited: true` and no `objective` predates the split; that *is* the `bg`
-render, so it is read as one. Re-rendering the 19 views on disk for a field name would cost
-a GPU-day for nothing.
+a render built with another compositing formula is rebuilt rather than accepted as current.
+The alpha must exist as the lossless MP4. A sidecar must name its objective; no field is
+inferred from other metadata. The motion input hash is also part of currency, so a refined
+body trajectory triggers a rebuild even when geometry and frame count are unchanged.
 
 ## Gotchas
 
@@ -142,7 +128,7 @@ Using white background `[1,1,1]` returns `R_white` unchanged.
 Using alpha zero replaces a white empty render pixel with the chosen background.
 Use render alpha for this operation; the capture matte is a separate target-preparation input.
 
-`tests/test_build_guidance.py` — the v2 background-replacement blend against
-renderer-faithful (already-white-composited) fixtures including the audit's exact CPU repro
-numbers, the `white` objective's exact identity, `guide_background`'s white path, and the
-`_render_is_complete` objective and compositing-version cases.
+`tests/test_build_guidance.py` — the background-replacement blend against
+renderer-faithful (already-white-composited) fixtures with the worked numbers above, the
+`white` objective's exact identity, `guide_background`'s white path, and the
+`_render_is_complete` objective, compositing-version, motion and MP4-alpha cases.

@@ -1,11 +1,10 @@
 """``pose3d.npy`` (DNARendering's per-view MHR pose+camera export) -> ARGAvatar's ``sam3db``
 motion-file format.
 
-Per ``plans/2026-09-05-dnarendering-argavatar-refine-corpus.md`` SS3: ``pose3d.npy``'s keys are
-already a complete match for what ARGAvatar's own ``infer_argavatar.build_sam3db_entry`` writes
-when it processes a subject image -- ``POSE_KEEP_KEYS`` and ``CACHE_KEYS`` below are copied
-verbatim from that function so the two cannot silently diverge. Only three things need fixing
-(SS3.1), not re-deriving:
+``pose3d.npy``'s keys are already a complete match for what ARGAvatar's own
+``infer_argavatar.build_sam3db_entry`` writes when it processes a subject image --
+``POSE_KEEP_KEYS`` and ``CACHE_KEYS`` below are copied verbatim from that function so the two
+cannot silently diverge. Only three things need fixing, not re-deriving:
 
 1. ``raw_size`` is stored ``[W, H]`` here (this dataset's convention, same as ``ori_img_size``)
    but ARGAvatar reads it as ``[H, W]`` (``xlib.train.train_helper.build_gs_camera``). Left
@@ -100,7 +99,7 @@ def convert_frame(pose3d: dict, frame_idx: int) -> dict:
 def assert_raw_size_matches_frame(pose3d: dict, frame_height: int, frame_idx: int = 0) -> None:
     """Raise if the swapped ``raw_size`` doesn't match the video's real decoded height.
 
-    A silent transpose bug here corrupts every camera derived from this clip/view (SS3.1) --
+    A silent transpose bug here corrupts every camera derived from this clip/view --
     check it against ffprobe/decord's own report of the height, never trust the source array.
     """
     w, h = (float(v) for v in np.asarray(pose3d["raw_size"][frame_idx]))
@@ -110,17 +109,6 @@ def assert_raw_size_matches_frame(pose3d: dict, frame_height: int, frame_idx: in
             f"of {h}, but the video's own decoded height is {frame_height} -- the raw_size "
             f"convention has changed; do not blindly swap it"
         )
-
-
-def valid_frame_mask(pose3d: dict, bbox: dict) -> np.ndarray:
-    """Frames usable for motion conversion: ``pose3d.valid`` AND a valid, finite bbox.
-
-    Neither dataset's validity flag is a superset of the other's, so both are required --
-    see SS2 hazard 1 (NaN bboxes can coincide with ``valid == True``... or not).
-    """
-    valid = np.asarray(pose3d["valid"], dtype=bool) & np.asarray(bbox["valid"], dtype=bool)
-    valid &= ~np.isnan(bbox["xyxy"]).any(axis=1)
-    return valid
 
 
 def repair_view_camera_gaps(view_pose3d: dict, bbox: dict) -> dict:
@@ -181,16 +169,18 @@ def _fill_gaps(valid: np.ndarray, max_gap: int | None) -> np.ndarray:
 
 def build_motion(
     pose3d: dict,
-    bbox: dict,
     frame_height: int,
     max_gap: int = 3,
-    valid: np.ndarray | None = None,
+    *,
+    valid: np.ndarray,
 ) -> dict:
     """The full-clip ``sam3db`` dict, keyed ``f"frames/{i:06d}.png"`` (``load_driving_motion``
     consumes ``sorted(sam3db.keys())``, so zero-padding is load-bearing), one entry per frame.
+
+    ``valid`` is the refined multiview body validity, one flag per frame.
     """
     assert_raw_size_matches_frame(pose3d, frame_height)
-    usable = valid_frame_mask(pose3d, bbox) if valid is None else np.asarray(valid, dtype=bool)
+    usable = np.asarray(valid, dtype=bool)
     if not usable.any():
         raise ValueError("no valid frames in this clip/view -- nothing to build a motion file from")
     source_idx = _fill_gaps(usable, max_gap)

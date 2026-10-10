@@ -1,9 +1,7 @@
 # `infer.py` — generate from a guide and supplied first image
 
-Status: Input checks and two-mode generation API implemented. Product CLI, pre-weight adapter checks and generated-only rendering are implemented. Optional decoded-input review panels are implemented; real-weight checks remain pending. Source exceeds 100 lines.
-
 Ordinary execution requests `global_sigma_dtype` from `model.common`'s float32
-contract. Adapter preflight rejects unknown historical precision before weights
+contract. Adapter preflight rejects an adapter without declared precision before weights
 load; research may explicitly acknowledge a known differing calibration, while
 product refuses it. Saved conditions preserve the requested precision.
 
@@ -114,7 +112,8 @@ identities and exact schedule. Compute no capture-reference metric.
 
 All adapter/input checks precede weight loading. No capture history exists.
 Never replace the supplied image with guide frame zero. Save raw evidence first.
-Product requests cannot use a research override. G7/G8/G9 remain separate limits.
+Product requests cannot use a research override. The cache, fusion and random-start
+[known gaps](known_gaps.md) remain separate limits.
 
 ## Gotchas
 

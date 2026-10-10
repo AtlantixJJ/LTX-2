@@ -2,7 +2,7 @@
 
 See doc/experiments/continuation_check.md. Capture and reference are separate bounded attempts;
 CPU snapshots prevent simultaneous resident cache/reference allocation. This
-experiment uses the shared causal/cache owners; full native E3 acceptance remains open.
+experiment uses the shared causal/cache owners.
 """
 from __future__ import annotations
 

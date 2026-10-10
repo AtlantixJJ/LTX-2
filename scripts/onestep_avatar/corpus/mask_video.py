@@ -12,11 +12,11 @@ almost entirely flat. Measured on real corpus alphas, lossless x264 in grayscale
 | lossless gray MP4 | 0.232 MB | 0.361 MB |
 
 The comparison that makes the point: the dataset's OWN `mask.mp4`, at 4096x3000, is 330-570 KB
--- a mask 180x larger in pixels than our 256**2 grid was, in a fraction of the space.
+-- a mask 180x larger in pixels than our 256**2 grid, in a fraction of the raw grid's space.
 
 **Lossless, and not negotiable.** Masks in this project are already one generation of lossy
-video away from the truth (the capture matte is a hard threshold off h264, the plan's risk 8),
-and plan SS1.7's rule is that the pipeline's job is not to add a *second* generation. Lossy
+video away from the truth (the capture matte is a hard threshold off h264), and the pipeline
+must not add a *second* generation. Lossy
 settings were measured and rejected: crf 12 is only 1.7x smaller than lossless but puts a max
 error of 58 and a mean error of 3.2 on exactly the soft silhouette edge that the composite's
 smooth boundary and the latent coverage both come from. 42x for free beats 72x for a corrupted
@@ -27,11 +27,8 @@ video in this pipeline uses (no new dependency, no new failure mode), plays in a
 a review pass, and -- unlike a compressed array -- decodes frame by frame without
 materializing the whole clip.
 
-Until 2026-09-15 this module was transcribed into both of the package's former trees, because
-they lived in different conda envs and could not import each other. Consolidating the package
-removed that seam; what the pin test guarded -- that the ENCODE ARGS never drift to a lossy
-setting, which would be invisible in every downstream number -- is now guarded directly by
-``test_mask_video``.
+``test_mask_video`` guards that the encode arguments never drift to a lossy setting, which
+would be invisible in every downstream number.
 """
 
 from __future__ import annotations

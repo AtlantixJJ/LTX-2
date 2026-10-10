@@ -132,9 +132,8 @@ must match `ENCODE_CONTRACT_VERSION`, source, objective, input fingerprint (RGB,
 scale. A bundle missing that metadata or disagreeing on any field is atomically regenerated.
 
 **Crop boxes are read through `dataset.CaptureManifest.load(root).boxes`, not a second
-parser.** `discover_pairs` and the paired-encode loop carried their own `manifest_boxes`, a
-byte-for-byte second reader of `capture_latent_manifest.json`, from when the two halves lived
-in different trees and conda envs; S1(8) of the 2026-09-17 cleanup plan retired it.
+parser.** `discover_pairs` and the paired-encode loop use that one reader of
+`capture_latent_manifest.json`.
 
 **Multi-GPU ownership is `items[rank::n_rank]`.** Discovery and ordering happen before the
 slice, and capture mode slices whole sources rather than windows. Therefore every window and
@@ -143,9 +142,8 @@ same rule to its sorted pair list. All ranks write the same full-corpus manifest
 PID-unique temporary files; identical atomic replacements are safe, whereas rank-local
 manifests would omit other ranks' crop boxes. Rank 0 alone writes the sampled QA gallery.
 
-For four GPUs, launch four processes with unique ranks (the `run_b2a.sh` wrapper was retired;
-call the module directly, and detach a long run with `setsid` so a signal to the shell does not
-take it down):
+For four GPUs, launch four processes with unique ranks. Call the module directly, and detach a
+long run with `setsid` so a signal to the shell does not take it down:
 
 ```bash
 for rank in 0 1 2 3; do
@@ -172,15 +170,13 @@ each paired view for training. A human-review copy is written to
 `<Part_*>/<subject>/qa/capture_mask_crop.mp4` only for view 0 of the lexicographically first
 five subject directories in each `Part_*`. No QA copy is written for other subjects or views.
 
-A side effect worth knowing: **both masks now reach the latent grid by the same route** (full
-res → 256 → latent). The capture matte used to be pooled straight to latent resolution while
-the render's alpha went via 256, so the band the loss weights by — their difference — carried
-a small resampling mismatch unrelated to alignment. Measured cost of the extra hop: mean 6e-5,
-max 2e-3 of a cell's coverage, far below the mismatch it removes.
+**Both masks reach the latent grid by the same route** (full res → 256 → latent). Pooling the
+capture matte straight to latent resolution while the render's alpha goes via 256 would give the
+band between them a small resampling mismatch unrelated to alignment. Measured cost of the extra
+hop: mean 6e-5, max 2e-3 of a cell's coverage.
 
 **The crop box comes from `geometry.canonical_crop_box`, not a copy of it.** This pass is its
-single producer; the arithmetic was transcribed here until 2026-09-15, and the two were
-verified identical over all 3,360 corpus views before the copy went. Note the module is
+single producer. Note the module is
 imported as `crop_geometry`: `geometry` is already this module's parameter name for a
 `CaptureGeometry` (whole-clip VAE alignment, separate from spatial cropping).
 
@@ -191,32 +187,30 @@ encoder so workers never fork after this process has touched CUDA.
 
 - `z_y` is never re-encoded by the paired pass. The capture pass is its only producer and the
   trainer reads that bundle directly; a copy is free to disagree with its original.
-- The two masks remain **uncombined MP4s**. Which disagreement region the loss covers is a
-  training decision (SS1.5); pre-combining or persisting a derived grid would bake one answer
-  and one geometry into the corpus.
+- The two masks remain **uncombined MP4s**. Which region a consumer measures is its own
+  decision; pre-combining or persisting a derived grid would bake one answer and one geometry
+  into the corpus.
 - Every source's windows share one fixed crop box.
 - **The on-disk plan cache (`enumerate_capture_jobs`, `.capture_plan_cache.json`) is keyed on
-  BOTH `rgb_fingerprint` and `bbox_fingerprint`** (F5, 2026-09-18 audit fix). `plan_source`
-  computes the box from `bbox.npy`, so keying on the RGB file's fingerprint alone (the
-  original design) let a corpus re-ingest that corrected a bbox with the RGB file untouched
-  keep serving the OLD cached box indefinitely — silently, since nothing else re-derives it.
-  A cache entry from before this field existed has no `bbox_fingerprint` and therefore always
-  misses (replanned once, then cached again), the same no-legacy-value rule as
-  `dataset.GUIDE_COMPOSITING_VERSION`.
+  BOTH `rgb_fingerprint` and `bbox_fingerprint`**. `plan_source` computes the box from
+  `bbox.npy`, so keying on the RGB file's fingerprint alone would let a corpus re-ingest that
+  corrects a bbox with the RGB file untouched keep serving the cached box — silently, since
+  nothing else re-derives it. An entry without `bbox_fingerprint` always misses (replanned
+  once, then cached again).
 - A live multi-GPU run uses every rank in `[0, n_rank)` exactly once. Duplicate ranks would
   duplicate work even though atomic writes prevent partial bundles.
 - **`capture_latent_manifest.json` validation and direct overwrite**: `--process_gt_latent` always
-  processes all available views (the `--views` CLI argument has been removed). When an existing
+  processes all available views. When an existing
   `capture_latent_manifest.json` is present at `--corpus-root`, its validity is checked via
-  `is_capture_manifest_valid` against the current run's `geometry`, `resolution`, and `pad_factor`.
+  `is_capture_manifest_valid` against the current run's `geometry`, `resolution`, `pad_factor`
+  and manifest `kind`.
   If the existing manifest is valid and `--overwrite` is not requested, the manifest is overwritten
   directly without forcing bundle re-encoding (unmodified bundles are skipped). If the existing
   manifest is invalid (or if `--overwrite` is passed), `overwrite` is set to `True`, replacing the
-  manifest and re-encoding all capture bundles. Still open: the write happens before
+  manifest and re-encoding all capture bundles. Limitation: the write happens before
   `encode_capture_jobs` confirms the bundles it describes actually exist/match (so a killed or
   partially-failed run can still publish a box ahead of its bundle).
-- Obsolete per-window latent bundles are regenerated; `precompute.py` no longer carries a
-  migration path for them.
+- A bundle without a schema-two master is regenerated, never converted.
 
 ## Gotchas
 

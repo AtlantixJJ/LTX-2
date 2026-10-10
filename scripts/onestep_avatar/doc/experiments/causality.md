@@ -12,8 +12,8 @@ Own where to change noise and how to compare the two outputs. Ordinary
 evaluation owns checked preparation, native sessions, adapter loading and
 publication primitives; `model/causal.py` owns sampling and caches. This owner
 adds no sampler, decoder or launcher. Supported model work uses the queue's
-`experiment` kind with selector `causality`. Historical direct parser forms
-remain at this experiment owner; ordinary evaluation accepts no study flags.
+`experiment` kind with selector `causality`; the module has no other CLI form and
+ordinary evaluation accepts no study flags.
 
 ## Data flow
 
@@ -34,7 +34,7 @@ flowchart LR
   class R out;
 ```
 
-A version-one `future_noise` spec contains exactly `schema_version`,
+A `future_noise` spec contains exactly `schema_version: 1`,
 `protocol` and string-list `arguments`. Arguments hold scientific settings;
 output/device/dry-run/spec/help overrides are refused. Scientific paths are
 absolute. An `eight_block` spec instead contains exactly `schema_version`,
@@ -46,7 +46,7 @@ Future-noise inputs use the evaluator's checked mode, source, adapters,
 conditioning, exact schedule, text and original saved noise. The intervention
 adds changed saved noise and its first changed encoded frame. Noise is
 `[1,F*H*W,C]` in shared patchifier order; published encodings are
-`[1,C,F,H,W]`. No historical noise is reconstructed.
+`[1,C,F,H,W]`. Saved noise is read, never reconstructed.
 
 Eight-block inputs are full white capture/guide masters `[C,F,H,W]` with
 equal geometry/fps and `F >= 17`, LTX-2.5 dev, a checked D1 adapter,
@@ -139,8 +139,8 @@ Saved eight-block master tokens must match the canonical master tensor hashes,
 including signed-zero bytes. Saved rollout outputs must retain the producer's
 float32 dtype. Rehashed artifacts still face these schema and conditioning gates.
 
-- Preserve scientific settings, historical tolerances and original attribution;
-  never restamp old producer manifests.
+- Keep scientific settings, protocol tolerances and saved attribution; never
+  restamp a saved producer manifest.
 - Ordinary evaluation imports no experiment. Explicit hooks carry behavior and
   source identity in one direction.
 - Adapter conditions/fresh destinations precede weights; file identity is
@@ -166,3 +166,7 @@ preflight refusal and publication. `test_extracted_queue_protocols.py`
 checks normalized/pinned specs, model-free receipts, missing/rehashed outputs,
 raw input/text/noise digests and dtype/shape/intervention controls, including
 master signed-zero byte mismatches and wrong output precision.
+
+## Current adapter and CLI contract
+
+Eight-block inputs require a typed causal DEV/D1/white adapter at the exact direct schedule, clean c0, full-frame loss, cache/refresh, and shared unmerged fp32 application. Read and validate contract/tensor inventory before any native model session, bind and recheck file bytes, then use model.adapters.inference_transformer. Keep eight blocks, shared first four noise blocks, changed last four, global noise mapping and 16 model calls per branch. The module CLI accepts only a pinned scientific spec; public kernel helpers remain usable by current short/continuation owners.

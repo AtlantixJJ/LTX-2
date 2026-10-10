@@ -13,6 +13,7 @@ import pytest
 from scripts.onestep_avatar.execution import process_registry, queue, runtime, supervision
 from scripts.onestep_avatar.execution import queue_launch as launch
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, LAUNCH_PROTOCOL, TOKEN_ENV
+from scripts.onestep_avatar.tests.claims_fixture import GPUClaims
 from scripts.onestep_avatar.training import resources
 
 
@@ -1205,7 +1206,7 @@ def test_real_dispatch_registers_before_grant_and_observes_approved_transition( 
     }
     monkeypatch.setattr(queue, "job_command", lambda *_: (command, {}))
     monkeypatch.setattr(queue, "completion_receipt", lambda *_, **__: {"job_sha256": job["sha256"], "evidence": []})
-    claims = queue.GPUClaims(tmp_path / "claims")
+    claims = GPUClaims(tmp_path / "claims")
     assert claims.acquire((4,), job="case")
     state_path = tmp_path / "state.json"
     original = launch.publish_grant

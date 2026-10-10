@@ -1,7 +1,6 @@
 """The one typed training engine: explicit-mode settings, checked inputs and LoRA updates.
 
-See doc/training/engine.md. ``run_settings`` is the only training entry point; the
-mode-less chain runtime and its subset readers retired in refactor group G11.
+See doc/training/engine.md. ``run_settings`` is the only training entry point.
 """
 
 from __future__ import annotations
@@ -125,8 +124,8 @@ def assert_rank_lockstep(accelerator: Accelerator, planned_forwards: int, source
     Under FSDP FULL_SHARD a forward is a round of all-gathers, so ranks that run a different
     NUMBER of them desynchronise the collective stream and the job deadlocks -- silently, at
     100 % GPU utilisation, until a watchdog fires minutes later blaming something unrelated.
-    That cost a long debugging session on 2026-09-16, when ``prime_cache`` skipped its forward
-    for clip-start chains (fixed there; see its empty-spans branch).
+    For example, a ``prime_cache`` that skipped its forward for clip-start samples would cause
+    this; its empty-spans branch therefore still makes the discarded call.
 
     This runs BEFORE the step's forwards, while the ranks are still in step from the previous
     optimizer update, so the gather here is itself safely matched. Checking afterwards cannot

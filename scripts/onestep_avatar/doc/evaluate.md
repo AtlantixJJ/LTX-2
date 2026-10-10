@@ -6,12 +6,9 @@ one actual local resource phase and records any declared numerical policy. The
 queue owns launch, supervision and worker-absence evidence; this module starts
 no child through that helper. See [runtime](execution/runtime.md).
 
-Status: **Implemented ordinary evaluation; full native acceptance remains incomplete.** Explicit modes, strict preflight,
-saved-noise sampling, guidance, raw saves, queued verification and automatic
-rendering from pinned references exist. `media` prepares reference RGB and
-`prepare_inputs` assembles complete fixed records. Read
-[current acceptance](known_gaps.md#current-acceptance-and-next-step) for scope.
-The old visualizers are removed; required checks live with the shared final owners.
+Ordinary evaluation provides explicit modes, strict preflight, saved-noise sampling,
+guidance, raw saves, queued verification and rendering from pinned references.
+`media` prepares reference RGB and `prepare_inputs` assembles complete fixed records.
 
 Causal preflight includes explicit `history_mode` and `kv_source` in the
 requested adapter conditions. The shared checker compares them with the recorded
@@ -32,7 +29,7 @@ and the output record. Base-only execution still uses the native Session path.
 Study protocols and their fixed metric inventories live in `experiments/`. General transition measurements keep one shared owner. Original results retain their producer identities; structural checks do not close missing native scope.
 
 Ordinary execution requests `global_sigma_dtype` from `model.common`'s float32
-contract. Adapter preflight rejects unknown historical precision before weights
+contract. Adapter preflight rejects an adapter without declared precision before weights
 load; research may explicitly acknowledge a known differing calibration, while
 product refuses it. Saved conditions preserve the requested precision.
 
@@ -41,10 +38,10 @@ product refuses it. Saved conditions preserve the requested precision.
 Ordinary evaluation snapshots `software.capture("evaluation", mode)` before
 preflight, checks it again before native sessions, and stores that manifest in
 every result. Recheck all recorded owners/runtime versions before publication.
-Queued scientific completion compares the same current profile. Saved historical
-records remain readable through integrity-only software validation, but cannot
-prove completion under a changed producer. Decoder publication binding is a
-separate profile and remains required for saved/preview rendering.
+Queued scientific completion compares the same current profile. Saved records
+from a changed producer stay readable through integrity-only software validation
+but cannot prove completion. Decoder publication binding is a
+separate profile and is required for saved/preview rendering.
 
 Compare the base model and named adapters with one fixed input set.
 Select bidirectional or causal mode explicitly.
@@ -78,9 +75,6 @@ silently evaluate training frames. Package-owned queue records include both
 arguments and the converted subset/frame-plan files. Validate nonempty source
 selection and membership IDs before indexing split records; unknown IDs and
 empty splits raise a pointed error before base hashing or any model session.
-Historical `eval_ckpt.sh`
-and `eval_queue.py` records are input evidence only and are not execution
-owners.
 
 ## Organization logic
 
@@ -156,7 +150,7 @@ list. Require one result at every expected case/variant path, with no duplicates
 omissions or extras. Compare mode settings, source, frame rate, effective frame coverage,
 schedule, seed, background/arm/model conditions, membership and source hashes,
 adapter bytes/contract/application/overrides, prompt and guidance settings.
-Check the evaluator source digest. A mode-only historical result is insufficient.
+Check the evaluator source digest. A result that records only its mode is insufficient.
 
 Generation saves the actual positive text tensor once at `text.pt` and, for CFG,
 the actual negative tensor at `negative_text.pt`. Completion requires finite bf16
@@ -173,7 +167,7 @@ Missing output remains pending; contradictory evidence raises an error. Existing
 records and media are not rewritten to add these fields.
 
 Tests use small checked masters and controlled backbone files. They vary one
-scientific setting or saved artifact at a time. Legacy queue lifecycle unit tests
+scientific setting or saved artifact at a time. Queue lifecycle unit tests
 explicitly substitute this scientific verifier only; their claims, journaling,
 tensor hashes and receipt checks retain production logic. Separate scientific
 tests exercise the verifier itself. Neither class proves native model quality.
@@ -188,7 +182,7 @@ is retained for model diagnostics that need text, not saved-only rendering.
 
 ### Define the comparison before execution
 
-The proposed comparison record states one question, one changed factor, and ordered variants.
+A comparison record states one question, one changed factor, and ordered variants.
 Each variant supplies its exact changed value and full executed settings.
 It also states the fixed person/view, capture/guide identities, first image, text,
 saved noise, selected encoded frames, geometry, playback rate, and adapter application method.
@@ -244,15 +238,15 @@ first frame with the native patchifier before comparing that hash. A hash of
 - Encoded-space metrics support video inspection; they do not establish correct identity or motion.
 - Raw-only evaluation does not run a decoder.
 - Decoding saved output does not rerun the transformer.
-- Historical run records keep their original producer names.
+- Saved run records keep their original producer names.
 - No evaluation implementation or launcher remains in `expr/` report code.
 
 ## Gotchas
 
 Guidance can add multiple model passes per step. Record actual cost.
 Different frame lengths require labeled shared display coverage.
-Keep fused/unmerged LoRA application fixed when comparing old and new code.
-G8 remains an independent numerical issue.
+Keep the adapter application method fixed unless it is the changed factor; fused
+bf16 application is a separate numerical issue ([known gaps](known_gaps.md#fused-adapter-application)).
 
 ## Tests
 

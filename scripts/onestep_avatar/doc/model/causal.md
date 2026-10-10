@@ -1,9 +1,7 @@
 # `model/causal.py` — process video blocks in order
 
-Status: **Block/cache and training extraction implemented; engine mode integration pending.**
-This module owns block/cache functions, frame plans, immediate training backward,
-and rollout. The engine's temporary old-interface adapter only prepares tokens
-and delegates to `train_sample`. It has no denoise/backward/cache loop.
+This module owns block/cache functions, frame plans, immediate training backward
+and rollout.
 
 ## Objective
 
@@ -189,7 +187,7 @@ Removing that last refresh later requires a separate check.
 ## Gotchas
 
 Sigma-zero cache refresh can differ from recalculation at the active noise level.
-Prompt AdaLN is the cause recorded in G7.
+Prompt AdaLN is the recorded cause ([known gaps](../known_gaps.md#cached-history-and-causal-recomputation)).
 Do not claim that both computations are always equal.
 
 Keep joint-history and recalculation paths as labeled diagnostics.
@@ -201,8 +199,8 @@ quadratic memory. With history, keep the block-causal mask.
 Joint-history diagnostics use the same retained frames without that mask.
 History can then respond to the current block, so its K/V data are not cacheable.
 Whole-video diagnostic modalities use float32 sigma and timesteps with bf16
-weights and latents. Keep the existing block dtype convention during extraction.
-G8 concerns LoRA application; G9 concerns first-image data.
+weights and latents. Keep the block dtype convention.
+Fused LoRA application and random-start first-image data are separate known gaps.
 These are separate from cache correctness.
 
 Current random-start independent segments support one block only.

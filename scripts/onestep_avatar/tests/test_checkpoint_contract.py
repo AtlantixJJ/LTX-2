@@ -293,7 +293,7 @@ def test_incomplete_or_unsupported_records_fail(defect: str) -> None:
 def test_old_unclassified_adapter_is_not_silently_accepted(tmp_path: Path) -> None:
     path = tmp_path / "old.safetensors"
     save_file({A: torch.ones(2, 4), B: torch.zeros(4, 2)}, path, metadata={"onestep_avatar_attention": "block_causal"})
-    with pytest.raises(ValueError, match="explicitly convert"):
+    with pytest.raises(ValueError, match="no current typed contract"):
         checkpoints.read_contract(path)
 
 
@@ -344,17 +344,15 @@ def test_atomic_save_records_actual_shapes_and_preserves_destination_on_failure(
 
 
 @pytest.mark.parametrize("mode", ["bidirectional", "causal"])
-def test_sigma_precision_contract_preserves_history_but_requires_known_execution(mode: str) -> None:
+def test_sigma_precision_contract_requires_declared_precision(mode: str) -> None:
     record = _contract(mode)
     assert record["training"]["global_sigma_dtype"] == "float32"
     requested = _request(record)
     assert checkpoints.check_contract(record, requested) == []
-    historical = copy.deepcopy(record)
-    del historical["training"]["global_sigma_dtype"]
-    checkpoints.validate_contract(historical)
-    for override in (False, True):
-        with pytest.raises(ValueError, match="global_sigma_dtype is unknown"):
-            checkpoints.check_contract(historical, requested, override=override)
+    undeclared = copy.deepcopy(record)
+    del undeclared["training"]["global_sigma_dtype"]
+    with pytest.raises(ValueError, match="global_sigma_dtype is missing"):
+        checkpoints.validate_contract(undeclared)
     calibrated = copy.deepcopy(record)
     calibrated["training"]["global_sigma_dtype"] = "bfloat16"
     with pytest.raises(ValueError, match=r"incompatible.*global_sigma_dtype"):

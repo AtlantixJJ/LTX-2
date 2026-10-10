@@ -332,7 +332,8 @@ def test_surviving_own_worker_is_bounded_stopped_after_leader_exit(  # noqa: PLR
         f"p=subprocess.Popen([sys.executable,'-c',{worker_code!r}],"
         f"stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session={new_session!r}); "
         f"Path({str(pid_file)!r}).write_text(str(p.pid)); "
-        "deadline=time.monotonic()+5\n"
+        # A loaded host can need several seconds to start the worker and observe it.
+        "deadline=time.monotonic()+30\n"
         f"while not Path({str(release_file)!r}).exists():\n"
         " if time.monotonic()>=deadline: raise RuntimeError('worker registration was not observed')\n"
         " time.sleep(.01)\n"

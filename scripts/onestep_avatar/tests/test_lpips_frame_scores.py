@@ -1,4 +1,4 @@
-"""Per-frame perceptual plumbing matches the legacy scorer without loading weights or decoders."""
+"""Per-frame perceptual plumbing matches a reference scorer without loading weights or decoders."""
 
 import pytest
 import torch

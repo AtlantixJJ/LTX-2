@@ -10,7 +10,7 @@ so the two cannot silently diverge.
 ## Data flow
 
 `pose3d.npy[view]` + `refined_pose3d.npy[clip]` → `merge_multiview_refinement` →
-`build_motion(pose3d, bbox, frame_height)` → a `sam3db` dict →
+`build_motion(pose3d, frame_height, valid=...)` → a `sam3db` dict →
 `torch.save` → `motion.pth` → `pipeline.render_motion_window`.
 
 Consumed only by `build_guidance.render_pair`, into a temp file that never outlives the
@@ -51,8 +51,8 @@ No available camera row is an error.
 
 ### Preserve motion timing
 
-For the legacy view-only path, usable frames require both pose and bbox validity, with no NaN bbox coordinate.
-For the refined path, use the supplied multiview validity array after camera repair.
+Usable frames come from the supplied refined multiview validity array, after camera repair;
+`build_motion` requires it.
 `build_motion` uses the same earlier-row/leading-row hold rule for short unusable motion runs.
 Reject a run longer than `max_gap` (default three frames), or a clip with no usable frame.
 Write one entry per original frame under `frames/{index:06d}.png`.

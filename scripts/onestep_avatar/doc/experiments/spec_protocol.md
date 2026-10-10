@@ -37,7 +37,7 @@ flowchart LR
 Parse `--spec`, `--output`, local `--gpu-id` and `--dry-run` only. First-pass
 relative paths stay unopened for queue normalization. Once the spec path is
 absolute, parse its scientific fields without loading inputs or a model.
-Require schema one, the exact literal protocol and a string argument list.
+Require `schema_version: 1`, the exact literal protocol and a string argument list.
 The optional `operation` must belong to the selected checker's fixed allowed
 set; it selects steps such as serial reference or saved comparison. Refuse
 duplicate JSON fields, unknown fields, duplicate flags, execution overrides and

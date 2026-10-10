@@ -1,20 +1,11 @@
 # `training/config.py` — check run settings
 
-The unsupported `--anchor-weight` option and transitional parser are removed.
-Old saved configurations remain historical input records;
-they do not authorize restoring the deleted offline-teacher path.
-
-Status: **Typed settings, mode plans, and explicit-mode CLI integration implemented. Fixed preview settings and execution are implemented; complete native workflow acceptance remains pending. Read [current acceptance](../known_gaps.md#current-acceptance-and-next-step).**
-`training_sigmas`, `training_noise_seed`, and `sigma_for_rank` keep their
-original calculations. The engine imports them. The mode-less `parse_args`
-and its old subset settings retired in refactor group G11.
+The engine imports `training_sigmas`, `training_noise_seed` and `sigma_for_rank`.
 
 `parse_settings` produces `RunSettings` with a `BidirectionalSettings` or
 `CausalSettings` value. It is the only training parser; `train.py` refuses a
-command without `--mode` before any write. The current handoff
-orders this structural refactor and CPU/caller checks before new native
-experiments on final owners; explicit-mode commands use the typed
-public CLI. Keep all scientific settings and original evidence unchanged.
+command without `--mode` before any write. There is no anchor option and no
+offline-teacher path.
 `--frame-plan` can select a saved reproduction plan. The reader checks its hash,
 membership hash, mode, geometry, and sample lengths before model loading.
 For a random-start plan, `window_start_draw` owns the saved draw descriptor:
@@ -63,7 +54,7 @@ The engine receives those checked records.
 Require `--mode bidirectional` or `--mode causal` in `train.py`, `evaluate.py`, and `infer.py`.
 Training selects `plan_samples` and `train_sample` from that mode.
 Evaluation and product generation select its `sample` function and check adapter settings.
-See the [README workflows](../../README.md#explicit-training-and-generation-workflows).
+See the [README workflows](../../README.md#workflows).
 
 Common settings include paths, train/evaluation group, model version, base variant,
 D0/D1, background, noise levels, seeds, LoRA, optimizer, accumulation, and logging.
@@ -94,7 +85,7 @@ the queue owner. It includes exact normalized arguments/processes/port/command
 and original Accelerate bytes/hash. Applied runtime evidence is separate from
 CLI settings: the engine records actual world and each rank's precision policy
 after Accelerator/FSDP setup. Readers compare those facts with the launch;
-they cannot infer missing historical settings from today's file.
+they never infer missing settings from today's file.
 
 Keep current random start and noise-seed rules.
 Each update/GPU process draws one sigma uniformly from its levels.

@@ -20,7 +20,7 @@ the orchestration module.
 
 ## Data flow
 
-1. `spec_protocol` reads a schema-one scientific spec and supplies queue-owned
+1. `spec_protocol` reads a `schema_version: 1` scientific spec and supplies queue-owned
    output/device arguments. Restrict this route to one absolute view, one seed,
    raw-only white distilled unguided one-step D0, optionally with D1. The shared
    spec protocol still rejects repeated options, including repeated `--view`.

@@ -1,11 +1,10 @@
-"""The DNARenderingVideo/Processed corpus layout that ``build_guidance.py`` reads.
+"""The DNARenderingVideo corpus layout, artifact names and checked readers.
 
-Per ``plans/2026-09-10-ltx25-one-step-argavatar-lora.md``: ``data/AnimatableHuman/
-DNARenderingVideo/`` is a curated, identically-laid-out copy of ``data/DNARendering/
-Processed/`` -- same per-clip files (``cameras.npy``, ``meta.json``,
-``views/*/{rgb,mask}.mp4`` + ``bbox/keypoints2d/pose3d.npy``). The corpus root is one
-constant here so T4's scale-out to ``Processed/`` (SS5.0) is a ``root=`` argument, not a
-second code path.
+See doc/corpus/dataset.md. ``data/AnimatableHuman/DNARenderingVideo/`` is a curated,
+identically-laid-out copy of ``data/DNARendering/Processed/`` -- same per-clip files
+(``cameras.npy``, ``meta.json``, ``views/*/{rgb,mask}.mp4`` +
+``bbox/keypoints2d/pose3d.npy``). The corpus root is one constant here, so another corpus
+with the same layout is a ``root=`` argument, not a second code path.
 """
 
 from __future__ import annotations
@@ -27,20 +26,15 @@ T = TypeVar("T")
 DEFAULT_CORPUS_ROOT = WORKSPACE_ROOT / "data" / "AnimatableHuman" / "DNARenderingVideo"
 
 # Written by ``LTX-2/scripts/onestep_avatar/corpus/precompute.py --process_gt_latent`` at the corpus
-# root. It is the **single producer** of the crop box (SS4.5): the box it records is the one
+# root. It is the **single producer** of the crop box: the box it records is the one
 # the capture target latents were actually encoded with, so every other stage reads it rather
 # than recomputing a box of its own.
 CAPTURE_MANIFEST_NAME = "capture_latent_manifest.json"
 
 # -- The two objectives, and the per-objective artifact names ---------------------------
 #
-# Single-sourced here since 2026-09-15. This mapping used to be transcribed into a second
-# module (``corpus_names.py``) because the corpus half and the model half lived in different
-# trees and different conda envs and could not import each other; consolidating the package
-# removed the seam, so the transcription and the cross-tree test that pinned it are both gone.
-#
-# The task splits in two (plan SS1.2), and the split reaches the corpus as exactly two
-# artifacts, not as two pipelines:
+# This module is the only spelling of these names. The task splits in two, and the split
+# reaches the corpus as exactly two artifacts, not as two pipelines:
 #
 #   * ``bg``    -- the product. Guide = render composited over the clip's real first frame;
 #                  target = the capture, unmatted, with its real background.
@@ -49,13 +43,12 @@ CAPTURE_MANIFEST_NAME = "capture_latent_manifest.json"
 #                  Isolates the subject-texture gap from the background question entirely.
 #
 # Everything else is objective-independent and is deliberately NOT suffixed: the render's
-# alpha and the loss-mask coverage grids are the same tensors either way (the render is the
+# alpha and the mask coverage grids are the same tensors either way (the render is the
 # same render; only what sits behind it differs), so suffixing them would manufacture two
-# copies of one thing -- the two-producer shape SS2 names as the source of every past bug.
+# copies of one thing -- two producers of one artifact.
 #
-# ``bg`` maps to the UNSUFFIXED names on purpose: it is what the 2034 capture bundles and 19
-# renders already on disk were built as, so adding the second objective does not invalidate
-# a single existing artifact.
+# ``bg`` maps to the UNSUFFIXED names, so existing ``bg`` artifacts keep their names and the
+# ``white`` objective adds files beside them.
 OBJECTIVES = ("bg", "white")
 DEFAULT_OBJECTIVE = "bg"
 
@@ -64,29 +57,19 @@ DEFAULT_OBJECTIVE = "bg"
 # same way ``objective`` is -- a render built under a different contract describes a
 # different artifact and must be rebuilt, not silently trained against.
 #
-#   v1 (retired) -- treated the renderer's RGB as straight foreground and blended it again
-#                   with ``alpha * render + (1 - alpha) * background``. The renderer's own
-#                   rasterizer had already composited over white first, so this applied
-#                   alpha twice and left a white fringe on every soft edge -- including the
-#                   ``white`` objective, which should have been a no-op. See build_guidance's
-#                   2026-09-18 audit finding F1.
-#   v2 (current)  -- background REPLACEMENT: ``R_white + (1 - alpha) * (B - white)``, which
-#                   algebraically undoes the renderer's white compositing instead of
-#                   compositing a second time. Identity for ``white`` within rounding.
-#
-# A sidecar with no ``compositing_version`` at all predates the field and is v1 by
-# construction (every render on disk before this fix was built with the v1 formula) --
-# there is no "pre-compositing" case to grandfather in the way ``objective`` has one, because
-# the renderer has always emitted an already-white-composited RGB.
+# Version 2 is background REPLACEMENT: ``R_white + (1 - alpha) * (B - white)``, which
+# algebraically undoes the renderer's white compositing instead of compositing a second time
+# (a second blend would apply alpha twice and leave a white fringe on every soft edge).
+# Identity for ``white`` within rounding. A sidecar without this exact version is rebuilt.
 GUIDE_COMPOSITING_VERSION = 2
 
 # The side (pixels) both persisted coverage grids are stored/read at. One spelling for the
 # producer (precompute.py's alpha/mask crop) and the consumer (build_guidance.py's alpha
-# render) to agree on -- they used to each declare their own ``ALPHA_GRID = 256``.
+# render) to agree on.
 ALPHA_GRID = 256
 
 # Both persisted coverage masks are LOSSLESS grayscale MP4 (see mask_video.py): ~42x smaller
-# than the raw arrays they replaced, bit-exact, and readable by the same OpenCV path as every
+# than raw arrays, bit-exact, and readable by the same OpenCV path as every
 # other video here. All three are objective-independent -- the render is the same render and
 # the matte the same matte; only what sits behind the subject differs between objectives.
 ALPHA_STEM = "argavatar_alpha"  # suffix-less name for required MP4
@@ -117,12 +100,7 @@ def guide_bundle_name(objective: str = DEFAULT_OBJECTIVE) -> str:
 
 
 def load_master(path: Path, *, bundle: dict | None = None) -> torch.Tensor:
-    """The clip's continuous encode out of a schema-2 bundle, with one pointed v1 error.
-
-    Was four readers of this one contract before S1 of the 2026-09-17 cleanup plan
-    (``train._master``, ``stats._master``, ``precompute.load_capture_master``, and this
-    module's own ``capture_master_latent_frames``), in three different error wordings, two
-    spelling the version as a literal ``2`` and two as ``BUNDLE_SCHEMA_VERSION``.
+    """Return the clip's continuous encode from a schema-two bundle; this is the one reader.
 
     ``bundle`` lets a caller that already loaded the record for other fields (fps,
     pixel_frames, ...) skip reading the file twice; by default this loads it from ``path``.
@@ -132,8 +110,8 @@ def load_master(path: Path, *, bundle: dict | None = None) -> torch.Tensor:
     version = bundle.get("schema_version")
     if version != 2 or "master" not in bundle:
         raise SystemExit(
-            f"{path}: schema_version={version} holds per-window slices, not the clip's master "
-            "latent. Re-run precompute.py --process_gt_latent for this view"
+            f"{path}: schema_version={version} is not a schema-two master bundle. "
+            "Re-run precompute.py --process_gt_latent for this view"
         )
     # [C, F, H, W] -- the frame axis is 1.
     return bundle["master"]
@@ -154,31 +132,6 @@ def load_training_master(path: Path, *, bundle: dict | None = None) -> tuple[tor
     if isinstance(fps, bool) or not isinstance(fps, (int, float)) or not math.isfinite(fps) or fps <= 0:
         raise SystemExit(f"{path}: fps must be a finite positive number, got {fps!r}")
     return master, float(fps)
-
-
-def capture_master_latent_frames(bundle_path: Path) -> int | None:
-    """Latent frames the STORED master actually holds, or ``None`` for a pre-v2 bundle.
-
-    **This is the one producer of that number**, and it is deliberately not
-    ``windows.py:latent_frames_for(clip.n_frames())``. A master consolidated from v1
-    per-window slices ends at the last WHOLE window, so it is short of the source video by up
-    to one window: measured 2026-09-16, a 150-frame clip stores 137 pixel frames (18 latent,
-    not 19) and a 225-frame clip stores 217 (28, not 29), matching ``WINDOW_FRAMES=25`` at
-    stride 16 exactly. Native v2 encoding deliberately uses that same planned prefix.
-
-    ``windows.py`` sized its block plan from the video until then, so it froze chains whose
-    last block did not exist in the latents -- and ``train.py``, which plans from the loaded
-    tensor, refused them with "the subset was frozen under a different geometry". Both now
-    read the tensor.
-
-    Returns ``None`` rather than raising ``load_master``'s error: a pre-v2 bundle is an
-    ordinary, expected state mid-migration (``windows.py``'s ``survey_source`` reports it as
-    ``capture_bundle_not_consolidated`` and moves on), not a caller mistake.
-    """
-    bundle = torch.load(bundle_path, map_location="cpu", weights_only=True)
-    if bundle.get("schema_version") != 2 or "master" not in bundle:
-        return None
-    return int(load_master(bundle_path, bundle=bundle).shape[1])
 
 
 def capture_bundle_name(objective: str = DEFAULT_OBJECTIVE) -> str:
@@ -206,8 +159,8 @@ class ClipRef:
     def actor_id(self) -> str:
         """The bare actor id, never the (part, id) pair.
 
-        Actor ids are not globally unique across ``Part_*`` (09-05 plan SS2: actor 31 is two
-        different people across parts, actor 8 is presumably the same one) -- splitting a
+        Actor ids are not globally unique across ``Part_*`` (actor 31 is two different
+        people across parts, actor 8 is presumably the same one) -- splitting a
         held-out set by the bare id is the conservative choice that makes leakage impossible
         under either interpretation.
         """
@@ -295,7 +248,7 @@ class CaptureManifest:
         record = json.loads(path.read_text())
         boxes: dict[str, tuple[float, float, float, float]] = {}
         for window in record["windows"]:
-            # Every window of a source shares one box (fixed for the whole clip, SS4.5), so
+            # Every window of a source shares one box (fixed for the whole clip), so
             # the first one seen settles it; window 0 is the natural representative.
             relative_dir = window["bundle"].rsplit("/", 1)[0]
             if relative_dir not in boxes:
@@ -324,21 +277,13 @@ class CaptureManifest:
         return key in self.boxes
 
 
-def atomic_write(destination: Path, write_to: Callable[[Path], T]) -> T:
-    """Write to a same-directory temp file, then atomically replace ``destination``.
+def atomic_write(destination: Path, write_to: Callable[[Path], T], *, replace_existing: bool = True) -> T:
+    """Publish complete same-directory temporary content, replacing only when requested.
 
-    The one temp-name convention every writer in this package now shares:
-    ``.<stem>.tmp.<pid><suffix>`` -- a hidden file with the real extension still at the end, so
-    a reader that globs by suffix (or a viewer double-clicking a directory) never picks up a
-    half-written file. Six call sites (``precompute.py``, ``build_guidance.py``,
-    ``mask_video.py``, ``windows.py``) hand-rolled this with two different conventions before
-    S1 of the 2026-09-17 cleanup plan.
-
-    ``write_to`` receives the temp path and must write the complete content there -- a JSON
-    dump, a ``torch.save``, an ffmpeg encode, whatever the caller needs -- and may return a
-    value, which is passed through. If it raises, the temp file is removed and ``destination``
-    is left untouched; nothing here makes ``write_to`` itself atomic, only what happens around
-    it.
+    The hidden temp name retains the real extension so format-dependent writers work.
+    ``write_to`` writes complete content and may return a value. On a writer failure,
+    remove its temp file and preserve the destination. With ``replace_existing=False``,
+    atomic hard-link publication refuses a destination created by another writer.
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp = destination.with_name(f".{destination.stem}.tmp.{os.getpid()}{destination.suffix}")
@@ -347,7 +292,13 @@ def atomic_write(destination: Path, write_to: Callable[[Path], T]) -> T:
     except BaseException:
         temp.unlink(missing_ok=True)
         raise
-    temp.replace(destination)
+    if replace_existing:
+        temp.replace(destination)
+    else:
+        try:
+            os.link(temp, destination)
+        finally:
+            temp.unlink(missing_ok=True)
     return result
 
 
@@ -399,8 +350,8 @@ class ClipStore:
         master, fps = load_training_master(path, bundle=bundle)
         if list(master.shape) != source["shape"] or fps != source["fps"]:
             raise ValueError(f"{path}: shape or frame rate differs from membership")
-        if bundle.get("objective", DEFAULT_OBJECTIVE) != self.objective:
-            raise ValueError(f"{path}: encoded background differs from membership")
+        if bundle.get("objective") != self.objective:
+            raise ValueError(f"{path}: encoded background differs from membership or is not recorded")
         encoding = source.get(f"{role}_encode_record")
         if not isinstance(encoding, dict) or not encoding:
             raise ValueError(f"{path}: {role} encoding record is missing")
@@ -429,8 +380,8 @@ class ClipStore:
             metadata = json.loads(sidecar.read_text())
             if metadata.get("compositing_version") != GUIDE_COMPOSITING_VERSION:
                 raise ValueError(f"{sidecar}: outdated guide compositing")
-            if metadata.get("objective", DEFAULT_OBJECTIVE) != self.objective:
-                raise ValueError(f"{sidecar}: wrong guide background")
+            if metadata.get("objective") != self.objective:
+                raise ValueError(f"{sidecar}: guide background differs or is not recorded")
             render_hash = sha256(view / render_name(self.objective))
             if guide_record.get("input_fingerprint") != render_hash:
                 raise ValueError(f"{source_id}: guide master encodes different render bytes")

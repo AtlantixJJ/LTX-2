@@ -9,9 +9,7 @@ capture condition `c0`. Every later frame is generated in one denoising step
 from the exact `[sigma, 0]` schedule. The output format is the one
 [`data.whole_clip`](../data/whole_clip.md) validates.
 
-This command replaced the avatar package's whole-clip visualizer mode in
-refactor group G10. It keeps that producer's computation, files and manifest
-fields, and it owns no other avatar diagnostic.
+It is the only producer of these rollouts and owns no other avatar diagnostic.
 
 ## Command
 
@@ -76,24 +74,17 @@ problems. The `model.script` stamp names this module.
 
 ## Options
 
-Kept from the replaced producer: `--view`, `--objective`, `--sigmas`,
-`--variant`, `--transformer`, `--steps`, `--dev-denoising-steps`,
-`--dev-schedule`, `--context-latent-frames`, the guidance options `--cfg`,
-`--stg`, `--stg-blocks`, `--rescale` and `--negative-prompt`, `--raw-only`,
-`--seeds`, `--arms`, `--output`, and the session's `--model`, `--gpu-id`,
-`--seed`, `--prompt` and `--prompt-file`.
+Supported options: `--view`, `--objective`, `--sigmas`, `--variant`,
+`--transformer`, `--steps`, `--dev-denoising-steps`, `--dev-schedule`,
+`--context-latent-frames`, the guidance options `--cfg`, `--stg`,
+`--stg-blocks`, `--rescale` and `--negative-prompt`, `--raw-only`, `--seeds`,
+`--arms`, `--output`, and the session's `--model`, `--gpu-id`, `--seed`,
+`--prompt` and `--prompt-file`.
 
-Not carried over, because the whole-clip computation fixes them or the
-pruning consumers refuse them:
-
-- `--whole-clip`: always on.
-- `--history-mode`, `--block-latent-frames`, `--max-blocks`: the old parser
-  already refused them with `--whole-clip`.
-- `--teacher-forcing`: one block has no history to force.
-- `--trajectory-only`: `data.whole_clip` refuses multi-step distilled tails.
-- `--checkpoint`, `--off-condition-override`: LoRA adapters need the avatar
-  training contract checks, which prune must not import, and the saved-input
-  consumers refuse LoRA manifests.
+There are no block, history, teacher-forcing, trajectory or adapter options:
+the computation is always one whole-clip block with no history,
+`data.whole_clip` refuses multi-step distilled tails, and LoRA adapters need
+the avatar training contract checks, which prune must not import.
 
 ## Invariants and gotchas
 
@@ -128,6 +119,6 @@ lengths, mixed-length and conflicting-option refusals, dev option validation
 and file suffixes, global noise slicing, and a CPU end-to-end run with a tiny
 real transformer. That run checks the saved file names, manifest fields that
 `data.whole_clip.validate_manifest` reads, exact epsilon reuse across arms and
-sigmas, and the `c0` frame of every saved latent. A native reproduction of a
-saved baseline (same view, sigmas, prompt, seed and model) follows the
-avatar refactor's code gate.
+sigmas, and the `c0` frame of every saved latent. Native reproduction of a saved
+baseline (same view, sigmas, prompt, seed and model) runs through the avatar
+`prune_baseline` queue experiment.
