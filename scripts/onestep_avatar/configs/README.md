@@ -485,6 +485,11 @@ match eight causal blocks over 17 frames. See the
     "arguments": ["--job", "/abs/update_job.json", "--world-size", "4", "--reference", "/abs/reference_out"]}
    ```
 
+   Give the comparison job the training job's `"resource_budget"` (as the
+   reference has). Without it the queue binds its generic budget, and the
+   comparison refuses the saved training records (see
+   [known gaps](../doc/known_gaps.md#supervision-and-reproduction-records)).
+
 The comparison checks 768 named gradients, Adam moments, exports, loss, norm and
 the step-one reload against relative L2 0.02 (near-zero RMS `1e-8`). A failed
 comparison exits 2 and keeps its measurements. `training_slice_check` (operations
