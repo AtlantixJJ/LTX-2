@@ -22,7 +22,7 @@ import torch
 
 from ltx_core.components.patchifiers import VideoLatentPatchifier
 from ltx_core.model.transformer.modality import Modality
-from scripts.onestep_avatar import evaluate, hashing
+from scripts.onestep_avatar import evaluate, hashing, previews
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.experiments import causality, spec_protocol
@@ -574,13 +574,14 @@ def run(args: argparse.Namespace, prepared: dict) -> dict:  # noqa: PLR0915 -- b
         phase.start()
         started = True
         if args.phase == "control":
-            causality.execute_evaluation(prepared["options"])
+            causality.execute_evaluation(prepared["options"], preview_tensor_validator=previews.verify_preview_tensors)
             controls = control_results(prepared)
             ordinary = sum(row["call_counts"]["model_calls"] for row in controls)
             model_calls = {"actual_model_calls": ordinary, "ordinary_model_calls": ordinary,
                            "diagnostic_model_calls": 0}
         else:
-            evaluate.execute_evaluation(prepared["options"], sample_runner=runner)
+            evaluate.execute_evaluation(prepared["options"], sample_runner=runner,
+                                        preview_tensor_validator=previews.verify_preview_tensors)
         samples.append(_device_memory(args.gpu_id))
         resource = phase.finish()
         started = False

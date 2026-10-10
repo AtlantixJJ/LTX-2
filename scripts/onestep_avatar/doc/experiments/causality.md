@@ -129,6 +129,12 @@ earlier-equality summary still fails against raw outputs; removing
 
 ## Invariants
 
+The public evaluation wrapper forwards an explicitly supplied fixed-input
+tensor validator to the ordinary evaluator in both the single and paired
+paths. The continuation checker supplies the canonical preview validator.
+Omitted validation for fixed inputs fails before model loading. This hook
+changes input verification only; the future-noise sampler remains the owner.
+
 Saved eight-block master tokens must match the canonical master tensor hashes,
 including signed-zero bytes. Saved rollout outputs must retain the producer's
 float32 dtype. Rehashed artifacts still face these schema and conditioning gates.

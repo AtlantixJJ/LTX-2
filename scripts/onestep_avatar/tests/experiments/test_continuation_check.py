@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 
-from scripts.onestep_avatar import evaluate, hashing
+from scripts.onestep_avatar import evaluate, hashing, previews
 from scripts.onestep_avatar.experiments import causality
 from scripts.onestep_avatar.experiments import continuation_check as check
 from scripts.onestep_avatar.model import causal, common
@@ -25,6 +26,39 @@ def inputs() -> tuple:
     shape = (1, grid.latent_frames * grid.tokens_per_latent_frame, CHANNELS)
     capture, guide, noise = (torch.randn(shape, generator=generator) for _ in range(3))
     return grid, geometry, capture, guide, noise, _context()
+
+
+@pytest.mark.parametrize("paired", [False, True])
+@pytest.mark.parametrize("changed_context", [False, True])
+def test_causality_wrapper_preserves_fixed_input_validation(
+    monkeypatch: pytest.MonkeyPatch, paired: bool, changed_context: bool,
+) -> None:
+    """Both public dispatch paths retain the tensor guard before controlled execution."""
+    context = torch.arange(8, dtype=torch.float32).reshape(1, 2, 4)
+    fixed = {"input_files": {"text": {"tensor_sha256": hashing.tensor_sha256(context)}}}
+    consumed = context + 1 if changed_context else context
+    args = SimpleNamespace(changed_noise=context if paired else None, preview_fixed=fixed)
+    monkeypatch.setattr(causality, "prepare_evaluation", lambda _args: None)
+    execution = []
+
+    def guarded_operation(
+        selected: SimpleNamespace, *,
+        preview_tensor_validator: Callable[[dict, dict], None] | None = None, **_hooks: object,
+    ) -> int:
+        if not callable(preview_tensor_validator):
+            raise ValueError("fixed preview requires its explicit preview tensor validator")
+        preview_tensor_validator(selected.preview_fixed, {"text": consumed})
+        execution.append("validated")
+        return 0
+
+    monkeypatch.setattr(evaluate, "execute_evaluation", guarded_operation)
+    if changed_context:
+        with pytest.raises(ValueError, match="fixed text tensor"):
+            causality.execute_evaluation(args, preview_tensor_validator=previews.verify_preview_tensors)
+        assert execution == []
+    else:
+        assert causality.execute_evaluation(args, preview_tensor_validator=previews.verify_preview_tensors) == 0
+        assert execution == ["validated"]
 
 
 @torch.no_grad()

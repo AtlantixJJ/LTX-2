@@ -381,11 +381,15 @@ def evaluation_evidence_paths(arguments: list[str], record_paths: list[Path]) ->
     return sorted(paths)
 
 
-def execute_evaluation(args: argparse.Namespace) -> int:
+def execute_evaluation(
+    args: argparse.Namespace, *,
+    preview_tensor_validator: Callable[[dict, dict[str, torch.Tensor | None]], None] | None = None,
+) -> int:
     """Intervene through the one shared model/runtime owner and explicit publication hook."""
     prepare_evaluation(args)
     if args.changed_noise is None:
-        return evaluate.execute_evaluation(args, extra_sources=EXTRA_SOURCES)
+        return evaluate.execute_evaluation(args, extra_sources=EXTRA_SOURCES,
+                                            preview_tensor_validator=preview_tensor_validator)
     pending = {}
 
     def runner(transformer, context, grid, capture, guide, noise, **settings):  # noqa: ANN001, ANN202
@@ -412,7 +416,8 @@ def execute_evaluation(args: argparse.Namespace) -> int:
         return save_future_noise_probe(pending["outputs"], diagnostic, provenance, destination)
 
     return evaluate.execute_evaluation(
-        args, sample_runner=runner, result_publisher=publish, extra_sources=EXTRA_SOURCES
+        args, sample_runner=runner, result_publisher=publish, extra_sources=EXTRA_SOURCES,
+        preview_tensor_validator=preview_tensor_validator,
     )
 
 

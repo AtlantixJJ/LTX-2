@@ -56,6 +56,11 @@ The native `ltx_core.components.patchifiers.VideoLatentPatchifier` converts
 capture and guide arrays to tokens. Import it from its owner; the evaluator
 does not publish that class. Check these converted values against the saved
 baseline hashes before any model call.
+Pass `previews.verify_preview_tensors` explicitly to the public evaluator.
+The same validator reaches both future-noise branches through the causality
+owner. It compares the consumed capture, guide, first image, text and noise
+against their saved tensor hashes before opening the transformer. A changed
+text tensor must fail at this gate; a matching input keeps the shared sampler.
 
 Capture and reference use separate queue experiment jobs. Their strict pinned
 specifications keep the original scientific arguments. Scientific paths must be
