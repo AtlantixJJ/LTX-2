@@ -1438,7 +1438,14 @@ def verify_receipt(job: dict, receipt: dict) -> bool:
 
 
 def ready_jobs(jobs: list[dict], state: dict) -> list[dict]:
-    """Select pending work only after immutable completed dependencies verify."""
+    """Select pending work only after the completed dependencies it needs verify.
+
+    A receipt check can rehash every pinned input, including model weights, so only
+    receipts that gate a pending job are verified here. The loop verifies every
+    receipt once more before it reports the whole list complete.
+    """
+    pending = [job for job in jobs if state["jobs"][job["id"]]["state"] == "pending"]
+    needed = {dependency for job in pending for dependency in job.get("dependencies", [])}
     verified = set()
     for job in jobs:
         row = state["jobs"][job["id"]]
@@ -1448,13 +1455,9 @@ def ready_jobs(jobs: list[dict], state: dict) -> list[dict]:
             receipt = row.get("receipt")
             if not isinstance(receipt, dict):
                 raise ValueError("completed queue job has no verified receipt")
-            if verify_receipt(job, receipt):
+            if job["id"] in needed and verify_receipt(job, receipt):
                 verified.add(job["id"])
-    ready = [
-        job
-        for job in jobs
-        if state["jobs"][job["id"]]["state"] == "pending" and set(job.get("dependencies", [])).issubset(verified)
-    ]
+    ready = [job for job in pending if set(job.get("dependencies", [])).issubset(verified)]
     if any(job["kind"] == "render" for job in ready):
         from scripts.onestep_avatar import comparisons  # noqa: PLC0415 -- saved-file readiness, no model session
 

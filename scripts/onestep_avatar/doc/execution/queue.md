@@ -146,8 +146,11 @@ checks no scientific input bytes; planned GPU IDs are not availability claims.
 `--execute --loop` rereads and validates the append-only job list and the state
 before each dispatch, verifies completed dependency receipts, and queries GPU
 memory directly each time. `ready_jobs` returns pending jobs whose dependencies
-have verified receipts, non-training kinds first and saved order within each
-group; a `render` job also waits for every saved panel file. `dispatch_ready`
+have verified receipts. It verifies only the receipts that a pending job depends
+on, because one check can rehash every pinned input, model weights included. A
+completed job without a receipt is still refused, and the loop verifies every
+receipt again before it reports the list complete. Ready jobs come back
+non-training kinds first and in saved order within each group; a `render` job also waits for every saved panel file. `dispatch_ready`
 tries each ready job in that order: it builds a `ProcessRegistry`, chooses
 devices from the inventory, acquires one token-bound ledger row, queries
 occupancy again and starts the child only if every selected device is still

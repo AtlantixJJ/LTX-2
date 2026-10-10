@@ -694,6 +694,41 @@ def test_ready_jobs_require_unchanged_completed_dependencies(tmp_path: Path) -> 
         queue.ready_jobs(jobs, state)
 
 
+@pytest.mark.usefixtures("controlled_evaluation_conditions")
+def test_ready_jobs_verify_only_receipts_that_gate_pending_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "source"
+    evaluate.save_case(torch.zeros(1, 2, 7, 2, 2), {"mode": "causal"}, output)
+    first = {
+        "id": "first",
+        "kind": "evaluate",
+        "sha256": "a" * 64,
+        "output": str(output),
+        "arguments": ["--mode", "causal"],
+        "completion": {"records": [str(output / "result.json")]},
+    }
+    other = {"id": "other", "kind": "decode", "sha256": "c" * 64}
+    jobs = [first, other]
+    state = {"jobs": {job["id"]: {"sha256": job["sha256"], "state": "pending"} for job in jobs}}
+    state["jobs"]["first"].update(state="complete", receipt=queue.completion_receipt(first))
+    checked = []
+    original = queue.verify_receipt
+    def counted(job: dict, receipt: dict) -> bool:
+        checked.append(job["id"])
+        return original(job, receipt)
+
+    monkeypatch.setattr(queue, "verify_receipt", counted)
+    # No pending job depends on "first", so its receipt is not rehashed before dispatch.
+    (output / "result.json").write_text("{}")
+    assert queue.ready_jobs(jobs, state) == [other]
+    assert checked == []
+    # A completed job without a receipt is still refused.
+    del state["jobs"]["first"]["receipt"]
+    with pytest.raises(ValueError, match="no verified receipt"):
+        queue.ready_jobs(jobs, state)
+
+
 def test_persistent_child_cannot_start_with_pending_dependency(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source = {"id": "source", "kind": "evaluate", "sha256": "a" * 64}
     job = {
