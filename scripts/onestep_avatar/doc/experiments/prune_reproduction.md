@@ -123,10 +123,13 @@ summary from the saved tensors. Any difference raises.
    differences between the two producers.
 
 **Two jobs.** The cuBLAS workspace is fixed when CUDA starts, so one process
-cannot change it. Run one job with `"numerical_policy": "deterministic"` and all
-controls. Run a second job with no numerical policy. PyTorch defaults then
-apply, as in the reference run; leave out `deterministic_off` and
-`cudnn_deterministic_off` there, because they need the deterministic policy.
+cannot change it. Run one job with `"numerical_policy": "deterministic"` and the
+controls that fit it: `sigma_bf16`, `deterministic_off`,
+`cudnn_deterministic_off` and `bf16_reduction_off`. Run a second job with no
+numerical policy. PyTorch defaults then apply, as in the reference run. Give it
+`sigma_bf16`, `dense_mask`, `historical_inputs` and `bf16_reduction_off`; the
+two `*deterministic_off` controls need the deterministic policy, and the mask
+controls need the smaller memory of the default environment (see Gotchas).
 
 ## Invariants
 
@@ -139,7 +142,13 @@ apply, as in the reference run; leave out `deterministic_off` and
 ## Gotchas
 
 - The dense mask costs `T × T × 4` bytes per call: 18 latent frames of 1,024
-  tokens give 18,432 tokens and 1.36 GB.
+  tokens give 18,432 tokens and 1.36 GB. The ltx-core preprocessor turns it
+  into an additive bias through boolean indexing. Its transient memory at this
+  size is 9.8 GiB with PyTorch defaults and 16.8 GiB under the deterministic
+  policy, whose sort-based `index_put_` needs more. Beside the 22B transformer
+  on a 48 GB GPU, the dense-mask arms therefore fit only in the job without the
+  deterministic policy. Each arm first returns cached free blocks
+  (`torch.cuda.empty_cache`), so the arm order cannot add fragmentation.
 - A mask can select a different attention kernel. The profiler names show the
   operators and kernels that ran; the names depend on the PyTorch build.
 - Profiling does not change the output; `profiled_equals_unprofiled` checks it.

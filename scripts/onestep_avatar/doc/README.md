@@ -63,7 +63,7 @@ reads saved inputs and cannot run models, decoding, or queue work.
 | `experiments/continuation_check.py` | [experiments/continuation_check.md](experiments/continuation_check.md) | 916 |
 | `experiments/fusion_parity.py` | [experiments/fusion_parity.md](experiments/fusion_parity.md) | 329 |
 | `experiments/prune_baseline.py` | [experiments/prune_baseline.md](experiments/prune_baseline.md) | 199 |
-| `experiments/prune_reproduction.py` | [experiments/prune_reproduction.md](experiments/prune_reproduction.md) | 407 |
+| `experiments/prune_reproduction.py` | [experiments/prune_reproduction.md](experiments/prune_reproduction.md) | 412 |
 | `experiments/saved_probe_metrics.py` | [experiments/saved_probe_metrics.md](experiments/saved_probe_metrics.md) | 141 |
 | `experiments/short_causal_check.py` | [experiments/short_causal_check.md](experiments/short_causal_check.md) | 573 |
 | `experiments/sigma_sweep.py` | [experiments/sigma_sweep.md](experiments/sigma_sweep.md) | 329 |

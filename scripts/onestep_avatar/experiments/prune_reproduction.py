@@ -294,6 +294,9 @@ def run_controls(args: argparse.Namespace, session, epsilon: torch.Tensor) -> tu
 
             with numerical_control(arm) as state:
                 if session.device.type == "cuda":
+                    # Return the earlier arms' free blocks, so arm order cannot add fragmentation
+                    # to the large transient of the dense-mask preprocessing.
+                    torch.cuda.empty_cache()
                     torch.cuda.reset_peak_memory_stats(session.device)
                 started = time.perf_counter()
                 outputs[arm] = {f"{sigma:.6f}": rollout(sigma) for sigma in sigmas}
@@ -305,6 +308,8 @@ def run_controls(args: argparse.Namespace, session, epsilon: torch.Tensor) -> tu
                 "profiled_equals_unprofiled": bool(torch.equal(profiled, outputs[arm][f"{sigmas[0]:.6f}"])),
                 "rollout_seconds": seconds,
                 "peak_cuda_memory_bytes": torch.cuda.max_memory_allocated(session.device)
+                if session.device.type == "cuda" else None,
+                "peak_cuda_reserved_bytes": torch.cuda.max_memory_reserved(session.device)
                 if session.device.type == "cuda" else None,
             }
     return records, outputs

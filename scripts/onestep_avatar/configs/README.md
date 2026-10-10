@@ -518,15 +518,18 @@ reference directory, an earlier current-producer run and the controls:
                "--context-latent-frames", "8", "--prompt", "", "--seed", "42", "--raw-only", "--arms", "d0",
                "--transformer", "/abs/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
                "--reference", "/abs/reference_run", "--earlier", "/abs/earlier_run/baseline",
-               "--controls", "sigma_bf16", "dense_mask", "historical_inputs", "deterministic_off",
-               "cudnn_deterministic_off", "bf16_reduction_off"]}
+               "--controls", "sigma_bf16", "deterministic_off", "cudnn_deterministic_off",
+               "bf16_reduction_off"]}
 ```
 
 Each saved directory must hold the producer's `manifest.json`, its epsilon and
 one D0 output per requested sigma. Run it as a queue `experiment` job with
 `"numerical_policy": "deterministic"`. Run a second job without a numerical
-policy (PyTorch defaults) and without the two `*deterministic_off` controls; it
-tests the environment that the cuBLAS workspace setting fixes at process start.
+policy (PyTorch defaults) with `--controls sigma_bf16 dense_mask
+historical_inputs bf16_reduction_off`. It tests the environment that the cuBLAS
+workspace setting fixes at process start. The dense-mask controls belong only in
+this second job: under the deterministic policy their mask preprocessing needs
+16.8 GiB more memory and does not fit beside the 22B model on a 48 GB GPU.
 Read `results.json` → `summary` first. The design gives the rules for reading
 the result: [design](../doc/experiments/prune_reproduction.md).
 
