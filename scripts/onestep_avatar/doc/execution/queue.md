@@ -107,14 +107,15 @@ rule. An unchanged raw or prepared job reconstructs the same identity.
 The `experiment` kind reads one literal `EXPERIMENTS` table that maps each
 selector (`stock_parity`, `adapter_effect_check`, `continuation_check`,
 `training_update_check`, `training_slice_check`, `causality`, `fusion_parity`,
-`sigma_sweep`, `stats`, `prune_baseline`) to its module. Only this branch reads
+`sigma_sweep`, `stats`, `prune_baseline`, `prune_reproduction`) to its module. Only this branch reads
 the table, importing the selected module at the point of use. An unknown
 selector fails before input reads, claims, state writes or children. Ordinary
 kinds never import an experiment. There is no discovery or registration API.
 The selected module owns its evidence layout and its
 `verify_completion(spec, root)`; for `sigma_sweep` the descriptor is exactly
 `<output>/manifest.json`. `prune_baseline` runs the prune-owned whole-clip
-producer for one view and one seed under the generic one-rank phase.
+producer for one view and one seed under the generic one-rank phase;
+`prune_reproduction` runs its controls in the same kind of phase.
 
 ### Commands and environment
 

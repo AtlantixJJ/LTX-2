@@ -505,6 +505,31 @@ weights, no guidance and context eight. `--arms d0 d1` adds the D1 arm.
 See [design](../doc/experiments/prune_baseline.md) and the producer
 [`scripts/prune/doc/evaluate/whole_clip_baseline.md`](../../prune/doc/evaluate/whole_clip_baseline.md).
 
+### Pruning reproduction controls (`prune_reproduction`)
+
+Tests why the current producer's D0 outputs differ from a saved reference run.
+The spec takes the `prune_baseline` arguments (D0 only) plus the saved
+reference directory, an earlier current-producer run and the controls:
+
+```json
+{"schema_version": 1, "protocol": "prune_reproduction",
+ "arguments": ["--view", "/abs/corpus/Part_1/0008_01/views/view00_cam51", "--model", "2.5",
+               "--variant", "distilled", "--objective", "white", "--sigmas", "0.725", "0.909375", "1.0",
+               "--context-latent-frames", "8", "--prompt", "", "--seed", "42", "--raw-only", "--arms", "d0",
+               "--transformer", "/abs/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
+               "--reference", "/abs/reference_run", "--earlier", "/abs/earlier_run/baseline",
+               "--controls", "sigma_bf16", "dense_mask", "historical_inputs", "deterministic_off",
+               "cudnn_deterministic_off", "bf16_reduction_off"]}
+```
+
+Each saved directory must hold the producer's `manifest.json`, its epsilon and
+one D0 output per requested sigma. Run it as a queue `experiment` job with
+`"numerical_policy": "deterministic"`. Run a second job without a numerical
+policy (PyTorch defaults) and without the two `*deterministic_off` controls; it
+tests the environment that the cuBLAS workspace setting fixes at process start.
+Read `results.json` → `summary` first. The design gives the rules for reading
+the result: [design](../doc/experiments/prune_reproduction.md).
+
 ### Other studies
 
 - `fusion_parity` — fused bf16 versus unmerged fp32 adapter output on one

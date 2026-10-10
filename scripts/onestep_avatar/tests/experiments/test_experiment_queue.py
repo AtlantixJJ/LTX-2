@@ -21,6 +21,7 @@ def test_literal_experiment_table_has_only_reviewed_current_owner() -> None:
         "fusion_parity": "scripts.onestep_avatar.experiments.fusion_parity",
         "stock_parity": "scripts.onestep_avatar.experiments.stock_parity",
         "prune_baseline": "scripts.onestep_avatar.experiments.prune_baseline",
+        "prune_reproduction": "scripts.onestep_avatar.experiments.prune_reproduction",
         "adapter_effect_check": "scripts.onestep_avatar.experiments.adapter_effect_check",
         "continuation_check": "scripts.onestep_avatar.experiments.continuation_check",
         "training_update_check": "scripts.onestep_avatar.experiments.training_update_check",

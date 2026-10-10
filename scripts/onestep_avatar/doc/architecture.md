@@ -82,7 +82,7 @@ experiments/         training_update_check, training_slice_check,
                      stock_parity, fusion_parity, sigma_sweep,
                      sigma_sweep_results, short_causal_check,
                      stats, saved_probe_metrics, spec_protocol,
-                     prune_baseline
+                     prune_baseline, prune_reproduction
 configs/             fsdp.yaml, fsdp_forward_prefetch.yaml, README.md recipes
 doc/                 mirrored module designs and cross-module contracts
 tests/               ordinary tests; tests/experiments/ for experiment tests
@@ -297,6 +297,7 @@ EXPERIMENTS = {
     "sigma_sweep": "scripts.onestep_avatar.experiments.sigma_sweep",
     "stats": "scripts.onestep_avatar.experiments.stats",
     "prune_baseline": "scripts.onestep_avatar.experiments.prune_baseline",
+    "prune_reproduction": "scripts.onestep_avatar.experiments.prune_reproduction",
 }
 ```
 
@@ -315,6 +316,9 @@ stays in prune, which imports no avatar experiment or execution owner. Queue
 supervision, claims and resource receipts stay in `execution/`. The protocol
 keeps the producer's original files under `baseline/` and publishes separate
 input/software acceptance and saved-completion records at the job root.
+`prune_reproduction` tests why that case differs from a saved reference. It
+reuses the same producer functions and applies each control only at the model
+call or through a process flag, so neither prune nor the model owners change.
 
 **Bounded supervision for every kind.** A job may name a resource budget in the
 existing `training/resources.py` format. `train` keeps its typed
