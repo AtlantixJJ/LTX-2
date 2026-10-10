@@ -123,6 +123,28 @@ outside that proof. Preserve interrupted supervision and scientific artifacts.
 The existing queue's explicit `--recover` can then verify the original saved
 completion; it does not manufacture successful external supervision.
 
+The same approved-request route supports a direct one-rank package child.
+Require the exact direct Python `-m` owner from the fixed queue tables, one
+physical GPU mapped to local zero, and the canonical trailing `--gpu-id 0`.
+Training, nested launch/dispatch commands and execution overrides refuse.
+The original journal and latest attempt must bind the same runtime path/hash;
+the recorded environment must bind those bytes, the token/job and budget.
+Validate bounded runtime and result snapshots through the unchanged runtime
+owner. Match the notification budget and require the sole rank-zero producer
+to equal the approved child. Generic runtime uses its single `runtime` phase;
+checker-specific phases retain the original notification inventory. Recheck
+runtime/result bytes with all original launch/journal/event bytes before closure.
+
+This validates saved child measurements and closes exact registered handles
+only. It reports `original_exitcode=null`, `unknown_descendants_unproven=true`
+and `supervision_acceptance=false`. It creates no supervisor result. Public
+queue completion still requires the original successful external-supervision
+receipt. If that receipt is missing after owner loss, scientific acceptance refuses;
+the job needs a fresh attempt with continuous supervision for queue acceptance.
+For example, a passed pruning manifest plus runtime measurements can remain
+scientific evidence, while its interrupted attempt remains unaccepted by the
+queue. Never overwrite its original output or restamp its producer identity.
+
 Worked case: four bound ranks finish all four declared phases, all five saved
 launcher/rank handles and the owner are absent on both passes, and GPU memory is
 `[276,4,4,4]` MiB. Close only that row with the scope above. A missing rank end,
@@ -198,6 +220,10 @@ Bounded ended-attempt controls check complete rank inventory, exact handle
 absence/terminal state, live/reused/denied refusal, bound approval/journal bytes,
 busy/incomplete devices and unchanged original-row evidence. The returned scope
 explicitly excludes continuous supervision and complete post-owner containment.
+Direct approved-request controls additionally reject unsupported commands,
+device/rank mapping changes, runtime/attempt/environment hash mismatches,
+failed child results, budget/phase/policy changes and mutated runtime bytes.
+Existing Accelerate recovery controls retain their original semantics.
 Registered-process recovery controls cover the direct E2 case, missing/changed
 row or launch hash, unsupported module/training/dispatch, rank roles, uncontained
 identities, live/reused/denied handles, mutation between passes, nonregular input,

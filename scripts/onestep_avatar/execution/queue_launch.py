@@ -699,6 +699,87 @@ def recover_registered_attempt(  # noqa: PLR0912, PLR0915 -- explicit bounded op
         return result
 
 
+def _direct_recovery_binding(request: dict, row: dict, original_bytes: dict[Path, bytes], deadline: float) -> dict:
+    """Bind a direct one-rank child's saved contracts, never recreate supervision."""
+    from scripts.onestep_avatar.execution import queue, runtime  # noqa: PLC0415 -- model-free owners
+    from scripts.onestep_avatar.training import resources  # noqa: PLC0415 -- saved budget validation
+
+    command, environment = request["command"], row["environment_changes"]
+    allowed = {*queue.ORDINARY.values(), *queue.EXPERIMENTS.values()}
+    if (
+        len(command) < 5
+        or not Path(command[0]).is_absolute()
+        or re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(command[0]).name) is None
+        or command[1] != "-m"
+        or command[2] not in allowed
+        or command.count("-m") != 1
+        or command[-2:] != ["--gpu-id", "0"]
+        or sum(value.split("=", 1)[0] == "--gpu-id" for value in command) != 1
+        or any(
+            value.split("=", 1)[0]
+            in {"--execute", "--loop", "--recover", "--recover-owned", "--supervise", "--num_processes"}
+            for value in command[3:]
+        )
+    ):
+        raise ValueError("owned recovery requires an approved direct one-rank package command")
+    gpus = row.get("gpus")
+    if (
+        not isinstance(gpus, list)
+        or len(gpus) != 1
+        or type(gpus[0]) is not int
+        or gpus[0] not in range(8)
+        or environment.get("CUDA_VISIBLE_DEVICES") != str(gpus[0])
+    ):
+        raise ValueError("owned direct recovery requires one exact physical-to-local GPU binding")
+    for field in ("runtime_contract", "runtime_contract_sha256"):
+        if row.get(field) != row["attempts"][-1].get(field):
+            raise ValueError("owned direct recovery runtime journal and original attempt differ")
+    selected = row.get("runtime_contract")
+    selected_hash = row.get("runtime_contract_sha256")
+    if (
+        not isinstance(selected, str)
+        or not Path(selected).is_absolute()
+        or environment.get(runtime.CONTRACT_ENV) != selected
+        or environment.get(runtime.CONTRACT_SHA_ENV) != selected_hash
+        or not isinstance(selected_hash, str)
+        or re.fullmatch("[0-9a-f]{64}", selected_hash) is None
+    ):
+        raise ValueError("owned direct recovery runtime environment or original hash differs")
+    path = Path(selected)
+    result_path = runtime.result_path(path)
+    for saved in (path, result_path):
+        if saved.is_symlink():
+            raise ValueError("owned direct recovery runtime paths must not be symlinks")
+        original_bytes[saved] = _bounded_bytes(saved, deadline)
+    # Validate bounded snapshots through the unchanged child-runtime owner.
+    with tempfile.TemporaryDirectory(prefix="onestep-owned-runtime-") as directory:
+        copied = Path(directory) / "runtime.json"
+        copied.write_bytes(original_bytes[path])
+        runtime.result_path(copied).write_bytes(original_bytes[result_path])
+        contract = runtime.read_contract(copied, selected_hash)
+        runtime.verify_result(copied, selected_hash)
+    notification = json.loads(_bounded_bytes(Path(row["supervision_contract"]), deadline))
+    if (
+        contract["token"] != request["token"]
+        or contract["job_sha256"] != request["job_sha256"]
+        or contract["budget"] != resources.budget_from_environment(environment)
+        or notification.get("budget_sha256") != contract["budget"]["sha256"]
+        or (contract["generic_phase"] and notification.get("phases") != ["runtime"])
+        or (contract["numerical_policy"] == "deterministic" and environment.get("CUBLAS_WORKSPACE_CONFIG") != ":4096:8")
+    ):
+        raise ValueError("owned direct recovery runtime, budget, policy or notification bindings differ")
+    return {
+        "command_module": command[2],
+        "world": 1,
+        "runtime_contract": selected,
+        "runtime_contract_sha256": selected_hash,
+        "runtime_result": str(result_path),
+        "runtime_result_sha256": hashlib.sha256(original_bytes[result_path]).hexdigest(),
+        "child_measurements_checked": True,
+        "supervision_acceptance": False,
+    }
+
+
 def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closure, original artifacts retained
     process_ledger: Path,
     request_path: Path,
@@ -767,14 +848,20 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
     notification_path = Path(row["supervision_contract"])
     if environment.get(supervision.SUPERVISION_ENV) != str(notification_path):
         raise ValueError("owned recovery notification path differs")
-    # The original canonical launch states the exact process count.
+    # Accelerate retains its original rank-count rules; direct children also bind
+    # their exact one-rank runtime before any operational ledger closure.
     command = request["command"]
-    if command.count("--num_processes") != 1:
-        raise ValueError("owned recovery requires an explicit original rank count")
-    try:
-        world = int(command[command.index("--num_processes") + 1])
-    except (IndexError, ValueError) as error:
-        raise ValueError("owned recovery original rank count is invalid") from error
+    direct_binding = None
+    if command[1:3] != ["-m", "accelerate.commands.launch"]:
+        direct_binding = _direct_recovery_binding(request, row, original_bytes, deadline)
+        world = 1
+    else:
+        if command.count("--num_processes") != 1:
+            raise ValueError("owned recovery requires an explicit original rank count")
+        try:
+            world = int(command[command.index("--num_processes") + 1])
+        except (IndexError, ValueError) as error:
+            raise ValueError("owned recovery original rank count is invalid") from error
     remaining = deadline - time.monotonic()
     notifications = read_completed_notifications(
         notification_path,
@@ -817,6 +904,10 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
             or child["identity"]["command"] != command
         ):
             raise ValueError("owned recovery original launch child differs")
+        if direct_binding is not None and notifications["rank_identities"] != [
+            {"rank": 0, "identity": child["identity"]}
+        ]:
+            raise ValueError("owned direct recovery rank zero is not the exact approved child")
         complete = [
             observation
             for observation in owned.get("observations", [])
@@ -877,10 +968,14 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
             "registered_workers_absent": True,
             "continuous_supervision": False,
             "containment_complete": False,
+            "unknown_descendants_unproven": True,
+            "original_exitcode": None,
             "scope_limit": "Unknown descendants after original owner loss are not certified absent; "
             "the legacy closed-row reader basis adds no containment evidence.",
             "recovered_at": time.time(),
         }
+        if direct_binding is not None:
+            result["direct_runtime"] = direct_binding
         if time.monotonic() >= deadline:
             raise TimeoutError("owned recovery observation deadline exceeded")
         owned.update(state="closed", recovery=result)
@@ -936,9 +1031,7 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("--recover-owned requires --process-ledger")
         print(  # noqa: T201 -- explicit operational recovery evidence
             json.dumps(
-                recover_owned_attempt(
-                    args.process_ledger, args.request, timeout=args.timeout
-                ),
+                recover_owned_attempt(args.process_ledger, args.request, timeout=args.timeout),
                 indent=2,
             )
         )

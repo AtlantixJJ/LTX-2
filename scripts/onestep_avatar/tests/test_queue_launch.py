@@ -10,9 +10,10 @@ from typing import IO
 
 import pytest
 
-from scripts.onestep_avatar.execution import process_registry, queue, supervision
+from scripts.onestep_avatar.execution import process_registry, queue, runtime, supervision
 from scripts.onestep_avatar.execution import queue_launch as launch
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, LAUNCH_PROTOCOL, TOKEN_ENV
+from scripts.onestep_avatar.training import resources
 
 
 def request_for(tmp_path: Path, *, owner: dict | None = None) -> tuple[Path, Path]:
@@ -346,6 +347,277 @@ def test_owned_recovery_rejects_nonregular_or_oversized_input(
         launch.recover_owned_attempt(ledger, request, timeout=2)
     assert time.monotonic() - started < 1
     assert ledger.read_bytes() == original_bytes
+
+
+def approved_direct_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
+    """The actual one-rank package route with independent saved runtime bindings."""
+    ledger, request, owned, _ranks, _notifications = ended_owned_attempt(tmp_path, monkeypatch)
+    original = json.loads(request.read_bytes())
+    command = [
+        sys.executable,
+        "-m",
+        "scripts.onestep_avatar.experiments.prune_baseline",
+        "--spec",
+        str(tmp_path / "spec.json"),
+        "--output",
+        str(tmp_path / "output"),
+        "--gpu-id",
+        "0",
+    ]
+    original["command"] = command
+    request.write_text(json.dumps(original))
+    bootstrap = json.loads((request.parent / "bootstrap.json").read_bytes())
+    bootstrap["request_sha256"] = launch.digest(request)
+    for name in ("bootstrap.json", "grant.json"):
+        (request.parent / name).write_text(json.dumps(bootstrap))
+    child = {**owned["processes"][str(owned["child_pid"])]["identity"], "command": command}
+    notifications, contract = tmp_path / "direct-phases.json", tmp_path / "runtime.json"
+    budget = resources.default_budget()
+    changes = supervision.prepare_notifications(
+        notifications,
+        token=original["token"],
+        job_sha256=original["job_sha256"],
+        world=1,
+        phases=["runtime"],
+        budget_sha256=budget["sha256"],
+    )
+    changes.update(
+        runtime.prepare_contract(
+            contract,
+            token=original["token"],
+            job_sha256=original["job_sha256"],
+            budget=budget,
+            generic_phase=True,
+            numerical_policy=None,
+        )
+    )
+    changes.update(
+        {
+            **resources.budget_environment(budget),
+            TOKEN_ENV: original["token"],
+            JOB_ENV: original["job_sha256"],
+            "CUDA_VISIBLE_DEVICES": "0",
+        }
+    )
+    runtime.result_path(contract).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "contract_sha256": changes[runtime.CONTRACT_SHA_ENV],
+                "token": original["token"],
+                "job_sha256": original["job_sha256"],
+                "state": "passed",
+                "error": None,
+                "numerical_policy_requested": None,
+                "numerical_policy_observed": None,
+                "resource_records": [
+                    {
+                        "schema_version": 1,
+                        "phase": "runtime",
+                        "rank": 0,
+                        "device": "cuda:0",
+                        "elapsed_s": 0.01,
+                        "peak_allocated_bytes": 100,
+                        "peak_reserved_bytes": 200,
+                        "budget_sha256": budget["sha256"],
+                        "state": "passed",
+                        "error": None,
+                    }
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(queue, "process_identity", lambda _pid: child)
+    for event in ("begin", "end"):
+        supervision.notify_phase("runtime", event, 0, budget_sha256=budget["sha256"], environment=changes)
+    state = register(request, bootstrap)
+    row = state["jobs"]["case"]
+    row.update(
+        owner_pid=owned["owner"]["pid"],
+        gpus=[0],
+        process_ledger=str(ledger),
+        environment_changes=changes,
+        supervision_contract=str(notifications),
+        attempt_started_ticks=9,
+        runtime_contract=str(contract),
+        runtime_contract_sha256=changes[runtime.CONTRACT_SHA_ENV],
+    )
+    row["attempts"] = [json.loads(json.dumps(row))]
+    (tmp_path / "journal.json").write_text(json.dumps(state))
+    owned.update(
+        gpus=[0],
+        processes={
+            str(child["pid"]): {
+                "identity": child,
+                "roles": ["child"],
+                "commands": [command],
+            }
+        },
+        observations=[
+            {"schema_version": 1, "complete": True, "error": None, "identities": [child], "workers_live": True}
+        ],
+    )
+    record = json.loads(ledger.read_bytes())
+    record["attempts"][original["token"]] = owned
+    ledger.write_text(json.dumps(record))
+    return ledger, request, owned, notifications, contract
+
+
+def test_approved_direct_recovery_preserves_science_and_lost_supervision_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger, request, owned, _notifications, contract = approved_direct_attempt(tmp_path, monkeypatch)
+    original = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file() and path != ledger}
+    result = launch.recover_owned_attempt(ledger, request, timeout=2)
+    assert result["notifications"]["world"] == 1
+    assert result["notifications"]["phases"] == ["runtime"]
+    assert result["direct_runtime"]["runtime_result_sha256"] == launch.digest(runtime.result_path(contract))
+    assert result["direct_runtime"]["child_measurements_checked"] is True
+    assert result["direct_runtime"]["supervision_acceptance"] is False
+    assert result["continuous_supervision"] is False
+    assert result["unknown_descendants_unproven"] is True
+    assert result["original_exitcode"] is None
+    closed = json.loads(ledger.read_bytes())["attempts"]["b" * 32]
+    assert closed["state"] == "closed"
+    assert {key: value for key, value in closed.items() if key not in ("state", "recovery")} == {
+        key: value for key, value in owned.items() if key != "state"
+    }
+    assert all(path.read_bytes() == data for path, data in original.items())
+    with pytest.raises(ValueError, match="ledger differs"):
+        launch.recover_owned_attempt(ledger, request, timeout=2)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "unsupported_module",
+        "training_module",
+        "nested_module",
+        "wrong_gpu",
+        "duplicate_gpu",
+        "nested_execute",
+        "direct_rank_count",
+        "relative_python",
+        "wrong_physical_gpu",
+        "runtime_environment",
+        "runtime_attempt",
+        "runtime_hash",
+        "runtime_failed",
+        "runtime_missing",
+        "result_missing",
+        "runtime_budget",
+        "notification_budget",
+        "notification_phase",
+        "world",
+        "rank_child",
+        "live_child",
+        "busy_gpu",
+        "runtime_changed_during_inventory",
+    ],
+)
+def test_approved_direct_recovery_refuses_uncertain_contracts_without_publication(  # noqa: PLR0912, PLR0915 -- complete tamper lifecycle
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    ledger, request, owned, notifications, contract = approved_direct_attempt(tmp_path, monkeypatch)
+    state_path = tmp_path / "journal.json"
+    state, record = json.loads(state_path.read_bytes()), json.loads(ledger.read_bytes())
+    row, attempt = state["jobs"]["case"], state["jobs"]["case"]["attempts"][-1]
+    if failure in (
+        "unsupported_module",
+        "training_module",
+        "nested_module",
+        "wrong_gpu",
+        "duplicate_gpu",
+        "nested_execute",
+        "direct_rank_count",
+        "relative_python",
+    ):
+        requested = json.loads(request.read_bytes())
+        command = requested["command"]
+        if failure == "unsupported_module":
+            command[2] = "unreviewed.owner"
+        elif failure == "training_module":
+            command[2] = "scripts.onestep_avatar.train"
+        elif failure == "nested_module":
+            command[3:3] = ["-m", "nested.owner"]
+        elif failure == "wrong_gpu":
+            command[-1] = "1"
+        elif failure == "duplicate_gpu":
+            command[3:3] = ["--gpu-id=0"]
+        elif failure == "nested_execute":
+            command[3:3] = ["--execute=yes"]
+        elif failure == "direct_rank_count":
+            command[3:3] = ["--num_processes", "1"]
+        else:
+            command[0] = "python"
+        request.write_text(json.dumps(requested))
+        for name in ("bootstrap.json", "grant.json"):
+            saved = json.loads((request.parent / name).read_bytes())
+            saved["request_sha256"] = launch.digest(request)
+            (request.parent / name).write_text(json.dumps(saved))
+        for item in (row, attempt):
+            item.update(command=command, launch_request_sha256=launch.digest(request))
+    elif failure == "wrong_physical_gpu":
+        for item in (row, attempt):
+            item["environment_changes"]["CUDA_VISIBLE_DEVICES"] = "1"
+    elif failure == "runtime_environment":
+        for item in (row, attempt):
+            item["environment_changes"][runtime.CONTRACT_ENV] = str(tmp_path / "elsewhere.json")
+    elif failure == "runtime_attempt":
+        attempt["runtime_contract_sha256"] = "d" * 64
+    elif failure == "runtime_hash":
+        contract.write_bytes(contract.read_bytes() + b" ")
+    elif failure == "runtime_failed":
+        saved = json.loads(runtime.result_path(contract).read_bytes())
+        saved.update(state="failed", error="controlled failure")
+        runtime.result_path(contract).write_text(json.dumps(saved))
+    elif failure in ("runtime_missing", "result_missing"):
+        (contract if failure == "runtime_missing" else runtime.result_path(contract)).unlink()
+    elif failure == "runtime_budget":
+        for item in (row, attempt):
+            item["environment_changes"].pop(resources.BUDGET_ENV)
+    elif failure in ("notification_budget", "notification_phase", "world"):
+        saved = json.loads(notifications.read_bytes())
+        saved[{"notification_budget": "budget_sha256", "notification_phase": "phases", "world": "world"}[failure]] = (
+            "d" * 64 if failure == "notification_budget" else ["another"] if failure == "notification_phase" else 2
+        )
+        notifications.write_text(json.dumps(saved))
+        for item in (row, attempt):
+            item["environment_changes"][supervision.SUPERVISION_SHA_ENV] = launch.digest(notifications)
+    elif failure == "rank_child":
+        child = owned["processes"][str(owned["child_pid"])]["identity"]
+        rank = {**child, "pid": child["pid"] + 1}
+        record["attempts"]["b" * 32]["processes"][str(rank["pid"])] = {
+            "identity": rank,
+            "roles": ["descendant"],
+            "commands": [rank["command"]],
+        }
+        record["attempts"]["b" * 32]["observations"][0]["identities"].append(rank)
+        for target in notifications.with_name(notifications.name + ".events").glob("*.json"):
+            saved = json.loads(target.read_bytes())
+            saved["identity"] = rank
+            target.write_text(json.dumps(saved))
+    elif failure == "live_child":
+        child = owned["processes"][str(owned["child_pid"])]["identity"]
+        monkeypatch.setattr(launch, "process_identity", lambda pid: child if pid == child["pid"] else None)
+    elif failure == "busy_gpu":
+        monkeypatch.setattr(process_registry, "gpu_memory", lambda **_kwargs: {0: 1024})
+    else:
+
+        def inventory(**_kwargs) -> dict:
+            contract.write_bytes(contract.read_bytes() + b" ")
+            return dict.fromkeys(range(8), 0)
+
+        monkeypatch.setattr(process_registry, "gpu_memory", inventory)
+    state_path.write_text(json.dumps(state))
+    ledger.write_text(json.dumps(record))
+    original = ledger.read_bytes()
+    with pytest.raises((ValueError, OSError)):
+        launch.recover_owned_attempt(ledger, request, timeout=2)
+    assert ledger.read_bytes() == original
 
 
 def direct_registered_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:

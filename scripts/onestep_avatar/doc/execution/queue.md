@@ -63,6 +63,31 @@ terminal states. Refused jobs preserve existing state.
 Explicit dead-owner recovery transactions verify recorded child handles and
 saved artifacts; the CLI exposes them through `--recover` and does not invoke
 recovery automatically.
+For a current approved attempt that has no original supervisor result or hash,
+explicit recovery can record failure before its overall deadline. It requires
+the matching bounded `queue_launch --recover-owned` closure first. That closure
+certifies only exact registered handles; it does not prove unknown descendants
+or continuous supervision. Recovery rechecks the request, approval, unchanged
+journal, original owned-row hash and ended handles. It then sets the machine
+reason `missing_supervision`, preserves the prior attempt inside the attributed
+recovery record, and retains all saved outputs and the original deadline.
+The selected owner still checks saved scientific files. Corrupt scientific
+files refuse recovery. Valid saved outputs cannot replace the supervisor;
+this branch writes no success receipt.
+Present or partial supervisor fields still use ordinary verification; corrupt
+evidence refuses the transaction. A fresh native attempt uses a fresh job and
+output identity when the interrupted outputs must be preserved.
+Incomplete outputs keep the original interrupted-failure behavior. Old
+unguarded attempts do not enter the new branch. This extension classifies only
+valid saved scientific output from a current, approved, ended owned attempt.
+Worked check: the original deadline is 3,700 and recovery runs at 105. The exact
+owned handles are ended and the bounded closure matches. Missing supervisor
+fields produce `failed` with `missing_supervision`; they never produce a
+completion receipt. The first start remains 100 and the deadline remains 3,700.
+The original attempt is preserved under `interruption_recovery.prior_attempt`.
+The CPU controls in `tests/test_queue_missing_supervision_recovery.py` check
+this outcome and refusal of changed closure/request/approval/journal bytes,
+live or reused handles, partial supervisor fields and corrupt present evidence.
 Choose `--dry-run` for read-only review. Execution requires `--execute` and exactly
 one of `--once` or `--loop`,
 and `--process-ledger <SHARED_PROCESS_LEDGER.json>`. All current queue processes
