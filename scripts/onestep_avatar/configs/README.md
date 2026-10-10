@@ -40,13 +40,18 @@ file, `../expr/onestep_avatar/processes.json`: PID, start ticks, command, GPUs
 and owned descendants. Pass this same path to every queue owner.
 
 **Long runs survive the terminal.** Start a queue owner or a long corpus run in
-its own session, with a log file:
+its own session, with a log file and a CPU thread limit:
 
 ```bash
-setsid -f "$PY" -m scripts.onestep_avatar.execution.queue --jobs <JOBS.json> --state <STATE.json> \
+OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 setsid -f "$PY" -m scripts.onestep_avatar.execution.queue \
+  --jobs <JOBS.json> --state <STATE.json> \
   --execute --loop --process-ledger ../expr/onestep_avatar/processes.json \
   > <LOG_FILE> 2>&1 < /dev/null
 ```
+
+Children inherit the owner's environment. Without the limit each child uses all
+48 CPU threads; on this shared host that made the chunked K/V comparisons about
+1,000 times slower, and an E3 reference job missed its deadline.
 
 A queue owner that ends with its terminal cannot publish its supervisor result.
 The queue then records the attempt as failed with reason `missing_supervision`,
@@ -100,6 +105,7 @@ queue stops the job's processes and records reason `overall_deadline`.
 "$PY" -m scripts.onestep_avatar.execution.queue --jobs <JOBS.json> --state <STATE.json> \
   --execute --once --process-ledger ../expr/onestep_avatar/processes.json
 
+# A dry run on a running list prints each job's state; it starts nothing.
 # After an owner ended: check ended children and saved outputs; starts nothing.
 "$PY" -m scripts.onestep_avatar.execution.queue --jobs <JOBS.json> --state <STATE.json> --recover
 
