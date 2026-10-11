@@ -309,6 +309,10 @@ The CLI requires mode, a version-two fixed video list, output, and an exact
 schedule. A source ID chooses one video; omission evaluates all selected sources.
 `--checkpoint` can repeat. With no checkpoint, execute the base alone.
 `--include-base` also executes the base for a checkpoint comparison.
+**Known gap (Required / Current):** each state's model must be released before
+the next loads; currently one process completes two 22B states and runs out of
+memory loading the third on a 48 GB GPU. Run one state per job until the
+[known gap](known_gaps.md#several-model-states-in-one-evaluation-process) closes.
 A declared encoded-frame limit starts at zero. Causal execution drops only its
 incomplete final block and records the actual range.
 Check all selected capture/guide bytes and all adapter conditions before opening

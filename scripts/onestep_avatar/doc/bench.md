@@ -148,6 +148,9 @@ Do not infer gradient-checkpoint work from inference call counts.
 
 ## Gotchas
 
+A bench request with three or more model states runs out of memory on a 48 GB
+GPU ([known gap](known_gaps.md#several-model-states-in-one-evaluation-process));
+measure one state per job and compare the saved results.
 An old causal-block timing result is not a bidirectional speed measurement.
 Removing unused cache work can help, but does not give a reliable numerical speed estimate.
 Check available GPUs before a small real-weight benchmark.

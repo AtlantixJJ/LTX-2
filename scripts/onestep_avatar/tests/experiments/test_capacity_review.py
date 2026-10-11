@@ -108,20 +108,24 @@ def test_capacity_layout_preserves_coordinate_evidence_and_adjacent_changed_pair
             assert gap["missing_reason"] == "No second zero"
 
 
+def single_state_job(root: Path, fixed: list[str], state: str, checkpoint: Path | None) -> dict:
+    output = root / "evaluate" / state
+    arguments = [*fixed, *([] if checkpoint is None else ["--checkpoint", str(checkpoint)]), "--output", str(output)]
+    return {"kind": "evaluate", "arguments": arguments, "output": str(output)}
+
+
 @pytest.fixture
 def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
+    """One case: four one-state ordinary D0 jobs in the order base, zero, twenty, sixty."""
     args = SimpleNamespace(output=tmp_path / "review", mode="bidirectional", evaluation_list=tmp_path / "jobs.json")
     args.evaluation_list.write_text("{}")
     member = tmp_path / "membership.json"
     member.write_text("{}")
     paths = {state: tmp_path / f"{state}.safetensors" for state in review.STATES[1:]}
-    arguments = ["--mode", "bidirectional", "--subset", str(member), "--source", "target", "--output",
-                 str(tmp_path / "evaluate"), "--variant", "dev", "--guide-mode", "d0", "--schedule", ".725", "0",
-                 "--span-latent-frames", "7", "--include-base"]
-    for path in paths.values():
-        arguments += ["--checkpoint", str(path)]
-    job = {"kind": "evaluate", "arguments": arguments, "output": str(tmp_path / "evaluate")}
-    monkeypatch.setattr(review.queue, "prepare_jobs", lambda *_a: [job])
+    fixed = ["--mode", "bidirectional", "--subset", str(member), "--source", "target", "--variant", "dev",
+             "--guide-mode", "d0", "--schedule", ".725", "0", "--span-latent-frames", "7"]
+    jobs = [single_state_job(tmp_path, fixed, state, paths.get(state)) for state in review.STATES]
+    monkeypatch.setattr(review.queue, "prepare_jobs", lambda *_a: jobs)
     monkeypatch.setattr(review.software, "capture", lambda *_a, **_k: {"current": "software"})
     monkeypatch.setattr(review.subset, "verify_prepared_membership", lambda *_a: None)
     contracts = {state: {"task": {"guide_mode": "d0"}, "adapter": {"step": step}}
@@ -130,49 +134,104 @@ def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
     capture, outputs, records = saved_states("bidirectional")
     video = dataset.EncodedVideo("target", "8", "held_out", capture[0], None, 30,
                                  {"capture": {"edge": 4}}, {"capture": "C"})
-    variants = [None, *paths.values()]
     membership = {"objective": "white"}
 
     def prepare_evaluation(ordinary, **_kwargs):  # noqa: ANN001, ANN202 -- controlled ordinary preflight
         ordinary.saved_noise = torch.zeros(1, 28, 8, dtype=torch.bfloat16)
+        variants = ([None] if not ordinary.checkpoint or ordinary.include_base else []) + list(ordinary.checkpoint)
         return object(), variants, [(video, 7, {}, [])], membership
 
     monkeypatch.setattr(review.evaluate, "prepare_evaluation", prepare_evaluation)
     monkeypatch.setattr(review.evaluate, "verify_evaluation_conditions", lambda *_a: None)
     for index, (state, record) in enumerate(zip(review.STATES, records, strict=True)):
-        folder = tmp_path / f"evaluate/case_0000/variant_{index:03d}"
+        folder = tmp_path / f"evaluate/{state}/case_0000/variant_000"
         folder.mkdir(parents=True)
         record["contract"] = None if index == 0 else contracts[state]
+        record["software"] = {"current": "software"}
         (folder / "result.json").write_text(json.dumps(record))
         torch.save(outputs[state], folder / "generated.pt")
-    return args, contracts, variants
+    return args, contracts, jobs, fixed, paths
 
 
 def test_prepare_uses_actual_saved_d0_state_inventory_without_native_work(prepared: tuple,
                                                                          monkeypatch: pytest.MonkeyPatch) -> None:
-    args, _contracts, _variants = prepared
+    args, _contracts, jobs, _fixed, _paths = prepared
     monkeypatch.setattr(media, "open_decoder_session", lambda *_a, **_k: pytest.fail("prepare opened VAE"))
     result = review.prepare(args)
     assert list(result["cases"][0]["outputs"]) == list(review.STATES)
+    assert result["cases"][0]["jobs"] == jobs
     assert result["cases"][0]["video"].encode_records == {"capture": {"edge": 4}}
+    assert sorted(result["cases"][0]["input_files"]) == sorted(
+        [str(args.evaluation_list), str(args.evaluation_list.parent / "membership.json")]
+        + [str(Path(job["output"]) / "case_0000/variant_000" / name) for job in jobs
+           for name in ("result.json", "generated.pt")])
 
 
-@pytest.mark.parametrize("change", ["D1_training", "order", "record_step", "missing_output"])
-def test_prepare_refuses_invalid_capacity_evidence(prepared: tuple, change: str) -> None:
-    args, contracts, variants = prepared
+def test_prepare_accepts_several_cases_in_list_order(prepared: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    args, _contracts, jobs, _fixed, _paths = prepared
+    monkeypatch.setattr(review.queue, "prepare_jobs", lambda *_a: [*jobs, *jobs])
+    assert [case["jobs"] for case in review.prepare(args)["cases"]] == [jobs, jobs]
+
+
+REFUSALS = {
+    "D1_training": "separately D0-trained",
+    "order": "checkpoint order differs",
+    "record_step": "actual adapter inventory differs",
+    "missing_output": "No such file",
+    "four_state_job": "changes more than the selected adapter",
+    "base_not_first": "base first",
+    "changed_source": "changes more than the selected adapter",
+    "changed_noise_file": "changes more than the selected adapter",
+    "software": "different producer software",
+    "incomplete_case": "four one-state evaluation jobs per case",
+    "empty": "evaluation list is empty",
+}
+
+
+@pytest.mark.parametrize("change", list(REFUSALS))
+def test_prepare_refuses_invalid_capacity_evidence(prepared: tuple, change: str,
+                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    args, contracts, jobs, fixed, paths = prepared
+    root = args.evaluation_list.parent
     if change == "D1_training":
         contracts["step20"]["task"]["guide_mode"] = "d1"
     elif change == "order":
-        variants[2], variants[3] = variants[3], variants[2]
+        jobs[2], jobs[3] = jobs[3], jobs[2]
     elif change == "record_step":
-        path = args.evaluation_list.parent / "evaluate/case_0000/variant_003/result.json"
+        path = root / "evaluate/step60/case_0000/variant_000/result.json"
         record = json.loads(path.read_text())
         record["contract"]["adapter"]["step"] = 59
         path.write_text(json.dumps(record))
+    elif change == "missing_output":
+        (root / "evaluate/step60/case_0000/variant_000/generated.pt").unlink()
+    elif change == "four_state_job":
+        jobs[0]["arguments"] = [*jobs[0]["arguments"][:-2], "--include-base",
+                                *(token for path in paths.values() for token in ("--checkpoint", str(path))),
+                                *jobs[0]["arguments"][-2:]]
+    elif change == "base_not_first":
+        jobs[0], jobs[1] = jobs[1], jobs[0]
+    elif change == "changed_source":
+        jobs[2] = single_state_job(root, [*fixed[:5], "other", *fixed[6:]], "step20", paths["step20"])
+    elif change == "changed_noise_file":
+        jobs[3] = single_state_job(root, [*fixed, "--noise-file", str(root / "other_noise.pt")], "step60",
+                                   paths["step60"])
+    elif change == "software":
+        path = root / "evaluate/step20/case_0000/variant_000/result.json"
+        record = json.loads(path.read_text())
+        record["software"] = {"other": "software"}
+        path.write_text(json.dumps(record))
+    elif change == "incomplete_case":
+        jobs.pop()
     else:
-        (args.evaluation_list.parent / "evaluate/case_0000/variant_003/generated.pt").unlink()
-    with pytest.raises((ValueError, FileNotFoundError)):
+        monkeypatch.setattr(review.queue, "prepare_jobs", lambda *_a: [])
+    with pytest.raises((ValueError, FileNotFoundError), match=REFUSALS[change]):
         review.prepare(args)
+
+
+def test_fixed_arguments_ignore_only_the_selected_adapter_and_output() -> None:
+    arguments = ["--mode", "causal", "--checkpoint", "a.safetensors", "--seed", "42", "--output", "out"]
+    assert review.fixed_arguments(arguments) == ["--mode", "causal", "--seed", "42"]
+    assert review.fixed_arguments([*arguments, "--include-base"])[-1] == "--include-base"
 
 
 def test_current_selector_dispatches_capacity_review_and_declares_all_saved_outputs(

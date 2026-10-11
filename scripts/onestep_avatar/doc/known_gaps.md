@@ -90,6 +90,30 @@ reported, never hidden by a parity claim or an unmeasured tolerance.
 and keep the exact direct endpoint. E1 measures full-model raw and decoded
 differences with matched inputs.
 
+## Several model states in one evaluation process
+
+**Required.** An ordinary evaluation or bench request that names several model
+states (the base and one or more adapters) runs them one after another within
+its memory bound. Each model is released before the next one loads.
+
+**Current.** On a 48 GB GPU, one process completes two 22B model states and
+fails while it loads the third. Two native four-state requests (base, update 0,
+update 20, update 60) failed this way: a causal warmed bench and a
+bidirectional held-out evaluation. Each saved the base and update-0 outputs,
+then raised CUDA out of memory while loading the update-20 weights. At the
+failure the process itself held 46.30 GiB allocated by PyTorch. The source of
+the retained allocation is not established.
+
+**Impact.** A request with three or more model states (`--include-base` with
+two or more `--checkpoint`, or three or more `--checkpoint`) is not usable on
+these GPUs. Run one model state per job. Consumers that compare states read
+one-state outputs: `experiments/capacity_review.py` groups four one-state jobs
+per case, and a saved comparison render names each state's output file.
+
+**Closing evidence.** Find and release the retained allocation. Then a native
+four-state evaluation must equal the matching one-state outputs bit-for-bit
+under the deterministic policy, with its peak memory recorded.
+
 ## Eight-block causality diagnostic
 
 `experiments.causality` protocol `eight_block` uses the typed adapter contract

@@ -33,11 +33,21 @@ evaluation jobs and one mode. Declare every evaluation output as an in-list
 dependency. The list contains data only. This module loads no transformer,
 text encoder or adapter and does not generate missing results.
 
-Before native decoding, normalize the ordinary jobs and verify their exact
-result inventory through the public evaluation verifier. Require D0, white,
-dev LTX-2.5, direct `[0.725, 0]`, seven encoded frames, one source per job,
-base followed by same-lineage checkpoints 0, 20 and 60. Inspect the actual
-contracts, output tensors and consumed input hashes. Zero output equals base
+The list holds four one-state ordinary evaluation jobs per case, in the order
+base, update 0, update 20, update 60. Each model state runs in its own process
+because one evaluation process cannot hold four 22B model states on a 48 GB GPU
+([known gap](../known_gaps.md#several-model-states-in-one-evaluation-process)).
+The review reads the list four jobs at a time. Within a case, the four jobs'
+arguments must be equal after removing `--checkpoint` and `--output`; the base
+job has no checkpoint and no `--include-base`, and each other job selects
+exactly one adapter.
+
+Before native decoding, normalize the ordinary jobs and verify each job's one
+`case_0000/variant_000/result.json` through the public evaluation verifier.
+Require D0, white, dev LTX-2.5, direct `[0.725, 0]`, seven encoded frames, one
+source, base first and then same-lineage checkpoints 0, 20 and 60. Inspect the
+actual contracts, output tensors and consumed input hashes. The four records
+must share one producer software identity. Zero output equals base
 bit-for-bit. Exact native call dictionaries are one denoise and one forward
 for bidirectional, or three denoises, three refreshes and six forwards for
 causal, with no priming. Each saved metric is recomputed. The adapter changes;
@@ -72,6 +82,12 @@ and sixty equals 4 under identical input hashes. Zero is a no-op and the
 trained correction is measurable. This establishes an effect. It does not
 establish correct identity or action; inspect the matched videos separately.
 
+Worked list check: eight jobs make two cases, read as jobs 1–4 and 5–8. A
+seven-job list fails before any file read. If the update-20 job of the first
+case names a different `--source` or `--noise-file`, the case fails as
+"changes more than the selected adapter". If jobs 3 and 4 are swapped, the
+selected adapters read 0, 60, 20 and the case fails on checkpoint order.
+
 The [reference input owner](reference_inputs.md) derives a copied source row
 from the saved capture manifest and original capture/guide encode records before
 public RGB replay. It preserves original membership bytes and content identity
@@ -80,6 +96,8 @@ and records the derivation with saved reference provenance.
 ## Invariants
 
 - No missing evaluation is rebuilt and no model training runs here.
+- One case is four one-state jobs whose fixed arguments are equal; their
+  records share one producer software identity.
 - D0-trained contracts must actually record D0; a research override cannot
   convert a D1-trained adapter into learning-capacity evidence.
 - Exact checkpoint inventory, source pins and consumed inputs are checked.
@@ -95,8 +113,11 @@ incomplete coverage, not permission to substitute a shorter update.
 
 ## Tests
 
-Focused tests check source selection, exact four-state inventory, fixed input
-comparisons, zero no-op, native counts and recomputed metrics. Saved rendering
+Focused tests check source selection, exact four-state inventory, grouping of
+one-state jobs in list order, refusal of a four-state job, a base that is not
+first, a changed source or noise file, mixed producer software and an
+incomplete case, fixed input comparisons, zero no-op, native counts and
+recomputed metrics. Saved rendering
 tests cover adjacent base/changed output positions and explicit empty narrow
 slots. Source-attribution tests reject a changed checkpoint-selection helper
 while the unrelated training, conditioning and reference profiles stay equal.

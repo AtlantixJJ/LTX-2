@@ -58,14 +58,31 @@ def check_outputs(mode: str, outputs: dict[str, torch.Tensor], records: list[dic
             raise ValueError("capacity review metric differs from saved output")
 
 
-def prepare(args: argparse.Namespace, *, fresh: bool = True) -> dict:
-    if fresh and args.output.exists():
-        raise ValueError("capacity review requires a fresh output")
-    producer = software.capture("evaluation", args.mode, decoder=True, extra_sources=EXTRAS)
-    cases = []
-    for job in queue.prepare_jobs(args.evaluation_list):
-        if job["kind"] != "evaluate":
-            raise ValueError("capacity review accepts ordinary evaluation jobs only")
+def fixed_arguments(arguments: list[str]) -> list[str]:
+    """Evaluation arguments without the selected adapter and the output path."""
+    kept, index = [], 0
+    while index < len(arguments):
+        if arguments[index] in ("--checkpoint", "--output"):
+            index += 2
+            continue
+        kept.append(arguments[index])
+        index += 1
+    return kept
+
+
+def prepare_case(args: argparse.Namespace, group: list[dict]) -> dict:
+    """Check one case: base, zero, twenty and sixty, each saved by its own ordinary process.
+
+    One evaluation process cannot hold four 22B model states on a 48 GB GPU
+    (doc/known_gaps.md), so each state is a separate job. The four jobs may differ
+    only in the selected adapter and output path.
+    """
+    if any(job["kind"] != "evaluate" for job in group):
+        raise ValueError("capacity review accepts ordinary evaluation jobs only")
+    if any(fixed_arguments(job["arguments"]) != fixed_arguments(group[0]["arguments"]) for job in group[1:]):
+        raise ValueError("capacity review case changes more than the selected adapter")
+    prepared = []
+    for job in group:
         ordinary = evaluate.parse_args(job["arguments"])
         specification, variants, selected, membership = evaluate.prepare_evaluation(
             ordinary, require_fresh_output=False)
@@ -73,34 +90,53 @@ def prepare(args: argparse.Namespace, *, fresh: bool = True) -> dict:
                 or ordinary.model != "2.5" or ordinary.schedule != [.725, 0] or ordinary.cfg != 1
                 or ordinary.stg != 0 or ordinary.rescale != 0 or len(selected) != 1
                 or ordinary.adapter_application != adapters.UNMERGED or ordinary.research_override
-                or len(variants) != 4 or not ordinary.include_base or membership["objective"] != "white"):
+                or ordinary.include_base or len(variants) != 1 or membership["objective"] != "white"):
             raise ValueError("capacity review requires the exact D0 bounded learning comparison")
         subset.verify_prepared_membership(membership)
-        selected_checkpoints, contracts = adapter_effect_check.checkpoint_selection(ordinary.checkpoint, pilot=True)
-        if any(contract["task"]["guide_mode"] != "d0" for contract in contracts.values()):
-            raise ValueError("capacity review requires separately D0-trained adapters")
-        if variants != [None, *(selected_checkpoints[state] for state in STATES[1:])]:
-            raise ValueError("capacity review checkpoint order differs")
-        video, frames, _requested, _checked = selected[0]
-        if frames != 7 or ordinary.saved_noise is None:
-            raise ValueError("capacity review requires seven frames and full saved noise")
-        paths = [ordinary.output / f"case_0000/variant_{index:03d}/result.json" for index in range(4)]
-        evaluate.verify_evaluation_conditions(job["arguments"], paths)
-        records = [json.loads(path.read_text()) for path in paths]
-        if records[0].get("adapter") is not None or [record.get("contract", {}).get("adapter", {}).get("step")
-            for record in records[1:]] != [0, 20, 60]:
-            raise ValueError("capacity review actual adapter inventory differs")
-        outputs = {state: torch.load(path.parent / "generated.pt", map_location="cpu", weights_only=True)
-                   for state, path in zip(STATES, paths, strict=True)}
-        capture = video.z_y[:, :7].unsqueeze(0).to(torch.bfloat16)
-        check_outputs(args.mode, outputs, records, capture)
-        cases.append({"job": job, "ordinary": ordinary, "specification": specification, "video": video,
-                      "membership": membership, "records": records, "outputs": outputs,
-                      "input_files": {str(path): sha256(path) for path in (
-                          args.evaluation_list, ordinary.subset, *paths,
-                          *(path.parent / "generated.pt" for path in paths))}})
-    if not cases:
+        prepared.append((ordinary, specification, variants[0], selected[0], membership))
+    states = [variant for _ordinary, _specification, variant, _selected, _membership in prepared]
+    if states[0] is not None or any(state is None for state in states[1:]):
+        raise ValueError("capacity review case requires base first and then three adapters")
+    selected_checkpoints, contracts = adapter_effect_check.checkpoint_selection(states[1:], pilot=True)
+    if any(contract["task"]["guide_mode"] != "d0" for contract in contracts.values()):
+        raise ValueError("capacity review requires separately D0-trained adapters")
+    if states[1:] != [selected_checkpoints[state] for state in STATES[1:]]:
+        raise ValueError("capacity review checkpoint order differs")
+    ordinary, specification, _base, (video, frames, _requested, _checked), membership = prepared[0]
+    if frames != 7 or ordinary.saved_noise is None:
+        raise ValueError("capacity review requires seven frames and full saved noise")
+    paths = []
+    for job, (each, *_rest) in zip(group, prepared, strict=True):
+        path = each.output / "case_0000/variant_000/result.json"
+        evaluate.verify_evaluation_conditions(job["arguments"], [path])
+        paths.append(path)
+    records = [json.loads(path.read_text()) for path in paths]
+    if records[0].get("adapter") is not None or [record.get("contract", {}).get("adapter", {}).get("step")
+        for record in records[1:]] != [0, 20, 60]:
+        raise ValueError("capacity review actual adapter inventory differs")
+    if any(record.get("software") != records[0].get("software") for record in records[1:]):
+        raise ValueError("capacity review states come from different producer software")
+    outputs = {state: torch.load(path.parent / "generated.pt", map_location="cpu", weights_only=True)
+               for state, path in zip(STATES, paths, strict=True)}
+    capture = video.z_y[:, :7].unsqueeze(0).to(torch.bfloat16)
+    check_outputs(args.mode, outputs, records, capture)
+    return {"jobs": group, "ordinary": ordinary, "specification": specification, "video": video,
+            "membership": membership, "records": records, "outputs": outputs,
+            "input_files": {str(path): sha256(path) for path in (
+                args.evaluation_list, ordinary.subset, *paths,
+                *(path.parent / "generated.pt" for path in paths))}}
+
+
+def prepare(args: argparse.Namespace, *, fresh: bool = True) -> dict:
+    if fresh and args.output.exists():
+        raise ValueError("capacity review requires a fresh output")
+    producer = software.capture("evaluation", args.mode, decoder=True, extra_sources=EXTRAS)
+    jobs = queue.prepare_jobs(args.evaluation_list)
+    if not jobs:
         raise ValueError("capacity review evaluation list is empty")
+    if len(jobs) % len(STATES):
+        raise ValueError("capacity review requires four one-state evaluation jobs per case")
+    cases = [prepare_case(args, jobs[index:index + len(STATES)]) for index in range(0, len(jobs), len(STATES))]
     return {"cases": cases, "software": producer}
 
 

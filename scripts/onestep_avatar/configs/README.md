@@ -321,6 +321,10 @@ records; decoding is separate (section 8). Example arguments:
 - The mode and settings must match the adapter's recorded conditions. The check
   runs before any weights load.
 - `--include-base` adds the base model without the adapter as a second variant.
+- **Known gap:** one process completes at most two model states on a 48 GB
+  GPU; the third runs out of memory. For three or more states, queue one job per
+  state: no `--checkpoint` for the base, otherwise exactly one. See
+  [known gaps](../doc/known_gaps.md#several-model-states-in-one-evaluation-process).
 - `--noise-file` reuses saved token noise for one video; it must match the full
   token range.
 - `--output-latent-frames N` (causal only) sets the generated length in complete
@@ -392,6 +396,7 @@ with the supplied image, guide and output.
   matched comparison videos from a saved comparison specification.
 - **Measure generation cost**: a queue `bench` job takes evaluation arguments
   plus `--repetitions 3 --warmup 1` and records warmed latency and peak memory.
+  Measure one model state per job (same known gap as section 5).
   The measured time covers sampling and CPU encoding, not loading, decoding or
   writes. Causal operation timing (`--operation-timing --mode causal --reps N
   --warmup N`) times single operations and does not measure complete-output latency.
@@ -608,9 +613,11 @@ saved-output operation:
  "arguments": ["--mode", "causal", "--evaluation-list", "/abs/d0_evaluation_jobs.json"]}
 ```
 
-The list must contain verified ordinary D0 base and updates 0, 20 and 60 under
-the fixed seven-frame direct `[0.725, 0]` setup. Include all those evaluation
-jobs as queue dependencies. This operation loads only the decoder and creates
+The list must contain four one-state ordinary D0 evaluation jobs per case, in
+the order base, update 0, update 20, update 60, under the fixed seven-frame
+direct `[0.725, 0]` setup. The four jobs differ only in `--checkpoint` (none for
+the base) and `--output`. Include all those evaluation jobs as queue
+dependencies. This operation loads only the decoder and creates
 matched RGB/VAE reviews from saved outputs; it never fills missing evaluations.
 See [capacity review design](../doc/experiments/capacity_review.md).
 
