@@ -7,6 +7,13 @@ export parity, output quality and timing use that same input contract.
 Run from LTX-2 in the `ltx` conda environment. Check `nvidia-smi` before loading
 models. Keep `scripts/` and `scripts/prune/` as PEP 420 namespace packages.
 
+Read the [design index](doc/README.md), [architecture](doc/ARCHITECTURE.md),
+[core algorithm](doc/core_algorithm.md), [verification](doc/VALIDATION.md)
+and [known gaps](doc/known_gaps.md) before a model-facing change.
+Use the [run guide](doc/usage.md) before writing a launch command.
+The registry supports 2.3 and 2.5; new work defaults to 2.5.
+Check each entrypoint's narrower support before using another key.
+
 ## Owners and invariants
 
 - `data.whole_clip` owns saved input validation and exact reconstruction.
@@ -22,8 +29,26 @@ models. Keep `scripts/` and `scripts/prune/` as PEP 420 namespace packages.
   parameters; distinguish storage savings from reduced GEMM work in `compact`.
 - `core.ltx_adapter` owns private upstream access. Avatar consumers also use model,
   prompt and media utilities: check their imports before changing shared interfaces.
-- Every production module has `doc/<area>/<module>.md`, mirroring its source path; update its interface, data flow
-  and invariants with the code.
+
+## Documentation contract
+
+Follow the [avatar reference](../onestep_avatar/doc/README.md#documentation-rules).
+A production module over 100 physical lines requires
+`doc/<relative-source-path>.md`. Smaller modules explain their logic in the
+header. Keep existing small-module designs as supplemental references.
+Empty package markers and tests need no design page.
+
+Use Objective, Data flow, Organization logic, Invariants, Gotchas and Tests.
+Entry scripts add Usage after Objective: launch owner, environment, complete
+command, main arguments, output files and matching run-guide link.
+Give worked calculations and failure meanings. Write in simplified technical
+English, about 80% to ASD-STE100. Use small left-to-right Mermaid diagrams
+with the [shared legend](doc/core_algorithm.md#diagram-legend); render and inspect them.
+
+Update designs or headers with changes to objective, data flow, organization
+or invariants. Describe current behavior only. Keep history in saved records.
+The source inventory must match existing files and physical line counts.
+Do not add an avatar queue requirement to an unrelated standalone prune CLI.
 
 ## Verification
 

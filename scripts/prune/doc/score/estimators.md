@@ -1,13 +1,41 @@
-# `score/estimators.py` — native-token unit score primitives
+# `score/estimators.py` — score calculation and mask allocation
 
 ## Objective
 
-Keep reusable scoring mathematics independent of model and input construction. The caller specifies native prediction tokens and owns model forwards and task loss.
+Keep score mathematics independent of model forwards and input construction.
 
 ## Data flow
 
-`rms_projection_scores` turns accumulated sampled activation square means and output-projection norms into the current cheap D0 proxy. `exact_local_head_energy` computes each head's actual projected local output RMS over an explicit token index set, retaining within-head covariance; it is a potential ranking comparison, not a downstream ablation. `fractional_masks` removes the lowest scores per branch with stable ties and one retained unit minimum. The D0 scorer uses the RMS proxy and allocator; it does not silently enable exact local energy, Taylor gradients or reconstruction.
+The caller supplies activation statistics, projection weights or explicit token indices.
+The functions return one score or binary mask value per pruning unit.
 
-## Invariants and checks
+## Organization logic
 
-The clean conditioning frame is excluded by the D0 caller's token indices. The caller owns token selection and model forwards. `test_estimators.py` checks local energy, score scaling, stable ties and malformed scores. A new estimator needs held-out D0 comparison before it becomes the default.
+`rms_projection_scores(S, P, n)` computes `sqrt(S/n)*P`.
+The native scorer averages squared activation means equally across clip/sigma cases.
+
+`exact_local_head_energy` projects each sampled head through its output-weight columns.
+It returns the RMS projected vector norm and keeps within-head covariance.
+The default scorer does not use this helper.
+
+`fractional_masks` removes the lowest `round(width*fraction)` scores per branch.
+It keeps at least one unit. Stable sorting resolves ties by source order.
+
+Worked example: scores `[1,1,3,4]` and fraction 0.5 produce `[0,0,1,1]`.
+A zero fraction returns all ones.
+
+## Invariants
+
+- Allocation scores are finite, nonempty and one-dimensional.
+- Fractions lie in `[0,1)`.
+- The caller selects prediction tokens and excludes clean frame zero.
+
+## Gotchas
+
+The RMS proxy omits cancellation and downstream effects.
+Exact local energy also does not measure a full-model ablation.
+A new default estimator needs held-out comparison at fixed executable widths.
+
+## Tests
+
+`tests/test_estimators.py` checks score scaling, local energy, stable ties and malformed scores.

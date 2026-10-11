@@ -1,15 +1,41 @@
-# `core/provenance.py`
+# `core/provenance.py` — file identities and execution stamps
 
-## Objective and data flow
+## Objective
 
-Identify checkpoints, saved inputs and execution context on artifacts. Checkpoint
-fingerprints hash the safetensors header, file size and fixed sampled data regions.
-`file_sha256` pins small files in full. `stamp` records model, VAE, geometry, revision,
-host and device; `run_id` combines timestamp and PID.
+Record checkpoint identity, file content and execution context on saved artifacts.
 
-## Invariants and verification
+## Data flow
 
-A sampled fingerprint is an identity cue, not whole-file integrity proof.
-Manifest/noise/capture hashes are validated by `data.whole_clip`. No renderer or
-window-source dependency is included. Native manifest and mask tests cover
-identity rejection; real saved-output checks verify model-facing input equality.
+A checkpoint path produces a short fingerprint.
+A file path produces a full SHA-256.
+A resolved model and optional device produce a provenance dictionary.
+
+## Organization logic
+
+`checkpoint_fingerprint` hashes file size, the safetensors header and three sampled payload regions.
+Each region is at most one MiB. The result contains 16 hexadecimal characters.
+`file_sha256` reads the whole file in one-MiB chunks.
+
+`run_id` combines a local timestamp, PID and optional prefix.
+`stamp` records model paths, VAE scales, revision, host, runtime versions and time.
+A CUDA device adds its index and name. Caller fields extend the record.
+
+Worked example: processes finishing in the same second get different run IDs because their PIDs differ.
+
+## Invariants
+
+- Use full hashes for pinned manifests, source captures and saved tensor files.
+- Record the actual selected checkpoint.
+- A dirty revision is execution context, not a full source-content pin.
+
+## Gotchas
+
+A sampled checkpoint fingerprint does not prove whole-file integrity.
+The avatar queue wrapper separately hashes complete components for native acceptance.
+Caller `extra` fields can override stamp fields; review them at the call site.
+
+## Tests
+
+Manifest, mask and depth-export tests check changed-file refusals.
+`tests/test_artifacts.py` checks run attribution.
+Native input reconstruction must also check actual tensor values.

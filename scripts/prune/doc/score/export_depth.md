@@ -1,6 +1,6 @@
 # `score/export_depth.py` — intact-block physical depth export
 
-## Objective and interface
+## Objective
 
 Write a shorter native LTX transformer checkpoint by removing complete blocks,
 without loading weight tensors into host RAM or allocating CUDA memory. This is
@@ -14,22 +14,42 @@ accounting. `verify_export` validates architecture/provenance for native
 consumers. `retained_blocks` supplies a reversible in-memory reference for
 export parity; it restores the original `ModuleList` even when the forward fails.
 
+## Usage
+
+A human or agent can run this CPU export directly from `LTX-2` in `ltx`.
+There is no `--dry-run` option. The command reads saved calibration inputs and checkpoint metadata.
+
 ```bash
+conda activate ltx
 CUDA_VISIBLE_DEVICES='' python -m scripts.prune.score.export_depth \
-  --baseline <saved-native-D0-baseline> \
-  --calibration-views <calibration-view-1> <calibration-view-2> \
+  --baseline ../expr/refiner_prune/2.5/prune_doc_example/baseline \
+  --calibration-views /abs/corpus/Part_1/0008_01/views/view00_cam51 \
   --sigmas 0.725 0.909375 1.0 \
   --remove-blocks 3 7 8 15 \
-  --artifact <new-depth-artifact.json> --output <new-depth-checkpoint.safetensors> \
+  --artifact ../expr/refiner_prune/2.5/prune_doc_example/depth_diagnostic.json \
+  --output ../expr/refiner_prune/2.5/prune_doc_example/depth_diagnostic.safetensors \
   --purpose diagnostic_architecture --quality-status failed_prior_functional_gate
 ```
 
-The example set is the previously studied four-block diagnostic, whose quality
-gate failed. It is not a newly selected recovery candidate. An eight-block set
-requires further calibration. For a no-prune architecture control, supply
+This command explicitly labels the four-block set as a failed diagnostic.
+It does not select or qualify a new candidate. For a no-prune architecture control, supply
 `--remove-blocks` with no indices and `--purpose no_prune_control`.
 
-## Data flow and invariants
+| Argument | Meaning |
+|---|---|
+| `--baseline` | Saved native D0 baseline |
+| `--calibration-views` | Views recorded in that baseline |
+| `--sigmas` | Exact saved calibration levels |
+| `--remove-blocks` | Original block indices; empty for a no-prune control |
+| `--artifact` | New depth JSON path |
+| `--output` | New checkpoint path |
+| `--purpose` | `diagnostic_architecture`, `calibration_candidate` or `no_prune_control` |
+| `--quality-status` | Declared current quality status |
+
+Outputs are the artifact and streamed checkpoint. Stdout records sizes, counts and fingerprint.
+See the [depth run guide](../usage.md#depth-export).
+
+## Data flow
 
 The source must be unpruned, have contiguous block indices matching `num_layers`
 and load through the native video configurator. Sources with existing pruning
@@ -39,6 +59,8 @@ The depth artifact uses `candidate_format=whole_clip_d0_depth_v1` and
 the source fingerprint/header hash, complete calibration-manifest content and
 distribution, source parameter accounting, retained order and both directions
 of the original/compact mapping. Every initial artifact is `unqualified`.
+
+## Organization logic
 
 The exporter removes all tensor keys below each deleted block, including audio
 and AV branches, renames retained blocks contiguously, sets the new `num_layers`,
@@ -57,7 +79,23 @@ and manifest content must still match before publication. Failed copying removes
 its temporary file and leaves no output checkpoint. The CLI writes a new artifact
 with exclusive creation and never calls CUDA preflight.
 
-## Accounting and validation
+Worked example: deleting block 1 from four blocks keeps original blocks `[0,2,3]`.
+The compact indices become `[0,1,2]`, and `num_layers` becomes 3.
+
+## Invariants
+
+- Keep at least one block and preserve retained order.
+- Bind mappings, source identity and calibration content to the artifact.
+- Preserve retained tensor dtype, shape and payload bytes.
+- Refuse existing destinations, source aliases and changed inputs.
+- Mark new artifacts `unqualified`.
+
+## Gotchas
+
+Parameter accounting measures storage and architecture, not speed or quality.
+This module does not select the deletion set.
+
+### Parameter accounting
 
 `checkpoint_tensors` counts all stored tensors. `resident_video_parameters`
 counts exactly the keys/shapes expected by `LTXVideoOnlyModelConfigurator` on the
@@ -68,7 +106,11 @@ and architecture changes; forward speed and peak VRAM require measurement.
 
 `verify_export` checks artifact content, pinned source, complete retained key
 inventory, tensor shapes/dtypes, transformed config and parameter counts. It
-does not compare tensor payloads or establish numerical parity. CPU tests compare
+does not compare tensor payloads or establish numerical parity.
+
+## Tests
+
+CPU tests compare
 retained tensor values and real small video/AV model forwards, strict reload,
 cache entries/full block-causal references, cache eviction, retained-block
 backward gradients, clean c0, aliases, source mutation,

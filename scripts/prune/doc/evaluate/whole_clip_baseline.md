@@ -11,20 +11,36 @@ from the exact `[sigma, 0]` schedule. The output format is the one
 
 It is the only producer of these rollouts and owns no other avatar diagnostic.
 
-## Command
+## Usage
 
-Run from `LTX-2` in the `ltx` environment after checking `nvidia-smi`:
+Humans can run the direct CLI from `LTX-2` in `ltx`.
+Agents reproduce the restricted raw baseline through the avatar queue.
+See the [baseline run guide](../usage.md#save-the-baseline) and [queue recipe](../usage.md#queued-baseline-reproduction).
+The direct producer has no `--dry-run` option.
 
 ```bash
-python -m scripts.prune.evaluate.whole_clip_baseline \
-  --view <corpus-view> [--view <corpus-view> ...] \
-  --sigmas 0.725 0.909375 1.0 --prompt "" --seed 42 --gpu-id N \
-  --output <fresh-output-dir>
+conda run -n ltx python -m scripts.prune.evaluate.whole_clip_baseline \
+  --model 2.5 --view /abs/corpus/Part_1/0008_01/views/view00_cam51 \
+  --sigmas 0.725 0.909375 1.0 --prompt "" --seed 42 --gpu-id 0 \
+  --output ../expr/refiner_prune/2.5/prune_doc_example/baseline
 ```
 
 Add `--transformer <candidate.safetensors>` for a pruned candidate and keep
 every other flag unchanged. `--raw-only` skips VAE decoding. Several noise
 seeds in one model load need `--seeds S1 S2 ... --raw-only`.
+
+| Argument | Meaning |
+|---|---|
+| `--view` | Corpus view; repeat for more views |
+| `--model`, `--variant` | Registered key and distilled/dev weights |
+| `--sigmas` | Exact starting levels |
+| `--prompt`, `--prompt-file` | Explicit text or stripped UTF-8 file |
+| `--seed`, `--seeds` | One seed, or multiple seeds with raw output |
+| `--transformer` | Candidate checkpoint override |
+| `--raw-only`, `--arms` | Skip decode; select D0 and/or D1 |
+| `--output`, `--gpu-id` | Fresh run directory and visible device |
+
+Outputs are `manifest.json`, saved epsilon, per-arm latent tensors and optional three-panel MP4s.
 
 ## Data flow
 
@@ -66,6 +82,17 @@ seeds in one model load need `--seeds S1 S2 ... --raw-only`.
    epsilon hash, block plan, per-arm timing and latent hashes, and one row per
    view and sigma.
 
+## Organization logic
+
+Load one model for the selected views and seeds.
+Use public avatar corpus and model owners for tensor reading, noising and prediction.
+Keep saved-input verification in the pruning package.
+The producer does not own a queue or a second numerical implementation.
+
+Worked example: three latent frames produce the single plan `[(0,3)]`.
+D0 and D1 reuse the same epsilon. At sigma 1, their noised sources are equal.
+Both arms restore the capture frame zero.
+
 Fixed manifest fields record what this producer cannot vary: `whole_clip:
 true`, `attention: full_bidirectional`, `history_policy: none_single_block`,
 `history_mode: recompute`, `trajectory_only: false`, `teacher_forcing:
@@ -86,13 +113,15 @@ the computation is always one whole-clip block with no history,
 `data.whole_clip` refuses multi-step distilled tails, and LoRA adapters need
 the avatar training contract checks, which prune must not import.
 
-## Invariants and gotchas
+## Invariants
 
 - One global epsilon per view and seed. A matching seed is not proof of
   matching noise; consumers compare the saved tensors.
 - `c0` is the clean capture frame in both arms; the guide's frame 0 is never
   a condition. Sigma and per-token timesteps stay float32 inside the model
   owner; BF16 applies to weights and latents.
+## Gotchas
+
 - The numerical policy selects the attention kernel. Under the deterministic
   policy, attention runs the Flash kernel; with PyTorch defaults it runs the
   cuDNN kernel. Their rounding differs, so compare baselines only within one

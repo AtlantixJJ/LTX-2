@@ -1,0 +1,245 @@
+# Pruning run guide
+
+## Launch and output rules
+
+Run from the `LTX-2` root in the `ltx` conda environment.
+Run entry scripts as `python -m scripts.prune.<area>.<module>`.
+Use LTX-2.5 for new work.
+
+The commands below describe the standalone pruning workflow.
+Humans can run these direct CLIs.
+Agents use the avatar queue for the restricted native baseline reproduction.
+That route has its own [recipe](#queued-baseline-reproduction).
+Other prune CLIs have no queue wrapper defined here.
+
+Replace the two view paths with existing corpus views.
+Choose different actors for calibration and held-out validation.
+All selected views in one producer run must have the same latent length.
+Choose a fresh run root and a free GPU after checking occupancy.
+
+```bash
+cd LTX-2
+conda activate ltx
+nvidia-smi
+
+PRUNE_GPU=0
+PRUNE_CALIB=/abs/corpus/Part_1/0008_01/views/view00_cam51
+PRUNE_HELDOUT=/abs/corpus/Part_1/0264_01/views/view00_cam51
+PRUNE_RUN=../expr/refiner_prune/2.5/prune_doc_example
+```
+
+These view names illustrate paths. They do not declare an actor split.
+Check saved experiment membership before selecting real actors.
+
+Keep prompt, seed, source bundles, epsilon, fps, geometry, schedule and numerical policy fixed.
+Store weights, tensors, media and logs under ignored `expr/` paths.
+Some writers can replace files. Use fresh paths even when an entrypoint does not enforce this.
+
+## Preflight and prompt cache
+
+```bash
+python -m scripts.prune.core.preflight \
+  --model 2.5 --gpu-id "$PRUNE_GPU" --min-free-gb 44 --dump-caps
+python -m scripts.prune.data.prompt_cache \
+  --model 2.5 --gpu-id "$PRUNE_GPU" --verify
+```
+
+Preflight reports decimal GB, while the scorer and benchmark require 44 GiB.
+The second command verifies `DEFAULT_PROMPT`.
+The workflow below explicitly uses empty text, which has a different cache.
+
+A direct baseline builds its selected context if missing.
+The queued wrapper requires that selected cache to exist before the run.
+Use the public API to prepare and verify empty text:
+
+```bash
+python - "$PRUNE_GPU" <<'PY'
+import sys
+import torch
+from scripts.prune.core import preflight, session
+from scripts.prune.data import prompt_cache
+
+gpu_id = int(sys.argv[1])
+model = preflight.check("2.5", gpu_id=gpu_id)
+device = torch.device(f"cuda:{gpu_id}")
+prompt_cache.get_or_build(model, "", session.DTYPE, device)
+report = prompt_cache.verify(model, "", session.DTYPE, device)
+print(report)
+if not report["bit_exact"]:
+    raise SystemExit("empty-text context verification failed")
+PY
+```
+
+Verification re-encodes and replaces the cache. Preserve the old cache before investigating a mismatch.
+See [preflight](core/preflight.md#usage) and [prompt cache](data/prompt_cache.md#usage).
+
+## Save the baseline
+
+Save calibration and held-out inputs in one native manifest for mask and parity checks:
+
+```bash
+python -m scripts.prune.evaluate.whole_clip_baseline \
+  --model 2.5 --variant distilled --objective white \
+  --view "$PRUNE_CALIB" --view "$PRUNE_HELDOUT" \
+  --sigmas 0.725 0.909375 1.0 --context-latent-frames 8 \
+  --prompt "" --seed 42 --gpu-id "$PRUNE_GPU" \
+  --output "$PRUNE_RUN/baseline"
+```
+
+The exact direct schedules are `[0.725,0]`, `[0.909375,0]` and `[1,0]`.
+Defaults are CFG 1, STG 0 and rescale 0.
+The output contains a manifest, saved epsilon, latent outputs and decoded capture/D0/D1 video.
+
+`--raw-only --arms d0` saves only raw D0 evidence.
+It cannot support a decoded comparison without separate media.
+Use a separate run directory for each seed consumed by native calibration.
+See [producer usage](evaluate/whole_clip_baseline.md#usage).
+
+## Calibration and functional ablation
+
+Calibrate only on the calibration actor:
+
+```bash
+python -m scripts.prune.score.whole_clip_d0_scores \
+  --baseline "$PRUNE_RUN/baseline" --view "$PRUNE_CALIB" \
+  --sigmas 0.725 0.909375 1.0 \
+  --head-fraction 0.10 --ffn-fraction 0.10 \
+  --sampler stride --spatial-stride 16 --gpu-id "$PRUNE_GPU" \
+  --output "$PRUNE_RUN/mask.json"
+
+python -m scripts.prune.evaluate.whole_clip_d0 \
+  --baseline "$PRUNE_RUN/baseline" --functional-mask "$PRUNE_RUN/mask.json" \
+  --view "$PRUNE_HELDOUT" --sigmas 0.725 0.909375 1.0 \
+  --gpu-id "$PRUNE_GPU" --output "$PRUNE_RUN/ablation.json"
+```
+
+The scorer first reproduces every calibration baseline.
+The functional analyzer checks the unmasked held-out baseline, then measures head-only, FFN-only and combined masks.
+These are numerical ablations. They do not establish export fidelity or speed.
+See [scorer](score/whole_clip_d0_scores.md#usage) and [analyzer](evaluate/whole_clip_d0.md#usage).
+
+## Width export and parity
+
+```bash
+python -m scripts.prune.score.export_pruned \
+  --model 2.5 --masks "$PRUNE_RUN/mask.json" --mode compact_faithful \
+  --output "$PRUNE_RUN/candidate.safetensors"
+
+python -m scripts.prune.checks.export_parity \
+  --baseline "$PRUNE_RUN/baseline" --masks "$PRUNE_RUN/mask.json" \
+  --exported-checkpoint "$PRUNE_RUN/candidate.safetensors" \
+  --view "$PRUNE_HELDOUT" --sigmas 0.725 0.909375 1.0 \
+  --gpu-id "$PRUNE_GPU" --max-abs 0.02
+```
+
+Width export performs CPU tensor surgery, but its current CLI requires CUDA preflight.
+`masked_full` is the default full-width control.
+`compact_faithful` reduces storage and restores original execution geometry.
+Use `compact` to test supported reduced execution widths with separate parity.
+`sparse` selects active attention heads while keeping full-width projections.
+
+Parity writes an indexed `d0-export-parity` run and prints its result path.
+Failure returns a nonzero exit status.
+Use an all-ones native artifact for the no-prune width control.
+See [export](score/export_pruned.md#usage) and [parity](checks/export_parity.md#usage).
+
+## Depth export
+
+The CPU depth exporter can make a no-prune architecture control:
+
+```bash
+CUDA_VISIBLE_DEVICES='' python -m scripts.prune.score.export_depth \
+  --baseline "$PRUNE_RUN/baseline" --calibration-views "$PRUNE_CALIB" \
+  --sigmas 0.725 0.909375 1.0 --remove-blocks \
+  --artifact "$PRUNE_RUN/depth_control.json" \
+  --output "$PRUNE_RUN/depth_control.safetensors" \
+  --purpose no_prune_control --quality-status not_evaluated
+
+python -m scripts.prune.checks.export_parity \
+  --baseline "$PRUNE_RUN/baseline" --depth-artifact "$PRUNE_RUN/depth_control.json" \
+  --exported-checkpoint "$PRUNE_RUN/depth_control.safetensors" \
+  --view "$PRUNE_HELDOUT" --sigmas 0.725 0.909375 1.0 \
+  --gpu-id "$PRUNE_GPU" --max-abs 0.02
+```
+
+A removal candidate must supply an explicitly selected `--remove-blocks` list and a suitable purpose.
+Its source order and original/compact mappings remain pinned.
+No selection method is implied by this control.
+See [depth export](score/export_depth.md#usage).
+
+## Held-out quality and timing
+
+Generate the candidate with the same calibration and held-out views as the baseline.
+The distribution validator requires the pinned calibration rows in the selected baseline.
+The analyzer reports every row; use the held-out rows for held-out quality claims.
+
+```bash
+python -m scripts.prune.evaluate.whole_clip_baseline \
+  --model 2.5 --variant distilled --objective white \
+  --view "$PRUNE_CALIB" --view "$PRUNE_HELDOUT" \
+  --sigmas 0.725 0.909375 1.0 --context-latent-frames 8 \
+  --prompt "" --seed 42 --gpu-id "$PRUNE_GPU" \
+  --transformer "$PRUNE_RUN/candidate.safetensors" \
+  --output "$PRUNE_RUN/candidate"
+
+python -m scripts.prune.evaluate.whole_clip_d0 \
+  --baseline "$PRUNE_RUN/baseline" --candidate "$PRUNE_RUN/candidate" \
+  --output "$PRUNE_RUN/comparison"
+
+python -m scripts.prune.evaluate.bench_whole_clip_d0 \
+  --baseline "$PRUNE_RUN/baseline" --candidate "$PRUNE_RUN/candidate" \
+  --view "$PRUNE_HELDOUT" --sigma 0.909375 --gpu-id "$PRUNE_GPU" \
+  --warmup 2 --repeats 5 --order ABA --output "$PRUNE_RUN/benchmark_aba.json"
+```
+
+The paired analyzer checks actual saved epsilon equality.
+It writes metrics and synchronized capture VAE, baseline D0 VAE and candidate D0 VAE panels.
+Inspect those videos for identity, action and motion.
+The numerical metrics support that judgment; they do not replace it.
+
+Repeat timing with `--order BAB` and a new output file when gains approach drift.
+Keep device, geometry and numerical policy fixed.
+See [analyzer](evaluate/whole_clip_d0.md#usage),
+[benchmark](evaluate/bench_whole_clip_d0.md#usage) and [acceptance](VALIDATION.md).
+
+## Queued baseline reproduction
+
+Agents use the existing avatar queue for the native `prune_baseline` experiment.
+Start with its [run guide](../../onestep_avatar/configs/README.md#pruning-baseline-prune_baseline),
+[protocol design](../../onestep_avatar/doc/experiments/prune_baseline.md)
+and [queue usage](../../onestep_avatar/doc/usage.md).
+
+The scientific spec permits one absolute view, one seed, white distilled unguided raw output and context eight.
+It keeps the requested sigmas and supports D0, optionally D1.
+The selected prompt cache must exist first.
+
+The experiment supports a CPU spec check:
+
+```bash
+conda run -n ltx python -m scripts.onestep_avatar.experiments.prune_baseline \
+  --spec /abs/prune_baseline_spec.json --output /abs/fresh_prune_job --dry-run
+```
+
+That check parses the spec without loading or hashing model components.
+Validate the prepared job list with the queue's `--dry-run`.
+Start the queue owner with `setsid`, following its documented process-ledger command.
+The prune producer's original files stay under `<job-output>/baseline/`.
+Job-root manifests and acceptance records belong to the wrapper.
+
+For drift diagnosis, use the existing
+[pruning reproduction controls](../../onestep_avatar/configs/README.md#pruning-reproduction-controls-prune_reproduction).
+Do not substitute new sigmas or change scientific flags to make a comparison pass.
+
+## CPU verification and stopping
+
+```bash
+CUDA_VISIBLE_DEVICES='' python -m pytest scripts/prune/tests -q -m 'not gpu'
+ruff check --select F,I scripts/prune
+```
+
+If Ruff is unavailable in `ltx`, follow the repository's dev-tool setup.
+Run the tests with the `ltx` interpreter.
+
+Direct CLIs run in the foreground. Interrupt your own command to stop it.
+Keep partial outputs for diagnosis and use a new directory for another producer attempt.
+For managed jobs, use the avatar queue's documented owned-process stop path.

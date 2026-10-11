@@ -1,29 +1,88 @@
 # Whole-clip pruning architecture
 
-`evaluate.whole_clip_baseline` produces the saved baseline and candidate
-whole-clip rollouts. `data.whole_clip` validates those manifests, reconstructs
-capture/noise/context inputs and verifies paired candidates. `score.whole_clip_d0_scores` observes
-native forwards through `score.hooks`, computes `score.estimators` statistics and
-writes a pinned mask. `score.export_pruned` turns that mask into a checkpoint.
-`score.export_depth` separately binds intact-block removal to native saved
-calibration inputs, streams retained payloads into a shorter checkpoint and
-records original/compact block mappings with exact resident-video counts.
-`score.token_sampling` owns deterministic generated-frame sample indices and
-their hashes. `score.ffn_reconstruction` fits a bounded local ridge correction
-and verifies calibration caches; changed fitted weights need separate model
-validation and are not faithful width-mask exports.
+## Objective and scope
 
-`checks.export_parity` compares functional masking with checkpoint execution.
-`evaluate.whole_clip_d0` compares baseline and candidate directions, capture
-fidelity and decoded media. `evaluate.bench_whole_clip_d0` measures warmed,
-synchronized full-transformer latency and memory with bracketed baseline arms.
+This package selects and exports smaller LTX transformer structures.
+Its native task is one full-clip bidirectional D0 forward at each exact `[sigma,0]` schedule.
+Capture frame zero is a clean condition. Later frames are generated.
+There is no generated history, cache or sliding window.
 
-`core.session` owns model and decoder lifetime, dtype and prompt selection;
-`core.artifacts` owns output paths; `core.provenance` owns content identity.
-`core.model_registry`, `geometry` and `ltx_adapter` own checkpoint resolution,
-VAE scales and private upstream access. `data.prompt_cache` owns cached text.
+Read the [algorithm](core_algorithm.md), [verification gates](VALIDATION.md)
+and [run guide](usage.md) after this page.
 
-Avatar scripts share bootstrap, checkpoint, prompt, dense decoding and video
-utilities. Avatar one-step schedule validation lives in
-`onestep_avatar.sampling`; corpus coverage lives in `precompute.CaptureGeometry`.
-Prune imposes no avatar block geometry or schedule.
+## Source owners
+
+| Area | Responsibility |
+|---|---|
+| `core/` | Checkpoint registry, VAE scales, model lifetime, private upstream access and provenance |
+| `data/` | Text context cache, saved inputs, paired identities and actor identities |
+| `score/` | Activation observations, scores, masks, width/depth export and bounded local fitting |
+| `evaluate/` | Baseline production, saved comparison, decoding, pixel metrics and timing |
+| `checks/` | In-memory intervention versus exported checkpoint parity |
+
+`evaluate.whole_clip_baseline` is the only saved rollout producer.
+`data.whole_clip` is the shared native-input validator and reconstructor.
+`core.session` owns BF16 model lifetime and prompt context, but no schedule.
+Callers own their exact schedules and view selection.
+
+## Dependency rules
+
+- Keep private upstream attribute access in `core.ltx_adapter`.
+- Use public avatar `corpus.dataset` readers and `model.common`, `model.causal`, `model.sampling` and `model.backbone`.
+- Prune does not import avatar training, execution or experiment modules.
+- Avatar consumers can import shared prune registry, session, prompt and media utilities.
+- Candidate verification imports score/export validators lazily from `data.whole_clip`.
+  Hooks themselves use the saved-input contract. Keep this deferred edge to avoid an import cycle.
+- Report code reads saved artifacts. It does not recreate missing model results.
+
+The avatar queue owns its `prune_baseline` experiment wrapper.
+That wrapper calls the prune producer directly and saves its original manifest under `baseline/`.
+It adds component/software pins and saved-completion records at the job root.
+Prune does not acquire a second queue or supervisor.
+
+## Artifact flow
+
+```mermaid
+flowchart LR
+  I("capture, context and saved noise") --> B["baseline producer"]
+  B --> S(["baseline manifest and tensors"])
+  S --> C["native calibration"] --> M(["width mask or depth artifact"])
+  M --> E["checkpoint export"] --> P(["candidate checkpoint"])
+  P --> V["parity, held-out quality and timing"]
+  S --> V
+  M --> V
+  V --> R(["saved evidence"])
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef tensor fill:#dcf5df,stroke:#43854b,color:#173b1c;
+  classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
+  class B,C,E,V proc;
+  class I tensor;
+  class S,M,P,R out;
+```
+
+Shapes and colors follow the [shared legend](core_algorithm.md#diagram-legend).
+The figure shows ownership, not numerical acceptance.
+
+## Width, depth and fitted weights
+
+Width masks use `whole_clip_d0_mask_v1`.
+They remove attention heads or FFN channels at executed projection boundaries.
+`compact_faithful` compresses stored parameters and restores original execution widths.
+`compact` changes supported executed widths and needs its own BF16 parity result.
+
+Depth artifacts use `whole_clip_d0_depth_v1`.
+They keep complete blocks in original order and map them to contiguous new indices.
+The CPU exporter streams payload bytes and checks exact parameter accounting.
+
+`ffn_reconstruction` supplies local CPU ridge fitting and cache validation.
+It does not supply a native collector or fitted-checkpoint exporter.
+Changed fitted weights require a new reference intervention.
+
+## Worked ownership check
+
+A changed capture file fails its full hash before reconstruction.
+A changed calibration manifest invalidates the mask or depth artifact.
+A changed export architecture fails candidate verification.
+Passing those checks still requires a numerical export-parity run.
+
+The [module index](README.md) describes every current production owner.

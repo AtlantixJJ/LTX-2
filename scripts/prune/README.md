@@ -1,83 +1,72 @@
 # Whole-clip bidirectional pruning
 
-Calibrate and judge attention-head and FFN-channel pruning using one full-video,
-bidirectional D0 forward at each exact `[sigma, 0]` schedule. Frame 0 is a clean
-capture condition; all later frames are generated. Use fresh baseline, calibration,
-export and evaluation directories under `../expr/refiner_prune/2.5/`.
+This package calibrates and evaluates attention-head, FFN-channel and intact-block pruning.
+The native task is one full-video bidirectional D0 forward at each exact `[sigma,0]` schedule.
+Capture latent frame zero is clean. Later frames are generated.
 
-Run from the LTX-2 root in the `ltx` conda environment. Check `nvidia-smi` before
-loading the transformer.
+Start with the [run guide](doc/usage.md) for complete commands.
+Read the [design index](doc/README.md), [architecture](doc/ARCHITECTURE.md),
+[algorithm](doc/core_algorithm.md), [verification](doc/VALIDATION.md)
+and [known gaps](doc/known_gaps.md) for implementation contracts.
+The [method review](doc/METHODS.md) supplies research context and proposed comparisons.
 
 ## Workflow
 
-1. Save a baseline with `python -m scripts.prune.evaluate.whole_clip_baseline --view <view> ... --sigmas <levels> --prompt "" --seed 42 --gpu-id N --output <baseline-dir>`.
-   Use the original capture, unguided BF16 inference, one step at each sigma, and
-   saved epsilon and output latents. Fix prompt, geometry, fps and seed.
-   Whole-clip attention uses no dense mask. Keep sigma and token timesteps in
-   float32 as in the stock pipeline; BF16 applies to the weights and latents.
-2. Calibrate on selected actors and exact sigma levels:
-   `python -m scripts.prune.score.whole_clip_d0_scores --baseline <baseline-dir> --view <calibration-view> --sigmas 0.725 0.909375 1.0 --head-fraction 0.10 --ffn-fraction 0.10 --gpu-id N --output <mask.json>`.
-   Every calibration forward must reproduce its saved baseline.
-3. Export:
-   `python -m scripts.prune.score.export_pruned --model 2.5 --masks <mask.json> --mode compact_faithful --output <candidate.safetensors>`.
-   `masked_full` is the default full-width control. `compact_faithful` compresses
-   stored parameters while executing original GEMM shapes; `compact` reduces
-   supported execution shapes and needs independent numerical validation.
-   `sparse` selects retained attention heads with full-width projections.
-4. Verify the export against the functional mask on a held-out actor:
-   `python -m scripts.prune.checks.export_parity --baseline <baseline-dir> --masks <mask.json> --exported-checkpoint <candidate.safetensors> --view <held-out-view> --sigmas 0.725 0.909375 --gpu-id N`.
-   The default maximum absolute tolerance is 0.02; failure exits nonzero.
-5. Generate the same saved whole-clip setup with
-   `python -m scripts.prune.evaluate.whole_clip_baseline ... --transformer <candidate.safetensors>`, then compare:
-   `python -m scripts.prune.evaluate.whole_clip_d0 --baseline <baseline-dir> --candidate <candidate-dir> --output <comparison-dir>`.
-   This verifies input identity and renders synchronized capture VAE, baseline
-   D0 VAE and candidate D0 VAE panels.
-6. Measure cost:
-   `python -m scripts.prune.evaluate.bench_whole_clip_d0 --baseline <baseline-dir> --candidate <candidate-dir> --view <held-out-view> --sigma 0.909375 --gpu-id N --order ABA --output <benchmark.json>`.
-   Repeat in reversed order when the effect is near measured bracket drift.
+Run from `LTX-2` in the `ltx` conda environment.
+Use LTX-2.5 for new work. Check `nvidia-smi` before model loading.
+Keep fresh outputs under `../expr/refiner_prune/2.5/`.
 
-Use `evaluate.whole_clip_d0 --functional-mask <mask.json> --view <held-out-view>
---sigmas <levels> --gpu-id N` with baseline and output arguments for head-only,
-FFN-only and combined ablations before exporting. Held-out actors must differ
-from calibration actors across all views. All mask consumers require pinned
-native whole-clip provenance.
+1. [Save a baseline](doc/usage.md#save-the-baseline) with
+   `python -m scripts.prune.evaluate.whole_clip_baseline`.
+   Fix source bundles, prompt, epsilon, seed, fps, geometry and exact sigmas.
+2. [Calibrate and ablate](doc/usage.md#calibration-and-functional-ablation) with
+   `python -m scripts.prune.score.whole_clip_d0_scores` and
+   `python -m scripts.prune.evaluate.whole_clip_d0 --functional-mask`.
+   Calibration must reproduce the saved native baseline.
+3. [Export width masks](doc/usage.md#width-export-and-parity) with
+   `python -m scripts.prune.score.export_pruned`.
+   `masked_full` is the default control. `compact_faithful` compresses storage while restoring original execution widths.
+   `compact` reduces supported executed widths. `sparse` selects active heads with full-width projections.
+4. [Export retained blocks](doc/usage.md#depth-export), when testing depth, with
+   `python -m scripts.prune.score.export_depth`.
+   This CPU exporter uses a separate native depth artifact.
+5. [Check export parity](doc/usage.md#width-export-and-parity) with
+   `python -m scripts.prune.checks.export_parity`.
+   Compare the export with its in-memory intervention. Default maximum absolute tolerance is 0.02.
+6. [Judge quality and cost](doc/usage.md#held-out-quality-and-timing) with
+   `python -m scripts.prune.evaluate.whole_clip_d0` and
+   `python -m scripts.prune.evaluate.bench_whole_clip_d0`.
+   Inspect synchronized VAE panels and timing drift separately.
 
-## Validation and design
+The shared [preflight and prompt-cache commands](doc/usage.md#preflight-and-prompt-cache)
+are `python -m scripts.prune.core.preflight` and
+`python -m scripts.prune.data.prompt_cache`.
 
-Native baseline reproduction runs through the avatar package queue. Its fixed
-`prune_baseline` experiment selector calls this producer for one
-recorded view and seed, white distilled one-step unguided raw outputs. Put
-the unchanged scientific flags in a pinned specification; the queue supplies
-the GPU and fresh output. The producer's original manifest and tensor files
-remain under `<job-output>/baseline/`. Full input/software pins and saved
-completion are separate job-root records. This numerical check compares the
-saved epsilon and D0 tensors; decoded quality remains separate.
+## Native reproduction and evidence
 
-From `LTX-2`, validate and execute the job list with the `ltx` interpreter
-(`PY=$(conda run -n ltx python -c 'import sys; print(sys.executable)')`):
+Agents run the restricted raw baseline through the existing avatar `prune_baseline` queue experiment.
+Humans can use the queue or direct producer.
+See the [queued reproduction recipe](doc/usage.md#queued-baseline-reproduction).
 
-```bash
-"$PY" -m scripts.onestep_avatar.execution.queue \
-  --jobs <queue-jobs.json> --state <state.json> --dry-run
-setsid -f "$PY" -m scripts.onestep_avatar.execution.queue \
-  --jobs <queue-jobs.json> --state <state.json> --execute --once \
-  --process-ledger ../expr/onestep_avatar/processes.json > <log> 2>&1 < /dev/null
-```
+The original producer manifest and tensors remain in `<job-output>/baseline/`.
+The queue wrapper owns separate full component/software pins and completion records.
+Prune retains its broader standalone interfaces.
 
-See the [protocol design](../onestep_avatar/doc/experiments/prune_baseline.md)
-and [avatar queue recipes](../onestep_avatar/configs/README.md). The underlying
-producer's broader multi-view/dev/decoded interface serves the standalone
-pruning workflow.
+Calibration actors cannot serve as held-out actors through another clip, Part, view or alias.
+The paired baseline must retain pinned calibration rows.
+The saved analyzer visits every row; judge and report held-out rows separately.
 
-Read [methods](doc/METHODS.md), [architecture](doc/ARCHITECTURE.md),
-[validation](doc/VALIDATION.md), [module docs](doc/README.md) and
-[working rules](CLAUDE.md).
+A smaller checkpoint does not establish faster execution.
+Acceptance requires matched inputs, export parity, held-out numerical and decoded quality,
+and measured same-device cost beyond drift.
+See [working rules](CLAUDE.md).
+
+## Focused checks
 
 ```bash
-conda run -n ltx python -m pytest scripts/prune/tests -q -m 'not gpu'
-conda run -n ltx ruff check --select F,I scripts/prune
+conda activate ltx
+CUDA_VISIBLE_DEVICES='' python -m pytest scripts/prune/tests -q -m 'not gpu'
+ruff check --select F,I scripts/prune
 ```
 
-A smaller checkpoint or a sparse functional mask is not a speed result. Acceptance
-requires matched inputs, export parity, held-out direction and decoded quality,
-and measured same-device latency improvement beyond drift.
+The [verification guide](doc/VALIDATION.md#cpu-gate) explains test coverage and native gates.

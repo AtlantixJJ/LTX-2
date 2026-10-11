@@ -1,6 +1,6 @@
 # `score/ffn_reconstruction.py` — bounded local ridge and calibration caches
 
-## Interface and objective
+## Objective
 
 `fit_output_projection(X, Y, W0, ridge_lambda=..., max_samples=512,
 output_chunk=256, max_memory_bytes=1<<30)` accepts retained post-activation
@@ -11,6 +11,8 @@ $$
 \min_\Delta \frac{1}{N}\|X(W_0+\Delta)^T-Y\|_F^2
   +\lambda\|\Delta\|_F^2.
 $$
+
+## Data flow
 
 The dual solve is
 `Delta.T = X.T @ solve(X @ X.T + N*lambda*I, Y - X @ W0.T)`.
@@ -28,7 +30,7 @@ source bias. Production collection must label targets as
 and original weights in FP32. Native BF16 reductions/rounding are a separate
 numerical question; no native BF16 parity claim follows from an FP64 fit.
 
-## Calibration cache contract
+## Organization logic
 
 `validate_cache_manifest(path, baseline=None, ...)` checks the separate
 `whole_clip_d0_ffn_reconstruction_samples_v1` schema before loading CPU tensors.
@@ -59,13 +61,26 @@ and scope; it cannot certify that arbitrary cached features/targets were
 actually collected from the declared model. A future collector must reproduce
 the saved native forward before accepting its cache.
 
-## Scope and verification
+## Invariants
+
+- Targets exclude the original projection bias.
+- Cache rows cover each calibration case once, with equal quotas.
+- Retained indices follow the original source order.
+- Full native provenance and file identities remain valid after loading.
+- Enforce memory and sample bounds before allocating the solve.
+
+Worked example: one retained feature `X=[1]`, target `Y=[2]`, source weight `W0=[0]` and lambda 1 return weight 1.
+The residual MSE changes from 4 to 1. This is a local calculation.
+
+## Gotchas
 
 No GPU collector, ridge-fitted checkpoint exporter or model improvement has
 been run by this implementation. Callers must supply W0 from the pinned source
 projection and retained source-order columns. Fitted weights define a changed
 model, separate from the unchanged faithful width-mask gate. Validate its
 in-memory/saved execution and held-out full model quality independently.
+
+## Tests
 
 `test_ffn_reconstruction.py` compares the dual result with an independent primal
 solve, correlated-feature synthetic recovery, zero/rank-deficient features,

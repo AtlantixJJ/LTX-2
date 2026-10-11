@@ -1,38 +1,77 @@
-# `evaluate/bench_whole_clip_d0.py` — same-GPU D0 forward latency
+# `evaluate/bench_whole_clip_d0.py` — same-device forward timing
 
 ## Objective
 
-Measure the unpruned and compact-pruned LTX-2.5 **one-step whole-clip D0 transformer forward** on the same GPU, over the complete saved capture. This prices the dense shape-reduced checkpoint directly; it does not infer latency from sparse gather/scatter or FLOP counts.
+Measure baseline and exported D0 transformer latency on the same saved whole-clip input.
+
+## Usage
+
+A human or agent can run the direct CLI from `LTX-2` in `ltx`.
+Check `nvidia-smi`. The selected GPU must have at least 44 GiB free.
+There is no `--dry-run` option.
+
+```bash
+conda run -n ltx python -m scripts.prune.evaluate.bench_whole_clip_d0 \
+  --baseline ../expr/refiner_prune/2.5/prune_doc_example/baseline \
+  --candidate ../expr/refiner_prune/2.5/prune_doc_example/candidate \
+  --view /abs/corpus/Part_1/0264_01/views/view00_cam51 \
+  --sigma 0.909375 --gpu-id 0 --warmup 2 --repeats 5 --order ABA \
+  --output ../expr/refiner_prune/2.5/prune_doc_example/benchmark_aba.json
+```
+
+| Argument | Meaning |
+|---|---|
+| `--baseline`, `--candidate` | Matched saved rollout directories |
+| `--view`, `--sigma` | One recorded view and exact level |
+| `--gpu-id` | Required visible device |
+| `--warmup` | Untimed calls per arm; minimum 1, default 2 |
+| `--repeats` | Timed calls per arm; minimum 3, default 5 |
+| `--order` | `ABA` or `BAB`; A is baseline, B is candidate |
+| `--output` | Benchmark JSON |
+
+See the [timing run guide](../usage.md#held-out-quality-and-timing).
 
 ## Data flow
 
-The CLI reads the two [`whole_clip_baseline`](whole_clip_baseline.md) manifests from the pruning comparison, validates their fixed setup and actual saved noise equality. `data.whole_clip.build_input` reconstructs the exact D0 modality from the baseline alone: `lerp(capture, epsilon, sigma)`, clean frame 0, global positions, one block `[0,T)`, all-ones bidirectional mask, and the same prompt context. Before timing an arm, it compares that arm's first forward with its saved latent output and refuses a maximum absolute difference above 0.02. It then runs a warmup and repeated synchronized wall-clock forwards.
+Validate the paired manifests, export provenance and actual saved epsilon equality.
+Reconstruct the baseline modality with `data.whole_clip.build_input`.
+Use one whole-clip block, clean capture frame zero and `attention_mask=None`.
+Run each checkpoint sequentially on that same modality.
 
-The default order is baseline → candidate → baseline; `--order BAB` reverses it. The repeated outside arm exposes run-order drift. The JSON saves every timing, median, mean, range, peak allocated CUDA memory, input/source fingerprints, geometry, hardware, and saved-output parity check. Checkpoint loading, noising, VAE decoding and MP4 encoding are outside the timed scope.
+## Organization logic
 
-## Command
+Before timing an arm, compare its first output with the saved D0 tensor.
+A maximum absolute difference above 0.02 raises.
+Warm up, synchronize CUDA before and after each timed call, and record wall-clock milliseconds.
+The timed call includes prediction and clean-prefix restoration.
+Loading, noising, dense unpatchification, VAE decoding and video encoding are outside the timing.
 
-Run from `LTX-2` in the `ltx` environment after checking `nvidia-smi`:
+Each arm records raw repetitions, median, mean, range and peak allocated CUDA memory.
+The JSON combines arm medians into the baseline/candidate means.
+Speedup is `baseline_ms/candidate_ms`.
+Bracket drift is the percentage change between the last and first arm medians.
 
-```bash
-python -m scripts.prune.evaluate.bench_whole_clip_d0 \
-  --baseline <fresh-baseline-dir> \
-  --candidate <fresh-candidate-dir> \
-  --view <held-out-view> \
-  --sigma 0.909375 --gpu-id 3 --warmup 2 --repeats 5 \
-  --output ../expr/refiner_prune/2.5/whole_clip_d0/benchmark_0008_01_s0909375.json
-```
+Worked example: `ABA` measures baseline, candidate, then baseline again.
+Medians 100, 80 and 110 ms give baseline mean 105 ms, speedup 1.3125 and bracket drift 10%.
 
-## Invariants and gotchas
+## Invariants
 
-- Candidate provenance is checked before GPU model loading. `compact_faithful` stores compact parameters but pads GEMMs at execution; report its measured cost rather than assuming reduced dense work.
+- Both checkpoints use the same saved capture, epsilon, context, geometry and exact sigma.
+- Validate checkpoint fingerprints before loading.
+- Only one transformer is resident at a time.
+- Report peak allocated memory separately from checkpoint storage.
 
-- A free A6000 needs at least 44 GiB available for the 1024-pixel, 18-latent-frame modality plus the 22B transformer. Do not share its GPU with a training run.
-- The same saved capture, epsilon, sigma, selected prompt, attention mask and clean keyframe are used for both checkpoint loads. The single block has no history or K/V cache.
-- Benchmarking a prebuilt `Modality` isolates transformer execution. It does not measure data loading or total video pipeline throughput.
-- The repeated outside arm exposes thermal/load drift. Interpret a small speed ratio only if it exceeds that drift and timing spread. A one-case benchmark does not establish throughput across other geometries.
-- The first forward is checked against the saved rollout because an apparently faster call on a different attention path would not answer this experiment.
+## Gotchas
+
+The current implementation opens a 2.5 session.
+This does not establish benchmarking support for other registry keys.
+`compact_faithful` restores original GEMM widths; storage savings do not imply faster execution.
+The baseline guard uses a threshold comparison. Inspect finite recorded differences before acceptance.
+Repeat with `BAB` when a gain is near bracket drift.
+One geometry and one view do not establish general throughput.
 
 ## Tests
 
-Run Ruff and `py_compile` on this module, then inspect the saved-output difference and raw repetitions in a real benchmark result. The pair analyzer's CPU tests cover the shared manifest validation.
+Shared manifest and candidate checks are covered by the CPU suite.
+A native benchmark must verify saved-output differences and inspect all timing repetitions.
+See [acceptance gates](../VALIDATION.md).

@@ -1,37 +1,99 @@
-# `evaluate/whole_clip_d0.py` — matched one-step pruning comparison
+# `evaluate/whole_clip_d0.py` — matched D0 quality comparison
 
 ## Objective
 
-Compare a compact or sparse pruned transformer with the unpruned LTX-2.5 transformer on the actual requested diagnostic: one bidirectional block covering each original DNARendering capture, with one denoising step from several start noise levels. This is an offline D0 capacity probe, evaluated with native bidirectional inputs.
+Compare saved baseline and candidate predictions on identical whole-clip D0 inputs.
+Optionally measure functional head, FFN and combined ablations before export.
 
-Paired manifest validation, saved-noise equality and D0 latent path resolution are shared through `data.whole_clip`; the evaluator owns direction metrics and media assembly.
+## Usage
 
-## Data flow
-
-Read capture masters through `onestep_avatar.corpus.dataset.load_training_master`.
-Use the same schema, shape and frame-rate checks as native input reconstruction.
-Do not import the training CLI to read capture data.
-
-Run [`scripts.prune.evaluate.whole_clip_baseline`](whole_clip_baseline.md) twice with identical `--view`, `--sigmas`, `--prompt`, `--seed`, and model/guidance flags, changing only `--transformer`. Keep both fresh output directories. The producer saves the capture bundle hash, one global epsilon tensor per view, D0 predicted latents per sigma, and a decoded GT|D0|D1 MP4. Then run:
+A human or agent can run the saved comparison directly on CPU in `ltx`.
+Functional ablation uses one free GPU. Run from `LTX-2`.
+Neither mode has a `--dry-run` option.
 
 ```bash
 conda run -n ltx python -m scripts.prune.evaluate.whole_clip_d0 \
-  --baseline BASELINE_OUTPUT --candidate PRUNED_OUTPUT --output COMPARISON_OUTPUT
+  --baseline ../expr/refiner_prune/2.5/prune_doc_example/baseline \
+  --candidate ../expr/refiner_prune/2.5/prune_doc_example/candidate \
+  --output ../expr/refiner_prune/2.5/prune_doc_example/comparison
 ```
 
-The analyzer verifies matching model key and VAE fingerprint, objective, sigma list, seed, geometry, text context, guidance, source hashes, block plan, one-step schedule and **actual saved epsilon tensor**. It calculates noise-facing one-step direction `(x_sigma - predicted_x0) / sigma` from the exact `torch.lerp` noising mix, using only latent frames 1 onward. Latent frame 0 is the clean condition. It reports candidate versus baseline direction cosine and relative L2, plus MSE of each predicted latent against the capture latent. It assembles labeled GT capture VAE | baseline D0 VAE | pruned D0 VAE videos from the producer's already decoded panels; all panels have equal size and synchronized frames. `comparison.json` is the machine-readable output.
+For functional ablation, replace `--candidate` with the following arguments.
+Use a JSON file, rather than a directory, for this mode's output.
 
-For a diagnostic before export, `--functional-mask <native-mask.json> --view <view> --sigmas <levels> --gpu-id N --output <ablation.json>` runs heads-only, FFN-only and combined masks on the baseline checkpoint. It verifies an unmasked direct forward against the saved D0 latent first. These scores describe functional-mask effects; they do not establish compact-export parity or timing. No candidate manifest is required in this mode.
+```bash
+conda run -n ltx python -m scripts.prune.evaluate.whole_clip_d0 \
+  --baseline ../expr/refiner_prune/2.5/prune_doc_example/baseline \
+  --functional-mask ../expr/refiner_prune/2.5/prune_doc_example/mask.json \
+  --view /abs/corpus/Part_1/0264_01/views/view00_cam51 \
+  --sigmas 0.725 0.909375 1.0 --gpu-id 0 \
+  --output ../expr/refiner_prune/2.5/prune_doc_example/ablation.json
+```
 
-## Invariants and gotchas
+| Argument | Meaning |
+|---|---|
+| `--baseline` | Saved native D0 run |
+| `--candidate` | Saved exported-checkpoint run for paired analysis |
+| `--functional-mask` | Native width mask for GPU ablation |
+| `--view`, `--sigmas`, `--gpu-id` | Required in functional mode |
+| `--output` | Comparison directory, or functional JSON path |
 
-- A saved epsilon's file SHA can change with serialization. Verify each file against its own recorded hash, then compare actual tensor values across the pair.
-- Candidate checkpoint fingerprint, export task, source and mask content must match. Native candidates require complete pinned calibration provenance. Every candidate requires pinned native D0 provenance.
-- Both manifests must say `whole_clip: true` and `attention: full_bidirectional`. The schedule for every row must be exactly `[sigma, 0]`.
-- A matching seed is insufficient proof of matching noise; verify the tensor values.
-- The direction metric excludes the clean keyframe and describes deviation from the baseline model. Capture MSE is a separate accuracy reference. Neither metric alone determines perceptual quality; inspect the synchronized decoded videos.
-- The three-panel producer MP4 contains D1 as its third panel; the analyzer crops the matched GT and D0 panels only. The new video title bars identify VAE decoding. Keep both source videos for provenance.
+The saved mode writes `comparison.json`, optional comparison MP4s and title PNGs.
+The functional mode writes metrics only.
+See [quality and timing](../usage.md#held-out-quality-and-timing)
+and [functional ablation](../usage.md#calibration-and-functional-ablation).
+
+## Data flow
+
+Use `data.whole_clip` to validate manifests, candidate provenance, saved noise and D0 output hashes.
+Read the capture with `corpus.dataset.load_training_master`.
+The dataset reader checks schema, shape and fps without importing training.
+
+Saved mode compares every recorded view/sigma pair.
+Functional mode reconstructs one held-out view at requested calibrated sigmas.
+It first compares an unmasked forward with the saved baseline, then attaches each mask family.
+
+## Organization logic
+
+Build the noised input in float32, then cast to capture dtype.
+For each prediction, the direction is `(x_sigma-predicted_x0)/sigma`.
+Exclude clean latent frame zero from all reported direction and MSE metrics.
+
+Direction relative L2 is `norm(candidate_direction-baseline_direction)/norm(baseline_direction)`.
+Cosine compares their angle. Capture MSE measures error against the capture latent.
+Candidate-versus-baseline latent MSE measures prediction disagreement.
+These metrics do not judge identity or correct motion.
+
+Worked example: `x_sigma=3`, sigma 0.5, baseline prediction 1 and candidate prediction 2 give directions 4 and 2.
+Relative L2 is 0.5 and cosine is 1. Equal direction angle does not imply equal prediction.
+
+For decoded comparisons, crop capture and baseline D0 from the baseline producer video.
+Crop candidate D0 from the candidate producer video.
+Place those equal-size panels left to right and overlay role labels.
+The labels identify VAE decoding. Keep source fps and stop at shared coverage.
+The producer video itself has capture, D0 and D1 panels.
+
+## Invariants
+
+- Saved inputs match in capture, context, fps, geometry, seed and schedule.
+- Check each epsilon file hash, then compare actual tensor values.
+- Candidate exports carry complete native source and family provenance.
+- Schedules are exactly `[sigma,0]`.
+
+## Gotchas
+
+Equal seeds do not prove equal noise.
+Raw-only runs produce metrics without comparison videos.
+The saved comparison visits all rows, including calibration rows when present.
+Identify held-out rows explicitly when making a final quality claim.
+The selected baseline must include the pinned calibration rows.
+Functional mode enforces actor separation and calibrated sigmas.
+It currently opens a 2.5 session and requires 44 GiB free.
+A functional mask does not establish export parity or faster execution.
+The direct-baseline guard uses a threshold comparison; inspect finite differences before acceptance.
 
 ## Tests
 
-`scripts/prune/tests/test_whole_clip_d0.py` checks a hand-computed direction comparison and rejects unmatched manifests. A real run should additionally verify source/noise hashes in `comparison.json` and inspect the assembled MP4s.
+`tests/test_whole_clip_d0.py` checks direction mathematics and invalid paired inputs.
+Mask and actor tests cover functional input restrictions.
+Inspect real synchronized videos before claiming perceptual quality.

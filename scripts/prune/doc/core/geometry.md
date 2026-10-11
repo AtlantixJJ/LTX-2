@@ -1,12 +1,39 @@
-# `core/geometry.py`
+# `core/geometry.py` — VAE scales and shape conversion
 
-## Objective and data flow
+## Objective
 
-Read checkpoint metadata to probe VAE spatial/temporal scales and their source.
-Convert aligned latent counts to pixel/latent shapes with round-trip validation.
+Read VAE scale factors and convert latent geometry to pixel geometry.
 
-## Invariants and verification
+## Data flow
 
-A reported default scale is a visible fallback, not a measured encoder layout.
-Pixel counts follow `time * (latent_frames - 1) + 1`. No overlap or sliding-window
-validation lives here. `tests/test_geometry.py` checks shape round trips.
+Read safetensors metadata from the VAE, then the transformer.
+Use the first VAE encoder or decoder block list found.
+Return the factors and source label: `video_vae`, `transformer` or `default`.
+
+## Organization logic
+
+`probe_scale_factors` delegates scale calculation to `SpatioTemporalScaleFactors.from_model_config`.
+If neither checkpoint supplies a block list, it returns the upstream default.
+
+`pixel_frames_for(F)` computes `time*(F-1)+1` for positive latent frame counts.
+`latent_shape_for` creates a batch-one pixel shape and converts it back to a latent shape.
+It raises if the latent frame count changes.
+
+Worked example: temporal scale 8 maps three latent frames to 17 pixel frames.
+Spatial scale 32 maps a 64-pixel dimension to two latent positions.
+
+## Invariants
+
+- Record whether factors were read or defaulted.
+- Use the same factors for grid construction and model loading.
+- Temporal conversion must preserve the requested latent frame count.
+
+## Gotchas
+
+A `default` result is a fallback, not an encoder measurement.
+This module does not select overlap, context or an attention mask.
+
+## Tests
+
+`tests/test_geometry.py` checks pixel-to-latent round trips.
+Native input checks must also verify recorded geometry and fps.
