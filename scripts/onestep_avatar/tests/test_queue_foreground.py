@@ -77,8 +77,15 @@ def test_cli_stop_saves_failure_and_ends_real_child_and_escaped_worker(  # noqa:
     def observe(*args: object) -> dict | None:
         value = original_observe(*args)
         if ready.exists() and not sent:
-            sent.append(stop_signal)
-            os.kill(os.getpid(), stop_signal)
+            # Popen returns before the worker finishes exec. Interrupt only after
+            # the ledger has observed its stable command; ambiguous startup has
+            # separate fail-closed supervision tests.
+            owned = next(iter(json.loads(ledger.read_text())["attempts"].values()))
+            worker_pid = json.loads(ready.read_text())[1]
+            worker = owned["processes"].get(str(worker_pid), {})
+            if worker.get("identity", {}).get("command") == [sys.executable, "-c", "import time; time.sleep(60)"]:
+                sent.append(stop_signal)
+                os.kill(os.getpid(), stop_signal)
         return value
 
     monkeypatch.setattr(supervision, "_observe", observe)

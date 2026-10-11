@@ -184,5 +184,7 @@ Patch the defining owner in tests. Source-byte changes need fresh affected scien
 
 Worked check: Send SIGTERM to an owned CPU child with an escaped worker: both handles must end.
 The journal records cancelled, keeps partial output and publishes no receipt.
+The cancellation fixture waits until the ledger observes the worker's executed command before sending the signal.
+Popen can return before exec finishes. An empty command in that interval remains ambiguous and cannot certify clean shutdown.
 
 Existing coverage: test_queue_foreground.py, test_queue_startup.py, test_queue_launch.py and test_supervision.py.

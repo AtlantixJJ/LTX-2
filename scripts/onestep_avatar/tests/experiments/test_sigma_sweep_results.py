@@ -12,6 +12,7 @@ from scripts.onestep_avatar import evaluate
 from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import completion as queue_completion
 from scripts.onestep_avatar.execution import jobs as queue_jobs
+from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.experiments import sigma_sweep
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_evaluation_completion import (
@@ -248,7 +249,7 @@ def test_decoder_readiness_requires_all_eight_unchanged_receipts(
 
 def test_late_evidence_change_refuses_before_decoder(completed_sweep: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
     _, path, output, calls = completed_sweep
-    verify = queue_completion.verify_completion
+    verify = queue.verify_completion
 
     def change_after_verification(job: dict) -> bool:
         result = verify(job)
@@ -256,7 +257,9 @@ def test_late_evidence_change_refuses_before_decoder(completed_sweep: tuple, mon
         torch.save(torch.load(text, weights_only=True) + 1, text)
         return result
 
-    monkeypatch.setattr(queue_completion, "verify_completion", change_after_verification)
+    # The saved-only producer intentionally retains its public queue import.
+    # Intervene at that call boundary, rather than replacing a different alias.
+    monkeypatch.setattr(queue, "verify_completion", change_after_verification)
     before = len(calls)
     with pytest.raises(ValueError, match="evidence changed during verification"):
         sigma_sweep.prepare(path, output)
