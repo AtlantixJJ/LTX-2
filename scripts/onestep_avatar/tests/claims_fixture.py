@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from scripts.onestep_avatar.execution.devices import GPU_POOL, select_devices
-from scripts.onestep_avatar.execution.queue import live_attempt_processes, live_session_processes, process_alive
+from scripts.onestep_avatar.execution.processes import live_attempt_processes, live_session_processes, process_alive
 
 
 class GPUClaims:

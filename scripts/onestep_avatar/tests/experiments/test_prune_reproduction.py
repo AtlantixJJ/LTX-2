@@ -11,7 +11,9 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from scripts.onestep_avatar.execution import queue, software
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import jobs as queue_jobs
+from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.experiments import prune_reproduction as study
 from scripts.onestep_avatar.experiments import spec_protocol
 from scripts.onestep_avatar.hashing import sha256
@@ -145,16 +147,16 @@ def test_completion_rechecks_inputs_software_and_comparisons_without_a_model(com
 
 
 def test_queue_routes_the_selector_and_checks_saved_completion(completed: SimpleNamespace) -> None:
-    job = queue.prepare_job({
+    job = queue_jobs.prepare_job({
         "id": "controls", "kind": "experiment", "experiment": study.SELECTOR, "spec": str(completed.spec),
         "spec_sha256": sha256(completed.spec), "arguments": outer(completed.spec, completed.output),
         "output": str(completed.output), "completion": {"manifest": str(completed.output / "manifest.json")},
     }, completed.spec.parent)
-    command, environment = queue.job_command(job, (3,))
+    command, environment = queue_jobs.job_command(job, (3,))
     assert command[2] == "scripts.onestep_avatar.experiments.prune_reproduction"
     assert command[-2:] == ["--gpu-id", "0"]
     assert environment["CUDA_VISIBLE_DEVICES"] == "3"
-    assert queue.verify_completion(job)
+    assert queue_completion.verify_completion(job)
 
 
 def test_rewritten_comparison_numbers_refuse_even_with_a_matching_inventory(completed: SimpleNamespace) -> None:

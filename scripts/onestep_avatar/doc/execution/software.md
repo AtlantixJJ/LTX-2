@@ -2,9 +2,10 @@
 
 ## Objective
 
-Produce and check one explicit source/runtime manifest for current training,
-evaluation, inference, decoding and native input preparation. Hash actual worktree bytes, including dirty
-files. A Git revision or entry-file hash does not identify the computation.
+Make and check one explicit manifest of source and runtime for training,
+evaluation, inference, decoding and native input preparation. Hash the actual
+worktree bytes, including uncommitted changes. A Git revision or the hash of an
+entry file does not identify the computation.
 
 ## Data flow
 
@@ -25,11 +26,16 @@ flowchart LR
   class P out;
 ```
 
-The producer snapshots its profile and selected mode before launch. The manifest
-contains relative LTX-2 source paths, SHA-256 digests, installed runtime versions,
-Python and Torch CUDA build versions, and a canonical content digest. Producers
-store it in their records, recheck it before model work and before publication.
-Current completion verifiers require the same current profile manifest.
+The producer records its profile and its selected mode before launch. The
+manifest contains:
+
+- relative LTX-2 source paths and their SHA-256 digests;
+- installed runtime versions, and the Python and Torch CUDA build versions;
+- a canonical content digest.
+
+Producers store the manifest in their records. They check it again before model
+work and before publication. Completion verifiers require the same current
+profile manifest.
 
 ## Organization logic
 
@@ -56,35 +62,43 @@ owners. The same profile pins the current shared own-process ledger, whose direc
 GPU inventory and targeted descendant tracking replace reservation files for
 new launches. Old manifests retain their original owner lists and scope.
 
-Use explicit owners for package data/config/checkpoints and capture preprocessing,
-common/noise/sampling,
-adapter loading and the selected mode. Add the entry/runtime owner for the chosen
-profile. Model execution includes shared pruning core and prompt-cache owners,
-trainer loading and the core transformer/attention/guidance/loader/model tools.
-Record pipeline utilities that supply stock schedules and guidance.
-Evaluation pins the reviewed native sampling pipeline calls. The stock
-comparison binds its own experiment entry through `extra_sources`; ordinary
-profiles contain no acceptance checker. Native conditioning and batch splitting belong to the model
-source inventory; their absence could otherwise change matched sampling without
-invalidating a manifest.
-Decoder profiles additionally pin media, saved decoder/sweep entry owners, native decode
-and video-VAE source owners.
-The preparation profile permits an absent model mode for the one-image producer
-and pins its entry owner, the trainer's fixed-input reader and native encoder/
-decoder source groups.
-Declared directory groups expand deterministically to their current Python files;
-a missing owner/group fails. Do not discover sources from imported modules or
-silently ignore absent files. This records the specified dependency boundary,
-not every library source file on the system. Installed distributions identify
-third-party runtime versions, including optional attention backends.
+Each profile lists explicit owners:
 
-Validate schema, profile/mode, safe relative source paths, digest syntax,
-runtime records and the canonical manifest hash before using the record. Current
-verification then recalculates the same profile and compares all fields. Adding,
-removing or changing an owner and changing a runtime version fails. Read-only
-`validate` checks a saved record's integrity without requiring today's sources;
-it never restamps a saved result as current. Keep saved outputs when the current
-verifier rejects them. No research override bypasses software checks.
+- **All model profiles:** package data, config and checkpoints, capture
+  preprocessing, common code, noise, sampling, adapter loading and the selected
+  mode, plus the entry and runtime owner of the profile.
+- **Model execution:** the shared pruning core and prompt-cache owners, trainer
+  loading, the core transformer, attention, guidance, loader and model tools,
+  and the pipeline utilities that supply stock schedules and guidance. Native
+  conditioning and batch splitting are in the model source list. Without them,
+  a change could alter matched sampling without invalidating a manifest.
+- **Evaluation:** the reviewed native sampling pipeline calls. The stock
+  comparison binds its own experiment entry through `extra_sources`. Ordinary
+  profiles contain no acceptance checker.
+- **Decoding:** also media, the saved decoder and sweep entry owners, native
+  decode and the video-VAE source owners.
+- **Preparation:** allows no model mode for the one-image producer. It pins its
+  entry owner, the trainer's fixed-input reader and the native encoder and
+  decoder source groups.
+
+Declared directory groups expand in a fixed order to their current Python
+files. A missing owner or group fails. Do not discover sources from imported
+modules, and do not ignore absent files. This records the specified dependency
+boundary, not every library source file on the system. Installed distributions
+identify the third-party runtime versions, including optional attention
+backends.
+
+Before a record is used, the module validates the schema, the profile and
+mode, safe relative source paths, the digest syntax, the runtime records and the
+canonical manifest hash.
+
+- `check_current` recalculates the same profile and compares all fields. An
+  added, removed or changed owner, or a changed runtime version, fails.
+- The read-only `validate` checks the integrity of a saved record without the
+  current sources. It never restamps a saved result as current.
+
+Keep saved outputs when the current verifier refuses them. No research override
+skips the software checks.
 
 ## Invariants
 
@@ -152,3 +166,11 @@ Current common profiles bind queue runtime, device pool, phase notifications,
 resource measurements and numerical policy owners. An unchanged scientific
 module does not make results current when those executed shared owners change.
 Original saved software manifests retain their original attribution.
+
+## Extracted execution owners
+
+The training profile includes jobs, journal, recovery, completion, attempt, clock and processes.
+The queue retains public aliases but delegates to these sources. Pin their bytes as part of training provenance.
+No ordinary profile gains an experiment source dependency. Current source checks remain strict.
+
+Every ordinary profile also pins processes, because supervision imports its stable process reader.

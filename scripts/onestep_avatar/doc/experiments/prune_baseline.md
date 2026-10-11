@@ -2,72 +2,118 @@
 
 ## Objective
 
-Expose the existing pruning-owned whole-clip numerical producer through the
-fixed `prune_baseline` experiment selector. The wrapper does not sample, decode,
-launch children or allocate devices. The ordinary queue owns its one-rank,
-generic bounded runtime phase; `execution.runtime.run` records that phase.
-`scripts.prune.evaluate.whole_clip_baseline` retains the numerical producer and
-its original manifest inside `baseline/`.
+Run the existing whole-clip numerical producer of the pruning package through
+the fixed `prune_baseline` experiment selector. The wrapper does not sample,
+decode, start children or allocate devices.
 
-## Organization logic
+- The ordinary queue owns its one-rank, generic bounded runtime phase.
+  `execution.runtime.run` records that phase.
+- `scripts.prune.evaluate.whole_clip_baseline` keeps the numerical producer and
+  its original manifest inside `baseline/`.
 
-The outer parser and `spec_protocol` own schema and scientific arguments;
-`input_paths` and acceptance records own fixed byte identity; the pruning
-producer owns computation and saved scientific checks. Public spec-path
-completion and evidence APIs match the existing queue contract and raise on
-invalid completion. No ordinary profile or pruning dependency points back to
-the orchestration module.
+## Usage
+
+Humans can use the foreground queue or run this module directly.
+See [launch, output and stop commands](../usage.md). Agents use the queue.
+The queue recipes below describe managed execution.
+
+Start the baseline as a queue `experiment` job with selector `prune_baseline`.
+See [run guide §9](../../configs/README.md#pruning-baseline-prune_baseline) and
+the [spec format](spec_protocol.md).
+
+This is the agent path. A person can also run the same module directly, or start the queue in the foreground; see [usage](../usage.md).
+
+```json
+{"schema_version": 1, "protocol": "prune_baseline",
+ "arguments": ["--view", "/abs/corpus/Part_1/0008_01/views/view00_cam51", "--model", "2.5",
+               "--variant", "distilled", "--objective", "white", "--sigmas", "0.725", "0.909375", "1.0",
+               "--context-latent-frames", "8", "--prompt", "", "--seed", "42", "--raw-only", "--arms", "d0"]}
+```
+
+The spec allows exactly one view and one seed, raw output, `white` distilled
+weights, no guidance and context eight. `--arms d0 d1` adds the D1 arm. The
+other arguments are the producer's (see
+[`scripts/prune/doc/evaluate/whole_clip_baseline.md`](../../../prune/doc/evaluate/whole_clip_baseline.md)).
+
+Check the spec on CPU first. A dry run parses the spec only. It writes nothing
+and never hashes or loads model components:
+
+```bash
+cd LTX-2
+"$PY" -m scripts.onestep_avatar.experiments.prune_baseline \
+  --spec <SPEC.json> --output <FRESH_OUT> --dry-run
+```
+
+Outputs: the producer's files under `<FRESH_OUT>/baseline/`,
+`acceptance.json` and `manifest.json`. The selected prompt cache must already
+exist.
 
 ## Data flow
 
-1. `spec_protocol` reads a `schema_version: 1` scientific spec and supplies queue-owned
-   output/device arguments. Restrict this route to one absolute view, one seed,
-   raw-only white distilled unguided one-step D0, optionally with D1. The shared
-   spec protocol still rejects repeated options, including repeated `--view`.
-2. Before native work, resolve public backbone/registry component paths and pin
-   full SHA-256 of capture, guide, transformer, text encoder, VAE, existing prompt
-   context cache, optional prompt file and the scientific spec. Capture the current evaluation/causal software
-   manifest with reviewed producer dependencies as explicit extra sources.
-   Ordinary software profiles remain unchanged. A dry run parses the scientific
-   spec only, writes nothing and never hashes or loads model components.
-3. Call the unchanged producer's `main` directly with its scientific arguments
-   and `--output <root>/baseline`. No process or controller is introduced.
-4. Recheck every input hash and current source/runtime identity. The producer's
-   saved-only verifier checks settings, exact coverage, local artifact hashes,
-   BF16 finite shapes, shared saved epsilon and clean capture frame `c0`.
-   Registered scale factors, capabilities and component fingerprints must match
-   the producer stamps, and actual BF16 cache bytes must match its context hash.
-5. Publish `acceptance.json`, then the queue-facing root `manifest.json` through
-   `spec_protocol`. Resume verification repeats the input/software checks,
-   producer checks and exact local output inventory. Evidence includes every
-   contained baseline file and acceptance record.
+1. `spec_protocol` reads a `schema_version: 1` scientific spec and supplies the
+   queue-owned output and device arguments. This route allows one absolute
+   view, one seed and raw-only `white` distilled unguided one-step D0,
+   optionally with D1. The shared spec protocol still refuses repeated options,
+   including a repeated `--view`.
+2. Before native work, resolve the public backbone and registry component
+   paths. Pin the full SHA-256 of the capture, the guide, the transformer, the
+   text encoder, the VAE, the existing prompt context cache, the optional prompt
+   file and the scientific spec. Record the current evaluation/causal software
+   manifest, with the reviewed producer dependencies as explicit extra sources.
+   The ordinary software profiles do not change.
+3. Call the unchanged producer's `main` directly, with its scientific arguments
+   and `--output <root>/baseline`. No process or controller is added.
+4. Check every input hash and the current source and runtime identity again.
+   The producer's saved-only verifier checks the settings, the exact coverage,
+   the local file hashes, finite BF16 shapes, the shared saved epsilon and the
+   clean capture frame `c0`. The registered scale factors, capabilities and
+   component fingerprints must match the producer stamps. The actual BF16 cache
+   bytes must match its context hash.
+5. Publish `acceptance.json`, then the queue-facing root `manifest.json`
+   through `spec_protocol`.
+
+Resume verification repeats the input and software checks, the producer checks
+and the exact local output list. The evidence includes every contained
+baseline file and the acceptance record.
+
+## Organization logic
+
+- The outer parser and `spec_protocol` own the schema and the scientific
+  arguments.
+- `input_paths` and the acceptance records own the fixed byte identity.
+- The pruning producer owns the computation and the saved scientific checks.
+
+The public spec-path completion and evidence APIs match the existing queue
+contract. They raise on invalid completion. No ordinary profile or pruning
+dependency points back to this orchestration module. The queue can call
+`evidence_paths(..., verified=True)` only after it ran this verifier in the same
+receipt check. Direct callers keep the default `verified=False`.
 
 ## Invariants
 
-One view, one seed and one global saved epsilon define the comparison. The
-original producer manifest remains untouched inside `baseline/`.
+- One view, one seed and one global saved epsilon define the comparison.
+- The original producer manifest stays unchanged inside `baseline/`.
 
 ## Gotchas
 
-This route reproduces raw baseline values, not decoded media. The direct prune
-CLI keeps its broader options. Completion verifies saved noise identity and
-geometry; CPU verification cannot independently regenerate device-specific
-seeded CUDA noise. A native old/new comparison must compare the saved epsilon
-tensors and D0 outputs directly. Equal seeds alone do not prove equal noise.
-Full component hashes are intentionally required for native acceptance and
-resume, and can take time for large weights. A partial output never becomes a
-completion receipt; it is preserved for diagnosis rather than overwritten.
-The selected prompt cache must already exist. Cache construction and fresh
-text-encoder parity remain owned by the pruning prompt-cache command.
+- This route reproduces raw baseline values, not decoded media. The direct
+  prune CLI keeps its broader options.
+- Completion verifies the saved noise identity and geometry. CPU verification
+  cannot regenerate device-specific seeded CUDA noise. A native old/new
+  comparison must compare the saved epsilon tensors and the D0 outputs
+  directly. Equal seeds alone do not prove equal noise.
+- Full component hashes are required for native acceptance and resume. They can
+  take time for large weights.
+- A partial output never becomes a completion receipt. It is kept for
+  diagnosis, not overwritten.
+- The selected prompt cache must already exist. The pruning prompt-cache
+  command owns cache construction and fresh text-encoder parity.
 
 ## Tests
 
-`tests/experiments/test_prune_baseline.py` exercises scientific restrictions,
-queue routing and source/input pin refusals with small files. Prune's
-`tests/test_whole_clip_baseline.py` exercises saved-only coverage, tensor,
-hash, `c0` and containment refusals using its tiny CPU producer fixture.
-
-The queue may request `evidence_paths(..., verified=True)` only after it has
-completed this owner's scientific verifier in the same receipt check. That path
-reads the checked inventory without repeating the verifier. Direct callers keep
-the default `verified=False`, which verifies before exposing evidence.
+- `tests/experiments/test_prune_baseline.py` checks the scientific
+  restrictions, the queue routing and the refusals of source and input pins,
+  with small files.
+- Prune's `tests/test_whole_clip_baseline.py` checks the saved-only refusals of
+  coverage, tensor, hash, `c0` and containment, with its tiny CPU producer
+  fixture.

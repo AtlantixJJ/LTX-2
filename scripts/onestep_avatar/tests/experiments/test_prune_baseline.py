@@ -14,7 +14,9 @@ from safetensors.torch import save_file
 
 from scripts.onestep_avatar import LTX_ROOT
 from scripts.onestep_avatar.corpus import dataset
-from scripts.onestep_avatar.execution import queue, software
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import jobs as queue_jobs
+from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.experiments import prune_baseline as study
 from scripts.onestep_avatar.experiments import spec_protocol
 from scripts.onestep_avatar.hashing import sha256
@@ -108,7 +110,7 @@ def saved_pruning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
 
 
 def job_for(spec: Path, output: Path) -> dict:
-    return queue.prepare_job(
+    return queue_jobs.prepare_job(
         {
             "id": "pruning",
             "kind": "experiment",
@@ -139,12 +141,12 @@ def test_completion_uses_saved_raw_outputs_and_pins_all_current_inputs(saved_pru
 def test_public_queue_route_binds_parser_launch_and_saved_completion(saved_pruning: tuple) -> None:
     _, spec, root, _ = saved_pruning
     job = job_for(spec, root)
-    assert queue.EXPERIMENTS[study.SELECTOR] == "scripts.onestep_avatar.experiments.prune_baseline"
-    command, environment = queue.job_command(job, (5,))
-    assert command[2] == queue.EXPERIMENTS[study.SELECTOR]
+    assert queue_jobs.EXPERIMENTS[study.SELECTOR] == "scripts.onestep_avatar.experiments.prune_baseline"
+    command, environment = queue_jobs.job_command(job, (5,))
+    assert command[2] == queue_jobs.EXPERIMENTS[study.SELECTOR]
     assert command[-2:] == ["--gpu-id", "0"]
     assert environment["CUDA_VISIBLE_DEVICES"] == "5"
-    assert queue.verify_completion(job)
+    assert queue_completion.verify_completion(job)
     assert study.verify_completion(spec, root)
 
 
@@ -279,8 +281,10 @@ def test_unknown_selector_refuses_without_importing_or_launching_route(
         "output": str(output),
         "completion": {"manifest": str(output / "manifest.json")},
     }
-    monkeypatch.setattr(queue.importlib, "import_module", lambda *_args: pytest.fail("unknown selector imported owner"))
+    monkeypatch.setattr(
+        queue_jobs.importlib, "import_module", lambda *_args: pytest.fail("unknown selector imported owner")
+    )
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("unknown selector launched child"))
     with pytest.raises(ValueError, match="selector is unknown"):
-        queue.prepare_job(raw, tmp_path)
+        queue_jobs.prepare_job(raw, tmp_path)
     assert not output.exists()

@@ -16,7 +16,9 @@ import scripts.prune.data.prompt_cache as prompts
 from ltx_core.model.transformer.model import LTXModel, LTXModelType, X0Model
 from scripts.onestep_avatar import evaluate, hashing
 from scripts.onestep_avatar.corpus import dataset, subset
-from scripts.onestep_avatar.execution import queue, software
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import jobs as queue_jobs
+from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
 from scripts.onestep_avatar.training import checkpoints
@@ -33,8 +35,8 @@ def controlled_scientific_receipt(job: dict, monkeypatch: pytest.MonkeyPatch) ->
     Queue lifecycle tests retain the real ownership and proof-negative checks.
     """
     attempt = {"command": ["controlled CPU scientific fixture"], "gpus": [0], "attempts": []}
-    monkeypatch.setattr(queue, "verify_attempt_evidence", lambda _job, _attempt: [])
-    receipt = queue.completion_receipt(job, attempt=attempt)
+    monkeypatch.setattr(queue_completion, "verify_attempt_evidence", lambda _job, _attempt: [])
+    receipt = queue_completion.completion_receipt(job, attempt=attempt)
     receipt["execution"]["binding"]["completed_at"] = 1.0
     return receipt
 
@@ -148,9 +150,9 @@ def completed(checked_settings: tuple, monkeypatch: pytest.MonkeyPatch, tmp_path
             )
         jobs_path = settings.output.parent / "queue_jobs.json"
         jobs_path.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
-        job = queue.prepare_jobs(jobs_path)[0]
+        job = queue_jobs.prepare_jobs(jobs_path)[0]
         before = len(calls)
-        assert queue.verify_completion(job)
+        assert queue_completion.verify_completion(job)
         assert len(calls) == before, "completion opened a native model session"
         return job, paths
 
@@ -163,10 +165,10 @@ def test_completed_science_and_normal_fresh_output_gate(completed: tuple, monkey
     assert len(paths) == 2
     with pytest.raises(ValueError, match="already used"):
         evaluate.prepare_evaluation(evaluate.parse_args(arguments))
-    assert queue.verify_completion(job)
+    assert queue_completion.verify_completion(job)
     receipt = controlled_scientific_receipt(job, monkeypatch)
     assert len(receipt["evidence"]) == 7
-    assert queue.verify_receipt(job, receipt)
+    assert queue_completion.verify_receipt(job, receipt)
 
 
 def test_saved_scalar_text_refuses_before_native_session(completed: tuple) -> None:
@@ -175,7 +177,7 @@ def test_saved_scalar_text_refuses_before_native_session(completed: tuple) -> No
     torch.save(torch.tensor(1.0, dtype=torch.bfloat16), settings.output / "text.pt")
     before = list(calls)
     with pytest.raises(ValueError, match="batch-one context"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
     assert calls == before
 
 
@@ -204,10 +206,10 @@ def test_split_selection_limits_results_and_rejects_cross_split_source(completed
     job, paths = execute(["--split", "held_out"])
     assert len(paths) == 1
     assert json.loads(paths[0].read_text())["source"] == held_out
-    assert queue.verify_completion(job)
+    assert queue_completion.verify_completion(job)
     job["arguments"][job["arguments"].index("--split") + 1] = "train"
     with pytest.raises(ValueError, match="scientific settings or input evidence"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 @pytest.mark.parametrize(("mode", "expected_calls"), [("bidirectional", 1), ("causal", 6)])
@@ -216,12 +218,12 @@ def test_both_modes_publish_verifiable_real_small_transformer_outputs(
 ) -> None:
     execute, _, _, _, _ = completed
     job, paths = execute(mode=mode)
-    assert queue.verify_completion(job)
+    assert queue_completion.verify_completion(job)
     assert all(json.loads(path.read_text())["call_counts"]["model_calls"] == expected_calls for path in paths)
     if mode == "causal":
         job["arguments"].append("--teacher-forcing")
         with pytest.raises(ValueError, match="scientific settings or input evidence"):
-            queue.verify_completion(job)
+            queue_completion.verify_completion(job)
 
 
 def test_causal_physical_prefix_roundtrip_preserves_null_span_c0_calls_and_saved_completion(completed: tuple) -> None:
@@ -247,11 +249,11 @@ def test_causal_physical_prefix_roundtrip_preserves_null_span_c0_calls_and_saved
         assert generated.shape == (1, 2, 7, 2, 2)
         assert hashing.tensor_sha256(generated[:, :, :1].permute(0, 2, 3, 4, 1).reshape(1, 4, 2)) == record["c0_sha256"]
     before = list(calls)
-    assert queue.verify_completion(job)
+    assert queue_completion.verify_completion(job)
     assert calls == before
     job["arguments"][job["arguments"].index("--output-latent-frames") + 1] = "9"
     with pytest.raises(ValueError, match="saved noise differs from requested input"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
     assert calls == before
 
 
@@ -287,7 +289,7 @@ def test_result_cannot_claim_other_scientific_conditions(completed: tuple, field
     record[field] = value
     paths[0].write_text(json.dumps(record))
     with pytest.raises(ValueError, match="scientific settings or input evidence"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 @pytest.mark.parametrize(("option", "value"), [("--seed", "43"), ("--guide-mode", "d1"), ("--variant", "distilled")])
@@ -296,7 +298,7 @@ def test_result_cannot_complete_different_requested_job(completed: tuple, option
     job, _ = execute()
     job["arguments"][job["arguments"].index(option) + 1] = value
     with pytest.raises((ValueError, FileNotFoundError)):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 @pytest.mark.parametrize("defect", ["missing", "duplicate", "extra", "wrong_path"])
@@ -315,7 +317,7 @@ def test_exact_case_inventory_is_required(completed: tuple, defect: str) -> None
         else:
             job["completion"]["records"][0] = str(alias)
     with pytest.raises(ValueError, match="inventory differs"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 @pytest.mark.parametrize("asset", ["text", "noise", "dtype", "first_frame", "shape", "base"])
@@ -342,7 +344,7 @@ def test_saved_evidence_changes_fail_even_with_updated_output_hash(completed: tu
         record["output"].update(sha256=sha256(path), shape=list(value.shape))
         paths[0].write_text(json.dumps(record))
     with pytest.raises(ValueError):  # noqa: PT011 -- mutation controls check refusal type and preserved bytes across different validators
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 def test_guidance_saves_actual_negative_text_and_binds_prompt(completed: tuple) -> None:
@@ -351,7 +353,7 @@ def test_guidance_saves_actual_negative_text_and_binds_prompt(completed: tuple) 
     assert (settings.output / "negative_text.pt").is_file()
     job["arguments"][-1] = "different negative text"
     with pytest.raises(ValueError, match="scientific settings or input evidence"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 @pytest.mark.parametrize("defect", ["bytes", "path", "missing_variant"])
@@ -387,7 +389,7 @@ def test_checked_adapter_bytes_path_and_complete_variant_inventory(completed: tu
     else:
         job["completion"]["records"].pop()
     with pytest.raises(ValueError, match=r"scientific settings or input evidence|inventory differs"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 @pytest.mark.parametrize("asset", ["text", "noise"])
@@ -402,9 +404,9 @@ def test_receipts_pin_input_file_bytes_even_when_tensor_content_is_identical(
     value = torch.load(path, weights_only=True)
     torch.save(value, path, _use_new_zipfile_serialization=False)
     assert sha256(path) != before
-    assert queue.verify_completion(job), "scientific tensor values changed"
+    assert queue_completion.verify_completion(job), "scientific tensor values changed"
     with pytest.raises(ValueError, match="receipt evidence changed"):
-        queue.verify_receipt(job, receipt)
+        queue_completion.verify_receipt(job, receipt)
 
 
 @pytest.mark.parametrize("changed", [None, "guide", "sidecar"])
@@ -435,7 +437,7 @@ def test_d1_checks_paired_guide_provenance_and_capture_first_frame(completed: tu
         )
         path.write_bytes(b"changed evidence")
         with pytest.raises(ValueError, match="content changed"):
-            queue.verify_completion(job)
+            queue_completion.verify_completion(job)
 
 
 @pytest.mark.parametrize(
@@ -534,7 +536,7 @@ def test_model_owner_change_blocks_current_completion_without_entry_change(
     assert sha256(Path(evaluate.__file__)) == digest
     software.validate(record["software"])
     with pytest.raises(ValueError, match=r"software.*changed since preflight"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 def test_changed_model_owner_during_sampling_prevents_publication(

@@ -4,9 +4,10 @@ This document defines the supported training settings. Commands are in the
 [run guide](../configs/README.md). See the [README terms](../README.md#terms-used-here)
 before the model designs.
 
-Raw results, checked render records and numeric logs supply evidence to report
-code under `expr/`. Missing artifacts fail before any model work. Full-frame MSE
-is the objective; report metrics must not relabel a different loss.
+Raw results, checked render records and numeric logs are the evidence for
+report code under `expr/`. A missing file fails before any model work. The
+training loss is full-frame MSE. A report metric must not give a different
+loss this name.
 
 ## Attention mode
 
@@ -48,10 +49,11 @@ Code uses `objective` for the background choice.
 | Filename | no suffix | `_white` suffix |
 | First-image input | bg capture encoding | white capture encoding |
 
-Guide pixel compositing is `R_white+(1-alpha)*(B_frame0-white)` (compositing
-version 2). Do not blend encoded data to replace this pixel operation.
-Both backgrounds use the same code. Check each selected video's producer
-records before D1 training; readiness is checked per selected input.
+The guide pixels are composited as `R_white+(1-alpha)*(B_frame0-white)`
+(compositing version 2). Do not blend encoded data instead of this pixel
+operation. Both backgrounds use the same code. Before D1 training, check the
+producer records of each selected video. The check runs for each selected
+input.
 
 ## Causal history
 
@@ -60,42 +62,46 @@ Teacher forcing (`--teacher-forcing`) updates it from the explicit capture
 target. Both keep the same first-image input. `model.causal.sample` requires
 `teacher_tokens` for teacher forcing; a guide cannot supply teacher history.
 
-Clean cache refresh at whole-model sigma zero is the selected causal training
-and product computation. Active-sigma recomputation and joint-history execution
-are diagnostics; they can differ because of prompt AdaLN and old-frame context
+Causal training and the product refresh the cache from clean frames at
+whole-model sigma zero. Recomputation at the active sigma and joint history are
+diagnostics. They can differ, because of prompt AdaLN and the old-frame context
 after eviction. A causal adapter needs an explicit research override for a
-changed `history_mode` or `kv_source`. Product uses cache/refresh with
-generated history and permits no override.
+changed `history_mode` or `kv_source`. The product uses `cache`/`refresh` with
+generated history and allows no override.
 
-When training starts at a later block, priming uses capture past frames under
+When training starts at a later block, priming uses capture past frames with
 either policy. Product generation starts at frame zero and has no capture past
-frames. Generated-history evaluation of a teacher-trained adapter changes its
-training conditions; record that change. Bidirectional mode has no history policy.
+frames. If you evaluate a teacher-trained adapter with generated history, its
+training conditions change. Record that change. Bidirectional mode has no
+history policy.
 
 ## Weights, noise and schedules
 
-Dev/distilled selects base weights, not mode. Base weight identity and supported
-noise levels are checked before adapter settings; distilled weights accept only
-their nine grid levels.
+Dev or distilled selects the base weights, not the mode. The code checks the
+base weight identity and the supported noise levels before the adapter
+settings. Distilled weights accept only their nine grid levels.
 
-Training uses a fixed sigma (`--sigma0`) or multiple direct levels
-(`--sigma-levels`). One uniform sigma draw is made per update and GPU process;
-accumulated samples on that process share the draw.
+Training uses one fixed sigma (`--sigma0`) or several direct levels
+(`--sigma-levels`). Each update draws one uniform sigma for each GPU process.
+All accumulated samples on that process use the same draw.
 
-`--noise-policy fresh` draws new noise per visit; `fixed_per_chain` keeps one
-noise draw per sample for the whole run as a debug control. Seeds stay fixed.
-A random-start segment resets positions and uses its first selected capture
-encoding as `c0`; a later latent frame encodes eight pixel frames and differs
-from a single-image keyframe (see [known gaps](known_gaps.md#random-start-first-image-distribution)).
-More-step evaluation of a directly trained adapter needs an explicit record of
-changed conditions.
+- `--noise-policy fresh` draws new noise for each visit.
+- `--noise-policy fixed_per_chain` keeps one noise draw for each sample for the
+  whole run. It is a debug control.
+
+Seeds stay fixed. A random-start segment resets the positions and uses its
+first selected capture encoding as `c0`. A later latent frame encodes eight
+pixel frames, so it differs from a single-image keyframe (see
+[known gaps](known_gaps.md#random-start-first-image-distribution)). To evaluate
+a directly trained adapter with more steps, record the changed conditions
+explicitly.
 
 ## Adapter application
 
-Evaluation and product use the same unmerged fp32 PEFT adapter function as
-training, against frozen bf16 base weights. The fused bf16 method is an explicit
-evaluation diagnostic that records its application method. A memory failure
-never selects a fused fallback.
+Evaluation and the product use the same unmerged fp32 PEFT adapter function
+as training, with frozen bf16 base weights. The fused bf16 method is an
+explicit evaluation diagnostic, and the record names it. A memory failure never
+selects a fused fallback.
 
 Masks and alpha are data-quality records, not loss weights.
 [Known gaps](known_gaps.md) records current limits; the

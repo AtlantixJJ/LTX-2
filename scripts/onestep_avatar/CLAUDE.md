@@ -11,13 +11,16 @@ records current progress and next steps.
 Use `main` for subsequent avatar changes, as requested by the user. The
 `onestep-avatar-refactor` branch is merged. Check the active branch before edits.
 
-Use the package queue for all native model work. It checks direct `nvidia-smi` occupancy
+Agents use the package queue for native model work. Humans can choose queued
+foreground execution or direct task CLIs; see [usage](doc/usage.md).
+The queue checks direct `nvidia-smi` occupancy
 and records only its own processes in one shared JSON ledger: PID, start ticks,
 command, GPU IDs, and owned descendants. Independent runs can use free GPUs 0–7.
 Training selects exactly four free devices. Each phase has explicit time and
 allocated-memory bounds; an optional overall budget adds a deadline across phases.
 Keep scientific inputs, budgets, tolerances, original attempts, and acceptance evidence unchanged.
-Do not create a second launcher or consult reservation files or unrelated process environments.
+Direct human commands use the existing task modules and Accelerate configuration.
+Do not create a second managed launcher or consult reservation files or unrelated process environments.
 
 ## Reading order — binding
 
@@ -114,8 +117,13 @@ either producer.
 needs no doc edit; a new flag that changes what lands on disk always does.
 
 **Before changing code**, establish its intended logic in the doc folder. Large-file docs
-mirror source paths, e.g. `model/causal.py` → `doc/model/causal.md`, and use Objective · Data
-flow · Organization logic · Invariants · Gotchas · Tests. Core logic needs readable Mermaid
+mirror source paths, e.g. `model/causal.py` → `doc/model/causal.md`, and use Objective · Usage
+(entry scripts only) · Data flow · Organization logic · Invariants · Gotchas · Tests.
+**Every entry script's doc has a Usage section** right after Objective: who starts it (queue
+kind for agents, direct or foreground queue for humans), the env, one complete example command
+with its CPU `--dry-run` check, an argument table, the outputs, and a link to the matching
+`configs/README.md` section. A CLI change updates that Usage section in the same commit. A
+small entry script without its own doc (`train.py`) has its Usage in the doc that owns its parser. Core logic needs readable Mermaid
 diagrams plus explicit shape/state facts and worked checks with expected outcomes. Render
 and inspect diagrams; they cannot establish runtime numerical/distributed correctness.
 
@@ -148,7 +156,12 @@ known violation stays prominently marked — in the module doc, in the affected 
 
 ## Documentation language
 
-Follow the user's target of about 80% ASD-STE100 style.
+Follow the user's target of about 80% ASD-STE100 style; the concrete rules are in
+[`doc/README.md`](doc/README.md#documentation-rules) (Language). In short: one topic per
+sentence, at most 20 words for an instruction and 25 for a description, at most six sentences
+per paragraph, active voice and present tense, keep the articles, no stacks of more than three
+nouns, and lists for steps and conditions. Dense telegraphic prose ("X owns Y; Z binds W") is
+the failure to avoid, not long sentences alone.
 Use short sentences, active verbs, and one term for each concept.
 Define technical terms before use. Preserve exact code identifiers and equations.
 Use `video segment` for consecutive encoded frames; explain `span` only as a code/option term.

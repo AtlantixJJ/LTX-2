@@ -2,51 +2,61 @@
 
 Each entry states the required behavior, the current behavior, its impact and
 the evidence that would close it. A source change or a passing CPU test does not
-close a gap; accepted native evidence does. The
+close a gap. Only accepted native evidence closes it. The
 [acceptance gates](verification.md#acceptance-gates) define that evidence.
 
 ## Cached history and causal recomputation
 
-**Required.** Before cached refresh is treated as an optimization of explicit
-causal continuation, compare the two under matched text conditioning, clean
-per-token history timesteps, positions and retention on the real checkpoint. If
-zero-sigma refresh is the intended streaming model, its quality must be shown
-under generated history.
+**Required.** Do not treat the cached refresh as only an optimization of
+explicit causal continuation until the two are compared on the real
+checkpoint. The comparison must match the text conditioning, the clean
+per-token history timesteps, the positions and the retention. If zero-sigma
+refresh is the intended streaming model, show its quality with generated
+history.
 
-**Current.** `refresh_block` computes history K/V with global sigma zero.
-`transformer_args.py` uses global sigma for prompt AdaLN, independently of token
-timesteps, and the LTX-2.5 checkpoint enables this branch. On the real
-checkpoint, clean block-0 K/V are equal at layer 0 but differ from layer 1 onward
-when only global sigma changes from 0 to 0.909375 or 1. A two-block real rollout
-differs at block 1 by relative latent L2 0.12084 (D0) / 0.11428 (D1) at
-0.909375, and 0.23675 in both arms at sigma 1. Block 0 and a repeated cached run
-agree exactly. `rollout(history_mode="recompute")` is the explicit block-causal
-reference: its retained history stays at token timestep zero while global sigma
-follows each denoise step. After eviction, recomputation also changes the old
-frames' available context, so comparisons split before and after eviction.
+**Current.**
 
-**Impact.** The difference is measured on one view; its contribution to
-appearance jumps is unmeasured. Teacher-forced cache history also differs from
-the displayed output by definition; that separate mismatch is tested by
-dropping `--teacher-forcing`.
+- `refresh_block` computes the history K/V with global sigma zero.
+- `transformer_args.py` uses the global sigma for prompt AdaLN, independently
+  of the token timesteps. The LTX-2.5 checkpoint enables this branch.
+- On the real checkpoint, the clean block-0 K/V are equal at layer 0. They
+  differ from layer 1 onward when only the global sigma changes from 0 to
+  0.909375 or 1.
+- A two-block real rollout differs at block 1 by a relative latent L2 of
+  0.12084 (D0) and 0.11428 (D1) at 0.909375, and 0.23675 in both arms at
+  sigma 1.
+- Block 0 and a repeated cached run agree exactly.
 
-**Closing evidence.** Keep sigma-zero cached refresh as the selected
-calculation. E3 compares native block output and layerwise K/V before and after
-eviction at 0.909375 and sigma 1, boundary quality under both history
-calculations and both forcing policies on held-out views, generated-history
-quality and measured cost.
+`rollout(history_mode="recompute")` is the explicit block-causal reference. Its
+retained history stays at token timestep zero, while the global sigma follows
+each denoise step. After eviction, recomputation also changes the context that
+the old frames can see. So comparisons are split into before and after
+eviction.
+
+**Impact.** The difference is measured on one view. Its effect on appearance
+jumps is not measured. Teacher-forced cache history also differs from the
+displayed output by definition. Remove `--teacher-forcing` to test that
+separate mismatch.
+
+**Closing evidence.** Keep the sigma-zero cached refresh as the selected
+calculation. E3 compares these items on held-out views:
+
+- native block output and layerwise K/V before and after eviction, at
+  0.909375 and at sigma 1;
+- boundary quality with both history calculations and both forcing policies;
+- generated-history quality and the measured cost.
 
 ## Fused adapter application
 
 **Required.** Evaluation and product run the function training optimised, the
 unmerged fp32 adapter against frozen bf16 base weights.
 
-**Current.** Training, ordinary evaluation and product share `model.adapters`.
-Inference wraps that velocity function once in stock x0. CPU controls with small
-real LTX/PEFT models match the loaded training reference bit-for-bit in both
-modes, including zero adapters. `--adapter-application fused_bf16` is an
-evaluation diagnostic that needs `--research-override`; product has no fusion
-choice and no fallback to it.
+**Current.** Training, ordinary evaluation and the product share
+`model.adapters`. Inference wraps that velocity function once in stock x0. CPU
+controls with small real LTX/PEFT models match the loaded training reference
+bit for bit in both modes, including zero adapters.
+`--adapter-application fused_bf16` is an evaluation diagnostic, and it needs
+`--research-override`. The product has no fusion choice and no fallback to it.
 
 **Mechanism.** Fusing `W + BA` into bf16 base weights loses low-order bits when a
 small correction is added to a large base value. It shrinks and perturbs the
@@ -96,13 +106,13 @@ differences with matched inputs.
 states (the base and one or more adapters) runs them one after another within
 its memory bound. Each model is released before the next one loads.
 
-**Current.** On a 48 GB GPU, one process completes two 22B model states and
+**Current.** On a 48 GB GPU, one process completes two 22B model states. It
 fails while it loads the third. Two native four-state requests (base, update 0,
 update 20, update 60) failed this way: a causal warmed bench and a
-bidirectional held-out evaluation. Each saved the base and update-0 outputs,
-then raised CUDA out of memory while loading the update-20 weights. At the
-failure the process itself held 46.30 GiB allocated by PyTorch. The source of
-the retained allocation is not established.
+bidirectional held-out evaluation. Each request saved the base and update-0
+outputs. Then it raised CUDA out of memory while it loaded the update-20
+weights. At the failure, PyTorch had 46.30 GiB allocated in that process. The
+source of the retained allocation is not known.
 
 **Impact.** A request with three or more model states (`--include-base` with
 two or more `--checkpoint`, or three or more `--checkpoint`) is not usable on
@@ -134,70 +144,80 @@ on the same saved outputs, for example a fixed-order float64 reduction.
 
 ## Changed-past decoder total deadline
 
-**Required.** A changed-past decoder attempt completes both child execution and
-the queue's independent saved completion checks within its declared whole-attempt
-deadline. Child exit zero does not establish complete bounded execution.
+**Required.** A changed-past decoder attempt must complete two things within
+its declared deadline for the whole attempt: the child execution and the
+queue's independent saved completion checks. A child exit code of zero does not
+prove complete bounded execution.
 
-**Current.** The decoder checks its full native prerequisites before opening a
-session. It reuses those prepared inputs for its own saved-output checks within
-that child. Public `verify_review` always prepares afresh, so the queue still
-rechecks native all-layer evidence and every saved decoder output independently.
-That completion work counts toward the original deadline. Native attempts have
-finished their supervised child successfully but failed the total deadline
-during parent completion checks. The current preparation reuse has CPU checks;
-its complete native timing has not yet been established.
+**Current.**
+
+- The decoder checks its full native prerequisites before it opens a session.
+  It reuses those prepared inputs for its own saved-output checks in the same
+  child.
+- The public `verify_review` always prepares again. So the queue still checks
+  the native all-layer evidence and every saved decoder output independently.
+- That completion work counts toward the original deadline.
+- Native attempts finished their supervised child successfully, but failed the
+  total deadline during the parent's completion checks.
+- The current reuse of prepared inputs has CPU checks. Its complete native
+  timing is not yet known.
 
 **Impact.** Saved videos or a passed child supervisor cannot accept an attempt
-whose queue records `overall_deadline`. Keep those attempts failed and preserve
-their failure observations. A source change requires fresh affected native and decoder jobs.
+whose queue records `overall_deadline`. Keep those attempts failed and keep
+their failure observations. A source change requires fresh native and decoder
+jobs for the affected results.
 
-**Closing evidence.** Fresh source-matching native interventions and decoder
-attempts complete their canonical queue checks within the unchanged bounds.
-Record both child and total attempt timing; do not increase the budget or omit
-independent completion verification.
+**Closing evidence.** Fresh native interventions and decoder attempts that
+match the source complete their canonical queue checks within the unchanged
+bounds. Record the child timing and the total attempt timing. Do not increase
+the budget. Do not skip the independent completion verification.
 
 ## Eight-block causality diagnostic
 
-`experiments.causality` protocol `eight_block` uses the typed adapter contract
-and the shared unmerged loader. It runs only an adapter whose recorded
-conditions match eight causal blocks over 17 encoded frames; a shorter trained
+The `experiments.causality` protocol `eight_block` uses the typed adapter
+contract and the shared unmerged loader. It runs only an adapter whose recorded
+conditions match eight causal blocks over 17 encoded frames. A shorter trained
 span needs its own protocol, not an override.
 
 ## Supervision and reproduction records
 
 **E3 changed-past native verification.** The isolated past observer restores
-the original refresh layouts from saved generated-history values: contiguous
-for the c0 block, packed preserve-format copies for later blocks. Focused CPU
-checks cover both history computations, schedules and eviction targets. Fresh
-native original replay must still reproduce every layer's K/V and the current
-prediction bit-for-bit before changed-past results can be accepted. The saved
-failed original reconstruction remains failed; no tolerance is relaxed.
+the original refresh layouts from the saved generated-history values. The
+`c0` block uses a contiguous layout. Later blocks use packed preserve-format
+copies. Focused CPU checks cover both history calculations, the schedules and
+the eviction targets. A fresh native replay of the original must still
+reproduce every layer's K/V and the current prediction bit for bit. Only then
+can changed-past results be accepted. The saved failed reconstruction stays
+failed. No tolerance is relaxed.
 
-Scientific output completion and continuous queue supervision are separate. An
-ended queue owner or a complete tensor file cannot create missing supervisor
-evidence; recovery records the attempt as failed with reason
-`missing_supervision`. A raw reproduction mismatch stays a failure even when
-noise and first-image inputs match. Diagnose source, input, precision and
-backend-policy differences with one-factor controls; never fit a tolerance to a
+Scientific output completion and continuous queue supervision are separate.
+An ended queue owner or a complete tensor file cannot create missing
+supervisor evidence. Recovery records the attempt as failed with reason
+`missing_supervision`. A raw reproduction mismatch stays a failure, even when
+the noise and first-image inputs match. Find source, input, precision and
+backend-policy differences with one-factor controls. Never fit a tolerance to a
 failed result.
 
-**E4 compare budget.** Both `training_update_check` operations now bind the
-original training job's absolute resource budget. A different declared budget
-fails normalization. Fresh native reference and compare evidence remains
-required for this producer.
+**E4 compare budget.** Both `training_update_check` operations bind the
+absolute resource budget of the original training job. A different declared
+budget fails normalization. This producer still needs fresh native reference
+and compare evidence.
 
 **Saved pruning reference.** The saved whole-clip D0 reference
-`expr/refiner_prune/2.5/recheck_20260930/baseline` was made with a BF16 global
-sigma and PyTorch default numerical settings, under which scaled-dot-product
-attention runs the cuDNN kernel. The current producer passes a float32 global
-sigma (per-token timesteps are float32 in both), and the deterministic policy
-(`torch.use_deterministic_algorithms(True)`) makes attention run the Flash
-kernel. `experiments/prune_reproduction.py` reproduces the reference
-bit-for-bit with default settings and a BF16 global sigma; the dense mask, cuDNN
-determinism and BF16 reduction change nothing. Current outputs therefore differ
-from that reference at every sigma. Pruning comparisons stay within one
-producer setting until a baseline is rebuilt or the reference's settings are
-adopted.
+`expr/refiner_prune/2.5/recheck_20260930/baseline` differs from the current
+producer in two settings:
+
+| Setting | Saved reference | Current producer |
+|---|---|---|
+| Global sigma dtype | BF16 | float32 |
+| Numerical policy | PyTorch defaults: attention runs the cuDNN kernel | deterministic (`torch.use_deterministic_algorithms(True)`): attention runs the Flash kernel |
+
+Per-token timesteps are float32 in both. `experiments/prune_reproduction.py`
+reproduces the reference bit for bit with the default settings and a BF16
+global sigma. The dense mask, cuDNN determinism and BF16 reduction change
+nothing. So the current outputs differ from that reference at every sigma.
+Keep pruning comparisons within one producer setting until a baseline is
+rebuilt or the reference settings are adopted.
 
 ## Related
 

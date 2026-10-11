@@ -8,6 +8,36 @@ evaluation reuse this membership and choose encoded frame ranges separately.
 This module runs on CPU in the `ltx` environment. It loads no model, renders
 no guide, changes no crop and encodes no pixels.
 
+## Usage
+
+Run the module directly on CPU, from `LTX-2` in the `ltx` environment. It
+loads no model. See [run guide §3, step 4](../../configs/README.md#3-prepare-the-corpus).
+
+```bash
+cd LTX-2
+"$PY" -m scripts.onestep_avatar.corpus.subset \
+  --objective white --require-guide --splits <PERSON_GROUPS.json> \
+  --output <NEW_MEMBERSHIP.json>
+```
+
+| Argument | Meaning |
+|---|---|
+| `--output` | Required. A new path. It must not exist, be an input or be a symbolic link. |
+| `--objective {bg,white}` | The background objective of the masters. |
+| `--require-guide` | Require a checked guide for each video. Use it for D1 and for paired D0/D1 work. |
+| `--corpus-root` | The corpus root. Default `data/AnimatableHuman/DNARenderingVideo`. |
+| `--source <VIEW>` | Select one exact view, for example `Part_1/clip/views/view00`. You can repeat it. |
+| `--splits <FILE>` | Explicit person groups, for example `{"train":["1"],"held_out":["2"]}`. |
+| `--held-out-fraction`, `--min-held-out` | Without `--splits`: form `train`/`held_out` groups automatically. |
+| `--max-people N` | Keep at most N people before grouping. |
+| `--format {csv,json}` | `json`: one file. `csv`: a small JSON with `<stem>.sources.csv` and `<stem>.excluded.csv` beside it. |
+
+A single-person evaluation list requires an explicit group. The command pins
+the hash of every selected file.
+
+Output: the membership file. Give it to training, evaluation and the other
+commands as `--subset`.
+
 ## Data flow
 
 ```mermaid
@@ -102,22 +132,6 @@ their encoded-frame selection, ranges and plan hash. A saved explicit plan
 continues to be checked by the settings owner against membership, requested
 mode, settings and stored master limits. Membership creation produces no
 frame plan and imports no model or training module.
-
-## Command
-
-From the LTX-2 root:
-
-```bash
-conda run -n ltx python -m scripts.onestep_avatar.corpus.subset \
-  --corpus-root /path/to/corpus --objective white --require-guide \
-  --held-out-fraction 0.1 --min-held-out 1 --output /path/to/membership.json
-```
-
-Use `--source Part_1/clip/views/view00` repeatedly to select exact views.
-Use `--splits /path/to/groups.json` for explicit group lists, such as
-`{"train":["1"],"held_out":["2"]}`. A single-person evaluation list requires
-an explicit group. `--max-people` caps the available people before grouping.
-The output path must be unused and must not be an input or symbolic link.
 
 ## Invariants and gotchas
 

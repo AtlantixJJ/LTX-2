@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution import processes as queue_processes
 from scripts.onestep_avatar.execution.queue_protocol import TOKEN_ENV
 
 
@@ -28,9 +28,9 @@ def test_disappearing_stat_with_esrch_is_reobserved_as_absent(
 
     monkeypatch.setattr(Path, "read_text", gone)
     if scan == "session":
-        assert queue.live_session_processes(999, proc_root=tmp_path) == []
+        assert queue_processes.live_session_processes(999, proc_root=tmp_path) == []
     else:
-        assert queue.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path) == []
+        assert queue_processes.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path) == []
 
 
 @pytest.mark.parametrize("transition", ["terminal", "missing", "reused", "live"])
@@ -57,10 +57,10 @@ def test_environment_denial_requires_same_terminal_or_absent_handle(
 
     monkeypatch.setattr(Path, "read_bytes", denied)
     if transition in ("terminal", "missing"):
-        assert queue.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path) == []
+        assert queue_processes.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path) == []
     else:
         with pytest.raises(PermissionError):
-            queue.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path)
+            queue_processes.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path)
 
 
 def test_brief_live_denial_retries_then_identifies_owned_worker(
@@ -81,5 +81,5 @@ def test_brief_live_denial_retries_then_identifies_owned_worker(
         return original(path)
 
     monkeypatch.setattr(Path, "read_bytes", briefly_denied)
-    assert queue.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path) == [42]
+    assert queue_processes.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path) == [42]
     assert len(attempts) == 3

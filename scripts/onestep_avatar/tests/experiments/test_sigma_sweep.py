@@ -9,7 +9,8 @@ import pytest
 import torch
 
 from scripts.onestep_avatar import media
-from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.experiments import sigma_sweep
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_evaluation_completion import controlled_scientific_receipt
@@ -80,7 +81,7 @@ def sweep_queue_job(path: Path, output: Path) -> dict:
     }
     jobs = path.parent / "queue_jobs.json"
     jobs.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
-    return queue.prepare_jobs(jobs)[0]
+    return queue_jobs.prepare_jobs(jobs)[0]
 
 
 def test_queue_sweep_command_and_complete_receipt_use_real_owner(
@@ -88,23 +89,23 @@ def test_queue_sweep_command_and_complete_receipt_use_real_owner(
 ) -> None:
     _, path, output, calls = saved_sweep
     job = sweep_queue_job(path, output)
-    command, environment = queue.job_command(job, (4,))
+    command, environment = queue_jobs.job_command(job, (4,))
     assert command[2:4] == ["scripts.onestep_avatar.experiments.sigma_sweep", "--spec"]
     assert command[-2:] == ["--gpu-id", "0"]
     assert environment == {"CUDA_VISIBLE_DEVICES": "4", **resources.budget_environment(job["effective_budget"])}
-    assert not queue.verify_completion(job)
+    assert not queue_completion.verify_completion(job)
     assert not calls
     sigma_sweep.execute(path, output, gpu_id=4)
     before = len(calls)
     receipt = controlled_scientific_receipt(job, monkeypatch)
-    assert queue.verify_receipt(job, receipt)
+    assert queue_completion.verify_receipt(job, receipt)
     assert len(receipt["evidence"]) == 1
     assert len(calls) == before
     # A movie outside a report sheet is still part of completion verification.
     movie = output / "videos" / "sigma0.725000_d1.mp4"
     movie.write_bytes(movie.read_bytes() + b"changed")
     with pytest.raises(ValueError, match=r"content changed|bytes changed|hash"):
-        queue.verify_receipt(job, receipt)
+        queue_completion.verify_receipt(job, receipt)
     assert len(calls) == before
 
 
@@ -113,9 +114,9 @@ def test_queue_sweep_refuses_changed_spec_before_launch_and_completion(saved_swe
     job = sweep_queue_job(path, output)
     path.write_text(path.read_text() + "\n")
     with pytest.raises(ValueError, match="specification changed"):
-        queue.job_command(job, (5,))
+        queue_jobs.job_command(job, (5,))
     with pytest.raises(ValueError, match="specification changed"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
     assert not calls
 
 
@@ -127,7 +128,7 @@ def test_queue_sweep_rejects_execution_overrides(saved_sweep: tuple, flag: str) 
     jobs = path.parent / "bad_jobs.json"
     jobs.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
     with pytest.raises(ValueError, match="forbidden execution override"):
-        queue.prepare_jobs(jobs)
+        queue_jobs.prepare_jobs(jobs)
     assert not calls
 
 
@@ -138,7 +139,7 @@ def test_queue_sweep_refuses_wrong_completion_destination(saved_sweep: tuple) ->
     jobs = path.parent / "bad_jobs.json"
     jobs.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
     with pytest.raises(ValueError, match="completion manifest differs"):
-        queue.prepare_jobs(jobs)
+        queue_jobs.prepare_jobs(jobs)
     assert not calls
 
 

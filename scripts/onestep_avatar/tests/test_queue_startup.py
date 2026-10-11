@@ -15,7 +15,13 @@ import pytest
 import torch
 
 from scripts.onestep_avatar.corpus import dataset
+from scripts.onestep_avatar.execution import attempt as queue_attempt
+from scripts.onestep_avatar.execution import clock as queue_clock
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import jobs as queue_jobs
+from scripts.onestep_avatar.execution import journal as queue_journal
 from scripts.onestep_avatar.execution import process_registry, queue, supervision
+from scripts.onestep_avatar.execution import processes as queue_processes
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.training import engine, startup
 
@@ -57,7 +63,7 @@ def failed_attempt(tmp_path: Path) -> tuple:
     }
     attempt["attempt_started_ticks"] = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf("SC_CLK_TCK"))
     state_path = tmp_path / "state.json"
-    with queue.queue_state(state_path, [job]) as state:
+    with queue_journal.queue_state(state_path, [job]) as state:
         state["jobs"][job["id"]].update(
             state="failed",
             error="QueueChildError: CUDA startup failure",
@@ -82,7 +88,7 @@ def test_retry_preserves_output_log_error_and_identity_before_pending(tmp_path: 
         state_path.write_text(json.dumps(s))
     source_hashes = {p.name: sha256(p) for p in output.iterdir()}
     log_hash = sha256(log)
-    assert queue.retry_startup_failure(job, [job], state_path)
+    assert queue_attempt.retry_startup_failure(job, [job], state_path)
     row = json.loads(state_path.read_text())["jobs"][job["id"]]
     assert row["state"] == "pending"
     assert row["child_pid"] is None
@@ -172,7 +178,7 @@ def test_ambiguous_or_nonstartup_failure_never_mutates_state_or_output(tmp_path:
     state_path.write_text(json.dumps(s))
     original = state_path.read_bytes()
     inputs = {p.name: sha256(p) for p in output.iterdir()}
-    assert not queue.retry_startup_failure(job, [job], state_path)
+    assert not queue_attempt.retry_startup_failure(job, [job], state_path)
     assert original == state_path.read_bytes()
     assert inputs == {p.name: sha256(p) for p in output.iterdir()}
     assert not (output.parent / "superseded_startup_contention").exists()
@@ -190,7 +196,7 @@ def test_archive_publication_failure_restores_output_and_preserves_journal(
 
     monkeypatch.setattr(dataset, "atomic_write", unavailable)
     with pytest.raises(OSError, match="state disk failed"):
-        queue.retry_startup_failure(job, [job], state_path)
+        queue_attempt.retry_startup_failure(job, [job], state_path)
     assert state_path.read_bytes() == original
     assert hashes == {p.name: sha256(p) for p in output.iterdir()}
     assert log.is_file()
@@ -256,10 +262,12 @@ def test_loop_retries_at_most_three_times_with_new_claims_and_preserved_attempts
     claims.mkdir()
     (claims / "5").write_text("legacy foreign claim")
     ledger = claims / "processes.json"
-    monkeypatch.setattr(queue, "prepare_jobs", lambda *_: [job])
-    monkeypatch.setattr(queue, "job_command", lambda *_: (["controlled child"], {"CUDA_VISIBLE_DEVICES": "0,1,2,3"}))
+    monkeypatch.setattr(queue_jobs, "prepare_jobs", lambda *_: [job])
+    monkeypatch.setattr(
+        queue_jobs, "job_command", lambda *_: (["controlled child"], {"CUDA_VISIBLE_DEVICES": "0,1,2,3"})
+    )
     # This immediate fake-Popen control tests retries, not canonical launch acceptance.
-    monkeypatch.setattr(queue, "training_launch_record", lambda *_: {"command": ["controlled child"]})
+    monkeypatch.setattr(queue_jobs, "training_launch_record", lambda *_: {"command": ["controlled child"]})
     monkeypatch.setattr(
         subprocess, "run", lambda *_a, **_k: SimpleNamespace(stdout="\n".join(f"{g}, 0" for g in range(8)))
     )
@@ -293,10 +301,12 @@ def test_loop_retries_at_most_three_times_with_new_claims_and_preserved_attempts
             else original_identity(pid)
         ),
     )
-    monkeypatch.setattr(queue, "completion_receipt", lambda *_, **__: {"job_sha256": job["sha256"], "evidence": []})
-    monkeypatch.setattr(queue, "verify_receipt", lambda *_: True)
+    monkeypatch.setattr(
+        queue_completion, "completion_receipt", lambda *_, **__: {"job_sha256": job["sha256"], "evidence": []}
+    )
+    monkeypatch.setattr(queue_completion, "verify_receipt", lambda *_: True)
     if success_after is None:
-        with pytest.raises(queue.QueueChildError, match="failed with exit 1"):
+        with pytest.raises(queue_clock.QueueChildError, match="failed with exit 1"):
             queue.execute_jobs(tmp_path / "jobs.json", state_path, ledger, once=False)
         assert len(launches) == 4
     else:
@@ -362,16 +372,20 @@ def test_surviving_own_worker_is_bounded_stopped_after_leader_exit(  # noqa: PLR
             release_file.write_text("registered")
 
     monkeypatch.setattr(claims, "refresh", refresh)
-    monkeypatch.setattr(queue, "job_command", lambda *_: ([sys.executable, "-c", code], {}))
-    monkeypatch.setattr(queue, "live_session_processes", lambda *_a, **_k: pytest.fail("broad session scan used"))
+    monkeypatch.setattr(queue_jobs, "job_command", lambda *_: ([sys.executable, "-c", code], {}))
     monkeypatch.setattr(
-        queue, "live_attempt_processes", lambda *_a, **_k: pytest.fail("unrelated environment scan used")
+        queue_processes, "live_session_processes", lambda *_a, **_k: pytest.fail("broad session scan used")
+    )
+    monkeypatch.setattr(
+        queue_processes, "live_attempt_processes", lambda *_a, **_k: pytest.fail("unrelated environment scan used")
     )
     state_path = tmp_path / "state.json"
     worker = None
     try:
         with pytest.raises(ValueError, match="bounded package child failed"):
-            queue.run_child(job, claims, tmp_path / "child.log", state_path=state_path, jobs=[job], poll_seconds=0.01)
+            queue_attempt.run_child(
+                job, claims, tmp_path / "child.log", state_path=state_path, jobs=[job], poll_seconds=0.01
+            )
         worker = int(pid_file.read_text())
         assert ready_file.read_text() == "ready"
         assert release_file.read_text() == "registered"
@@ -398,11 +412,11 @@ def test_surviving_own_worker_is_bounded_stopped_after_leader_exit(  # noqa: PLR
         if worker is None and pid_file.exists():
             worker = int(pid_file.read_text())
         if worker is not None:
-            identity = queue.process_identity(worker)
+            identity = queue_processes.process_identity(worker)
             if identity is not None and not identity["terminal"]:
                 descriptor = supervision._pidfd_open(worker)
                 try:
-                    current = queue.process_identity(worker)
+                    current = queue_processes.process_identity(worker)
                     assert current["pid"] == identity["pid"]
                     assert current["start_ticks"] == identity["start_ticks"]
                     supervision._pidfd_signal(descriptor, signal.SIGTERM)
@@ -432,22 +446,22 @@ def test_session_scan_distinguishes_live_terminal_and_unknown_handles(tmp_path: 
     stat(10, "S", 42)
     stat(11, "Z", 42)
     stat(12, "S", 99)
-    assert queue.live_session_processes(42, proc_root=tmp_path) == [10]
-    assert queue.live_session_processes(100, proc_root=tmp_path) == []
+    assert queue_processes.live_session_processes(42, proc_root=tmp_path) == [10]
+    assert queue_processes.live_session_processes(100, proc_root=tmp_path) == []
     (tmp_path / "12/stat").write_text("bad stat")
     with pytest.raises(ValueError, match="malformed"):
-        queue.live_session_processes(42, proc_root=tmp_path)
+        queue_processes.live_session_processes(42, proc_root=tmp_path)
 
 
 def test_once_records_retry_pending_without_a_second_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     job, state_path, _output, _log = failed_attempt(tmp_path)
     # Reuse the real preservation path after a mocked single failed dispatch.
-    monkeypatch.setattr(queue, "prepare_jobs", lambda *_: [job])
+    monkeypatch.setattr(queue_jobs, "prepare_jobs", lambda *_: [job])
     seen = []
 
     def dispatch(*_args) -> bool:
         seen.append(1)
-        assert queue.retry_startup_failure(job, [job], state_path)
+        assert queue_attempt.retry_startup_failure(job, [job], state_path)
         return True
 
     monkeypatch.setattr(queue, "dispatch_ready", dispatch)
@@ -477,13 +491,13 @@ def test_claim_free_wait_after_preserved_retry_creates_no_additional_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     job, state_path, output, _log = failed_attempt(tmp_path)
-    assert queue.retry_startup_failure(job, [job], state_path)
+    assert queue_attempt.retry_startup_failure(job, [job], state_path)
     original = state_path.read_bytes()
-    monkeypatch.setattr(queue, "prepare_jobs", lambda *_: [job])
+    monkeypatch.setattr(queue_jobs, "prepare_jobs", lambda *_: [job])
     monkeypatch.setattr(
         subprocess, "run", lambda *_a, **_k: SimpleNamespace(stdout="\n".join(f"{g}, 2048" for g in range(8)))
     )
-    monkeypatch.setattr(queue, "run_child", lambda *_a, **_k: pytest.fail("launched on busy device"))
+    monkeypatch.setattr(queue_attempt, "run_child", lambda *_a, **_k: pytest.fail("launched on busy device"))
     ledger = tmp_path / "own_processes.json"
     assert queue.execute_jobs(tmp_path / "jobs.json", state_path, ledger, once=True) == 2
     assert state_path.read_bytes() == original
@@ -504,7 +518,7 @@ def test_attempt_worker_scan_requires_exact_token_and_skips_older_handles(tmp_pa
     create(42, 200, marker + b"\0OTHER=x\0")
     create(43, 200, marker + b"x\0")
     create(44, 50, None)  # Older process may have an inaccessible environment.
-    assert queue.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path) == [42]
+    assert queue_processes.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path) == [42]
 
 
 def test_attempt_worker_scan_refuses_unreadable_or_reused_handles(
@@ -524,7 +538,7 @@ def test_attempt_worker_scan_refuses_unreadable_or_reused_handles(
 
     monkeypatch.setattr(Path, "read_bytes", unreadable)
     with pytest.raises(PermissionError):
-        queue.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path)
+        queue_processes.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path)
 
     def reused(path: Path) -> bytes:
         result = original(path)
@@ -534,4 +548,4 @@ def test_attempt_worker_scan_refuses_unreadable_or_reused_handles(
 
     monkeypatch.setattr(Path, "read_bytes", reused)
     with pytest.raises(ValueError, match="handle changed"):
-        queue.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path)
+        queue_processes.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path)

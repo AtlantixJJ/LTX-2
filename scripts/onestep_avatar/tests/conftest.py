@@ -15,6 +15,7 @@ import pytest
 import torch
 
 from scripts.onestep_avatar import PACKAGE_ROOT
+from scripts.onestep_avatar.execution import completion as queue_completion
 from scripts.onestep_avatar.execution import queue_launch
 from scripts.onestep_avatar.hashing import sha256
 
@@ -77,7 +78,7 @@ def controlled_queue_launch(monkeypatch: pytest.MonkeyPatch, controlled_queue_ob
 @pytest.fixture
 def controlled_queue_observation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Scope fake observations to receipt/guard fixtures, never native acceptance."""
-    from scripts.onestep_avatar.execution import queue, runtime, supervision  # noqa: PLC0415 -- fixture only
+    from scripts.onestep_avatar.execution import runtime, supervision  # noqa: PLC0415 -- fixture only
 
     def observe(child: object, **arguments: object) -> dict:
         code = child.poll()
@@ -89,7 +90,7 @@ def controlled_queue_observation(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(supervision, "supervise", observe)
     monkeypatch.setattr(runtime, "verify_result", lambda *_: {})
-    monkeypatch.setattr(queue, "verify_attempt_evidence", lambda *_: [])
+    monkeypatch.setattr(queue_completion, "verify_attempt_evidence", lambda *_: [])
 
 
 @pytest.fixture

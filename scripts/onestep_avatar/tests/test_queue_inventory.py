@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from scripts.onestep_avatar.execution import attempt as queue_attempt
+from scripts.onestep_avatar.execution import journal as queue_journal
 from scripts.onestep_avatar.execution import queue
 
 
@@ -22,7 +24,7 @@ def setup_dispatch(tmp_path: Path, kind: str) -> tuple:
         spec.write_text(json.dumps({"comparisons": [{"panels": [{"latent": "panel.pt"}]}]}))
         job["render_spec"] = str(spec)
     state_path = tmp_path / "state.json"
-    with queue.queue_state(state_path, [job]):
+    with queue_journal.queue_state(state_path, [job]):
         pass
     claims = tmp_path / "claims"
     claims.mkdir()
@@ -69,8 +71,8 @@ def test_contended_claim_set_is_released_before_any_attempt(
         return inventory(**{str(min(expected)): memory})
 
     monkeypatch.setattr(subprocess, "run", query)
-    monkeypatch.setattr(queue, "run_child", lambda *_a, **_k: pytest.fail("started contended child"))
-    state = queue.read_queue_state(state_path, [job])
+    monkeypatch.setattr(queue_attempt, "run_child", lambda *_a, **_k: pytest.fail("started contended child"))
+    state = queue_journal.read_queue_state(state_path, [job])
     assert not queue.dispatch_ready([job], state, state_path, claims / "processes.json")
     assert len(calls) == 3
     assert_no_launch_artifacts(tmp_path, state_path, original, claims)
@@ -102,10 +104,12 @@ def test_failed_second_observation_releases_claims_and_preserves_journal(
         return SimpleNamespace(stdout="0, unavailable" if error == "malformed" else "0, 0")
 
     monkeypatch.setattr(subprocess, "run", query)
-    monkeypatch.setattr(queue, "run_child", lambda *_a, **_k: pytest.fail("started child without inventory"))
+    monkeypatch.setattr(queue_attempt, "run_child", lambda *_a, **_k: pytest.fail("started child without inventory"))
     expected = {"command": subprocess.CalledProcessError, "interrupt": KeyboardInterrupt}.get(error, ValueError)
     with pytest.raises(expected):
-        queue.dispatch_ready([job], queue.read_queue_state(state_path, [job]), state_path, claims / "processes.json")
+        queue.dispatch_ready(
+            [job], queue_journal.read_queue_state(state_path, [job]), state_path, claims / "processes.json"
+        )
     assert len(calls) == 3
     assert_no_launch_artifacts(tmp_path, state_path, original, claims)
 
@@ -116,7 +120,7 @@ def test_subsequent_selection_uses_changed_inventory_and_rechecks_it(
     first, state_path, claims = setup_dispatch(tmp_path, "evaluate")
     second = {**first, "id": "second", "sha256": "b" * 64, "output": str(tmp_path / "second")}
     jobs = [first, second]
-    state = queue.read_queue_state(state_path, jobs)
+    state = queue_journal.read_queue_state(state_path, jobs)
     observations, launches = [], []
 
     def query(*_args, **_kwargs) -> SimpleNamespace:
@@ -132,7 +136,7 @@ def test_subsequent_selection_uses_changed_inventory_and_rechecks_it(
         owned.release()
 
     monkeypatch.setattr(subprocess, "run", query)
-    monkeypatch.setattr(queue, "run_child", launch)
+    monkeypatch.setattr(queue_attempt, "run_child", launch)
     assert queue.dispatch_ready(jobs, state, state_path, claims / "processes.json")
     assert launches == [("second", {1})]
     assert observations == [set(), set(), {0}, set(), {1}]

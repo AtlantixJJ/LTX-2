@@ -2,22 +2,27 @@
 
 ## Objective
 
-Observe an existing registered package child under explicit external deadlines.
-Use the queue's process identity and the [own process registry](process_registry.md).
-Do not launch a model, choose a study, recover an old attempt, close an own record,
-or use a process
-group as a substitute for exact signal ownership.
+Observe an existing registered package child under explicit external
+deadlines. Use the queue's process identity and the
+[own process registry](process_registry.md). This module does not:
+
+- start a model or choose a study;
+- recover an old attempt or close an own record;
+- use a process group instead of exact signal ownership.
 
 ## Data flow
 
-The caller supplies its `Popen`, registered PID/start ticks/command, original
-worker record, owned process registry, GPU IDs and evidence destination. A separate immutable
-notification contract binds the attempt token, job hash, rank count, ordered
-phase names and budget hash. `prepare_notifications` writes this contract before
-launch. Its returned environment names bind the exact contract bytes.
-Each actual rank calls `notify_phase` immediately before phase work and after
-its measurement. The helper writes exclusive, complete JSON events outside the
-scientific output directory. It imports no model library.
+The caller supplies its `Popen`, the registered PID, start ticks and command,
+the original worker record, the owned process registry, the GPU IDs and the
+evidence destination.
+
+A separate fixed notification contract binds the attempt token, the job hash,
+the rank count, the ordered phase names and the budget hash.
+`prepare_notifications` writes this contract before launch. The environment
+names that it returns bind the exact contract bytes. Each actual rank calls
+`notify_phase` immediately before its phase work and after its measurement. The
+helper writes exclusive, complete JSON events outside the scientific output
+directory. It imports no model library.
 
 ```mermaid
 flowchart LR
@@ -42,6 +47,11 @@ Sampled total-device occupancy is explicitly a different quantity.
 
 ## Organization logic
 
+A `KeyboardInterrupt` uses the same bounded shutdown as an ordinary failure.
+This permits the queue owner's SIGINT and SIGTERM handlers to request cleanup.
+The supervisor saves the interruption as failure evidence and proves worker absence.
+The queue then saves the cancelled job and returns the signal exit code.
+
 When the exact registered child becomes terminal between `Popen.poll()` and its
 targeted observation, reap only that original Popen child within the existing
 shutdown bound, then apply the usual exit-code, phase and descendant checks.
@@ -59,23 +69,33 @@ command or a terminal state is observed. If the command restores between the
 failed observation and its follow-up read, validate the restored command again.
 Do not classify the normal terminal/reaping interval as lost ownership.
 
-Validate all limits as finite positive values. Require exact registry/token/job and
-notification-contract agreement. Before signals, observe the existing queue's
-stable PID/start ticks and approved command transition, open a Linux pidfd, and
-observe again. Signal through that descriptor only. If a pidfd is unavailable
-or identity observation is denied, preserve the failure and do not guess a PID.
-Use Python's pidfd wrappers where available. The old `ltx` Python/libc lacks
-them, so the module calls the same Linux syscalls through `ctypes` on x86_64 and
-aarch64. Unsupported architectures and kernel refusal fail closed. This fallback
-does not use `os.kill` or weaken the registered identity check.
+**Signal ownership.**
 
-While the leader runs, refresh the caller's own process records, read ordered phase
-events, and check deadlines. A rank's first begin must arrive within the explicit
-startup bound. After every end, its next begin must arrive within the same
-explicit notification-gap bound. Every active rank has its own phase deadline.
-An optional overall deadline is separate; no command deadline is inferred by
-multiplying the phase count. Contract mutation, unknown/duplicate events,
-rank/phase/order mismatch or a changed rank producer handle fails supervision.
+1. Validate all limits as finite positive values. Require exact agreement of
+   the registry, the token, the job and the notification contract.
+2. Before any signal, observe the queue's stable PID, start ticks and approved
+   command change. Open a Linux pidfd. Observe again.
+3. Signal through that descriptor only.
+
+If a pidfd is not available, or an identity observation is denied, keep the
+failure. Never guess a PID. The module uses Python's pidfd wrappers where they
+exist. The old `ltx` Python and libc do not have them, so the module calls the
+same Linux syscalls through `ctypes` on x86_64 and aarch64. Unsupported
+architectures and a kernel refusal fail closed. This fallback does not use
+`os.kill` and does not weaken the registered identity check.
+
+**Deadlines.** While the leader runs, the supervisor refreshes the caller's
+own process records, reads the ordered phase events and checks the deadlines.
+
+- The first begin of a rank must arrive within the explicit startup limit.
+- After every end, the next begin of that rank must arrive within the explicit
+  notification-gap limit.
+- Every active rank has its own phase deadline.
+- An optional overall deadline is separate. No command deadline is inferred by
+  multiplying the phase count.
+
+A changed contract, unknown or duplicate events, a rank, phase or order mismatch
+or a changed rank producer handle fails supervision.
 The queue supplies the remaining time from its persisted first-attempt deadline,
 not a fresh per-retry duration. Check overall expiry before inspecting successful
 terminal completion and again after final owned-worker inventory. Time consumed
@@ -89,20 +109,25 @@ If an explicitly named `sampled_total_device_limit_bytes` is supplied, run
 Do not compare it with `memory_limit_allocated_bytes`. Inventory timeout or
 malformed/missing selected-device rows fails rather than reporting a free GPU.
 
-On failure, collect the registry's exact own descendants and previously recorded
-handles. Open a pidfd for each live handle after PID/start/command checks. Send
-SIGTERM to all exact owned handles, including ranks in new sessions. Poll for a
-finite aggregate grace interval. Refresh the targeted tree during this interval,
-so newly adopted descendants also receive the same signal. Then send SIGKILL to
-surviving exact handles and poll for one more finite interval. Newly discovered
-owned descendants receive SIGKILL during that interval too. Never call an
-unbounded `wait`, `killpg`, or signal a handle with unproved ownership. After
-shutdown, observe only the original live subreaper
-owner's targeted child tree through the registry. This covers workers in new
-sessions and children of any owner/worker thread. A live worker, denied targeted
-read, inventory deadline or uncertain leader identity means `workers_absent=false`.
-The result preserves own process records; only the queue caller can close them
-after complete empty containment. No unrelated environment scan occurs.
+**Shutdown.** On failure, the supervisor does these steps:
+
+1. Collect the registry's exact own descendants and the earlier recorded
+   handles.
+2. Open a pidfd for each live handle, after the PID, start and command checks.
+3. Send SIGTERM to all exact owned handles, including ranks in new sessions.
+4. Poll for a finite total grace interval. Refresh the targeted tree during
+   this interval, so newly adopted descendants also get the signal.
+5. Send SIGKILL to the surviving exact handles. Poll for one more finite
+   interval. Newly found owned descendants also get SIGKILL in that interval.
+6. Observe only the targeted child tree of the original live subreaper owner,
+   through the registry. This covers workers in new sessions and children of
+   any owner or worker thread.
+
+Never call an unbounded `wait` or `killpg`, and never signal a handle whose
+ownership is not proved. A live worker, a denied targeted read, an inventory
+deadline or an uncertain leader identity gives `workers_absent=false`. The
+result keeps the own process records. Only the queue caller can close them,
+after complete empty containment. No unrelated environment is scanned.
 
 For a plain media command, the caller can omit `notifications_path` only with
 an explicit overall deadline. Then phase/startup/gap limits and notification
@@ -172,3 +197,9 @@ final worker inventory remains failure with retained shutdown/ownership evidence
 Saved notification controls cover complete and missing rank inventories, wrong
 bindings, changed producer or event bytes, duplicate/extra files, bounded regular
 reads and explicit absence of timing/supervision acceptance claims.
+
+## Process observation ownership
+
+Import stable process observations from `execution/processes.py`.
+Read direct GPU inventory through `execution/devices.py`.
+No infrastructure helper imports the queue scheduler. Preserve existing observation and cleanup gates.

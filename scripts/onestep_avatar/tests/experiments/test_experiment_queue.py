@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.experiments import sigma_sweep
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.experiments.test_sigma_sweep import sweep_queue_job
@@ -15,7 +16,7 @@ pytest_plugins = ("scripts.onestep_avatar.tests.experiments.test_sigma_sweep",)
 
 
 def test_literal_experiment_table_has_only_reviewed_current_owner() -> None:
-    assert queue.EXPERIMENTS == {
+    assert queue_jobs.EXPERIMENTS == {
         "sigma_sweep": "scripts.onestep_avatar.experiments.sigma_sweep",
         "causality": "scripts.onestep_avatar.experiments.causality",
         "fusion_parity": "scripts.onestep_avatar.experiments.fusion_parity",
@@ -41,14 +42,14 @@ def test_experiment_raw_and_prepared_round_trips_bind_spec_and_descriptor(
     raw = deepcopy(initial)
     if not prepared_input:
         raw.pop("sha256")
-    assert queue.prepare_job(raw, path.parent) == initial
+    assert queue_jobs.prepare_job(raw, path.parent) == initial
     assert initial["spec_sha256"] == sha256(path)
-    command, _ = queue.job_command(initial, (0,))
-    assert command[2] == queue.EXPERIMENTS["sigma_sweep"]
+    command, _ = queue_jobs.job_command(initial, (0,))
+    assert command[2] == queue_jobs.EXPERIMENTS["sigma_sweep"]
     changed = deepcopy(initial)
     changed["completion"]["manifest"] = str(output / "different.json")
     with pytest.raises(ValueError, match="completion manifest differs"):
-        queue.prepare_job(changed, path.parent)
+        queue_jobs.prepare_job(changed, path.parent)
 
 
 @pytest.mark.parametrize("selector", ["unknown", "", "scripts.onestep_avatar.experiments.sigma_sweep", None, 1])
@@ -67,10 +68,10 @@ def test_unknown_selector_refuses_before_input_reads_imports_claims_or_writes(
         "output": str(output),
         "completion": {"manifest": str(output / "manifest.json")},
     }
-    monkeypatch.setattr(queue.importlib, "import_module", lambda *_args: pytest.fail("imported unknown selector"))
+    monkeypatch.setattr(queue_jobs.importlib, "import_module", lambda *_args: pytest.fail("imported unknown selector"))
     before = list(tmp_path.iterdir())
     with pytest.raises(ValueError, match="selector is unknown"):
-        queue.prepare_job(raw, tmp_path)
+        queue_jobs.prepare_job(raw, tmp_path)
     assert list(tmp_path.iterdir()) == before
 
 
@@ -80,7 +81,7 @@ def test_required_experiment_identity_fields_are_not_inferred(saved_sweep: tuple
     job = sweep_queue_job(path, output)
     job.pop(field)
     with pytest.raises(ValueError, match=r"selector|specification"):
-        queue.prepare_job(job, path.parent)
+        queue_jobs.prepare_job(job, path.parent)
 
 
 def test_spec_claim_and_prepared_digest_refuse_mutation(saved_sweep: tuple) -> None:
@@ -88,17 +89,17 @@ def test_spec_claim_and_prepared_digest_refuse_mutation(saved_sweep: tuple) -> N
     job = sweep_queue_job(path, output)
     bad_claim = {**job, "spec_sha256": "a" * 64}
     with pytest.raises(ValueError, match="specification changed"):
-        queue.prepare_job(bad_claim, path.parent)
+        queue_jobs.prepare_job(bad_claim, path.parent)
     original = path.read_bytes()
     path.write_bytes(original + b"\n")
     updated = {**job, "spec_sha256": sha256(path)}
     with pytest.raises(ValueError, match="prepared job identity"):
-        queue.prepare_job(updated, path.parent)
-    for verify in (lambda: queue.job_command(job, (0,)), lambda: queue.verify_completion(job)):
+        queue_jobs.prepare_job(updated, path.parent)
+    for verify in (lambda: queue_jobs.job_command(job, (0,)), lambda: queue_completion.verify_completion(job)):
         with pytest.raises(ValueError, match="specification changed"):
             verify()
     path.write_bytes(original)
-    assert queue.prepare_job(job, path.parent) == job
+    assert queue_jobs.prepare_job(job, path.parent) == job
 
 
 def test_retired_sweep_kind_remains_data_and_cannot_be_dispatched(saved_sweep: tuple) -> None:
@@ -107,14 +108,14 @@ def test_retired_sweep_kind_remains_data_and_cannot_be_dispatched(saved_sweep: t
     old = {**job, "kind": "sigma_sweep"}
     before = sorted(p.name for p in path.parent.iterdir())
     with pytest.raises(ValueError, match="supported package owner"):
-        queue.prepare_job(old, path.parent)
+        queue_jobs.prepare_job(old, path.parent)
     assert sorted(p.name for p in path.parent.iterdir()) == before
 
 
 def test_ordinary_job_never_looks_up_or_imports_experiments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(queue, "EXPERIMENTS", None)
+    monkeypatch.setattr(queue_jobs, "EXPERIMENTS", None)
     monkeypatch.setattr(
-        queue.importlib, "import_module", lambda *_args: pytest.fail("ordinary job imported experiment")
+        queue_jobs.importlib, "import_module", lambda *_args: pytest.fail("ordinary job imported experiment")
     )
     jobs_file = tmp_path / "saved_jobs.json"
     jobs_file.write_text('{"schema_version": 1, "jobs": []}')
@@ -126,10 +127,10 @@ def test_ordinary_job_never_looks_up_or_imports_experiments(tmp_path: Path, monk
         "output": str(output),
         "completion": {"manifest": str(output / "manifest.json")},
     }
-    prepared = queue.prepare_job(raw, tmp_path)
-    command, _ = queue.job_command(prepared, (0,))
+    prepared = queue_jobs.prepare_job(raw, tmp_path)
+    command, _ = queue_jobs.job_command(prepared, (0,))
     assert command[2] == "scripts.onestep_avatar.decode_saved"
-    assert not queue.verify_completion(prepared)
+    assert not queue_completion.verify_completion(prepared)
     assert not output.exists()
 
 
@@ -161,7 +162,7 @@ def test_malformed_public_parser_completion_descriptor_refused_before_writes(
 
     monkeypatch.setattr(sigma_sweep, "parse_args", malformed)
     with pytest.raises(ValueError, match="descriptor is malformed"):
-        queue.prepare_job(job, path.parent)
+        queue_jobs.prepare_job(job, path.parent)
     assert not output.exists()
     assert not calls
 
@@ -182,7 +183,7 @@ def test_matching_parser_and_job_descriptor_still_cannot_escape_output(
 
     monkeypatch.setattr(sigma_sweep, "parse_args", changed)
     with pytest.raises(ValueError, match="escapes its output"):
-        queue.prepare_job(job, path.parent)
+        queue_jobs.prepare_job(job, path.parent)
     assert not output.exists()
     assert not calls
 
@@ -207,9 +208,9 @@ def test_malformed_job_descriptor_refused_before_owner_import_or_writes(
     _, path, output, calls = saved_sweep
     job = sweep_queue_job(path, output)
     job["completion"] = descriptor
-    monkeypatch.setattr(queue.importlib, "import_module", lambda *_args: pytest.fail("imported malformed job"))
+    monkeypatch.setattr(queue_jobs.importlib, "import_module", lambda *_args: pytest.fail("imported malformed job"))
     with pytest.raises(ValueError, match="descriptor is malformed"):
-        queue.prepare_job(job, path.parent)
+        queue_jobs.prepare_job(job, path.parent)
     assert not output.exists()
     assert not calls
 
@@ -223,9 +224,9 @@ def test_relative_spec_and_output_paths_normalize_before_prepared_round_trip(sav
     relative["output"] = output.name
     relative["arguments"] = ["--spec", path.name, "--output", output.name]
     relative["completion"] = {"manifest": str(Path(output.name) / "manifest.json")}
-    normalized = queue.prepare_job(relative, path.parent)
+    normalized = queue_jobs.prepare_job(relative, path.parent)
     assert normalized == absolute
-    assert queue.prepare_job(normalized, path.parent) == normalized
+    assert queue_jobs.prepare_job(normalized, path.parent) == normalized
 
 
 def test_declared_spec_cannot_differ_from_command_argument(saved_sweep: tuple) -> None:
@@ -233,6 +234,6 @@ def test_declared_spec_cannot_differ_from_command_argument(saved_sweep: tuple) -
     job = sweep_queue_job(path, output)
     job["spec"] = str(path.parent / "another.json")
     with pytest.raises(ValueError, match="specification differs from command"):
-        queue.prepare_job(job, path.parent)
+        queue_jobs.prepare_job(job, path.parent)
     assert not output.exists()
     assert not calls

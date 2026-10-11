@@ -1,15 +1,15 @@
 # `model/common.py` — prepare the model inputs
 
 This module owns `ClipGrid`, `noise_block`, `epsilon_block`, `mix_block_noise`,
-`with_clean_prefix`, `block_modality`, the model prediction helpers, and
+`with_clean_prefix`, `block_modality`, the model prediction helpers and
 `full_frame_mse` with its record identifier.
 
-**Precision contract.** Ordinary calls use float32 global sigma and
-float32 token timesteps, independently of token/weight dtype. The native paired
-check showed that bf16 global sigma changes predictions with identical initial
-inputs. `SIGMA_DTYPE` and its derived `SIGMA_PRECISION` identifier own the ordinary
-contract; explicit diagnostic dtype overrides remain available. Adapter
-records bind this precision.
+**Precision contract.** Ordinary calls use a float32 global sigma and float32
+token timesteps, for any token or weight dtype. The native paired check showed
+that a bf16 global sigma changes the predictions, even with identical first
+inputs. `SIGMA_DTYPE` and the identifier `SIGMA_PRECISION` that derives from it
+own the ordinary contract. Explicit diagnostic dtype overrides are still
+available. Adapter records bind this precision.
 
 ## Objective
 
@@ -65,10 +65,14 @@ The responsibilities and their implementation names are:
 - `full_frame_mse`: calculate the mean squared error in fp32.
 
 Keep the current random seeds and the current 20-second position limit.
-`ScaleGeometry` describes only VAE scale factors. `CacheView` describes already
-allocated cache data for modality assembly. These are structural type contracts.
-They do not allocate a cache or import a causal implementation.
-Both modes can build a grid with the same scale factors. Cache ownership stays causal.
+
+- `ScaleGeometry` describes only the VAE scale factors.
+- `CacheView` describes cache data that is already allocated, for modality
+  assembly.
+
+These are structural type contracts. They do not allocate a cache or import a
+causal implementation. Both modes can build a grid with the same scale
+factors. The causal mode keeps the cache ownership.
 An independent video segment starts its positions at zero.
 Blocks from one causal video keep their original positions.
 
@@ -93,10 +97,11 @@ For a block containing frame zero, `with_clean_prefix` replaces exactly the firs
 It preserves later tokens and does not overwrite the saved source/target arrays.
 For later blocks, do not insert a new first image; first-image information is already in their cache.
 
-Build positions/keyframe marks from the mode's token slices.
-Use active global sigma and per-token `sigma*denoise_mask`, with clean first-image token levels set to zero.
+Build the positions and keyframe marks from the mode's token slices.
+Use the active global sigma and the per-token `sigma*denoise_mask`. The levels
+of the clean first-image tokens are zero.
 For a velocity prediction `v`, use `x0 = input - token_sigma*v` through the existing fp32 conversion helper.
-For an existing x0 prediction, perform no second conversion.
+For an existing x0 prediction, do no second conversion.
 Restore the exact first-image tokens in the prediction before computing loss or updating history.
 `full_frame_mse` is `sum((prediction-target)^2)/(T*C)` in fp32.
 It has no foreground mask, no anchor term, and no special denominator for non-first frames.

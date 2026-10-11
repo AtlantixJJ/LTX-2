@@ -5,6 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import jobs as queue_jobs
+from scripts.onestep_avatar.execution import journal as queue_journal
+from scripts.onestep_avatar.execution import processes as queue_processes
 from scripts.onestep_avatar.execution import queue, queue_launch
 from scripts.onestep_avatar.tests.test_queue_launch import ended_owned_attempt
 from scripts.onestep_avatar.training import resources
@@ -27,8 +31,8 @@ def closed_interrupted_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     journal.write_text(json.dumps(state))
     result = queue_launch.recover_owned_attempt(ledger, request, timeout=2)
     (tmp_path / "scientific-output.json").write_text('{"saved_science":"preserved"}\n')
-    monkeypatch.setattr(queue, "process_alive", lambda _pid: False)
-    monkeypatch.setattr(queue, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(queue_processes, "process_alive", lambda _pid: False)
+    monkeypatch.setattr(queue_processes, "process_identity", lambda _pid: None)
     monkeypatch.setattr(queue.time, "time", lambda: 105)
     return journal, ledger, request, job, result
 
@@ -45,10 +49,10 @@ def test_missing_supervisor_fails_before_deadline_without_scientific_acceptance(
     def forbidden(*_args, **_kwargs) -> None:
         pytest.fail("missing original supervision must not enter scientific success verification")
 
-    monkeypatch.setattr(queue, "verify_completion", lambda _job: True)
-    monkeypatch.setattr(queue, "verify_attempt_evidence", forbidden)
-    monkeypatch.setattr(queue, "completion_receipt", forbidden)
-    with queue.queue_state(journal, [job], recover=True) as recovered:
+    monkeypatch.setattr(queue_completion, "verify_completion", lambda _job: True)
+    monkeypatch.setattr(queue_completion, "verify_attempt_evidence", forbidden)
+    monkeypatch.setattr(queue_completion, "completion_receipt", forbidden)
+    with queue_journal.queue_state(journal, [job], recover=True) as recovered:
         row = recovered["jobs"]["case"]
         assert row["state"] == "failed"
         assert row["failure_reason"] == "missing_supervision"
@@ -69,11 +73,12 @@ def test_missing_supervisor_fails_before_deadline_without_scientific_acceptance(
 
 
 def test_public_recovery_classifies_missing_supervisor_without_launch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     journal, _ledger, _request, job, _closure = closed_interrupted_attempt(tmp_path, monkeypatch)
-    monkeypatch.setattr(queue, "prepare_jobs", lambda _path: [job])
-    monkeypatch.setattr(queue, "verify_completion", lambda _job: True)
+    monkeypatch.setattr(queue_jobs, "prepare_jobs", lambda _path: [job])
+    monkeypatch.setattr(queue_completion, "verify_completion", lambda _job: True)
     result = queue.recover_jobs(tmp_path / "jobs.json", journal)
     assert result["jobs"][0]["state"] == "failed"
     row = json.loads(journal.read_bytes())["jobs"]["case"]
@@ -112,7 +117,7 @@ def test_missing_supervisor_recovery_refuses_ambiguity_without_mutation(  # noqa
 ) -> None:
     journal, ledger, request, job, _closure = closed_interrupted_attempt(tmp_path, monkeypatch)
     state, record = json.loads(journal.read_bytes()), json.loads(ledger.read_bytes())
-    monkeypatch.setattr(queue, "verify_completion", lambda _job: True)
+    monkeypatch.setattr(queue_completion, "verify_completion", lambda _job: True)
     row = state["jobs"]["case"]
     owned = record["attempts"]["b" * 32]
     if failure == "missing_closure":
@@ -140,7 +145,7 @@ def test_missing_supervisor_recovery_refuses_ambiguity_without_mutation(  # noqa
             owned["owner"] if failure == "live_owner" else owned["processes"][str(owned["child_pid"])]["identity"]
         )
         monkeypatch.setattr(
-            queue_launch,
+            queue_processes,
             "process_identity",
             lambda pid: (
                 {**identity, "start_ticks": identity["start_ticks"] + int(failure == "reused_child")}
@@ -152,26 +157,28 @@ def test_missing_supervisor_recovery_refuses_ambiguity_without_mutation(  # noqa
         for item in (row, row["attempts"][-1]):
             item["launch_protocol"] = "old_protocol"
         monkeypatch.setattr(
-            queue, "verify_attempt_evidence", lambda *_args: (_ for _ in ()).throw(ValueError("old supervision"))
+            queue_completion,
+            "verify_attempt_evidence",
+            lambda *_args: (_ for _ in ()).throw(ValueError("old supervision")),
         )
     elif failure == "corrupt_science":
         monkeypatch.setattr(
-            queue, "verify_completion", lambda *_args: (_ for _ in ()).throw(ValueError("corrupt science"))
+            queue_completion, "verify_completion", lambda *_args: (_ for _ in ()).throw(ValueError("corrupt science"))
         )
     else:
         if failure != "missing_supervisor_path":
             row["supervision_result"] = None if failure == "present_null_supervisor" else str(tmp_path / "absent.json")
         if failure not in ("missing_supervisor_hash", "present_null_supervisor"):
             row["supervision_result_sha256"] = "d" * 64
-        monkeypatch.setattr(queue, "verify_completion", lambda _job: True)
+        monkeypatch.setattr(queue_completion, "verify_completion", lambda _job: True)
 
         def corrupt(*_args, **_kwargs) -> None:
             raise ValueError("present supervisor evidence remains invalid")
 
-        monkeypatch.setattr(queue, "verify_attempt_evidence", corrupt)
+        monkeypatch.setattr(queue_completion, "verify_attempt_evidence", corrupt)
     journal.write_text(json.dumps(state))
     ledger.write_text(json.dumps(record))
     originals = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    with pytest.raises((ValueError, OSError)), queue.queue_state(journal, [job], recover=True):
+    with pytest.raises((ValueError, OSError)), queue_journal.queue_state(journal, [job], recover=True):
         pytest.fail("ambiguous owned attempt adopted")
     assert all(path.read_bytes() == data for path, data in originals.items())

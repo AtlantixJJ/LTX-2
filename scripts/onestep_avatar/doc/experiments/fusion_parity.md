@@ -1,18 +1,47 @@
 # `experiments/fusion_parity.py` — five-case fused versus unmerged adapter comparison
 
-The module entry calls the shared queue runtime helper. Outside a queue binding,
-it calls the public operation unchanged. In a queued child, the helper measures
-one actual local resource phase and records any declared numerical policy. The
-queue owns launch, supervision and worker-absence evidence; this module starts
-no child through that helper. See [runtime](../execution/runtime.md).
-
 ## Objective
 
-Preserve the D1 block-zero fused-x0 versus unmerged-PEFT-velocity comparison.
-Own the five scientific cases and effect calculation while calling shared
-adapter, grid and causal diagnostic primitives. No decoder or launcher belongs
-here. Queue model work selects `fusion_parity` through its literal experiment
-table. Ordinary evaluation has no fusion-study parser.
+Keep the D1 block-zero comparison of fused x0 against unmerged PEFT velocity.
+This owner owns the five scientific cases and the effect calculation. It calls
+the shared adapter, grid and causal diagnostic primitives. No decoder or
+launcher belongs here. Queue model work selects `fusion_parity` through the
+literal experiment table. Ordinary evaluation has no fusion-study parser.
+
+The module entry calls the shared queue runtime helper. Outside a queue, the
+helper calls the public operation unchanged. In a queued child, it measures one
+local resource phase and records any declared numerical policy. The queue owns
+the launch, the supervision and the proof that no worker remains. See
+[runtime](../execution/runtime.md).
+
+## Usage
+
+Humans can use the foreground queue or run this module directly.
+See [launch, output and stop commands](../usage.md). Agents use the queue.
+The queue recipes below describe managed execution.
+
+Start the comparison as a queue `experiment` job with selector
+`fusion_parity`. The queue supplies the device. The module has no other CLI
+form and no `--dry-run`. See
+[run guide §9, other studies](../../configs/README.md#other-studies).
+
+This is the agent path. A person can also run the same module directly, or start the queue in the foreground; see [usage](../usage.md).
+
+The spec has fixed fields, not an argument list:
+
+```json
+{"schema_version": 1, "protocol": "fusion_parity",
+ "run": "/abs/run", "view": "/abs/corpus/Part_1/0008_01/views/view00_cam51", "step": 1}
+```
+
+| Spec field | Meaning |
+|---|---|
+| `run` | The absolute training run directory (with `config.json` and checkpoints). |
+| `view` | The absolute view directory with paired `white` capture and guide masters. |
+| `step` | A positive integer. The trained adapter step. |
+
+The queue arguments are `--spec` and a fresh `--output`. Outputs:
+`result.json`, `raw_outputs.pt` and `manifest.json`.
 
 ## Data flow
 
@@ -32,101 +61,115 @@ flowchart LR
   class V out;
 ```
 
-Specs contain exactly `schema_version: 1`, `protocol: fusion_parity`, absolute
-`run`, absolute `view` and positive integer `step`. Queue arguments select
-`--spec` and fresh `--output`; the queue supplies the device. The module has no
-other CLI form. Recipes live in `configs/README.md`.
-
-Inputs are run `config.json`, LTX-2.5 dev, step-zero/trained adapters and
-paired white capture/guide masters. Fixed settings are seed 42, sigma
-0.421875, D1, block zero, an empty cache and clean capture c0. Masters are
-`[C,F,H,W]` with `F >= 3`; each saved fp32 output is
-`[1,3*H*W,C]` in native patchifier order.
+The inputs are the run's `config.json`, LTX-2.5 dev, the step-zero and trained
+adapters and the paired `white` capture and guide masters. The fixed settings
+are seed 42, sigma 0.421875, D1, block zero, an empty cache and the clean
+capture `c0`. Masters are `[C,F,H,W]` with `F >= 3`. Each saved fp32 output is
+`[1,3*H*W,C]`, in native patchifier order.
 
 ## Organization logic
 
-### Preflight and five cases
+### Checks and five cases
 
-Before weights, require a fresh output, valid LoRA target/rank, positive finite
-alpha equal to rank, all six scientific files, paired geometry/fps and block-zero
-coverage. Alpha equals rank so the fused loader applies the same
-scale as the unmerged adapter. Hash all input files before execution.
+Before the weights load, the module requires:
 
-Run `bare`, `step0` and `fused1` through the shared fused x0 session
-loader, releasing each model before opening the next. Release fused models
-before loading the frozen base/public PEFT configuration, then apply saved
-step-zero/trained weights for `peft0` and `peft1`.
-`fusion_probe_block` builds the shared grid, allocates a fresh native cache,
-noises guide block zero at fixed sigma/seed, restores clean c0 and calls public
-`causal.fusion_parity_block`. Each case performs one diagnostic denoise and
-returns fp32 CPU tokens. No VAE opens.
+- a fresh output;
+- a valid LoRA target and rank, and a positive finite alpha that equals the
+  rank. Alpha equals rank, so the fused loader applies the same scale as the
+  unmerged adapter;
+- all six scientific files, paired geometry and fps, and block-zero coverage.
 
-Recheck input hashes before atomic publication. Optional `raw_outputs.pt`
-holds all five tensors; `result.json` keeps the protocol's metric/settings
-fields and input-file hashes. Queue execution binds both files, spec SHA and
-current evaluation software with `EXTRA_SOURCES` in `manifest.json`, then
-runs saved completion.
+It hashes all input files before execution. Then it runs the five cases:
+
+1. `bare`, `step0` and `fused1` through the shared fused x0 session loader.
+   Each model is released before the next opens.
+2. All fused models are released. Then the frozen base and the public PEFT
+   configuration load, and the saved step-zero and trained weights are applied
+   for `peft0` and `peft1`.
+
+`fusion_probe_block` builds the shared grid and allocates a fresh native
+cache. It noises guide block zero at the fixed sigma and seed, restores the
+clean `c0` and calls the public `causal.fusion_parity_block`. Each case does
+one diagnostic denoise and returns fp32 CPU tokens. No VAE opens.
+
+The module checks the input hashes again before atomic publication.
+`raw_outputs.pt` holds all five tensors. `result.json` keeps the protocol's
+metric and settings fields and the input-file hashes. Queue execution binds
+both files, the spec SHA and the current evaluation software, with
+`EXTRA_SOURCES`, in `manifest.json`. Then it runs saved completion.
 
 ### Adapter-effect arithmetic
 
-Require exactly five named cases with finite nonempty equal shapes. Define
-`effect_peft = peft1 - peft0` and `effect_fused = fused1 - bare`.
-Effect gap is `norm(effect_fused-effect_peft) / norm(effect_peft)`.
-Keep this separate from raw trained-output differences and each effect
-relative to its own no-adapter output. Also record fused step-zero equality
-to bare bitwise.
+Exactly five named cases with finite, nonempty, equal shapes are required.
 
-The protocol's effect tolerance is 0.2. Zero denominators yield JSON null.
-A zero PEFT effect gives `effect_ratio_status: undefined_zero_peft_effect`
-and a false tolerance flag, never NaN or a false pass. This tolerance differs from
+- `effect_peft = peft1 - peft0`
+- `effect_fused = fused1 - bare`
+- effect gap = `norm(effect_fused - effect_peft) / norm(effect_peft)`
+
+The effect gap is separate from the raw differences of the trained outputs,
+and from each effect relative to its own no-adapter output. The module also
+records whether fused step zero equals bare bitwise.
+
+The protocol's effect tolerance is 0.2. A zero denominator gives JSON null. A
+zero PEFT effect gives `effect_ratio_status: undefined_zero_peft_effect` and a
+false tolerance flag, never NaN or a false pass. This tolerance differs from
 the tighter adapter-effect acceptance gate (E2).
 
-### Completion and worked checks
+### Completion
 
-`verify_completion` reads saved tensors with `weights_only=True`, reloads
-paired masters and patchifies capture's first three frames to bf16 then fp32.
-Every output must have that exact shape, fp32 dtype, finite values and exactly
-matching capture first-frame tokens. Recompute every metric, compare fixed
-view/step/sigma/block/seed fields, check all six scientific file hashes,
-reconstruct the whole manifest and check current software. No weights, decoder
-or repair runs. `evidence_paths` returns manifest/raw outputs/result to the
-queue receipt. A failed tolerance can be a completed scientific observation;
-completion does not make it an accepted parity result.
+`verify_completion` does these steps:
 
-Let `bare = step0 = peft0` for nonzero references and give each generated
-token fused effect 0.18 and PEFT effect 0.20. The effect gap is
-`abs(0.18-0.20)/0.20 = 0.1`; the tolerance flag and step-zero
-equality are true. If both PEFT cases are equal, the effect gap is undefined
-and its tolerance flag false. Rehashing a reported gap changed to zero fails
-against raw outputs. Changing all five cases' c0 together also fails against
-the actual capture master even when pairwise metrics still agree.
+1. Read the saved tensors with `weights_only=True`.
+2. Reload the paired masters. Patchify the first three capture frames to bf16,
+   then to fp32.
+3. Every output must have that exact shape, fp32 dtype, finite values and
+   capture first-frame tokens that match exactly.
+4. Recompute every metric. Compare the fixed view, step, sigma, block and seed
+   fields. Check all six scientific file hashes.
+5. Rebuild the whole manifest and check the current software.
+
+No weights, decoder or repair runs. `evidence_paths` returns the manifest, the
+raw outputs and the result to the queue receipt. The queue can call
+`evidence_paths(..., verified=True)` only after it ran this verifier in the same
+receipt check. Direct callers keep the default `verified=False`.
+
+A failed tolerance can still be a completed scientific observation. Completion
+does not make it an accepted parity result.
+
+Worked checks: let `bare = step0 = peft0` for nonzero references. Give each
+generated token a fused effect of 0.18 and a PEFT effect of 0.20.
+
+- The effect gap is `abs(0.18-0.20)/0.20 = 0.1`. The tolerance flag and the
+  step-zero equality are true.
+- If both PEFT cases are equal, the effect gap is undefined and its tolerance
+  flag is false.
+- A reported gap changed to zero, with a rehashed file, fails against the raw
+  outputs.
+- A change of `c0` in all five cases together also fails against the actual
+  capture master, even when the pairwise metrics still agree.
 
 ## Invariants
 
-- Keep all five roles, original noise/grid mapping, fixed sigma, adapter scale,
-  metric names and tolerance.
-- Each case has a new cache; fused residency ends before unmerged residency.
-- Shared owners retain adapter loading, targets, layout and model operations.
-- Each run binds its current producer bytes; saved results keep their own
+- Keep all five roles, the original noise and grid map, the fixed sigma, the
+  adapter scale, the metric names and the tolerance.
+- Each case has a new cache. Fused residency ends before unmerged residency.
+- Shared owners keep adapter loading, targets, layout and model operations.
+- Each run binds its current producer bytes. Saved results keep their own
   attribution.
 
 ## Gotchas
 
-A small raw-output gap can hide a large adapter-effect gap when the effect
-itself is small. Undefined denominators require explicit status. Completion
-checks tensor/control consistency; real-weight native parity, visual quality,
-learning and final architecture acceptance remain separate.
+- A small raw-output gap can hide a large adapter-effect gap when the effect
+  itself is small.
+- Undefined denominators need an explicit status.
+- Completion checks tensor and control consistency. Real-weight native parity,
+  visual quality, learning and final architecture acceptance stay separate.
 
 ## Tests
 
-`tests/experiments/test_fusion_diagnostic.py` checks original grid/noise
-on a real small transformer, exact five-case orchestration, metric values,
-zero-effect handling and fresh-output refusal.
-`test_extracted_queue_protocols.py` checks pinned/normalized specs,
-model-free completion, missing outputs, changed inputs, rehashed false metrics
-and joint raw-output shape/c0/precision tampering.
-
-The queue may request `evidence_paths(..., verified=True)` only after it has
-completed this owner's scientific verifier in the same receipt check. That path
-reads the checked inventory without repeating the verifier. Direct callers keep
-the default `verified=False`, which verifies before exposing evidence.
+- `tests/experiments/test_fusion_diagnostic.py` checks the original grid and
+  noise on a real small transformer, the exact five-case orchestration, the
+  metric values, zero-effect handling and fresh-output refusal.
+- `test_extracted_queue_protocols.py` checks pinned and normalized specs,
+  completion without a model, missing outputs, changed inputs, rehashed false
+  metrics and joint changes of raw-output shape, `c0` and precision.

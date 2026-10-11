@@ -152,7 +152,7 @@ def plan(args: argparse.Namespace) -> dict:
         raise ValueError("E3 preparation output must be fresh")
     membership_path = args.membership.resolve()
     membership_hash = hashing.sha256(membership_path)
-    membership = json.loads(membership_path.read_text())
+    membership = subset.load_membership(membership_path)
     selected = cohort_sources(membership, args.source, args.seeds, args.cohort)
     budget = resources.read_budget(args.resource_budget)
     if budget is None or budget["wall_seconds_per_phase"] != 1800:
@@ -246,7 +246,7 @@ def read_plan(path: Path) -> dict:
     membership_path = Path(record["membership"]["path"])
     if identity(membership_path) != record["membership"]:
         raise ValueError("E3 preparation membership bytes changed")
-    membership = json.loads(membership_path.read_text())
+    membership = subset.load_membership(membership_path)
     cohort_sources(
         membership,
         list(dict.fromkeys(case["source"] for case in record["cases"])),

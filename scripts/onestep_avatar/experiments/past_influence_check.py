@@ -16,7 +16,7 @@ import torch
 from PIL import Image
 
 from scripts.onestep_avatar import hashing, media
-from scripts.onestep_avatar.corpus import dataset
+from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.experiments import continuation_check as continuation
 from scripts.onestep_avatar.experiments import continuation_identity_check as identity
@@ -409,7 +409,7 @@ def review_preparation(args: argparse.Namespace) -> dict:
     capture, _reference, pins = source_records(args)
     protocol = json.loads(Path(capture["protocol"]["path"]).read_text())
     member = Path(protocol["membership"])
-    store = dataset.ClipStore(json.loads(member.read_text()))
+    store = dataset.ClipStore(subset.load_membership(member))
     # The native continuation verifier has already checked this original
     # membership. Its scientific data predates canonical publication metadata.
     store.verify(require_guide=True)

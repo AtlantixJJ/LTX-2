@@ -13,7 +13,11 @@ import pytest
 import torch
 
 from scripts.onestep_avatar import evaluate
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import jobs as queue_jobs
+from scripts.onestep_avatar.execution import journal as queue_journal
 from scripts.onestep_avatar.execution import process_registry, queue
+from scripts.onestep_avatar.execution import processes as queue_processes
 
 
 def controlled_terminal_child(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -117,9 +121,9 @@ def test_loop_waits_then_dispatches_appended_dependency_and_verifies_all_receipt
     assert sleeps == [0.5]
     assert len(queries) == 7
     state = json.loads(state_path.read_text())
-    prepared = queue.prepare_jobs(jobs_path)
+    prepared = queue_jobs.prepare_jobs(jobs_path)
     assert state["job_order"] == ["first", "second"]
-    assert all(queue.verify_receipt(item, state["jobs"][item["id"]]["receipt"]) for item in prepared)
+    assert all(queue_completion.verify_receipt(item, state["jobs"][item["id"]]["receipt"]) for item in prepared)
     assert len(list((tmp_path / "logs").glob("*.log"))) == 2
     assert reservations(claims_dir) == ["5"]
     assert all(row["state"] == "closed" for row in json.loads(ledger.read_text())["attempts"].values())
@@ -151,7 +155,7 @@ def test_loop_preserves_unrecovered_or_failed_attempts_without_inventory(
 ) -> None:
     path, state_path = tmp_path / "jobs.json", tmp_path / "state.json"
     write_jobs(path, [job("first")])
-    with queue.queue_state(state_path, queue.prepare_jobs(path)) as state:
+    with queue_journal.queue_state(state_path, queue_jobs.prepare_jobs(path)) as state:
         state["jobs"]["first"]["state"] = status
     original = state_path.read_bytes()
     monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: pytest.fail("queried inventory"))
@@ -171,12 +175,12 @@ def test_loop_does_not_accept_complete_label_with_missing_evidence(
     """Scope a controlled completion envelope to missing-artifact refusal."""
     path, state_path = tmp_path / "jobs.json", tmp_path / "state.json"
     write_jobs(path, [job("first")])
-    prepared = queue.prepare_jobs(path)
+    prepared = queue_jobs.prepare_jobs(path)
     output = tmp_path / "first"
     evaluate.save_case(torch.zeros(1, 2, 7, 2, 2), {"mode": "causal"}, output)
-    receipt = queue.completion_receipt(prepared[0], attempt={})
+    receipt = queue_completion.completion_receipt(prepared[0], attempt={})
     receipt["execution"]["binding"]["completed_at"] = time.time()
-    with queue.queue_state(state_path, prepared) as state:
+    with queue_journal.queue_state(state_path, prepared) as state:
         state["jobs"]["first"].update(state="complete", receipt=receipt)
     (output / "generated.pt").unlink()
     original = state_path.read_bytes()
@@ -263,10 +267,10 @@ def test_invalid_poll_interval_fails_before_reading_jobs(interval: str, tmp_path
 def recovery_fixture(tmp_path: Path, *, child_pid: int = 99999999, publish: bool = False) -> tuple:
     path, state_path = tmp_path / "jobs.json", tmp_path / "state.json"
     write_jobs(path, [job("first")])
-    prepared = queue.prepare_jobs(path)
+    prepared = queue_jobs.prepare_jobs(path)
     if publish:
         evaluate.save_case(torch.zeros(1, 2, 7, 2, 2), {"mode": "causal"}, tmp_path / "first")
-    with queue.queue_state(state_path, prepared) as state:
+    with queue_journal.queue_state(state_path, prepared) as state:
         state["jobs"]["first"].update(state="running", child_pid=child_pid)
     return path, state_path, prepared
 
@@ -291,7 +295,7 @@ def test_recovery_cli_verifies_terminal_outputs_without_inventory(
     state = json.loads(state_path.read_text())
     assert state["jobs"]["first"]["state"] == expected
     if publish:
-        assert queue.verify_receipt(prepared[0], state["jobs"]["first"]["receipt"])
+        assert queue_completion.verify_receipt(prepared[0], state["jobs"]["first"]["receipt"])
     assert not (tmp_path / "claims").exists()
     assert not (tmp_path / "logs").exists()
 
@@ -303,7 +307,7 @@ def test_recovery_refuses_real_surviving_child_even_for_current_owner(tmp_path: 
         path, state_path, _ = recovery_fixture(tmp_path, child_pid=child.pid)
         state = json.loads(state_path.read_text())
         state["owner_pid"] = os.getpid() if same_owner else 99999999
-        state["jobs"]["first"]["child_identity"] = queue.process_identity(child.pid)
+        state["jobs"]["first"]["child_identity"] = queue_processes.process_identity(child.pid)
         state_path.write_text(json.dumps(state))
         original = state_path.read_bytes()
         with pytest.raises(ValueError, match="surviving child"):
@@ -335,7 +339,7 @@ def test_recovery_summary_without_running_jobs_preserves_journal(
     path = tmp_path / "jobs.json"
     write_jobs(path, [job("first")])
     state_path = tmp_path / "state.json"
-    with queue.queue_state(state_path, queue.prepare_jobs(path)):
+    with queue_journal.queue_state(state_path, queue_jobs.prepare_jobs(path)):
         pass
     original = state_path.read_bytes()
     monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: pytest.fail("queried GPU inventory"))

@@ -10,7 +10,12 @@ from typing import IO
 
 import pytest
 
+from scripts.onestep_avatar.execution import attempt as queue_attempt
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import jobs as queue_jobs
+from scripts.onestep_avatar.execution import journal as queue_journal
 from scripts.onestep_avatar.execution import process_registry, queue, runtime, supervision
+from scripts.onestep_avatar.execution import processes as queue_processes
 from scripts.onestep_avatar.execution import queue_launch as launch
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, LAUNCH_PROTOCOL, TOKEN_ENV
 from scripts.onestep_avatar.tests.claims_fixture import GPUClaims
@@ -30,7 +35,7 @@ def request_for(tmp_path: Path, *, owner: dict | None = None) -> tuple[Path, Pat
         tmp_path / "launch",
         token="b" * 32,
         job_sha256="a" * 64,
-        owner_identity=queue.process_identity(os.getpid()) if owner is None else owner,
+        owner_identity=queue_processes.process_identity(os.getpid()) if owner is None else owner,
         job_id="case",
         journal=tmp_path / "journal.json",
         command=command,
@@ -140,7 +145,7 @@ def ended_owned_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tupl
     )
     changes.update({TOKEN_ENV: "b" * 32, JOB_ENV: "a" * 64})
     for rank, identity in enumerate(ranks):
-        monkeypatch.setattr(queue, "process_identity", lambda _pid, identity=identity: identity)
+        monkeypatch.setattr(queue_processes, "process_identity", lambda _pid, identity=identity: identity)
         for phase in ("load", "export:0"):
             for event in ("begin", "end"):
                 supervision.notify_phase(
@@ -188,7 +193,7 @@ def ended_owned_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tupl
             }
         )
     )
-    monkeypatch.setattr(launch, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(queue_processes, "process_identity", lambda _pid: None)
     monkeypatch.setattr(process_registry, "gpu_memory", lambda **_kwargs: dict.fromkeys(range(8), 0))
     return ledger, request, owned, ranks, notifications
 
@@ -247,10 +252,10 @@ def test_interrupted_recovery_keeps_live_handle_busy_gpu_and_running_journal_che
 ) -> None:
     ledger, request, _owned, ranks, _notifications = ended_owned_attempt(tmp_path, monkeypatch)
     original = ledger.read_bytes()
-    monkeypatch.setattr(launch, "process_identity", lambda pid: ranks[0] if pid == ranks[0]["pid"] else None)
+    monkeypatch.setattr(queue_processes, "process_identity", lambda pid: ranks[0] if pid == ranks[0]["pid"] else None)
     with pytest.raises(ValueError, match="registered handle remains live"):
         launch.recover_owned_attempt(ledger, request, timeout=2, interrupted=True)
-    monkeypatch.setattr(launch, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(queue_processes, "process_identity", lambda _pid: None)
     monkeypatch.setattr(process_registry, "gpu_memory", lambda **_kwargs: {**dict.fromkeys(range(8), 0), 1: 4096})
     with pytest.raises(ValueError, match="idle selected GPU"):
         launch.recover_owned_attempt(ledger, request, timeout=2, interrupted=True)
@@ -333,7 +338,7 @@ def test_ended_owned_recovery_refuses_uncertainty_without_ledger_mutation(  # no
                 raise PermissionError("controlled exact-handle denial")
             return {**identity, "start_ticks": identity["start_ticks"] + int(failure == "reused_rank")}
 
-        monkeypatch.setattr(launch, "process_identity", observe)
+        monkeypatch.setattr(queue_processes, "process_identity", observe)
     elif failure == "uncontained_rank":
         del changed["processes"][str(ranks[1]["pid"])]
         changed["reported_rank_identities"].append({"identity": ranks[1], "role": "rank:1"})
@@ -371,7 +376,9 @@ def test_ended_owned_recovery_rechecks_handles_after_direct_inventory(
 
     def inventory(**kwargs) -> dict[int, int]:
         del kwargs
-        monkeypatch.setattr(launch, "process_identity", lambda pid: ranks[0] if pid == ranks[0]["pid"] else None)
+        monkeypatch.setattr(
+            queue_processes, "process_identity", lambda pid: ranks[0] if pid == ranks[0]["pid"] else None
+        )
         return dict.fromkeys(range(8), 0)
 
     monkeypatch.setattr(process_registry, "gpu_memory", inventory)
@@ -477,7 +484,7 @@ def approved_direct_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
             }
         )
     )
-    monkeypatch.setattr(queue, "process_identity", lambda _pid: child)
+    monkeypatch.setattr(queue_processes, "process_identity", lambda _pid: child)
     for event in ("begin", "end"):
         supervision.notify_phase("runtime", event, 0, budget_sha256=budget["sha256"], environment=changes)
     state = register(request, bootstrap)
@@ -510,6 +517,7 @@ def approved_direct_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     record = json.loads(ledger.read_bytes())
     record["attempts"][original["token"]] = owned
     ledger.write_text(json.dumps(record))
+    monkeypatch.setattr(queue_processes, "process_identity", lambda _pid: None)
     return ledger, request, owned, notifications, contract
 
 
@@ -652,7 +660,7 @@ def test_approved_direct_recovery_refuses_uncertain_contracts_without_publicatio
             target.write_text(json.dumps(saved))
     elif failure == "live_child":
         child = owned["processes"][str(owned["child_pid"])]["identity"]
-        monkeypatch.setattr(launch, "process_identity", lambda pid: child if pid == child["pid"] else None)
+        monkeypatch.setattr(queue_processes, "process_identity", lambda pid: child if pid == child["pid"] else None)
     elif failure == "busy_gpu":
         monkeypatch.setattr(process_registry, "gpu_memory", lambda **_kwargs: {0: 1024})
     else:
@@ -834,7 +842,7 @@ def test_registered_nontraining_recovery_refuses_ambiguous_evidence(  # noqa: PL
                 raise PermissionError("controlled registered-handle denial")
             return {**identity, "start_ticks": identity["start_ticks"] + int(failure == "reused_child")}
 
-        monkeypatch.setattr(launch, "process_identity", observe)
+        monkeypatch.setattr(queue_processes, "process_identity", observe)
     elif failure in ("busy_gpu", "missing_gpu", "invalid_gpu"):
         memory = dict.fromkeys(range(8), 0)
         if failure == "busy_gpu":
@@ -883,7 +891,9 @@ def test_registered_recovery_rechecks_original_handles_and_bytes(
             ledger.write_text(json.dumps(record))
         else:
             identity = owned["processes"][str(owned["child_pid"])]["identity"]
-            monkeypatch.setattr(launch, "process_identity", lambda pid: identity if pid == identity["pid"] else None)
+            monkeypatch.setattr(
+                queue_processes, "process_identity", lambda pid: identity if pid == identity["pid"] else None
+            )
         return dict.fromkeys(range(8), 0)
 
     monkeypatch.setattr(process_registry, "gpu_memory", inventory)
@@ -918,8 +928,8 @@ def test_registered_recovery_covers_ended_real_package_child(tmp_path: Path, mon
         stop(owner)
     token = json.loads(identity_file.read_bytes())["token"]
     row = json.loads(ledger.read_bytes())["attempts"][token]
-    assert queue.process_identity(row["owner"]["pid"]) is None
-    assert queue.process_identity(row["child_pid"]) is None
+    assert queue_processes.process_identity(row["owner"]["pid"]) is None
+    assert queue_processes.process_identity(row["child_pid"]) is None
     launch_path = tmp_path / "real-launch.json"
     command = row["processes"][str(row["child_pid"])]["identity"]["command"]
     launch_path.write_text(
@@ -950,7 +960,7 @@ def test_grant_published_during_owner_inspection_keeps_all_approval_gates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, approval: str | None
 ) -> None:
     path, executed = request_for(tmp_path)
-    original_identity = launch.process_identity
+    original_identity = queue_processes.process_identity
     injected, commands = [], []
     monkeypatch.setenv(TOKEN_ENV, "b" * 32)
     monkeypatch.setenv(JOB_ENV, "a" * 64)
@@ -981,7 +991,7 @@ def test_grant_published_during_owner_inspection_keeps_all_approval_gates(
             return None  # Observe owner exit after the loop's initial absent-grant check.
         return original_identity(pid)
 
-    monkeypatch.setattr(launch, "process_identity", inspect)
+    monkeypatch.setattr(queue_processes, "process_identity", inspect)
     monkeypatch.setattr(
         launch.os,
         "execvpe",
@@ -1007,7 +1017,7 @@ def test_exec_requires_approval_and_keeps_registered_pid_and_start_ticks(tmp_pat
         child = start_guard(path, log)
         try:
             bootstrap = wait_bootstrap(path, child)
-            assert bootstrap["identity"] == queue.process_identity(child.pid)
+            assert bootstrap["identity"] == queue_processes.process_identity(child.pid)
             assert not executed.exists()
             assert child.poll() is None
             register(path, bootstrap)
@@ -1081,7 +1091,7 @@ def test_owner_exit_before_approval_starts_no_consumer(tmp_path: Path) -> None:
     child = None
     try:
         assert owner.stdout.readline().strip() == "ready"
-        path, executed = request_for(tmp_path, owner=queue.process_identity(owner.pid))
+        path, executed = request_for(tmp_path, owner=queue_processes.process_identity(owner.pid))
         with (tmp_path / "child.log").open("w") as log:
             child = start_guard(path, log)
             wait_bootstrap(path, child)
@@ -1145,7 +1155,7 @@ def test_record_publication_is_exclusive_and_invalid_input_creates_no_directory(
             tmp_path / "invalid",
             token="bad",
             job_sha256="a" * 64,
-            owner_identity=queue.process_identity(os.getpid()),
+            owner_identity=queue_processes.process_identity(os.getpid()),
             job_id="case",
             journal=tmp_path / "j",
             command=["python"],
@@ -1188,7 +1198,7 @@ os._exit(0)
             bootstrap = json.loads((tmp_path / "launch/bootstrap.json").read_text())
             deadline = time.monotonic() + 5
             while True:
-                handle = queue.process_identity(bootstrap["identity"]["pid"])
+                handle = queue_processes.process_identity(bootstrap["identity"]["pid"])
                 if handle is None or handle["terminal"]:
                     break
                 assert handle["start_ticks"] == bootstrap["identity"]["start_ticks"]
@@ -1203,7 +1213,7 @@ os._exit(0)
             bootstrap_path = tmp_path / "launch/bootstrap.json"
             if bootstrap_path.exists():
                 saved = json.loads(bootstrap_path.read_text())["identity"]
-                current = queue.process_identity(saved["pid"])
+                current = queue_processes.process_identity(saved["pid"])
                 if current and not current["terminal"] and current["start_ticks"] == saved["start_ticks"]:
                     os.kill(saved["pid"], 15)
 
@@ -1253,8 +1263,10 @@ def test_real_dispatch_registers_before_grant_and_observes_approved_transition( 
         "arguments": ["--mode", "causal"],
         "output": str(tmp_path / "output"),
     }
-    monkeypatch.setattr(queue, "job_command", lambda *_: (command, {}))
-    monkeypatch.setattr(queue, "completion_receipt", lambda *_, **__: {"job_sha256": job["sha256"], "evidence": []})
+    monkeypatch.setattr(queue_jobs, "job_command", lambda *_: (command, {}))
+    monkeypatch.setattr(
+        queue_completion, "completion_receipt", lambda *_, **__: {"job_sha256": job["sha256"], "evidence": []}
+    )
     claims = GPUClaims(tmp_path / "claims")
     assert claims.acquire((4,), job="case")
     state_path = tmp_path / "state.json"
@@ -1274,7 +1286,7 @@ def test_real_dispatch_registers_before_grant_and_observes_approved_transition( 
             if time.monotonic() >= deadline:
                 pytest.fail("approved consumer did not execute")
             time.sleep(0.01)
-        assert queue.inspect_child(row) == "live"
+        assert queue_processes.inspect_child(row) == "live"
         actual = json.loads(executed.read_text())
         assert actual["command"] == command
         assert actual["pid"] == row["child_pid"]
@@ -1287,10 +1299,10 @@ def test_real_dispatch_registers_before_grant_and_observes_approved_transition( 
             try:
                 changed_path.write_text(json.dumps(changed_record))
                 with pytest.raises(ValueError):  # noqa: PT011 -- mutation controls check refusal type and preserved bytes across different validators
-                    queue.inspect_child(row)
+                    queue_processes.inspect_child(row)
             finally:
                 changed_path.write_bytes(original_bytes)
-            assert queue.inspect_child(row) == "live"
+            assert queue_processes.inspect_child(row) == "live"
         elif changed:
             invalid = json.loads(json.dumps(row))
             if changed == "command":
@@ -1300,14 +1312,14 @@ def test_real_dispatch_registers_before_grant_and_observes_approved_transition( 
             if changed == "protocol":
                 invalid["launch_protocol"] = "unrecognized"
             with pytest.raises(ValueError):  # noqa: PT011 -- mutation controls check refusal type and preserved bytes across different validators
-                queue.inspect_child(invalid)
+                queue_processes.inspect_child(invalid)
         observed.append(row)
         release.write_text("exit")
         return result
 
     monkeypatch.setattr(launch, "publish_grant", approve)
     try:
-        result = queue.run_child(
+        result = queue_attempt.run_child(
             job, claims, tmp_path / "child.log", state_path=state_path, jobs=[job], poll_seconds=0.01
         )
         row = json.loads(state_path.read_text())["jobs"]["case"]
@@ -1334,7 +1346,7 @@ def test_real_dispatch_registration_failure_never_grants_and_bounded_stops_guard
         "arguments": ["--mode", "causal"],
         "output": str(tmp_path / "output"),
     }
-    monkeypatch.setattr(queue, "job_command", lambda *_: (request["command"], {}))
+    monkeypatch.setattr(queue_jobs, "job_command", lambda *_: (request["command"], {}))
     claims = process_registry.ProcessRegistry(tmp_path / "ledger.json", inventory=lambda: dict.fromkeys(range(8), 0))
     assert claims.acquire((4,), job="case")
     original = launch.wait_registration
@@ -1349,7 +1361,9 @@ def test_real_dispatch_registration_failure_never_grants_and_bounded_stops_guard
     state_path = tmp_path / "state.json"
     try:
         with pytest.raises(ValueError, match="controlled registration interruption"):
-            queue.run_child(job, claims, tmp_path / "child.log", state_path=state_path, jobs=[job], poll_seconds=0.01)
+            queue_attempt.run_child(
+                job, claims, tmp_path / "child.log", state_path=state_path, jobs=[job], poll_seconds=0.01
+            )
         row = json.loads(state_path.read_text())["jobs"]["case"]
         assert row["state"] == "failed"
         assert row["child_pid"] == child_handle[0].pid
@@ -1373,7 +1387,7 @@ def test_journal_sync_precedes_publication_and_failure_preserves_original(
 ) -> None:
     job = {"id": "case", "sha256": "a" * 64}
     path = tmp_path / "state.json"
-    with queue.queue_state(path, [job]):
+    with queue_journal.queue_state(path, [job]):
         pass
     original = path.read_bytes()
     actual = os.fsync
@@ -1388,12 +1402,12 @@ def test_journal_sync_precedes_publication_and_failure_preserves_original(
 
     monkeypatch.setattr(queue.os, "fsync", sync)
     if fail_sync:
-        with pytest.raises(OSError, match="controlled sync failure"), queue.queue_state(path, [job]) as state:
+        with pytest.raises(OSError, match="controlled sync failure"), queue_journal.queue_state(path, [job]) as state:
             state["jobs"]["case"]["error"] = "changed"
         assert path.read_bytes() == original
         assert len(observations) == 1
     else:
-        with queue.queue_state(path, [job]) as state:
+        with queue_journal.queue_state(path, [job]) as state:
             state["jobs"]["case"]["error"] = "changed"
         assert observations[0] == str(path.with_name(f".state.tmp.{os.getpid()}.json"))
         assert observations[1] == str(tmp_path)

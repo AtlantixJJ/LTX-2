@@ -64,7 +64,7 @@ def scientific_args(argv: list[str]) -> argparse.Namespace:
 def prepare(args: argparse.Namespace, *, fresh: bool = True) -> dict:
     if fresh and args.output.exists():
         raise ValueError("reference preparation requires a fresh output")
-    membership = json.loads(args.subset.read_text())
+    membership = subset.load_membership(args.subset)
     subset.verify_prepared_membership(membership)
     store = dataset.ClipStore(membership)
     if args.source not in store.sources:

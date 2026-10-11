@@ -12,7 +12,8 @@ from typing import TypeVar
 
 import pytest
 
-from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution import journal as queue_journal
+from scripts.onestep_avatar.execution import processes as queue_processes
 from scripts.onestep_avatar.execution.queue_protocol import TOKEN_ENV
 from scripts.onestep_avatar.tests.claims_fixture import GPUClaims
 
@@ -58,7 +59,7 @@ while not (root/'release').exists(): time.sleep(.01)
     row = None
     try:
         until(ready.exists)
-        saved = queue.process_identity(child.pid)
+        saved = queue_processes.process_identity(child.pid)
         assert saved is not None
         assert not saved["terminal"]
         assert saved["command"]
@@ -85,33 +86,38 @@ while not (root/'release').exists(): time.sleep(.01)
             "completion": {"records": [str(tmp_path / "output/result.json")]},
         }
         state_path = tmp_path / "state.json"
-        with queue.queue_state(state_path, [job]) as state:
+        with queue_journal.queue_state(state_path, [job]) as state:
             state["jobs"]["zombie"] = row
         original = state_path.read_bytes()
         release.write_text("exit")
         # Do not poll/wait: Popen would reap the child and erase the regression case.
         terminal = until(
-            lambda: identity if (identity := queue.process_identity(child.pid)) and identity["terminal"] else None
+            lambda: (
+                identity if (identity := queue_processes.process_identity(child.pid)) and identity["terminal"] else None
+            )
         )
         assert terminal["command"] == []
         assert terminal["start_ticks"] == saved["start_ticks"]
-        assert queue.inspect_child(row) == ("live" if worker_survives else "terminal")
+        assert queue_processes.inspect_child(row) == ("live" if worker_survives else "terminal")
         if worker_survives:
-            with pytest.raises(ValueError, match="surviving child"), queue.queue_state(state_path, [job], recover=True):
+            with (
+                pytest.raises(ValueError, match="surviving child"),
+                queue_journal.queue_state(state_path, [job], recover=True),
+            ):
                 pytest.fail("recovered a surviving worker")
             assert state_path.read_bytes() == original
             with pytest.raises(ValueError, match="live child"):
                 claims.release()
             assert claims.owned == {4}
             assert (tmp_path / "claims/4").is_file()
-            current = queue.process_identity(worker["pid"])
+            current = queue_processes.process_identity(worker["pid"])
             assert current["start_ticks"] == worker["start_ticks"]
             os.kill(worker["pid"], signal.SIGTERM)
-            until(lambda: not queue.owned_workers_live(row))
-        with queue.queue_state(state_path, [job], recover=True) as state:
+            until(lambda: not queue_processes.owned_workers_live(row))
+        with queue_journal.queue_state(state_path, [job], recover=True) as state:
             assert state["jobs"]["zombie"]["state"] == "failed"
             assert "before verified completion" in state["jobs"]["zombie"]["error"]
-        assert queue.inspect_child(row) == "terminal"
+        assert queue_processes.inspect_child(row) == "terminal"
         claims.release()
         assert not claims.owned
         assert not (tmp_path / "claims/4").exists()
@@ -120,14 +126,14 @@ while not (root/'release').exists(): time.sleep(.01)
         if worker is None and worker_file.exists():
             worker = json.loads(worker_file.read_text())
         if worker is not None:
-            current = queue.process_identity(worker["pid"])
+            current = queue_processes.process_identity(worker["pid"])
             if current and not current["terminal"] and current["start_ticks"] == worker["start_ticks"]:
                 os.kill(worker["pid"], signal.SIGTERM)
         if child.returncode is None:
             child.terminate()
             child.wait(timeout=5)
         if claims.owned:
-            until(lambda: row is None or not queue.owned_workers_live(row))
+            until(lambda: row is None or not queue_processes.owned_workers_live(row))
             claims.release()
 
 
@@ -145,6 +151,6 @@ def test_empty_terminal_command_cannot_authorize_other_handle_changes(
         current["terminal"] = False
     if change == "terminal_changed":
         current["command"] = ["other"]
-    monkeypatch.setattr(queue, "process_identity", lambda _: current)
+    monkeypatch.setattr(queue_processes, "process_identity", lambda _: current)
     with pytest.raises(ValueError, match="identity differs"):
-        queue.inspect_child({"child_pid": 42, "child_identity": saved})
+        queue_processes.inspect_child({"child_pid": 42, "child_identity": saved})

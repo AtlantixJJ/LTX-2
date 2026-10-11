@@ -314,7 +314,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:  # noqa: PL
 
 def prepare_evaluation(args: argparse.Namespace, *, require_fresh_output: bool = True) -> tuple:  # noqa: PLR0912, PLR0915 -- ordered pre-weight input/adapter gates
     """All data, schedule, output and adapter gates precede model/text sessions."""
-    membership = json.loads(args.subset.read_text())
+    membership = subset.load_membership(args.subset)
     subset.validate_membership(membership)
     if args.frame_plan is not None:
         plan = json.loads(args.frame_plan.read_text())

@@ -13,7 +13,8 @@ import torch
 
 from ltx_core.model.transformer.model import X0Model
 from scripts.onestep_avatar.corpus import dataset
-from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.experiments import causality, fusion_parity
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.experiments.test_causality_diagnostic import fixture_inputs
@@ -39,7 +40,7 @@ def test_relative_job_paths_normalize_before_spec_reads(selector: str, tmp_path:
     spec.write_text("{}")
     output = tmp_path / "output"
     raw = job(selector, spec, output)
-    absolute = queue.prepare_job(raw, tmp_path)
+    absolute = queue_jobs.prepare_job(raw, tmp_path)
     relative = deepcopy(raw)
     relative.update(
         spec=spec.name,
@@ -47,17 +48,17 @@ def test_relative_job_paths_normalize_before_spec_reads(selector: str, tmp_path:
         arguments=["--spec", spec.name, "--output", output.name],
         completion={"manifest": str(Path(output.name) / "manifest.json")},
     )
-    assert queue.prepare_job(relative, tmp_path) == absolute
-    assert queue.prepare_job(absolute, tmp_path) == absolute
-    command, _environment = queue.job_command(absolute, (0,))
-    assert command[2] == queue.EXPERIMENTS[selector]
-    assert not queue.verify_completion(absolute)
+    assert queue_jobs.prepare_job(relative, tmp_path) == absolute
+    assert queue_jobs.prepare_job(absolute, tmp_path) == absolute
+    command, _environment = queue_jobs.job_command(absolute, (0,))
+    assert command[2] == queue_jobs.EXPERIMENTS[selector]
+    assert not queue_completion.verify_completion(absolute)
     assert not output.exists()
     spec.write_text('{"changed": true}')
     with pytest.raises(ValueError, match="specification changed"):
-        queue.job_command(absolute, (0,))
+        queue_jobs.job_command(absolute, (0,))
     with pytest.raises(ValueError, match="specification changed"):
-        queue.verify_completion(absolute)
+        queue_completion.verify_completion(absolute)
 
 
 @pytest.fixture
@@ -94,10 +95,10 @@ def completed_eight_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tu
     )
     output = tmp_path / "output"
     causality.main(["--spec", str(spec), "--output", str(output)])
-    prepared = queue.prepare_job(job("causality", spec, output), tmp_path)
+    prepared = queue_jobs.prepare_job(job("causality", spec, output), tmp_path)
     monkeypatch.setattr(sessions, "open_session", lambda *_a, **_k: pytest.fail("completion opened native weights"))
-    assert queue.verify_completion(prepared)
-    assert len(queue.completion_receipt(prepared)["evidence"]) == 4
+    assert queue_completion.verify_completion(prepared)
+    assert len(queue_completion.completion_receipt(prepared)["evidence"]) == 4
     assert dev.is_file()
     return prepared, output
 
@@ -109,14 +110,14 @@ def test_eight_block_completion_rechecks_full_saved_controls(completed_eight_blo
     if defect == "missing":
         raw.unlink()
         with pytest.raises(FileNotFoundError):
-            queue.verify_completion(prepared)
+            queue_completion.verify_completion(prepared)
     elif defect == "raw_bytes":
         original = raw.read_bytes()
         raw.write_bytes(original + b"changed serialization")
         with pytest.raises(ValueError, match="artifacts differ"):
-            queue.verify_completion(prepared)
+            queue_completion.verify_completion(prepared)
         raw.write_bytes(original)
-        assert queue.verify_completion(prepared)
+        assert queue_completion.verify_completion(prepared)
     else:
         result = output / "result.json"
         data = json.loads(result.read_text())
@@ -127,7 +128,7 @@ def test_eight_block_completion_rechecks_full_saved_controls(completed_eight_blo
         manifest["artifacts"][str(result.resolve())] = sha256(result)
         manifest_path.write_text(json.dumps(manifest))
         with pytest.raises(ValueError, match="diagnostic differs"):
-            queue.verify_completion(prepared)
+            queue_completion.verify_completion(prepared)
 
 
 @pytest.fixture
@@ -180,12 +181,12 @@ def completed_fusion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[d
     )
     output = tmp_path / "output"
     fusion_parity.main(["--spec", str(spec), "--output", str(output)])
-    prepared = queue.prepare_job(job("fusion_parity", spec, output), tmp_path)
+    prepared = queue_jobs.prepare_job(job("fusion_parity", spec, output), tmp_path)
     monkeypatch.setattr(
         fusion_parity, "evaluate_fusion_parity", lambda *_a, **_k: pytest.fail("completion loaded model")
     )
-    assert queue.verify_completion(prepared)
-    assert len(queue.completion_receipt(prepared)["evidence"]) == 3
+    assert queue_completion.verify_completion(prepared)
+    assert len(queue_completion.completion_receipt(prepared)["evidence"]) == 3
     return prepared, output
 
 
@@ -204,7 +205,7 @@ def test_eight_block_completion_binds_every_input_digest(completed_eight_block: 
     manifest["artifacts"][str(result_path.resolve())] = sha256(result_path)
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="digest differs from raw inputs"):
-        queue.verify_completion(prepared)
+        queue_completion.verify_completion(prepared)
 
 
 @pytest.mark.parametrize(
@@ -216,7 +217,7 @@ def test_eight_block_completion_rechecks_raw_inputs(completed_eight_block: tuple
     if defect == "missing":
         raw_path.unlink()
         with pytest.raises(FileNotFoundError):
-            queue.verify_completion(prepared)
+            queue_completion.verify_completion(prepared)
         return
     inputs = torch.load(raw_path, weights_only=True)
     if defect == "nonfinite":
@@ -237,7 +238,7 @@ def test_eight_block_completion_rechecks_raw_inputs(completed_eight_block: tuple
     manifest["artifacts"][str(raw_path.resolve())] = sha256(raw_path)
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match=r"raw input|raw noise"):
-        queue.verify_completion(prepared)
+        queue_completion.verify_completion(prepared)
 
 
 def test_eight_block_completion_requires_native_saved_output_precision(completed_eight_block: tuple) -> None:
@@ -250,7 +251,7 @@ def test_eight_block_completion_requires_native_saved_output_precision(completed
     manifest["artifacts"][str(raw_path.resolve())] = sha256(raw_path)
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="saved output shape, c0 or values differ"):
-        queue.verify_completion(prepared)
+        queue_completion.verify_completion(prepared)
 
 
 @pytest.mark.parametrize("defect", ["shape", "c0", "precision"])
@@ -275,7 +276,7 @@ def test_fusion_completion_rechecks_block_geometry_and_c0(completed_fusion: tupl
         manifest["artifacts"][str(path.resolve())] = sha256(path)
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="shape, precision or clean c0"):
-        queue.verify_completion(prepared)
+        queue_completion.verify_completion(prepared)
 
 
 @pytest.mark.parametrize("defect", ["missing", "metric_rehashed", "input"])
@@ -284,12 +285,12 @@ def test_fusion_completion_recomputes_metrics_and_input_identity(completed_fusio
     if defect == "missing":
         (output / "raw_outputs.pt").unlink()
         with pytest.raises(FileNotFoundError):
-            queue.verify_completion(prepared)
+            queue_completion.verify_completion(prepared)
     elif defect == "input":
         args = fusion_parity.read_spec(fusion_parity.parse_args(prepared["arguments"]))
         (args.run / "config.json").write_bytes(b"changed scientific input")
         with pytest.raises(ValueError, match="input bytes differ"):
-            queue.verify_completion(prepared)
+            queue_completion.verify_completion(prepared)
     else:
         result_path = output / "result.json"
         result = json.loads(result_path.read_text())
@@ -300,4 +301,4 @@ def test_fusion_completion_recomputes_metrics_and_input_identity(completed_fusio
         manifest["artifacts"][str(result_path.resolve())] = sha256(result_path)
         manifest_path.write_text(json.dumps(manifest))
         with pytest.raises(ValueError, match="metrics differ"):
-            queue.verify_completion(prepared)
+            queue_completion.verify_completion(prepared)

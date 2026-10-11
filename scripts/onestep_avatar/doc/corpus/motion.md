@@ -2,19 +2,22 @@
 
 ## Objective
 
-Convert DNARendering's per-view MHR pose+camera export into the motion-file format
-ARGAvatar's renderer consumes, **without re-deriving anything**. `POSE_KEEP_KEYS` and
-`CACHE_KEYS` are copied verbatim from ARGAvatar's own `infer_argavatar.build_sam3db_entry`
-so the two cannot silently diverge.
+Convert DNARendering's per-view MHR pose and camera export into the motion-file
+format that ARGAvatar's renderer reads. **Nothing is calculated again.**
+`POSE_KEEP_KEYS` and `CACHE_KEYS` are exact copies from ARGAvatar's own
+`infer_argavatar.build_sam3db_entry`, so the two cannot drift apart without
+notice.
 
 ## Data flow
 
-`pose3d.npy[view]` + `refined_pose3d.npy[clip]` → `merge_multiview_refinement` →
-`build_motion(pose3d, frame_height, valid=...)` → a `sam3db` dict →
-`torch.save` → `motion.pth` → `pipeline.render_motion_window`.
+1. Read `pose3d.npy[view]` and `refined_pose3d.npy[clip]`.
+2. `merge_multiview_refinement` merges them.
+3. `build_motion(pose3d, frame_height, valid=...)` makes a `sam3db` dict.
+4. `torch.save` writes it to `motion.pth`.
+5. `pipeline.render_motion_window` reads it.
 
-Consumed only by `build_guidance.render_pair`, into a temp file that never outlives the
-render.
+Only `build_guidance.render_pair` uses this module. The motion file is a
+temporary file that is deleted after the render.
 
 ## Organization logic
 
@@ -70,9 +73,9 @@ The manifest crop remains fixed and is never rebuilt from repaired rows.
 
 ## Gotchas
 
-- **Pose-tracking gaps are a data-quality gate, not an error.** `build_motion` refuses a
-  clip whose tracking has holes; `build_guidance` treats that as a per-pair exclusion and
-  keeps going. Five attempted pairs were correctly excluded this way in the T2 batch.
+- **Pose-tracking gaps are a data-quality gate, not an error.** `build_motion`
+  refuses a clip whose tracking has holes. `build_guidance` excludes that pair
+  and continues. In the T2 batch, five pairs were correctly excluded this way.
 
 ## Tests
 

@@ -2,17 +2,22 @@
 
 ## Objective
 
-Record effective Accelerator and FSDP settings after setup, separately from
-requested YAML. Ordinary training and replay share the validation calculation.
-Current native acceptance requires actual world size and agreement across ranks.
+Record the effective Accelerator and FSDP settings after setup, separately from
+the requested YAML. Ordinary training and replay share the validation
+calculation. Native acceptance requires the actual world size and agreement
+across ranks.
 
 ## Data flow
 
-The engine captures the prepared model's FSDP policies and the adapter master
-storage dtypes. Each rank contributes one JSON record through a fixed tensor
-collective, avoiding GPU object gathering. Compare records except their rank,
-then save the complete ordered inventory in resolved config and checkpoint
-markers. The canonical launch owner checks requested process count and precision.
+1. The engine records the prepared model's FSDP policies and the storage dtypes
+   of the adapter masters.
+2. Each rank gives one JSON record through a fixed tensor collective. This
+   avoids GPU object gathering.
+3. The records are compared, except for their rank.
+4. The complete ordered list is saved in the resolved config and the
+   checkpoint markers.
+
+The canonical launch owner checks the requested process count and precision.
 
 ```mermaid
 flowchart LR
@@ -32,27 +37,35 @@ contains policies and storage dtypes, not gradient or model-output measurements.
 
 ## Organization logic
 
-Before expensive sessions, `check_accelerator` compares the actual process count,
-mixed precision and selected distributed type with the declared launch. Queued
-training requires FSDP; serial replay requires ordinary execution. A mismatch fails before model/text
-loading. This preflight does not replace the later wrapped-policy inventory.
+Before the expensive sessions open, `check_accelerator` compares the actual
+process count, mixed precision and selected distributed type with the declared
+launch. Queued training requires FSDP. Serial replay requires ordinary
+execution. A mismatch fails before the model and text load. This check does not
+replace the later list of wrapped-module policies.
 
-Capture world size, mixed precision, distributed type, conditioning precision,
-adapter storage dtypes and each distinct actual FSDP mixed-precision policy.
-Use the wrapped modules' policies rather than assuming the plugin was applied.
-Typed float32 conditioning requires disabled root-input casting. Preserve the
-parameter, reduction and buffer dtypes as observed; no repair changes them here.
-No FSDP module is represented by an empty policy inventory. This distinguishes
-an ordinary serial process from the original distributed reference.
+The capture records these items:
 
-`validate` checks the complete rank inventory and requested world/precision.
+- world size, mixed precision and distributed type;
+- conditioning precision and adapter storage dtypes;
+- each distinct actual FSDP mixed-precision policy.
+
+It uses the policies of the wrapped modules. It does not assume that the plugin
+was applied. Typed float32 conditioning requires disabled root-input casting.
+The parameter, reduction and buffer dtypes are kept as observed. No repair
+changes them here. An empty policy list means that there is no FSDP module.
+This separates an ordinary serial process from the original distributed
+reference.
+
+`validate` checks the complete rank list and the requested world and precision.
 Native replay requires FSDP, fp32 adapter masters and the preserved float32
-conditioning policy. A record without these facts fails. A serial reference records its own ordinary
-policy and compares the explicitly relevant requested precision separately.
-Policy records establish setup, not numerical equivalence or actual consumer
-field precision. Native acceptance also requires observations inside the model
-consumer, including nested wrapping and checkpoint recomputation; setup records
-alone cannot replace that evidence.
+conditioning policy. A record without these facts fails. A serial reference
+records its own ordinary policy and compares the relevant requested precision
+separately.
+
+Policy records prove the setup. They do not prove numerical equivalence or the
+actual precision of consumer fields. Native acceptance also requires
+observations inside the model consumer, including nested wrapping and
+checkpoint recomputation. Setup records alone cannot replace that evidence.
 
 Worked check: four rank records with bf16 parameter/reduction policy and
 `cast_root_forward_inputs=false` agree. Changing only rank two's reduction dtype
@@ -80,24 +93,31 @@ trainer's publication and marker binding; it does not prove native FSDP.
 
 ## Deterministic training policy
 
-The small shared owner `training/numerics.py` declares one required
-child environment: `CUBLAS_WORKSPACE_CONFIG=:4096:8`. It applies strict Torch
-deterministic algorithms, `warn_only=False`, cuDNN deterministic mode, disabled
-cuDNN benchmarking and disabled CUDA matmul TF32. These are the settings used by
-the successful one-rank control. cuDNN's separate TF32 setting is not changed by
-that control; observe it explicitly and require serial/native agreement rather
-than silently changing it. This policy changes numerical kernel selection only.
-It changes no training input, seed, sigma, budget, optimizer or tolerance.
+The small shared owner `training/numerics.py` declares one required child
+environment: `CUBLAS_WORKSPACE_CONFIG=:4096:8`. It applies these settings:
+
+- strict Torch deterministic algorithms, with `warn_only=False`;
+- cuDNN deterministic mode, and cuDNN benchmarking disabled;
+- CUDA matmul TF32 disabled.
+
+These are the settings of the successful one-rank control. That control does
+not change the separate TF32 setting of cuDNN. Observe it explicitly and
+require serial and native agreement. Do not change it silently. This policy
+changes only the numerical kernel selection. It changes no training input,
+seed, sigma, budget, optimizer or tolerance.
 
 The queue records the exact required environment in a version-two training
-launch record and passes it to the guarded child. The typed engine compares
-the inherited setting with that record before applying the policy. A direct
-typed run without a queue configures the workspace before native imports.
-Refuse late workspace configuration after CUDA initialization. Native backend
-detection can initialize CUDA before training; flags can be applied after that
-detection only when the required workspace was already inherited correctly.
-Apply before reserved CUDA buffers, Accelerator, prompt/model sessions or
-cuBLAS work.
+launch record and passes it to the guarded child. The typed engine compares the
+inherited setting with that record before it applies the policy.
+
+- A direct typed run without a queue configures the workspace before native
+  imports.
+- A late workspace configuration after CUDA initialization is refused. Native
+  backend detection can start CUDA before training. The flags can be applied
+  after that detection only when the required workspace was already inherited
+  correctly.
+- The policy applies before reserved CUDA buffers, the Accelerator, prompt or
+  model sessions and cuBLAS work.
 
 Runtime capture produces schema version two with observed numerical flags on
 every rank. `validate` accepts only schema two: it checks exact field types, full

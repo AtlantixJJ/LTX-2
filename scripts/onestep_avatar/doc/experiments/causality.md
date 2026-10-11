@@ -1,19 +1,73 @@
 # `experiments/causality.py` — saved-noise interventions and eight-block control
 
-The module entry calls the shared queue runtime helper. Outside a queue binding,
-it calls the public operation unchanged. In a queued child, the helper measures
-one actual local resource phase and records any declared numerical policy. The
-queue owns launch, supervision and worker-absence evidence; this module starts
-no child through that helper. See [runtime](../execution/runtime.md).
+This module is one of the E3 checkers. It tests that earlier causal output does
+not depend on later noise.
 
 ## Objective
 
-Own where to change noise and how to compare the two outputs. Ordinary
-evaluation owns checked preparation, native sessions, adapter loading and
-publication primitives; `model/causal.py` owns sampling and caches. This owner
-adds no sampler, decoder or launcher. Supported model work uses the queue's
-`experiment` kind with selector `causality`; the module has no other CLI form and
-ordinary evaluation accepts no study flags.
+Own where noise changes and how the two outputs are compared. The other parts
+have their own owners:
+
+- Ordinary evaluation owns the checked preparation, native sessions, adapter
+  loading and publication.
+- `model/causal.py` owns sampling and caches.
+
+This owner adds no sampler, decoder or launcher. Model work uses the queue's
+`experiment` kind with selector `causality`. The module has no other CLI form.
+Ordinary evaluation accepts no study flags.
+
+The module entry calls the shared queue runtime helper. Outside a queue, the
+helper calls the public operation unchanged. In a queued child, it measures one
+local resource phase and records any declared numerical policy. The queue owns
+the launch, the supervision and the proof that no worker remains. See
+[runtime](../execution/runtime.md).
+
+## Usage
+
+Humans can use the foreground queue or run this module directly.
+See [launch, output and stop commands](../usage.md). Agents use the queue.
+The queue recipes below describe managed execution.
+
+Start the check as a queue `experiment` job with selector `causality`. The
+queue supplies the device. See
+[run guide §9, E3](../../configs/README.md#e3--causal-continuation-continuation_check-continuation_identity_check-causality).
+
+This is the agent path. A person can also run the same module directly, or start the queue in the foreground; see [usage](../usage.md).
+
+The module has two protocols.
+
+**`future_noise`.** The arguments are causal
+[evaluation arguments](../evaluate.md#usage) plus three intervention options.
+All scientific paths are absolute:
+
+```json
+{"schema_version": 1, "protocol": "future_noise",
+ "arguments": ["--mode", "causal", "--subset", "/abs/membership.json", "--source", "<VIEW_ID>",
+               "--variant", "dev", "--guide-mode", "d1", "--schedule", "0.725", "0",
+               "--block-latent-frames", "2", "--blocks-per-sample", "3", "--context-latent-frames", "8",
+               "--noise-file", "/abs/noise.pt", "--changed-noise-file", "/abs/noise_changed.pt",
+               "--future-noise-start", "3"]}
+```
+
+| Option | Meaning |
+|---|---|
+| `--noise-file` | The original saved noise. Required. |
+| `--changed-noise-file` | The changed saved noise. Earlier bytes equal the original. |
+| `--future-noise-start N` | The first changed encoded frame. It must lie on a block boundary. |
+
+**`eight_block`.** The spec has fixed fields, not an argument list:
+
+```json
+{"schema_version": 1, "protocol": "eight_block",
+ "checkpoint": "/abs/adapter.safetensors", "view": "/abs/corpus/Part_1/0008_01/views/view00_cam51",
+ "sigma": 0.725}
+```
+
+The adapter's recorded conditions must match eight causal blocks over 17
+encoded frames. A shorter trained span needs its own protocol, not an override.
+
+Both protocols use the queue arguments `--spec` and `--output`. Check a spec on
+CPU with `--dry-run` first.
 
 ## Data flow
 
@@ -34,144 +88,167 @@ flowchart LR
   class R out;
 ```
 
-A `future_noise` spec contains exactly `schema_version: 1`,
-`protocol` and string-list `arguments`. Arguments hold scientific settings;
-output/device/dry-run/spec/help overrides are refused. Scientific paths are
-absolute. An `eight_block` spec instead contains exactly `schema_version`,
-`protocol`, `checkpoint`, `view` and `sigma`. Both use queue arguments
-`--spec` and `--output`; the queue supplies the device. The spec SHA and an
-evaluation software profile with `EXTRA_SOURCES` bind the producer.
+**Spec rules.** A `future_noise` spec has exactly `schema_version: 1`,
+`protocol` and a string-list `arguments`. The arguments hold scientific
+settings. Output, device, dry-run, spec and help overrides are refused. An
+`eight_block` spec has exactly `schema_version`, `protocol`, `checkpoint`,
+`view` and `sigma`. The spec SHA and an evaluation software profile with
+`EXTRA_SOURCES` bind the producer.
 
-Future-noise inputs use the evaluator's checked mode, source, adapters,
-conditioning, exact schedule, text and original saved noise. The intervention
-adds changed saved noise and its first changed encoded frame. Noise is
-`[1,F*H*W,C]` in shared patchifier order; published encodings are
-`[1,C,F,H,W]`. Saved noise is read, never reconstructed.
+**Future-noise inputs.** The inputs use the evaluator's checked mode, source,
+adapters, conditioning, exact schedule, text and original saved noise. The
+intervention adds the changed saved noise and its first changed encoded frame.
+Noise has the shape `[1,F*H*W,C]`, in shared patchifier order. Published
+encodings have the shape `[1,C,F,H,W]`. Saved noise is read, never rebuilt.
 
-Eight-block inputs are full white capture/guide masters `[C,F,H,W]` with
-equal geometry/fps and `F >= 17`, LTX-2.5 dev, a checked D1 adapter,
-generated history, B2/D8/sink1 geometry and direct `[sigma,0]`. Full masters
-determine global seed-42/seed-99 noise arrays; execution covers only the first
-eight complete blocks. Each rollout starts with an empty cache and uses clean
-capture c0, refreshed generated history and fixed text.
+**Eight-block inputs.**
+
+- Full `white` capture and guide masters `[C,F,H,W]` with equal geometry and
+  fps, and `F >= 17`.
+- LTX-2.5 dev, a checked D1 adapter, generated history, B2/D8/sink1 geometry
+  and direct `[sigma,0]`.
+- The full masters set the global seed-42 and seed-99 noise arrays. Execution
+  covers only the first eight complete blocks.
+- Each rollout starts with an empty cache. It uses the clean capture `c0`,
+  refreshed generated history and fixed text.
 
 ## Organization logic
 
 ### Future-noise protocol
 
-1. `parse_future_args` consumes the two intervention options and passes the
-   rest to the public evaluation parser. Either both options are present or
-   neither is; intervention requires saved original noise and a positive boundary.
-2. `prepare_evaluation` calls shared preflight before a session. Changed
-   noise is finite native bf16, matches the complete selected token shape,
-   preserves all earlier bytes and differs later. Causal boundaries separate
-   completed blocks and leave a later complete block.
-3. `probe_future_noise` repeats pair checks at the sampling boundary, then
-   calls public `evaluate.sample_case` twice with identical settings. It
-   returns both outputs/records, earlier exact equality and fp32 maximum
-   absolute differences before/after the boundary.
-4. `execute_evaluation` supplies explicit `sample_runner`,
-   `result_publisher` and `extra_sources` hooks to the one shared
-   evaluator. The runner retains both outputs while returning the first
-   ordinary pair. Publication saves changed noise, calls public `save_case`
-   for `original/` and `changed/`, then writes `future_noise.json`.
-   Each branch keeps its own noise digest and shared provenance.
-5. Saved verification supplies `branch_provider`, `records_validator`
-   and `extra_sources` to public `evaluate.verify_evaluation_conditions`.
-   Ordinary checks cover every expected case/variant/result. The branch hook
-   checks saved changed noise; the validator recomputes all five pair fields
-   from saved outputs. Neither hook opens weights or repairs results.
+1. `parse_future_args` reads the two intervention options and passes the rest
+   to the public evaluation parser. Either both options are present or
+   neither. An intervention requires saved original noise and a positive
+   boundary.
+2. `prepare_evaluation` calls the shared checks before a session opens. The
+   changed noise must be finite native bf16, match the complete selected token
+   shape, keep all earlier bytes and differ later. Causal boundaries must
+   separate completed blocks and leave a later complete block.
+3. `probe_future_noise` repeats the pair checks at the sampling boundary. Then
+   it calls the public `evaluate.sample_case` twice with identical settings. It
+   returns both outputs and records, the exact earlier equality and the fp32
+   maximum absolute differences before and after the boundary.
+4. `execute_evaluation` gives explicit `sample_runner`, `result_publisher` and
+   `extra_sources` hooks to the one shared evaluator. The runner keeps both
+   outputs and returns the first ordinary pair. Publication saves the changed
+   noise, calls the public `save_case` for `original/` and `changed/`, and then
+   writes `future_noise.json`. Each branch keeps its own noise digest and the
+   shared provenance.
+5. Saved verification gives `branch_provider`, `records_validator` and
+   `extra_sources` to the public `evaluate.verify_evaluation_conditions`. The
+   ordinary checks cover every expected case, variant and result. The branch
+   hook checks the saved changed noise. The validator recomputes all five pair
+   fields from the saved outputs. Neither hook opens weights or repairs
+   results.
 
-Evidence includes text, optional negative text, every raw encoding/result,
-original and changed noise, and pair diagnostics. Case/variant coverage comes
-from checked shared preparation rather than the manifest's claimed inventory.
+The evidence includes the text, the optional negative text, every raw encoding
+and result, the original and changed noise and the pair diagnostics. The case
+and variant coverage comes from the checked shared preparation, not from the
+list that the manifest claims.
 
 ### Eight-block protocol
 
-The shared planner covers `[0,3)`, `[3,5)`, ..., `[15,17)`.
-Block three ends at encoded frame nine: mixed noise takes seed 42 before
-token `9*H*W` and seed 99 afterward. Drawing full arrays preserves the
-original mapping for masters longer than 17 frames. Each finite output records
-eight denoise calls, eight refresh calls and sixteen total model calls.
+The shared planner covers `[0,3)`, `[3,5)`, ..., `[15,17)`. Block three ends at
+encoded frame nine. The mixed noise takes seed 42 before token `9*H*W` and seed
+99 after it. Drawing full arrays keeps the original map for masters longer than
+17 frames. Each finite output records eight denoise calls, eight refresh calls
+and sixteen model calls in total.
 
-Observers copy actual native inputs/outputs without replacing a model call.
-Queue execution publishes `result.json`, `raw_outputs.pt` and
-`raw_inputs.pt`. Raw inputs contain exactly `capture`, `guide`,
-`text`, `original_noise` and `mixed_noise`: CPU copies of full native
-tensors used by the forward. Completion does not redraw noise on CPU, whose
-generator mapping can differ from CUDA.
+Observers copy the actual native inputs and outputs. They replace no model
+call. Queue execution publishes `result.json`, `raw_outputs.pt` and
+`raw_inputs.pt`. The raw inputs contain exactly `capture`, `guide`, `text`,
+`original_noise` and `mixed_noise`: CPU copies of the full native tensors of
+the forward. Completion does not draw noise again on CPU, because the CPU
+generator map can differ from CUDA.
 
-`_verify_eight_block_inputs` reloads full masters and uses the native
-patchifier and content hashes to check exact saved bf16 capture/guide bytes.
-Require finite nonempty
-tensors, matching shapes, `[1,text_tokens,context_channels]` text,
-unchanged earlier noise bytes and changed later noise. Capture/guide/text
-digests and both record noise digests must match these actual saved tensors.
-`_verify_eight_block_outputs` then requires two finite fp32 `[1,C,17,H,W]`
-outputs, clean c0, exact fixed settings/control fields, true earlier equality,
-positive later difference, four input-file hashes and full call counts.
+`_verify_eight_block_inputs` reloads the full masters. It uses the native
+patchifier and content hashes to check the exact saved bf16 capture and guide
+bytes. It requires:
 
-### Completion and worked checks
+- finite nonempty tensors with matching shapes;
+- `[1,text_tokens,context_channels]` text;
+- unchanged earlier noise bytes and changed later noise;
+- capture, guide and text digests, and both noise digests of the record, that
+  match these saved tensors.
 
-`verify_completion` first runs selected saved scientific checks, then
-compares the whole manifest with reconstructed schema/kind/protocol/spec
-SHA/software/artifacts and checks current software. `evidence_paths` returns
-the manifest plus every artifact to the generic queue receipt. Missing files,
-changed inputs, extra manifest fields or rehashed false summary fields fail.
+`_verify_eight_block_outputs` then requires:
 
-For a 17-frame B2 input with four tokens per frame, boundary nine fixes the
-first 36 noise tokens. Valid cached outputs are exactly equal on `[0,9)`
-and differ on `[9,17)`. A zero later delta is an insensitive control and
-fails completion. An earlier signed-zero noise change keeps numerical equality
-but changes the hash, so it fails before sampling. Rehashing a false
-earlier-equality summary still fails against raw outputs; removing
-`raw_inputs.pt` cannot complete the queue result.
+- two finite fp32 `[1,C,17,H,W]` outputs and a clean `c0`;
+- exact fixed settings and control fields;
+- true earlier equality and a positive later difference;
+- four input-file hashes and full call counts.
+
+Saved master tokens must match the canonical master tensor hashes, including
+signed-zero bytes. Saved rollout outputs must keep the producer's float32
+dtype. Rehashed files still face these schema and conditioning gates.
+
+**Adapter.** The eight-block protocol requires a typed causal DEV/D1/`white`
+adapter at the exact direct schedule, with a clean `c0`, full-frame loss,
+cache/refresh and the shared unmerged fp32 application. The module reads and
+validates the contract and the tensor list before any native model session. It
+binds and checks the file bytes again. Then it uses
+`model.adapters.inference_transformer`. It keeps eight blocks, the shared first
+four noise blocks, the changed last four, the global noise map and 16 model
+calls per branch. The public kernel helpers stay usable by the short and
+continuation owners.
+
+### Completion
+
+`verify_completion` first runs the selected saved scientific checks. Then it
+compares the whole manifest with the rebuilt schema, kind, protocol, spec SHA,
+software and file list, and checks the current software. `evidence_paths`
+returns the manifest and every file to the generic queue receipt. The queue can
+call `evidence_paths(..., verified=True)` only after it ran this verifier in the
+same receipt check. Direct callers keep the default `verified=False`.
+
+Missing files, changed inputs, extra manifest fields or rehashed false summary
+fields fail.
+
+Worked checks: a 17-frame B2 input with four tokens per frame and boundary
+nine.
+
+- The first 36 noise tokens are fixed.
+- Valid cached outputs are exactly equal on `[0,9)` and differ on `[9,17)`.
+- A zero later difference is an insensitive control and fails completion.
+- An earlier signed-zero noise change keeps numerical equality but changes the
+  hash, so it fails before sampling.
+- A rehashed false earlier-equality summary still fails against the raw
+  outputs.
+- Without `raw_inputs.pt`, the queue result cannot complete.
 
 ## Invariants
 
-The public evaluation wrapper forwards an explicitly supplied fixed-input
-tensor validator to the ordinary evaluator in both the single and paired
-paths. The continuation checker supplies the canonical preview validator.
-Omitted validation for fixed inputs fails before model loading. This hook
-changes input verification only; the future-noise sampler remains the owner.
-
-Saved eight-block master tokens must match the canonical master tensor hashes,
-including signed-zero bytes. Saved rollout outputs must retain the producer's
-float32 dtype. Rehashed artifacts still face these schema and conditioning gates.
-
-- Keep scientific settings, protocol tolerances and saved attribution; never
-  restamp a saved producer manifest.
+- The public evaluation wrapper forwards an explicitly supplied fixed-input
+  tensor validator to the ordinary evaluator, in both the single and the paired
+  paths. The continuation checker supplies the canonical preview validator.
+  Omitted validation for fixed inputs fails before the model loads. This hook
+  changes only input verification. The future-noise sampler stays the owner.
+- Keep the scientific settings, protocol tolerances and saved attribution.
+  Never restamp a saved producer manifest.
 - Ordinary evaluation imports no experiment. Explicit hooks carry behavior and
   source identity in one direction.
-- Adapter conditions/fresh destinations precede weights; file identity is
-  rechecked before atomic publication.
-- Public causal sampling owns cache/noise/model operations; this experiment
-  owns intervention inventory and comparison.
+- Adapter conditions and fresh destinations come before the weights. The file
+  identity is checked again before atomic publication.
+- Public causal sampling owns cache, noise and model operations. This
+  experiment owns the intervention list and the comparison.
 
 ## Gotchas
 
-Earlier-output invariance belongs to causal sampling; whole-segment attention
-can depend on later noise. Latent differences do not measure perceptual
-similarity. Saved completion proves tensor consistency/control sensitivity;
-full-weight E3, learning and long-video acceptance remain separate.
+- Earlier-output invariance is a property of causal sampling. Whole-segment
+  attention can depend on later noise.
+- Latent differences do not measure perceptual similarity.
+- Saved completion proves tensor consistency and control sensitivity.
+  Full-weight E3, learning and long-video acceptance stay separate.
 
 ## Tests
 
-`tests/experiments/test_future_noise.py` checks native small-transformer
-invariance, invalid pairs before sampling, saved-input preflight, branch
-provenance/inventory, recomputed pair fields and signed-zero byte identity.
-`test_causality_diagnostic.py` compares original grid/noise trajectories and
-call counts on a real small transformer, including longer masters, plus
-preflight refusal and publication. `test_extracted_queue_protocols.py`
-checks normalized/pinned specs, model-free receipts, missing/rehashed outputs,
-raw input/text/noise digests and dtype/shape/intervention controls, including
-master signed-zero byte mismatches and wrong output precision.
-
-## Current adapter and CLI contract
-
-Eight-block inputs require a typed causal DEV/D1/white adapter at the exact direct schedule, clean c0, full-frame loss, cache/refresh, and shared unmerged fp32 application. Read and validate contract/tensor inventory before any native model session, bind and recheck file bytes, then use model.adapters.inference_transformer. Keep eight blocks, shared first four noise blocks, changed last four, global noise mapping and 16 model calls per branch. The module CLI accepts only a pinned scientific spec; public kernel helpers remain usable by current short/continuation owners.
-
-The queue may request `evidence_paths(..., verified=True)` only after it has
-completed this owner's scientific verifier in the same receipt check. That path
-reads the checked inventory without repeating the verifier. Direct callers keep
-the default `verified=False`, which verifies before exposing evidence.
+- `tests/experiments/test_future_noise.py` checks native small-transformer
+  invariance, invalid pairs before sampling, the saved-input checks, branch
+  provenance and lists, recomputed pair fields and signed-zero byte identity.
+- `test_causality_diagnostic.py` compares the original grid and noise
+  trajectories and call counts on a real small transformer, including longer
+  masters. It also checks refusal before sampling, and publication.
+- `test_extracted_queue_protocols.py` checks normalized and pinned specs,
+  receipts without a model, missing or rehashed outputs, raw input, text and
+  noise digests and dtype, shape and intervention controls. This includes
+  signed-zero byte mismatches in a master and wrong output precision.

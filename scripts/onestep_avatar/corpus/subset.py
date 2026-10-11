@@ -7,11 +7,17 @@ assign person groups before model work, and publish only a new content-pinned li
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import copy
+import csv
+import functools
 import hashlib
+import io
 import json
 import math
+import multiprocessing
 import pickle
+from collections.abc import Callable
 from pathlib import Path
 
 import torch
@@ -22,6 +28,8 @@ from scripts.onestep_avatar.hashing import sha256
 SCHEMA_VERSION = 2
 KIND = "onestep_avatar_membership"
 FRAME_PLAN_KIND = "onestep_avatar_frame_plan"
+CSV_FORMAT = "onestep_avatar_membership_sources_csv_v1"
+DEFAULT_WORKERS = 8
 
 
 def record_hash(record: dict) -> str:
@@ -65,6 +73,155 @@ def validate_membership(membership: dict) -> None:
             raise ValueError(f"{name}: frame selection belongs in the frame plan")
     if membership.get("sha256") != membership_hash(membership):
         raise ValueError("membership content does not match its SHA-256")
+
+
+def _flatten(record: dict, prefix: str = "") -> dict:
+    """Nested nonempty records become dotted columns; lists and scalars are leaf cells."""
+    flat = {}
+    for key, value in record.items():
+        if "." in key:
+            raise ValueError(f"membership field {key!r} cannot be a table column")
+        if isinstance(value, dict) and value:
+            flat.update(_flatten(value, f"{prefix}{key}."))
+        else:
+            flat[f"{prefix}{key}"] = value
+    return flat
+
+
+def _unflatten(flat: dict) -> dict:
+    record: dict = {}
+    for column, value in flat.items():
+        *parents, leaf = column.split(".")
+        node = record
+        for parent in parents:
+            node = node.setdefault(parent, {})
+        node[leaf] = value
+    return record
+
+
+def summarize_exclusions(record: dict) -> dict:
+    """Replace the per-view exclusion list by counts per reason, as the CSV form stores it.
+
+    Nothing downstream reads individual exclusions; the counts keep what was dropped and
+    why. The content hash is recomputed because exclusions are part of the hashed record.
+    """
+    summary = {key: value for key, value in record.items() if key not in {"excluded", "sha256"}}
+    counts: dict[str, int] = {}
+    for reason in record.get("excluded", {}).values():
+        counts[reason] = counts.get(reason, 0) + 1
+    summary["excluded_counts"] = dict(sorted(counts.items()))
+    summary["sha256"] = membership_hash(summary)
+    return summary
+
+
+def sources_csv_path(path: Path) -> Path:
+    """The per-view table that sits beside a membership JSON: same stem, ``.csv``."""
+    return path.with_suffix(".csv")
+
+
+def membership_files(record: dict, path: Path) -> tuple[str, str]:
+    """Split a membership into its small JSON text and its pure per-view CSV text.
+
+    The CSV has one header row and one row per selected view, holding every per-view
+    field as a column (nested records as dotted names). String columns hold the raw
+    string, other columns one JSON value; an empty cell means the field is absent from
+    that view. The JSON holds the list-level fields and names, hashes and types the CSV,
+    so pinning the JSON bytes pins the whole list; ``sha256`` stays the content hash.
+    """
+    if "excluded" in record:
+        raise ValueError("summarize per-view exclusions before writing the table form")
+    flats = [_flatten(source) for source in record["sources"]]
+    names = list(dict.fromkeys(column for flat in flats for column in flat))
+    if any(other.startswith(f"{name}.") for name in names for other in names):
+        raise ValueError("a membership field is a record in one view and a value in another")
+    columns = [
+        {"name": name, "type": "str" if all(isinstance(f[name], str) for f in flats if name in f) else "json"}
+        for name in names
+    ]
+    if any(flat.get(c["name"]) == "" for flat in flats for c in columns if c["type"] == "str"):
+        raise ValueError("an empty string field cannot be stored in a membership CSV")
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(names)
+    for flat in flats:
+        writer.writerow(
+            ""
+            if c["name"] not in flat
+            else flat[c["name"]] if c["type"] == "str" else json.dumps(flat[c["name"]], separators=(",", ":"))
+            for c in columns
+        )
+    table = buffer.getvalue()
+    meta = {key: value for key, value in record.items() if key != "sources"}
+    meta["sources_csv"] = {
+        "format": CSV_FORMAT,
+        "path": sources_csv_path(path).name,
+        "sha256": hashlib.sha256(table.encode()).hexdigest(),
+        "rows": len(flats),
+        "columns": columns,
+    }
+    return json.dumps(meta, indent=2) + "\n", table
+
+
+def read_sources_csv(directory: Path, table: dict) -> list[dict]:
+    if table.get("format") != CSV_FORMAT or Path(table["path"]).name != table["path"]:
+        raise ValueError(f"membership sources must be a {CSV_FORMAT} file beside the JSON")
+    data = (directory / table["path"]).read_bytes()
+    if hashlib.sha256(data).hexdigest() != table["sha256"]:
+        raise ValueError(f"membership table {table['path']} does not match its SHA-256")
+    columns = table["columns"]
+    reader = csv.reader(io.StringIO(data.decode(), newline=""))
+    if next(reader, None) != [column["name"] for column in columns]:
+        raise ValueError("membership CSV header differs from its declared columns")
+    sources = []
+    for row in reader:
+        if len(row) != len(columns):
+            raise ValueError("membership CSV row has the wrong number of cells")
+        sources.append(_unflatten({
+            column["name"]: cell if column["type"] == "str" else json.loads(cell)
+            for column, cell in zip(columns, row, strict=True)
+            if cell != ""
+        }))
+    if len(sources) != table["rows"]:
+        raise ValueError(f"membership table {table['path']} has the wrong row count")
+    return sources
+
+
+def load_membership(path: Path) -> dict:
+    """Read a membership JSON; its per-view rows come from the CSV it names, when present."""
+    path = Path(path)
+    record = json.loads(path.read_text())
+    if "sources_csv" not in record:
+        return record
+    table = record.pop("sources_csv")
+    record["sources"] = read_sources_csv(path.parent, table)
+    validate_membership(record)
+    return record
+
+
+def write_membership(path: Path, record: dict, check: Callable[[], None] = lambda: None) -> None:
+    """Publish the new CSV, then the JSON that pins it; refuse any existing file.
+
+    ``check`` runs after both are written and before the JSON appears. On failure the CSV
+    this call published is removed, so no partial list is left behind.
+    """
+    meta, table = membership_files(record, path)
+    table_path = sources_csv_path(path)
+    for target in (table_path, path):
+        if target.exists() or target.is_symlink():
+            raise ValueError(f"membership output {target} must be a new file")
+    dataset.atomic_write(table_path, lambda temporary: temporary.write_text(table), replace_existing=False)
+    try:
+
+        def publish(temporary: Path) -> None:
+            temporary.write_text(meta)
+            check()
+
+        dataset.atomic_write(path, publish, replace_existing=False)
+    except BaseException:
+        table_path.unlink(missing_ok=True)
+        raise
+    if load_membership(path) != record:
+        raise ValueError("published membership files do not reproduce the checked record")
 
 
 def split_actors(actors: list[str], held_out_fraction: float = 0.1, min_held_out: int = 1) -> dict[str, list[str]]:
@@ -200,7 +357,6 @@ def pin_content(
         record["guide_sha256"] = sha256(view / dataset.render_name(objective))
         record["guide_sidecar_sha256"] = sha256(view / dataset.render_metadata_name(objective))
     dataset.ClipStore(_one_view_membership(root, objective, record)).load(name, require_guide=require_guide)
-    _check_source_pins(root, objective, record)
     return record
 
 
@@ -221,8 +377,42 @@ def _check_source_pins(root: Path, objective: str, source: dict) -> None:
         raise ValueError(f"{source['relative_dir']}: input content changed during membership preparation")
 
 
+def _map(function: Callable, items: list, workers: int) -> list:
+    """Order-preserving map; views are independent, so pinning parallelizes across processes."""
+    if workers <= 1 or len(items) <= 1:
+        return [function(item) for item in items]
+    context = multiprocessing.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(min(workers, len(items)), mp_context=context) as pool:
+        return list(pool.map(function, items, chunksize=16))
+
+
+def _try_pin(
+    root: Path, objective: str, require_guide: bool, crop_manifest: dataset.CaptureManifest, name: str
+) -> tuple[dict | None, str | None]:
+    try:
+        return pin_content(root, name, objective, require_guide=require_guide, crop_manifest=crop_manifest), None
+    except (
+        OSError, ValueError, KeyError, TypeError, RuntimeError, EOFError, pickle.UnpicklingError, SystemExit
+    ) as exc:
+        # Name the failing view generically so identical failures group in the exclusion counts.
+        return None, str(exc).replace(str(root / name), "<view>").replace(str(root), "<corpus>")
+
+
+def _pins_ok(root: Path, objective: str, source: dict) -> str | None:
+    try:
+        _check_source_pins(root, objective, source)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def survey_sources(
-    root: Path, objective: str, *, require_guide: bool = False, source_ids: list[str] | None = None
+    root: Path,
+    objective: str,
+    *,
+    require_guide: bool = False,
+    source_ids: list[str] | None = None,
+    workers: int = 1,
 ) -> tuple[list[dict], dict[str, str], str]:
     """Read available views and record exclusions before person grouping."""
     root = Path(root).resolve()
@@ -245,22 +435,13 @@ def survey_sources(
             raise ValueError("explicit source IDs must be nonempty and unique")
         names = sorted(source_ids)
     sources, excluded = [], {}
-    for name in names:
-        try:
-            sources.append(pin_content(root, name, objective, require_guide=require_guide, crop_manifest=crop_manifest))
-        except (
-            OSError,
-            ValueError,
-            KeyError,
-            TypeError,
-            RuntimeError,
-            EOFError,
-            pickle.UnpicklingError,
-            SystemExit,
-        ) as exc:
-            reason = str(exc).replace(str(root), "<corpus>")
-            if source_ids is not None:
-                raise ValueError(f"selected video {name} is unavailable: {reason}") from exc
+    pin = functools.partial(_try_pin, root, objective, require_guide, crop_manifest)
+    for name, (source, reason) in zip(names, _map(pin, names, workers), strict=True):
+        if source is not None:
+            sources.append(source)
+        elif source_ids is not None:
+            raise ValueError(f"selected video {name} is unavailable: {reason}")
+        else:
             excluded[name] = reason
     if sha256(manifest_path) != manifest_hash:
         raise ValueError("crop manifest changed during membership preparation")
@@ -277,15 +458,21 @@ def build_membership(
     max_people: int | None = None,
     held_out_fraction: float = 0.1,
     min_held_out: int = 1,
+    workers: int = 1,
+    verify: bool = True,
 ) -> dict:
-    """Create an immutable video list from current files without choosing model frames."""
+    """Create an immutable video list from current files without choosing model frames.
+
+    ``verify=False`` leaves the content recheck to the caller, which must run
+    ``verify_prepared_membership`` before publishing (the CLI does it at publication).
+    """
     if objective not in dataset.OBJECTIVES or type(require_guide) is not bool:
         raise ValueError("membership requires objective bg or white and an explicit guide requirement")
     if max_people is not None and (type(max_people) is not int or max_people < 1):
         raise ValueError("max_people must be a positive integer")
     root = Path(root).resolve()
     sources, excluded, manifest_hash = survey_sources(
-        root, objective, require_guide=require_guide, source_ids=source_ids
+        root, objective, require_guide=require_guide, source_ids=source_ids, workers=workers
     )
     people = _actor_order([source["actor"] for source in sources])
     if max_people is not None:
@@ -321,18 +508,21 @@ def build_membership(
         },
     }
     record["sha256"] = membership_hash(record)
-    verify_prepared_membership(record)
+    if verify:
+        verify_prepared_membership(record, workers=workers)
     return record
 
 
-def verify_prepared_membership(record: dict) -> None:
+def verify_prepared_membership(record: dict, workers: int = 1) -> None:
     """Recheck the selected producer bytes before a new list is published."""
     validate_membership(record)
     root = Path(record["corpus_root"])
     if sha256(root / dataset.CAPTURE_MANIFEST_NAME) != record["capture_manifest"]["sha256"]:
         raise ValueError("crop manifest changed during membership preparation")
-    for source in record["sources"]:
-        _check_source_pins(root, record["objective"], source)
+    check = functools.partial(_pins_ok, root, record["objective"])
+    failure = next((reason for reason in _map(check, record["sources"], workers) if reason), None)
+    if failure:
+        raise ValueError(failure)
     dataset.ClipStore(record).verify(require_guide=record["requires_guide_latent"])
 
 
@@ -361,16 +551,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--corpus-root", type=Path, default=dataset.DEFAULT_CORPUS_ROOT)
     parser.add_argument("--objective", choices=dataset.OBJECTIVES, default=dataset.DEFAULT_OBJECTIVE)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True, help="new .json path; the per-view .csv goes beside it")
     parser.add_argument("--require-guide", action="store_true")
     parser.add_argument("--source", action="append")
     parser.add_argument("--splits", type=Path)
     parser.add_argument("--max-people", type=int)
     parser.add_argument("--held-out-fraction", type=float, default=0.1)
     parser.add_argument("--min-held-out", type=int, default=1)
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="CPU processes for pinning views")
     args = parser.parse_args(argv)
-    if args.output.exists() or args.output.is_symlink():
-        raise SystemExit("membership output must be a new file")
+    if args.output.suffix != ".json" or any(
+        path.exists() or path.is_symlink() for path in (args.output, sources_csv_path(args.output))
+    ):
+        raise SystemExit("membership output must be a new file: a .json path with no .csv of the same name")
+    if args.workers < 1:
+        raise SystemExit("--workers must be positive")
     splits_hash = sha256(args.splits) if args.splits is not None else None
     splits = json.loads(args.splits.read_text()) if args.splits is not None else None
     membership = build_membership(
@@ -382,17 +577,17 @@ def main(argv: list[str] | None = None) -> int:
         max_people=args.max_people,
         held_out_fraction=args.held_out_fraction,
         min_held_out=args.min_held_out,
+        workers=args.workers,
+        verify=False,
     )
+    membership = summarize_exclusions(membership)
 
-    def publish(temporary: Path) -> None:
-        temporary.write_text(json.dumps(membership, indent=2) + "\n")
-        verify_prepared_membership(membership)
+    def check() -> None:
+        verify_prepared_membership(membership, workers=args.workers)
         if args.splits is not None and sha256(args.splits) != splits_hash:
             raise ValueError("explicit group input changed during membership preparation")
-        if args.output.exists() or args.output.is_symlink():
-            raise ValueError("membership output appeared during preparation")
 
-    dataset.atomic_write(args.output, publish, replace_existing=False)
+    write_membership(args.output, membership, check)
     return 0
 
 

@@ -1,10 +1,60 @@
 # `previews.py` — pinned training previews
 
+A preview generates and renders the same fixed inputs at each saved training
+checkpoint. You can then compare the checkpoints on the same inputs.
+
 ## Objective
 
-Own fixed preview records, locked state changes, raw generation and saved-output
-rendering. Training enqueues a job; this module calls ordinary evaluation with
-its one canonical tensor validator. It owns no trainer or sampler.
+This module owns these parts of a preview:
+
+- the fixed preview records;
+- the locked state changes of a preview job;
+- raw generation;
+- rendering of the saved outputs.
+
+Training adds a preview job to the queue. This module calls ordinary
+evaluation with its one tensor validator. It has no trainer or sampler of its
+own.
+
+## Usage
+
+Humans can use the foreground queue or run this module directly.
+See [launch, output and stop commands](usage.md). Agents use the queue.
+The queue recipes below describe managed execution.
+
+Start a preview as a queue `preview` job. The queue selects the GPU. See
+[run guide §6](../configs/README.md#6-fixed-training-previews).
+
+This is the agent path. A person can also run the same module directly, or start the queue in the foreground; see [usage](usage.md).
+
+1. Prepare the reference pixels with
+   [`media --prepare-training-references`](media.md#usage).
+2. Pin the fixed inputs with [`prepare_inputs preview`](prepare_inputs.md#usage).
+3. Give `<FIXED>/preview.json` to training as `--preview-inputs`. Each saved
+   checkpoint then writes a preview job file.
+4. Run each preview job file as a queue job:
+
+```json
+{"id": "preview_step20", "kind": "preview",
+ "arguments": ["--preview-job", "/abs/run/preview_jobs/<ID>.json", "--output", "/abs/run/previews/<ID>"],
+ "output": "/abs/run/previews/<ID>",
+ "completion": {"records": ["/abs/run/previews/<ID>/preview_completion.json"]}}
+```
+
+Training writes each job to `<run>/preview_jobs/<ID>.json`. Its output is
+fixed to `<run>/previews/<ID>`, and `--output` must name that directory.
+
+| Argument | Meaning |
+|---|---|
+| `--preview-job` | Required. The pinned preview job file that training wrote. |
+| `--output` | Required. It must equal the output in the preview job, `<run>/previews/<ID>`. |
+| `--gpu-id` | Set by the queue. Local device zero by default. |
+
+The result shows these panels on matched frames: capture RGB, VAE-decoded
+capture, guide, base and adapter. A failed preview does not change training.
+
+Outputs in `<run>/previews/<ID>`: numbered `attempt_NNNN/` directories with raw results, the
+rendered video and poster, and `preview_completion.json`.
 
 ## Data flow
 
@@ -20,194 +70,209 @@ flowchart LR
   class J,O,M disk;
 ```
 
-Rendering reads the fixed reference bundle and raw records. It opens the shared
-VAE session, decodes only requested outputs, then calls the shared media owner.
+Rendering reads the fixed reference bundle and the raw records. It opens the
+shared VAE session and decodes only the requested outputs. Then it calls the
+shared media owner.
 
 ## Organization logic
 
-The queue-facing parser accepts `--preview-job`, `--output` and an optional
-local `--gpu-id` (zero by default). Parsing reads no scientific files. The
-explicit output must equal the pinned job's output after path normalization.
-`queue_identity(arguments)` exposes the immutable job ID, checkpoint record,
-fixed-input hash and output. It does not bind the whole mutable job-file hash:
-the preview owner updates that file's state and result inventory during work.
+### Arguments and identity
 
-After a queued preview reaches complete state, publish `preview_completion.json`
-under its output. Bind the immutable identity and exact raw/render record lists.
-`verify_completion(arguments, root)` rechecks that marker, the current complete
-job, every fixed input and checkpoint, and the public raw/render verification.
-Require each generated artifact to remain within the pinned output. Validate
-the raw encoding's shape, finite native precision and clean first-image bytes.
-`evidence_paths` returns the marker, every raw/render record, encoding, video
-and poster after verification. It opens no model or decoder and repairs nothing.
-`--output` is required; completion always requires rendered evidence.
+The parser reads no scientific files. The explicit output must equal the
+pinned job's output after path normalization.
 
-If rendering completed before the process stopped but no queue marker exists,
-the explicit queue CLI verifies the saved complete job and publishes that marker
-without generation. If the marker already exists, verify it and return without
-changing any bytes. Saved verification itself never writes or repairs records.
+`queue_identity(arguments)` gives the fixed identity of the job: the job ID,
+the checkpoint record, the fixed-input hash and the output. It does not bind
+the hash of the whole job file, because this module updates the job's state
+and result list during work.
 
-Raw completion uses the shared ordinary evaluation verifier with the fixed
-arguments, pinned adapter and exact numbered attempt. Require one adapter and
-at most one base result. Rendering must identify that same raw attempt, decoder
-keys, native VAE bytes and pinned references. Check the reference pixel hashes,
-panel roles/titles/positions, source-frame mapping and fixed media paths.
+Worked check: a state change or new media changes the job-file SHA, but not
+`queue_identity`. A changed checkpoint or fixed-input hash changes the
+identity or fails the check. A deleted poster fails saved completion.
 
-Worked queue control: publishing state and media changes the job-file SHA, but
-not `queue_identity`. Changing its checkpoint or fixed-input hash changes that
-identity or fails preflight. Deleting a rendered poster fails saved completion.
+### Checks before generation
 
-Recalculate the fixed-record hash, concatenated checkpoint/fixed identity,
-every input-file hash and the checkpoint completion marker before execution.
-Validate the checkpoint through the public metadata and tensor checker.
-Reference RGB must bind the fixed capture encoding, source and guide render.
+`verify_preview_job` checks these items. It runs no model or decoder.
 
-Lock job state writes. Permit pending→running/failed, failed→running and
-running→complete/failed. A complete job has no outgoing transition. A different
-live PID cannot replace the running owner. Failed states require a reason.
-Complete states require byte-current raw results and video/poster records,
-matching job/fixed identities and at least one pinned adapter result.
+- the job ID against the checkpoint and fixed-record hashes;
+- the checkpoint completion marker and all fixed file hashes;
+- the actual version-two adapter matrices and step, through the public
+  metadata and tensor checker.
 
-Each retry chooses the first unused attempt directory. Pass typed ordinary
-arguments and `preview_fixed` to the evaluator. Pass the public
-`verify_preview_tensors` as its explicit `preview_tensor_validator`. The
-evaluator rejects a fixed preview without that callable before native handles,
-weights or writes. After assembling the actual execution tensors, it calls
-this validator at the same point as before the owner split. This module has
-a one-way import of evaluate; evaluate imports no previews module.
+The fixed record can have a `reference_bundle`. It pins an absolute manifest
+path and the full file hash. The check loads its pixel records and requires:
 
-The tensor checker hashes shape, dtype and actual tensor bytes through hashing.
-Check every pinned tensor except the subset file. Missing or changed tensors
-fail before the transformer. On success, verify and retain raw records. Render
-only when pinned reference pixels exist; raw-only output stays running.
+- its capture-encoding hash equals the fixed capture file hash;
+- its source equals the one explicit evaluation source;
+- for D1, the guide RGB identity matches the encoding fingerprint of the
+  pinned guide bundle. A D1 bundle with no guide is invalid. Null values do
+  not prove a matching guide identity.
 
-The rendered panels remain recorded capture, VAE-decoded capture, guide,
-optional base and pinned adapter output. Keep exact source frames/fps and
-shared equal-height media layout rules. Missing base output is explicit.
+Reference pixels or a bundle from another source fail before generation. Older
+raw-only records can omit this field. They cannot claim complete reference
+rendering. The shared reference checker also verifies non-tensor
+`producer_inputs`, for example the membership and frame-plan bytes.
 
-Worked check: a failed attempt_0000 remains unchanged. Retry writes
-attempt_0001 with the same checkpoint and fixed inputs. A changed noise tensor
-fails before transformer loading and records its reason; checkpoint bytes and
-completion marker stay unchanged.
+### Job state
+
+`set_preview_state` locks each job file and writes JSON atomically. The allowed
+state changes are:
+
+| From | To |
+|---|---|
+| `pending` | `running`, `failed` |
+| `failed` | `running` |
+| `running` | `complete`, `failed` |
+| `complete` | none |
+
+- A different live PID cannot replace the running owner.
+- A failed state requires a reason.
+- A complete state requires current raw results and video and poster records,
+  matching job and fixed identities and at least one pinned adapter result.
+- A failed-state update checks the fixed job identity, but not unchanged input
+  bytes. This lets the module record an input-corruption failure. The running
+  and complete changes still verify all pinned files.
+- Checkpoint bytes and the completion marker stay read-only.
+
+### Generation
+
+`generate_preview(job_path, gpu_id=...)` is the raw generation stage. It
+accepts no study-setting overrides. It does these steps:
+
+1. Verify the fixed files and the completed adapter. If this first check
+   fails, record a failed state on the pending job before claiming it. Do not
+   change a job that another process owns or a terminal job.
+2. Claim the job under its state lock.
+3. Build the evaluation arguments from the saved settings. Add the pinned
+   checkpoint and the first unused `attempt_NNNN` directory. Never change the
+   training settings or overwrite an earlier failed attempt.
+4. Read the fixed text tensor directly. Do not rebuild text from a prompt. Load
+   the saved negative text when CFG uses it. Never rebuild it from the prompt
+   cache.
+5. Pass the typed arguments and `preview_fixed` to the evaluator. Pass the
+   public `verify_preview_tensors` as `preview_tensor_validator`.
+6. Before each transformer opens, compare the actual capture, guide,
+   first-image, text and saved-noise tensor hashes with the fixed record. A
+   mismatch fails before any transformer call.
+7. After generation, verify the saved raw records and their encoding hashes.
+   Record these results on the running job.
+
+The evaluator refuses a fixed preview without the validator, before native
+handles, weights or writes. It calls the validator after it assembles the
+execution tensors. This module imports `evaluate` in one direction only.
+`evaluate` imports no previews module.
+
+The tensor checker hashes the shape, the dtype and the tensor bytes through
+`hashing`. It checks every pinned tensor except the subset file. All pinned
+tensor roles are required.
+
+A saved `--noise-file` holds one finite native-bf16 token tensor for one
+video. The check verifies its shape. Execution uses the retained CPU tensor.
+It does not read the file again after the weights open, and it does not change
+the dtype.
+
+Raw generation alone cannot complete the job. Any ordinary failure records
+`failed` with the exception type and message, and then raises the error again.
+
+### Rendering
+
+With a reference bundle, rendering follows raw generation in the same process.
+`render_preview_outputs` does these steps:
+
+1. Verify the saved raw results, the reference hashes, the source, fps and
+   coverage, the native decoder settings and the native VAE hash.
+2. Check the exact reference and output titles with `media.layout_geometry`.
+   Use the normal training layout when it fits. Otherwise use the compact
+   planner. If neither fits, fail before decoding. The checkpoint stays intact.
+3. Require exactly one pinned adapter result and at most one base result.
+4. Decode the saved encodings with the reference decode seed. Do not open the
+   transformer again.
+5. Show the three references above the base and adapter outputs. If no base
+   result was requested, label that panel as missing.
+6. Save the actual decoder identities and links to the raw result records.
+
+A changed Torch version or decoder configuration fails before the decoder
+opens. Prepare new references for that runtime. A rendering failure goes to the
+failed-job handler of the generation stage. There is no separate render-only
+recovery. Native preview acceptance is part of E4.
+
+The panels are: recorded capture, VAE-decoded capture, guide, the optional base
+and the pinned adapter output. They keep the exact source frames and fps, and
+the shared equal-height layout rules. A missing base output is labeled.
+
+Preview rendering records the decoding software profile before the checks. It
+checks the profile again before the VAE session and before publication, and
+saves it in each rendering.
+
+### Completion
+
+After a queued preview reaches the complete state, the module publishes
+`preview_completion.json` under its output. The marker binds the fixed
+identity and the exact lists of raw and render records.
+
+`verify_completion(arguments, root)` checks these items again:
+
+- the marker and the current complete job;
+- every fixed input and the checkpoint;
+- the public raw and render verification;
+- that each generated file stays inside the pinned output;
+- the raw encoding's shape, finite native precision and clean first-image
+  bytes.
+
+Raw completion uses the shared evaluation verifier with the fixed arguments,
+the pinned adapter and the exact numbered attempt. Rendering must identify the
+same raw attempt, decoder keys, native VAE bytes and pinned references. The
+check covers the reference pixel hashes, panel roles, titles and positions,
+source-frame map and fixed media paths.
+
+`evidence_paths` returns the marker, every raw and render record, the encoding,
+the video and the poster, after verification. It opens no model or decoder and
+repairs nothing. The queue can call `evidence_paths(..., verified=True)` only
+after it ran this verifier in the same receipt check. Direct callers keep the
+default `verified=False`.
+
+Every run requires an explicit output that matches the preview job. Completion
+always requires rendered evidence. The module never creates absent reference
+data.
+
+**Marker recovery.** Rendering can complete before the process stops, with no
+marker written. Then the queue CLI verifies the saved complete job and
+publishes the marker without generation. If the marker exists, the CLI
+verifies it and changes no bytes. Saved verification itself never writes or
+repairs records.
+
+Worked check: `attempt_0000` failed and stays unchanged. A retry writes
+`attempt_0001` with the same checkpoint and fixed inputs. A changed noise
+tensor fails before the transformer loads and records its reason. The
+checkpoint bytes and the completion marker stay unchanged.
 
 ## Invariants
 
-One validator owns fixed tensor checks. The evaluation software receipt includes
-this validator owner. Never change a training or checkpoint file. Completion
-requires raw and rendered evidence under the same running owner.
+- One validator owns the fixed tensor checks. The evaluation software receipt
+  includes this validator owner.
+- Never change a training or checkpoint file.
+- Completion requires raw and rendered evidence under the same running owner.
 
 ## Gotchas
 
 Generation and rendering are separate evidence stages. A saved raw output alone
-cannot certify complete preview media. Retain original retries and receipts.
+cannot certify complete preview media. Keep the original retries and receipts.
 
 ## Tests
 
-Preserve all state, mutation, retry, rendering and pin controls in test_previews.py.
-Add missing-validator refusal before native handles or writes, and assert the
-canonical validator reaches ordinary evaluation. New CLI help uses --preview-job.
-`test_ordinary_queue_completion.py` adds a mutable-state identity control,
-complete queued raw/render execution on a controlled CPU model, marker-only
-recovery, and missing-media/rehashed shape/precision/c0/time-map/decoder failures.
-Native model and decoder boundaries remain blocked during saved completion.
+`test_previews.py` keeps all state, change, retry, rendering and pin checks. It
+also checks:
 
+- a missing validator fails before native handles or writes;
+- the validator reaches ordinary evaluation;
+- CLI help uses `--preview-job`.
 
-### Preview verification and state changes
+`test_ordinary_queue_completion.py` adds these checks:
 
-An optional fixed `reference_bundle` pins an absolute manifest path and its
-full file hash. Load its checked pixel records during training/preview preflight.
-Require its capture-encoding hash to equal the fixed capture file hash and its
-source to equal the one explicit evaluation source. D1 additionally checks the
-guide RGB identity against the pinned guide bundle's encoding fingerprint.
-Reference pixels or a bundle from another source fail before generation.
-Older raw-only preview records can omit this field; they cannot claim complete
-reference/render integration from that omission.
+- the identity stays the same when the job state changes;
+- complete queued raw and render execution on a controlled CPU model;
+- marker-only recovery;
+- failures for missing media and for changed shape, precision, `c0`, time map
+  and decoder.
 
-`verify_preview_job` checks the job ID against checkpoint and fixed-record
-hashes, the completion marker, all fixed file hashes, and actual version-two
-adapter matrices/step. It performs no model or decoder operation.
-`set_preview_state` permits pending/failed to running and running to complete
-or failed. A live running owner cannot be replaced. Changes use a per-job file
-lock and an atomic JSON write. Checkpoint bytes and marker stay read-only.
-To mark complete, verify every saved result encoding and every rendered output
-against their records. Missing raw or rendered evidence fails completion.
-### Preview generation stage
-
-When fixed inputs include a reference bundle, raw generation continues into
-`render_preview_outputs` in the same owning process. Verify saved raw results,
-reference hashes, source/FPS/coverage, current native decoder settings and the native VAE hash before loading
-a decoder. Require exactly one pinned adapter result and at most one base
-result. Decode those saved encodings with the reference decode seed; no
-transformer is reopened. Show the checked three references above base/adapter
-outputs in the training layout. If no base result was requested, label that
-panel missing. A changed Torch version or decoder configuration fails before
-opening the decoder; prepare new references for that runtime. Save actual
-decoder identities and link raw-result records in rendering
-settings. Mark complete only through the existing completion gates. Rendering
-failure propagates to the generation stage's failed-job handler. There is no
-standalone render-only recovery path; native preview acceptance is part of E4.
-
-`generate_preview(job_path, gpu_id=...)` is the package-owned raw generation
-stage. A `preview` queue job supplies `--preview-job <job.json> --output <output>`
-in its `arguments`; the queue assigns the device and verifies saved completion.
-Use the [queue recipes](../configs/README.md) to validate and execute the list.
-This route accepts no study-setting overrides. Verify the fixed files and completed adapter, claim the job under its
-state lock, and build evaluation arguments from the saved settings. The
-executor adds the pinned checkpoint and a new numbered attempt directory;
-it never changes training settings or overwrites an earlier failed attempt.
-Read the fixed text tensor directly instead of rebuilding text from a prompt.
-Before opening each transformer, compare actual capture, guide, first-image,
-text and saved-noise tensor hashes with the fixed record. A mismatch fails
-before any transformer call.
-
-After generation, verify saved raw records and their encoding hashes using the
-same completion gates. Record these results on the running job. Raw generation
-alone cannot mark the job complete: checked reference preparation and media
-rendering must still supply the final rendering evidence. Any ordinary failure
-records `failed` with its exception type/message, then propagates the error.
-An initial pinned-file verification failure records a failed pending job before
-claiming it. It does not change a job already owned by another process or a
-terminal job. The tensor checker requires all pinned tensor roles; omission
-does not bypass verification.
-Checkpoint and completion-marker bytes remain read-only. A second process
-cannot claim a running job owned by a live process. A failed job can retry in
-the next attempt directory. Rendering with pinned references runs automatically
-after generation.
-
-A failed-state update validates the immutable job identity but does not require
-unchanged input/output bytes: this lets the executor record an input-corruption
-failure. Running and complete transitions still verify all pinned files.
-`--noise-file` consumes one finite native-bf16 token tensor for one selected
-video. Preflight checks its shape. Execution uses the retained CPU tensor rather
-than rereading a file after opening weights or silently changing its dtype.
-
-
-Fixed preview inputs may include negative text when CFG uses it. Load that saved
-context and verify its tensor hash with all other fixed tensors before any
-transformer call. Never rebuild fixed negative context from the prompt cache.
-The shared reference checker also verifies non-tensor `producer_inputs` such as
-membership and frame-plan bytes pinned by the preparation command.
-
-Preview and saved-comparison decoder jobs capture the decoding software profile
-before preflight, check it before the VAE session and media publication, and save
-it in each rendering. Saved-comparison current completion compares the same
-shared manifest, including native video-VAE and preprocessing dependencies.
-
-Training preview rendering checks exact reference/output titles with
-`media.layout_geometry` before opening a decoder. Use the normal training
-layout when it fits, otherwise the existing compact planner. A no-fit result
-fails before decode and leaves the completed checkpoint intact. Both layouts
-keep the reference roles and adjacent output roles specified in `media.md`.
-For D1, a reference bundle with no guide is invalid even when a malformed
-guide bundle also omits its render fingerprint. Null values do not establish
-matching guide identity. Reject this before a decoder or transformer is opened.
-
-
-## Current preview publication contract
-
-Every invocation requires an explicit output matching the immutable preview job. Raw-only output omission is unsupported. Completion binds raw results and rendered RGB references; no absent reference data is created by the executor.
-
-The queue may request `evidence_paths(..., verified=True)` only after it has
-completed this owner's scientific verifier in the same receipt check. That path
-reads the checked inventory without repeating the verifier. Direct callers keep
-the default `verified=False`, which verifies before exposing evidence.
+Native model and decoder access stay blocked during saved completion.

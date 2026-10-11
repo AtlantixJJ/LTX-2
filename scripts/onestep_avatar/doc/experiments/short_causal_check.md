@@ -2,11 +2,46 @@
 
 ## Objective
 
-Check repeated generation, the supplied first image and future-noise independence
-through the shared causal evaluation and product functions. Use one accepted
-E4 step-one adapter, seven encoded frames and generated cache history.
-These checks establish numerical agreement. They establish no video quality or
-behavior after cache eviction.
+Check three things through the shared causal evaluation and product functions:
+
+- repeated generation gives identical output;
+- the supplied first image is kept;
+- earlier output does not depend on future noise.
+
+The check uses one accepted E4 step-one adapter, seven encoded frames and
+generated cache history. It proves numerical agreement. It proves no video
+quality and no behavior after cache eviction.
+
+## Usage
+
+Humans can use the foreground queue or run this module directly.
+See [launch, output and stop commands](../usage.md). Agents use the queue.
+The queue recipes below describe managed execution.
+
+This module has no selector of its own. Run it through the
+`continuation_check` selector with `--phase short_controls`, as a queue
+`experiment` job. See
+[run guide §9, E3](../../configs/README.md#e3--causal-continuation-continuation_check-continuation_identity_check-causality).
+
+```json
+{"schema_version": 1, "protocol": "continuation_check",
+ "arguments": ["--phase", "short_controls", "--job", "/abs/causal_train_job.json",
+               "--inputs", "/abs/fixed_inputs.json", "--update-check", "/abs/e4_causal_reference/result.json",
+               "--checkpoints", "/abs/step0.safetensors", "/abs/step1.safetensors",
+               "--changed-noise-3", "/abs/noise_changed_3.pt", "--changed-noise-5", "/abs/noise_changed_5.pt"]}
+```
+
+| Scientific argument | Meaning |
+|---|---|
+| `--job` | The original causal training job. |
+| `--inputs` | The fixed E2 inputs file (see [adapter_effect_check](adapter_effect_check.md#inputs-file)). |
+| `--update-check` | The passed serial update result (E4 reference). The job depends on it. |
+| `--checkpoints` | The step-zero and step-one adapters. |
+| `--changed-noise-3`, `--changed-noise-5` | Saved noise, changed from encoded frame 3 or 5. |
+
+The accepted queue plan also depends on the matching four-rank comparison.
+Outputs: nine raw outputs with their records, resource records and
+`manifest.json`.
 
 ## Data flow
 
@@ -25,85 +60,108 @@ flowchart LR
   class R result;
 ```
 
-The existing `continuation_check` queue selector accepts `--phase short_controls`.
-Its strict specification names the original training job, accepted serial update
-result, fixed E2 inputs, zero and step-one checkpoints, and changed noise for
-boundaries three and five. The ordinary queue owns the device, process ledger,
-runtime contract and supervision. This module launches no process.
-The continuation owner loads this module only for the selected short phase.
-The larger continuation phases keep their original import and source closure.
+The ordinary queue owns the device, the process ledger, the runtime contract
+and supervision. This module starts no process. The continuation owner loads
+this module only for the short phase. The larger continuation phases keep
+their original import and source closure.
 
-The public E2 preparation checks calibration, checkpoint lineage, actual saved
-training context, independently supplied image, continuous guide and exact saved
-noise before weights. This module adds its fixed short-control restrictions and
-binds both experiment owners to the current software manifest.
+The public E2 preparation checks these items before the weights load: the
+calibration, the checkpoint lineage, the actual saved training context, the
+independently supplied image, the continuous guide and the exact saved noise.
+This module adds its fixed short-control restrictions. It binds both experiment
+owners to the current software manifest.
 
-The shared grid, adapter loader, `evaluate.sample_case`,
-`causality.probe_future_noise` and `infer.generate` produce all outputs.
-The shared saved-case and manifest owners publish artifacts. Completion reads
-CPU tensors and checks their relationships. It opens no model or decoder.
+The shared grid, the adapter loader, `evaluate.sample_case`,
+`causality.probe_future_noise` and `infer.generate` make all outputs. The
+shared saved-case and manifest owners publish the files. Completion reads CPU
+tensors and checks their relationships. It opens no model or decoder.
 
 ## Organization logic
 
-Require D1, white, LTX-2.5 dev, seed 42, direct `[0.725, 0]`, B=2, K=3,
-D=8 and generated history. Preserve the training span as null. Select seven
-encoded frames at 30 fps and 1024 square RGB geometry. Read the actual training
-context; never reconstruct it from a prompt. Use the independent supplied image
-for `c0`, including the capture tokens passed to evaluation.
+### Fixed settings
 
-Require BF16 saved noise. At boundary three or five, its earlier values stay
-exact and all later values equal the negated original noise. Validate this
-relationship before any transformer load. The two changed arrays are inputs,
-not noise regenerated by this module.
+D1, `white`, LTX-2.5 dev, seed 42, direct `[0.725, 0]`, B=2, K=3, D=8 and
+generated history. The training span stays null. The module selects seven
+encoded frames at 30 fps and 1024-pixel square RGB geometry. It reads the
+actual training context and never rebuilds it from a prompt. It uses the
+independent supplied image for `c0`, also in the capture tokens given to
+evaluation.
 
-Load the checked unmerged FP32 step-one adapter once. Run two independent
-evaluation rollouts and one product rollout with the original noise. For each
-boundary, run the public two-output future-noise probe and one product rollout
-with the same changed noise. This produces nine outputs and 54 measured native
-forwards. Every rollout starts a fresh shared cache and has three denoises,
-zero primes and three refreshes.
+### Changed noise
 
-Require finite BF16 arrays with the exact source geometry and supplied `c0`.
-The repeated arrays and matching evaluation/product arrays must be bit-identical.
-Each intervention's original branch equals the first repeat. Before its
-boundary, the changed output is exact with maximum delta zero. Record later
-differences without fitting an acceptance tolerance.
+The saved noise must be BF16. At boundary three or five, its earlier values
+stay exact, and all later values equal the negated original noise. The module
+checks this relationship before any transformer loads. The two changed arrays
+are inputs. This module does not generate noise.
 
-Measure eight phases: load, repeat_a, repeat_b, product_original,
-future_noise_3, product_changed_3, future_noise_5 and product_changed_5.
-Keep the accepted E4 budget: 1800 seconds per phase and 48 billion allocated
-bytes. The module uses the shared Phase owner and retains failed records.
-Recheck all pinned bytes, source identity and numerical policy before the final
-result and strict spec manifest. Partial failures cannot complete.
+### Rollouts
+
+The module loads the checked unmerged FP32 step-one adapter once. Then it runs:
+
+1. two independent evaluation rollouts with the original noise;
+2. one product rollout with the original noise;
+3. for each boundary, the public two-output future-noise probe and one product
+   rollout with the same changed noise.
+
+This gives nine outputs and 54 measured native forwards. Every rollout starts a
+fresh shared cache. Each has three denoises, zero primes and three refreshes.
+
+### Pass rules
+
+- All arrays are finite BF16 with the exact source geometry and the supplied
+  `c0`.
+- The repeated arrays, and the matching evaluation and product arrays, are bit
+  identical.
+- The original branch of each intervention equals the first repeat.
+- Before its boundary, the changed output is exact, with a maximum difference
+  of zero.
+- Later differences are recorded. No acceptance tolerance is fitted.
+
+### Resources
+
+The module measures eight phases: `load`, `repeat_a`, `repeat_b`,
+`product_original`, `future_noise_3`, `product_changed_3`, `future_noise_5`
+and `product_changed_5`. It keeps the accepted E4 budget: 1,800 seconds per
+phase and 48 billion allocated bytes. It uses the shared Phase owner and keeps
+failed records. It checks all pinned bytes, the source identity and the
+numerical policy again before the final result and the strict spec manifest.
+A partial failure cannot complete.
 
 ## Invariants
 
-- One numerical owner for conditioning, noising, generation, adapters and caches.
-- The same actual saved context, supplied image, guide and matrices enter every path.
-- Full-value exact controls; E4 calibration tolerances do not relax these checks.
-- Both zero and step-one exports prove accepted lineage; rollouts use step one.
-- Every raw record binds its consumed noise, guide, text, image, calls and producer.
-- CPU completion checks all nine arrays, resource phases and local artifact paths.
+- One numerical owner for conditioning, noising, generation, adapters and
+  caches.
+- The same saved context, supplied image, guide and matrices enter every path.
+- The controls are exact on full values. The E4 calibration tolerances do not
+  relax them.
+- Both the step-zero and step-one exports prove the accepted lineage. The
+  rollouts use step one.
+- Every raw record binds its consumed noise, guide, text, image, calls and
+  producer.
+- CPU completion checks all nine arrays, the resource phases and the local file
+  paths.
 
 ## Gotchas
 
-Seven encoded frames cover 49 RGB frames. This check has no cache eviction.
-The independently supplied image can differ from capture frame zero; replacing
-only the output first frame does not satisfy the input rule.
-Two future-noise phases each contain two rollouts. Count actual forwards through
-the shared measurement hook as well as checking each rollout's call record.
-Do not retain a model reference after leaving its adapter lifecycle.
-
-The larger 17-frame continuation phases retain their separate scientific
-preparation, sampled device guard and completion checks. This module does not
-change their geometry, history, sigma or artifact requirements.
+- Seven encoded frames cover 49 RGB frames. This check has no cache eviction.
+- The supplied image can differ from capture frame zero. Replacing only the
+  output's first frame does not satisfy the input rule.
+- Each of the two future-noise phases has two rollouts. Count the actual
+  forwards through the shared measurement hook, and also check each rollout's
+  call record.
+- Do not keep a model reference after its adapter lifecycle ends.
+- The larger 17-frame continuation phases keep their separate scientific
+  preparation, sampled device guard and completion checks. This module does not
+  change their geometry, history, sigma or file requirements.
 
 ## Tests
 
-Use a real small causal transformer with the shared evaluation, product and
-future-noise APIs. Require all nine outputs, supplied-image preservation, exact
-repeat/product/future controls and 54 actual forwards. Check parser isolation
-and existing continuation profiles. Saved-only controls block model loading and
-reject rehashed output changes, incorrect calls, changed source/input identity,
-redirected artifacts and missing resource phases. Native acceptance needs the
-same fixed full-weight inputs and completed E4 calibration.
+A real small causal transformer runs with the shared evaluation, product and
+future-noise APIs. The tests require all nine outputs, preservation of the
+supplied image, exact repeat, product and future controls and 54 actual
+forwards. They check parser isolation and the existing continuation profiles.
+
+Saved-only controls block model loading. They refuse rehashed output changes,
+incorrect calls, changed source or input identity, redirected files and missing
+resource phases. Native acceptance needs the same fixed full-weight inputs and
+a completed E4 calibration.

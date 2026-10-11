@@ -13,7 +13,13 @@ import pytest
 import torch
 
 from scripts.onestep_avatar import LTX_ROOT, evaluate
+from scripts.onestep_avatar.execution import attempt as queue_attempt
+from scripts.onestep_avatar.execution import clock as queue_clock
+from scripts.onestep_avatar.execution import completion as queue_completion
 from scripts.onestep_avatar.execution import devices, queue, runtime
+from scripts.onestep_avatar.execution import jobs as queue_jobs
+from scripts.onestep_avatar.execution import journal as queue_journal
+from scripts.onestep_avatar.execution import processes as queue_processes
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
 from scripts.onestep_avatar.tests.claims_fixture import GPUClaims
 from scripts.onestep_avatar.training import resources
@@ -64,9 +70,9 @@ def test_default_budget_has_no_planning_writes_and_no_inferred_overall(
 def test_original_deadline_survives_retry_and_restart_and_detects_reset(tmp_path: Path) -> None:
     job = {"id": "train", "sha256": "a" * 64, "effective_budget": {"overall_seconds": 10}}
     row = {"attempts": []}
-    binding = queue.begin_execution_clock(job, row, now=100)
+    binding = queue_clock.begin_execution_clock(job, row, now=100)
     row["attempts"].append({"started_at": 100, **binding})
-    assert queue.begin_execution_clock(job, row, now=106) == binding
+    assert queue_clock.begin_execution_clock(job, row, now=106) == binding
     row["attempts"].append({"started_at": 106, **binding})
     path = tmp_path / "state.json"
     path.write_text(
@@ -78,13 +84,13 @@ def test_original_deadline_survives_retry_and_restart_and_detects_reset(tmp_path
             }
         )
     )
-    restarted = queue.read_queue_state(path, [job])["jobs"]["train"]
-    assert queue.remaining_deadline(restarted, now=109) == 1
-    with pytest.raises(queue.OverallDeadlineError, match="overall_deadline"):
-        queue.remaining_deadline(restarted, now=110)
+    restarted = queue_journal.read_queue_state(path, [job])["jobs"]["train"]
+    assert queue_clock.remaining_deadline(restarted, now=109) == 1
+    with pytest.raises(queue_clock.OverallDeadlineError, match="overall_deadline"):
+        queue_clock.remaining_deadline(restarted, now=110)
     restarted.update(first_attempt_started_at=106, overall_deadline_at=116)
     with pytest.raises(ValueError, match="first attempt"):
-        queue.validate_execution_clock(job, restarted)
+        queue_clock.validate_execution_clock(job, restarted)
 
 
 def test_runtime_outside_queue_calls_once_and_partial_binding_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -132,11 +138,11 @@ def test_runtime_bound_failure_preserves_evidence_without_child(
 def test_current_scientific_receipt_cannot_unblock_without_supervision() -> None:
     job = {"sha256": "a" * 64, "effective_budget": resources.default_budget()}
     with pytest.raises(ValueError, match="supervised execution proof"):
-        queue.verify_receipt(job, {"job_sha256": "a" * 64, "evidence": []})
+        queue_completion.verify_receipt(job, {"job_sha256": "a" * 64, "evidence": []})
 
 
 def test_saved_execution_refuses_changed_physical_device_mapping(tmp_path: Path) -> None:
-    job = queue.prepare_job(
+    job = queue_jobs.prepare_job(
         {
             "id": "case",
             "kind": "evaluate",
@@ -156,7 +162,7 @@ def test_saved_execution_refuses_changed_physical_device_mapping(tmp_path: Path)
         },
         tmp_path,
     )
-    command, environment = queue.job_command(job, (0,))
+    command, environment = queue_jobs.job_command(job, (0,))
     row = {
         "command": command,
         "gpus": [0],
@@ -167,10 +173,10 @@ def test_saved_execution_refuses_changed_physical_device_mapping(tmp_path: Path)
         "supervision_contract": str(tmp_path / "phases.json"),
     }
     with pytest.raises(FileNotFoundError):
-        queue.verify_attempt_evidence(job, row)  # Correct mapping proceeds to saved evidence.
+        queue_completion.verify_attempt_evidence(job, row)  # Correct mapping proceeds to saved evidence.
     row["environment_changes"] = {**environment, "CUDA_VISIBLE_DEVICES": "1"}
     with pytest.raises(ValueError, match="environment differs from requested devices"):
-        queue.verify_attempt_evidence(job, row)
+        queue_completion.verify_attempt_evidence(job, row)
 
 
 @pytest.mark.usefixtures("controlled_queue_launch", "controlled_evaluation_conditions")
@@ -204,8 +210,8 @@ def test_final_transaction_cannot_publish_zero_exit_after_deadline(
         return SimpleNamespace(pid=99999, poll=lambda: 0, wait=lambda: 0)
 
     monkeypatch.setattr(subprocess, "Popen", launch)
-    monkeypatch.setattr(queue, "process_alive", lambda _: False)
-    original = queue.queue_state
+    monkeypatch.setattr(queue_processes, "process_alive", lambda _: False)
+    original = queue_journal.queue_state
     transactions = []
 
     @contextmanager
@@ -216,10 +222,10 @@ def test_final_transaction_cannot_publish_zero_exit_after_deadline(
                 clock[0] = 111.0  # The final lock/read consumes the remaining original time.
             yield state
 
-    monkeypatch.setattr(queue, "queue_state", locked)
+    monkeypatch.setattr(queue_journal, "queue_state", locked)
     state_path = tmp_path / "state.json"
-    with pytest.raises(queue.OverallDeadlineError):
-        queue.run_child(job, claims, tmp_path / "child.log", state_path=state_path, jobs=[job])
+    with pytest.raises(queue_clock.OverallDeadlineError):
+        queue_attempt.run_child(job, claims, tmp_path / "child.log", state_path=state_path, jobs=[job])
     row = json.loads(state_path.read_text())["jobs"]["case"]
     assert row["state"] == "failed"
     assert row["failure_reason"] == "overall_deadline"
@@ -239,10 +245,10 @@ from types import SimpleNamespace
 import torch
 
 from scripts.onestep_avatar import evaluate
-from scripts.onestep_avatar.execution import queue,process_registry
+from scripts.onestep_avatar.execution import queue,process_registry,completion,attempt
 name,root=sys.argv[1],Path(sys.argv[2])
 memory=dict.fromkeys(range(8),0)
-queue.ready_jobs=lambda jobs,state: jobs
+completion.ready_jobs=lambda jobs,state: jobs
 original=queue.subprocess if hasattr(queue,"subprocess") else None
 import subprocess
 subprocess.run=lambda *a,**k:type("Observed",(),{"stdout":"\\n".join(f"{g}, 0" for g in range(8))})()
@@ -254,7 +260,7 @@ def child(job,claims,log,**kwargs):
   if time.monotonic()>deadline: raise TimeoutError("CPU fixture timed out")
   time.sleep(.01)
  claims.release()
-queue.run_child=child
+attempt.run_child=child
 config=root/"fsdp.yaml"
 from scripts.onestep_avatar.hashing import sha256
 job={"id":name,"kind":"train","arguments":["--mode","causal","--subset",str(root/"membership.json"),"--output",str(root/name)],

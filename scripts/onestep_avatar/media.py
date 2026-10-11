@@ -397,7 +397,7 @@ def load_training_references(path: Path) -> tuple[list[Panel], dict]:
 
 def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915 -- ordered reference preflight, decode and publication
     """Prepare checked fixed preview references with a decoder-only session."""
-    from scripts.onestep_avatar.corpus import dataset, precompute  # noqa: PLC0415 -- checked input owners
+    from scripts.onestep_avatar.corpus import dataset, precompute, subset  # noqa: PLC0415 -- checked input owners
     from scripts.onestep_avatar.model import backbone  # noqa: PLC0415 -- model registry only
 
     parser = argparse.ArgumentParser(description="Prepare fixed training reference pixels without generation")
@@ -416,7 +416,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915 -- ordered refe
     if args.output.exists() and (not args.output.is_dir() or any(args.output.iterdir())):
         raise ValueError("reference bundle output is already used")
     membership_hash = sha256(args.subset)
-    store = dataset.ClipStore(json.loads(args.subset.read_text()), args.corpus_root)
+    store = dataset.ClipStore(subset.load_membership(args.subset), args.corpus_root)
     if args.source not in store.sources:
         raise ValueError("reference source is not in the checked video list")
     source = store.sources[args.source]

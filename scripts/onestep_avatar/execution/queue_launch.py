@@ -16,7 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from scripts.onestep_avatar.execution.queue import process_identity
+from scripts.onestep_avatar.execution import processes as process_handles
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, LAUNCH_PROTOCOL, TOKEN_ENV
 
 if TYPE_CHECKING:
@@ -78,7 +78,7 @@ def wait_registration(
         or not isinstance(identity, dict)
         or identity.get("pid") != child.pid
         or identity.get("command") != command
-        or not same_handle(process_identity(child.pid), identity)
+        or not same_handle(process_handles.process_identity(child.pid), identity)
     ):
         raise ValueError("launch registration differs from the waiting child")
     return bootstrap
@@ -112,7 +112,6 @@ def verify_command_transition(row: dict, current: dict) -> None:
 
 def inspect_unapproved_launch(row: dict) -> dict:  # noqa: PLR0912, PLR0915 -- ordered ownership and evidence gates
     """Prove that an interrupted guard can never receive authority to run a model."""
-    from scripts.onestep_avatar.execution.queue import owned_workers_live  # noqa: PLC0415 -- avoid import cycle
 
     if row.get("launch_protocol") != LAUNCH_PROTOCOL or row.get("child_identity") is not None:
         raise ValueError("queue child has no recorded PID; launch recovery is required")
@@ -158,7 +157,7 @@ def inspect_unapproved_launch(row: dict) -> dict:  # noqa: PLR0912, PLR0915 -- o
         or row.get("state") != "running"
     ):
         raise ValueError("unapproved launch journal differs")
-    owner = process_identity(expected["owner_pid"])
+    owner = process_handles.process_identity(expected["owner_pid"])
     if owner is not None:
         if any(owner.get(key) != request["owner_identity"][key] for key in ("pid", "start_ticks")):
             raise ValueError("unapproved launch owner handle changed")
@@ -189,7 +188,7 @@ def inspect_unapproved_launch(row: dict) -> dict:  # noqa: PLR0912, PLR0915 -- o
             raise ValueError("unapproved launch bootstrap differs")
         if row.get("child_pid") is not None and identity.get("pid") != row["child_pid"]:
             raise ValueError("unapproved launch child PID differs from bootstrap")
-        current = process_identity(identity.get("pid"))
+        current = process_handles.process_identity(identity.get("pid"))
         if current is not None:
             if any(current.get(key) != identity.get(key) for key in ("pid", "start_ticks")) or current[
                 "command"
@@ -197,9 +196,9 @@ def inspect_unapproved_launch(row: dict) -> dict:  # noqa: PLR0912, PLR0915 -- o
                 raise ValueError("unapproved launch child handle changed")
             if not current["terminal"]:
                 raise ValueError("unapproved launch has a surviving child")
-    elif row.get("child_pid") is not None and process_identity(row["child_pid"]) is not None:
+    elif row.get("child_pid") is not None and process_handles.process_identity(row["child_pid"]) is not None:
         raise ValueError("unapproved launch has an unidentified surviving child handle")
-    if owned_workers_live(row):
+    if process_handles.owned_workers_live(row):
         raise ValueError("unapproved launch has a surviving child or worker")
     if digest(path) != request_hash or grant.exists() or grant.is_symlink():
         raise ValueError("unapproved launch evidence changed during inspection")
@@ -350,7 +349,7 @@ def verify_journal(path: Path, request: dict, bootstrap: dict) -> None:
 def publish_grant(path: Path) -> dict:
     """Approve only the currently waiting, durably registered child."""
     request, request_hash = read_request(path)
-    if not same_handle(process_identity(os.getpid()), request["owner_identity"]):
+    if not same_handle(process_handles.process_identity(os.getpid()), request["owner_identity"]):
         raise ValueError("only the recorded launch owner can publish approval")
     bootstrap = json.loads((path.parent / "bootstrap.json").read_text())
     if (
@@ -360,7 +359,7 @@ def publish_grant(path: Path) -> dict:
         or bootstrap.get("token") != request["token"]
         or bootstrap.get("job_sha256") != request["job_sha256"]
         or not isinstance(bootstrap.get("identity"), dict)
-        or not same_handle(process_identity(bootstrap["identity"].get("pid")), bootstrap["identity"])
+        or not same_handle(process_handles.process_identity(bootstrap["identity"].get("pid")), bootstrap["identity"])
     ):
         raise ValueError("launch bootstrap is changed or its child is not waiting")
     verify_journal(path, request, bootstrap)
@@ -380,7 +379,7 @@ def run_guard(path: Path, *, timeout: float = 60, poll_seconds: float = 0.1) -> 
         raise ValueError("launch environment identity differs from the request")
     if (path.parent / "grant.json").exists():
         raise ValueError("launch grant already exists before child registration")
-    identity = process_identity(os.getpid())
+    identity = process_handles.process_identity(os.getpid())
     if identity is None or identity["terminal"]:
         raise ValueError("cannot register a stable live launch child")
     bootstrap = {
@@ -396,7 +395,9 @@ def run_guard(path: Path, *, timeout: float = 60, poll_seconds: float = 0.1) -> 
     while not grant.exists():
         if digest(path) != bootstrap["request_sha256"]:
             raise ValueError("launch request changed while waiting")
-        if not same_handle(process_identity(request["owner_identity"]["pid"]), request["owner_identity"]):
+        if not same_handle(
+            process_handles.process_identity(request["owner_identity"]["pid"]), request["owner_identity"]
+        ):
             # Approval may publish between the loop's grant check and owner exit.
             # It still must pass every binding check below; absence never approves.
             if not grant.exists():
@@ -509,7 +510,7 @@ def _ended_handles(identities: list[dict], deadline: float) -> list[dict]:
     for saved in identities:
         if time.monotonic() >= deadline:
             raise TimeoutError("owned recovery observation deadline exceeded")
-        current = process_identity(saved["pid"])
+        current = process_handles.process_identity(saved["pid"])
         if current is not None:
             if any(current.get(key) != saved.get(key) for key in ("pid", "start_ticks")):
                 raise ValueError("owned recovery registered PID was reused")
@@ -679,7 +680,7 @@ def recover_registered_attempt(  # noqa: PLR0912, PLR0915 -- explicit bounded op
             "launch_evidence": str(launch_evidence),
             "launch_evidence_sha256": expected_launch_sha256,
             "recovery_source_sha256": digest(Path(__file__)),
-            "observer": process_identity(os.getpid()),
+            "observer": process_handles.process_identity(os.getpid()),
             "handle_observations": [before, after],
             "sampled_gpu_memory_mib": {str(gpus[0]): memory[gpus[0]]},
             "registered_processes_absent": True,
@@ -701,11 +702,11 @@ def recover_registered_attempt(  # noqa: PLR0912, PLR0915 -- explicit bounded op
 
 def _direct_recovery_binding(request: dict, row: dict, original_bytes: dict[Path, bytes], deadline: float) -> dict:
     """Bind a direct one-rank child's saved contracts, never recreate supervision."""
-    from scripts.onestep_avatar.execution import queue, runtime  # noqa: PLC0415 -- model-free owners
+    from scripts.onestep_avatar.execution import jobs, runtime  # noqa: PLC0415 -- model-free owners
     from scripts.onestep_avatar.training import resources  # noqa: PLC0415 -- saved budget validation
 
     command, environment = request["command"], row["environment_changes"]
-    allowed = {*queue.ORDINARY.values(), *queue.EXPERIMENTS.values()}
+    allowed = {*jobs.ORDINARY.values(), *jobs.EXPERIMENTS.values()}
     if (
         len(command) < 5
         or not Path(command[0]).is_absolute()
@@ -970,7 +971,7 @@ def recover_owned_attempt(  # noqa: PLR0912, PLR0915 -- one locked bounded closu
                 json.dumps(owned, sort_keys=True, allow_nan=False, separators=(",", ":")).encode()
             ).hexdigest(),
             "recovery_source_sha256": digest(Path(__file__)),
-            "observer": process_identity(os.getpid()),
+            "observer": process_handles.process_identity(os.getpid()),
             "notifications": notifications,
             "handle_observations": [before, after],
             "sampled_gpu_memory_mib": {str(gpu): memory[gpu] for gpu in gpus},

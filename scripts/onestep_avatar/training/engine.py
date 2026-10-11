@@ -341,7 +341,7 @@ def prepare_run(  # noqa: PLR0912 -- fail all input/parent conditions before run
     used = settings.output.is_dir() and any(settings.output.iterdir())
     if require_fresh_output and used and not settings.overwrite:
         raise ValueError("output already has a run; explicit overwrite archives it after all checks and setup succeed")
-    membership = json.loads(settings.subset.read_text())
+    membership = video_lists.load_membership(settings.subset)
     video_lists.validate_membership(membership)
     if membership["objective"] != settings.objective:
         raise ValueError("requested background differs from the fixed video list")

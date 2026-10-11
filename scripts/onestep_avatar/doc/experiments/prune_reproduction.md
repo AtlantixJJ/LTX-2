@@ -18,6 +18,42 @@ Terms used below:
 - **control** — an arm that changes one named factor, or the named pair in
   `historical_inputs`.
 
+## Usage
+
+Humans can use the foreground queue or run this module directly.
+See [launch, output and stop commands](../usage.md). Agents use the queue.
+The queue recipes below describe managed execution.
+
+Start each job as a queue `experiment` job with selector `prune_reproduction`.
+Run two jobs (see [Two jobs](#organization-logic) below): one with
+`"numerical_policy": "deterministic"` and one without a numerical policy. See
+[run guide §9](../../configs/README.md#pruning-reproduction-controls-prune_reproduction)
+and the [spec format](spec_protocol.md).
+
+This is the agent path. A person can also run the same module directly, or start the queue in the foreground; see [usage](../usage.md).
+
+```json
+{"schema_version": 1, "protocol": "prune_reproduction",
+ "arguments": ["--view", "/abs/corpus/Part_1/0008_01/views/view00_cam51", "--model", "2.5",
+               "--variant", "distilled", "--objective", "white", "--sigmas", "0.725", "0.909375", "1.0",
+               "--context-latent-frames", "8", "--prompt", "", "--seed", "42", "--raw-only", "--arms", "d0",
+               "--transformer", "/abs/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
+               "--reference", "/abs/reference_run", "--earlier", "/abs/earlier_run/baseline",
+               "--controls", "sigma_bf16", "deterministic_off", "cudnn_deterministic_off",
+               "bf16_reduction_off"]}
+```
+
+| Scientific argument | Meaning |
+|---|---|
+| the [`prune_baseline`](prune_baseline.md#usage) arguments | The same restrictions, D0 arm only. |
+| `--reference <DIR>` | Required. The saved pruning reference run. |
+| `--earlier <DIR>` | Required. An earlier current-producer run on the same case. |
+| `--controls NAME ...` | Required. Distinct control names from the [table](#organization-logic). |
+
+Check the spec on CPU with `--dry-run` first. Read `results.json` →
+`summary` first. Outputs: `<arm>/sigma_<sigma>_d0.pt`, `results.json`,
+`acceptance.json` and `manifest.json`.
+
 ## Data flow
 
 ```mermaid

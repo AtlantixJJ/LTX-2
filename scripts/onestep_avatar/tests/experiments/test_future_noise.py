@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from scripts.onestep_avatar.corpus import dataset
-from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution import completion as queue_completion
 from scripts.onestep_avatar.experiments import causality
 from scripts.onestep_avatar.model import common
 from scripts.onestep_avatar.tests import test_evaluation_completion
@@ -212,7 +212,7 @@ def test_future_noise_requires_both_branches_and_original_noise_input(completed:
         )
     torch.save(noise + 1, noise_path)
     with pytest.raises(ValueError):  # noqa: PT011 -- mutation controls check refusal type and preserved bytes across different validators
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 @pytest.mark.parametrize(
@@ -246,7 +246,7 @@ def test_future_noise_diagnostic_is_bound_to_both_actual_outputs(completed: tupl
         ],
         execution_owner=causality,
     )
-    receipt = queue.completion_receipt(job)
+    receipt = queue_completion.completion_receipt(job)
     assert len(receipt["evidence"]) == 9
     path = settings.output / "case_0000/variant_000/future_noise.json"
     data = json.loads(path.read_text())
@@ -258,7 +258,7 @@ def test_future_noise_diagnostic_is_bound_to_both_actual_outputs(completed: tupl
         data[field] += 1
     path.write_text(json.dumps(data))
     with pytest.raises(ValueError, match="future-noise diagnostic differs"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 def test_signed_zero_early_byte_change_fails_before_sampling(monkeypatch: pytest.MonkeyPatch) -> None:

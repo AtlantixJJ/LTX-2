@@ -9,6 +9,9 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import jobs as queue_jobs
+from scripts.onestep_avatar.execution import journal as queue_journal
 from scripts.onestep_avatar.execution import process_registry, queue
 from scripts.onestep_avatar.tests.test_saved_comparisons import (
     test_saved_study_spec_renders_master_and_output_with_report_metrics as render_fixture,
@@ -29,21 +32,21 @@ def rendered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     }
     path = tmp_path / "queue_jobs.json"
     path.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
-    return queue.prepare_jobs(path)[0]
+    return queue_jobs.prepare_jobs(path)[0]
 
 
 @pytest.mark.usefixtures("controlled_queue_observation")
 def test_render_command_and_receipt_use_package_and_verified_manifest(rendered: dict, tmp_path: Path) -> None:
     """Check saved-render science; controlled envelopes do not prove native supervision."""
-    command, environment = queue.job_command(rendered, (4,))
+    command, environment = queue_jobs.job_command(rendered, (4,))
     assert command[1:3] == ["-m", "scripts.onestep_avatar.comparisons"]
     assert command[-2:] == ["--gpu-id", "0"]
     assert environment == {"CUDA_VISIBLE_DEVICES": "4", **resources.budget_environment(rendered["effective_budget"])}
-    assert queue.verify_completion(rendered)
-    receipt = queue.completion_receipt(rendered, attempt={})
+    assert queue_completion.verify_completion(rendered)
+    receipt = queue_completion.completion_receipt(rendered, attempt={})
     receipt["execution"]["binding"]["completed_at"] = time.time()
     assert receipt["evidence"][0]["path"] == str(tmp_path / "rendered/render_manifest.json")
-    assert queue.verify_receipt(rendered, receipt)
+    assert queue_completion.verify_receipt(rendered, receipt)
 
 
 @pytest.mark.parametrize(
@@ -83,7 +86,7 @@ def test_render_completion_rejects_changed_evidence(rendered: dict, tmp_path: Pa
     if defect == "spec":
         (tmp_path / "spec.json").write_text((tmp_path / "spec.json").read_text() + "\n")
         with pytest.raises(ValueError, match="specification changed"):
-            queue.job_command(rendered, (4,))
+            queue_jobs.job_command(rendered, (4,))
     elif defect == "seed":
         original["seed"] = 42
     elif defect == "decoder":
@@ -129,7 +132,7 @@ def test_render_completion_rejects_changed_evidence(rendered: dict, tmp_path: Pa
         original["results"] = []
     path.write_text(json.dumps(original))
     with pytest.raises((ValueError, EOFError, IndexError)):
-        queue.verify_completion(rendered)
+        queue_completion.verify_completion(rendered)
 
 
 @pytest.mark.parametrize("field", ["manifest", "video", "poster", "input"])
@@ -144,14 +147,14 @@ def test_render_is_incomplete_when_artifacts_are_missing(rendered: dict, tmp_pat
         else tmp_path / "rendered" / row[field]
     )
     path.unlink()
-    assert not queue.verify_completion(rendered)
+    assert not queue_completion.verify_completion(rendered)
 
 
 def test_missing_render_inputs_wait_without_gpu_queries_or_claims(
     rendered: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "generated.pt").unlink()
-    state = queue.read_queue_state(tmp_path / "state.json", [rendered])
+    state = queue_journal.read_queue_state(tmp_path / "state.json", [rendered])
     monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: pytest.fail("waiting render queried GPUs"))
     assert not queue.dispatch_ready([rendered], state, tmp_path / "state.json", tmp_path / "claims")
     assert not (tmp_path / "claims").exists()
@@ -160,7 +163,7 @@ def test_missing_render_inputs_wait_without_gpu_queries_or_claims(
 
 def test_render_spec_bytes_are_in_canonical_job_identity(rendered: dict, tmp_path: Path) -> None:
     (tmp_path / "spec.json").write_text((tmp_path / "spec.json").read_text() + "\n")
-    changed = queue.prepare_jobs(tmp_path / "queue_jobs.json")[0]
+    changed = queue_jobs.prepare_jobs(tmp_path / "queue_jobs.json")[0]
     assert changed["sha256"] != rendered["sha256"]
 
 
@@ -170,12 +173,12 @@ def test_only_one_render_spec_and_no_gpu_override_are_accepted(rendered: dict, t
     original["jobs"][0]["arguments"] += ["--render-saved-comparisons", "spec.json"]
     jobs_path.write_text(json.dumps(original))
     with pytest.raises(ValueError, match="one explicit specification"):
-        queue.prepare_jobs(jobs_path)
+        queue_jobs.prepare_jobs(jobs_path)
     original["jobs"][0]["arguments"] = rendered["arguments"] + ["--gpu-id", "0"]
     original["jobs"][0]["output"] = rendered["output"]
     jobs_path.write_text(json.dumps(original))
     with pytest.raises(ValueError, match="forbidden execution override"):
-        queue.prepare_jobs(jobs_path)
+        queue_jobs.prepare_jobs(jobs_path)
 
 
 @pytest.mark.usefixtures("controlled_queue_launch")
@@ -200,7 +203,7 @@ def test_render_dispatch_claims_one_device_and_publishes_verified_receipt(
         ),
     )
     state_path = tmp_path / "state.json"
-    state = queue.read_queue_state(state_path, [rendered])
+    state = queue_journal.read_queue_state(state_path, [rendered])
     monkeypatch.setattr(
         subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(stdout="\n".join(f"{gpu}, 0" for gpu in range(8)))
     )
@@ -224,6 +227,6 @@ def test_render_dispatch_claims_one_device_and_publishes_verified_receipt(
     assert queue.dispatch_ready([rendered], state, state_path, ledger)
     completed = json.loads(state_path.read_text())["jobs"]["saved_render"]
     assert completed["state"] == "complete"
-    assert queue.verify_receipt(rendered, completed["receipt"])
+    assert queue_completion.verify_receipt(rendered, completed["receipt"])
     assert (claims / "5").read_text() == "legacy reservation"
     assert not (claims / "4").exists()

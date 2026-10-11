@@ -1,12 +1,52 @@
 # `execution/queue_launch.py` — register the child before model execution
 
-Transient internal calls without a journal are outside the persisted protocol.
-
 ## Objective
 
-Close the interval between process creation and durable PID registration.
-A queue child must not start model work until its identity is saved and approved.
-Keep launch control in the package, separate from training and evaluation logic.
+A gap exists between the moment a process starts and the moment its PID is
+saved durably. This module closes that gap. A queue child must not start model
+work until its identity is saved and approved. Launch control stays in the
+package, separate from training and evaluation logic.
+
+The module has two kinds of operation:
+
+- **The guard** (`--request`). The queue starts it for every job. It waits for
+  approval, then replaces itself with the approved command.
+- **Recovery routes** (`--recover-owned`, `--recover-interrupted`,
+  `--recover-registered-owned`). You run one by hand to close a ledger row after
+  an owner ended. A recovery route starts nothing.
+
+Transient internal calls without a journal are outside the saved protocol.
+
+## Usage
+
+You do not start the guard yourself. The queue starts it.
+
+Run a recovery route directly, on CPU, from `LTX-2` in the `ltx` environment.
+Use it when `queue --recover` reports a surviving child, but every process of
+that attempt has ended. `<TOKEN>` is the attempt's folder under
+`<STATE dir>/launches/`. See [run guide §2](../../configs/README.md#commands).
+
+```bash
+cd LTX-2
+"$PY" -m scripts.onestep_avatar.execution.queue_launch \
+  --request <STATE dir>/launches/<TOKEN>/request.json --recover-interrupted \
+  --process-ledger ../expr/onestep_avatar/processes.json
+```
+
+Then run `queue --recover` to record the job state from the saved outputs.
+
+| Argument | Meaning |
+|---|---|
+| `--request` | The saved launch request of the attempt. |
+| `--recover-owned` | Close an ended, approved attempt in which every rank finished every phase. |
+| `--recover-interrupted` | Close an ended, approved attempt whose owner and workload stopped early. |
+| `--recover-registered-owned` | Close the row of an ended direct non-training command that has no approved request. Needs `--token`, `--expected-row-sha256`, `--launch-evidence` and `--expected-launch-sha256`. |
+| `--process-ledger` | The shared ledger file. |
+| `--timeout`, `--poll-seconds` | The guard's finite wait and poll interval. |
+
+A recovery route closes the ledger row only. It never writes a success result.
+The job of an interrupted attempt stays failed. Retry it with a new job ID and
+a new output.
 
 ## Data flow
 
@@ -26,304 +66,388 @@ flowchart LR
   class journal mutable
 ```
 
-The queue produces the request, journal and grant. The guard produces only its
-bootstrap identity. Each file has one producer and an exclusive publication path.
-These records are launch evidence, not model results or completion receipts.
-
-The explicit `--recover-owned` route consumes an existing approved launch
-request and the shared process ledger. It does not enter `run_guard` or launch
-anything. It adds a separately attributed operational closure record only after
-checking bound complete rank notifications, ended exact registered handles and
-current direct GPU inventory. Its source identity is recorded separately from
-the unchanged original training producer. The `--recover-interrupted` variant
-closes an attempt whose owner and workload both ended before every rank reported
-every phase (for example, a run stopped during startup). It skips only the
-complete-notification requirement and records `workload_complete: false`; without
-it, such an attempt would hold its devices in the ledger forever.
+The queue writes the request, the journal and the grant. The guard writes only
+its bootstrap identity. Each file has one producer and an exclusive
+publication path. These records are launch evidence. They are not model
+results or completion receipts.
 
 ## Organization logic
 
-If owner inspection finds the original owner missing, terminal or replaced,
-recheck whether the grant was published during that inspection. A valid durable
-grant can precede owner exit even when the loop's earlier grant check saw none.
-Continue to the full grant/request/journal validation if a grant now exists;
-otherwise refuse as before. Do not treat owner exit as approval or manufacture a
-grant. For example, absent grant → inspect owner → published grant → owner exit
-must honor the saved approval; absent grant → owner exit with no grant must fail.
+### Request
+
+`prepare_request` requires these items: a fresh token directory, an exact
+token and job hash, the owner's process identity, a journal path, the job ID
+and a nonempty command array. It resolves the paths and publishes
+`request.json` exclusively. The queue selects the command through its fixed
+package owners. The guard does not select models, settings, GPUs or
+scientific inputs. Tests use CPU commands as controlled consumers.
+
+### Guard
+
+The ordinary route accepts `--request`, a finite positive wait timeout and a
+poll interval. The guard does these steps:
+
+1. Check the inherited token and job environment against the request.
+2. Before any model library opens, publish `bootstrap.json` with its PID, start
+   ticks and actual command.
+3. Wait for `grant.json`. While it waits, verify that the exact owner (PID,
+   start ticks and command) stays live, and that the request bytes do not
+   change.
+4. Stop if the owner handle is missing or reused. The deadline is a failure,
+   never permission to run.
+5. Refuse a stale or existing bootstrap or grant.
+
+The guard parses and hashes one buffer of request bytes. It checks those bytes
+again before approval and before execution. It never pairs the settings of one
+file version with the hash of another.
+
+### Grant
+
+A grant binds the request SHA, the token, the job hash and the bootstrap
+identity. Before grant publication, and again before execution, the guard reads
+the saved journal. The journal must have the same job hash, running state, PID
+and start ticks, token and job environment, exact command, request path and
+hash and launch protocol.
+
+- A grant published before the PID is saved cannot authorize execution.
+- Unknown, changed or missing evidence stops the child.
+- Only the recorded owner process can publish approval.
+- After a valid grant exists, owner exit does not revoke it. The PID is
+  already registered, so ordinary queue recovery can see the surviving child.
+
+Owner exit during the grant check: if owner inspection finds the original owner
+missing, terminal or replaced, the guard checks again whether a grant appeared
+during that inspection. A valid durable grant can come before owner exit, even
+when the earlier check saw none. If a grant now exists, the guard continues to
+the full grant, request and journal validation. Otherwise it refuses. Owner
+exit is never approval, and the guard never creates a grant.
+
+- No grant → inspect owner → grant published → owner exit: honor the saved
+  approval.
+- No grant → owner exit with no grant: fail.
+
 A deterministic race test pauses that decision and publishes approval before
-the observed owner-death result. Existing real-process tests cover both paths.
+the observed owner-death result. Real-process tests cover both paths.
 
-`prepare_request` requires a fresh token directory, an exact token/job hash,
-an owner process identity, a journal path, job ID and a nonempty command array.
-Resolve paths and publish `request.json` exclusively. The queue selects the
-command through its fixed package owners; the gate does not select models,
-settings, GPUs or scientific inputs. Tests use CPU commands as controlled consumers.
+### Execution
 
-The child CLI's ordinary route accepts `--request`, a finite positive wait timeout and poll
-interval. It checks the inherited token/job environment against the request.
-Before opening model libraries, publish `bootstrap.json` with its PID, start
-ticks and actual command. While waiting for `grant.json`, verify the exact owner
-PID/start ticks/command remains live and the request bytes remain unchanged.
-Missing or reused owner handles stop the gate. The deadline is a failure, never
-permission to execute. A stale or preexisting bootstrap/grant is refused.
+`os.execvpe` replaces the guard with the exact command and its inherited
+environment. The PID and start ticks stay the same. The command changes once,
+from the guard command to the approved command. `verify_command_transition`
+checks that change against the request, the bootstrap, the grant and the
+running journal. The guard starts no second process and stops no workers.
+`publish_grant` does not close the process record.
 
-A grant binds request SHA, token, job hash and bootstrap identity. Before grant
-publication and again before execution, read the saved journal. Require the same
-job hash, running state, PID/start ticks, token/job environment, exact command,
-request path/hash and launch protocol. A grant published before the PID is saved
-cannot authorize execution. Unknown, changed or missing evidence stops the child.
-Once a valid grant exists, owner exit does not revoke it: the PID is already
-registered, so ordinary queue recovery can observe the surviving child.
-Only the recorded owner process can publish approval. Parse and hash one observed
-request byte buffer. Recheck those bytes before approval and execution; do not
-pair settings from one file version with the hash of another.
+Worked check: a CPU child would write `executed.txt`.
 
-`os.execvpe` replaces the guard with the exact command using its inherited
-environment. The PID and start ticks remain the same; the command changes once
-from the guard command to the approved command. `verify_command_transition` explicitly
-checks that transition against request, bootstrap, grant and running journal. The guard starts
-no second process and does not kill workers. `publish_grant` does not close
-the own-process record.
+- Before durable PID registration and grant publication, the file must not
+  exist.
+- After a matching journal and grant, the child writes it and exits.
+- If the owner disappears first, there is no grant. The child exits without
+  writing the file.
 
-Worked check: a CPU child would write `executed.txt`. Before durable PID
-registration and grant publication, the file must not exist. After a matching
-journal and grant, the child writes it and exits. If the owner disappears first,
-there is no grant and the child exits without writing the file.
+### Dispatcher order
 
-### Ended owned-attempt recovery
+The queue's `run_child` uses this order for all prepared job kinds:
 
-`recover_owned_attempt` requires the original request, bootstrap and matching
-grant. Read bounded regular files and validate the immutable request hash,
-token/job, exact original owner, child and approved command against the saved
-running journal and its latest attempt. Require the journal's original
-notification hash and exact process-ledger path. Copy bounded notification bytes
-to a private snapshot and apply the unchanged supervision `_contract`/`_consume`
-rules. All expected ranks and phases must be complete. Recheck original event
-and journal hashes before publication. No external phase timing is inferred.
+1. Publish a fresh request under `launches/<token>/` of the queue state.
+2. Save a running attempt with the protocol, the request path and hash and the
+   intended command.
+3. Start the guard, which loads no model, in a new session.
+4. Refresh the owned ledger row with the guard's PID.
+5. Wait for a valid bootstrap. The wait is bounded by the remaining job
+   deadline. Refresh the owned ledger row while waiting.
+6. Require that the bootstrap PID equals the child from Popen and that its
+   command equals the guard command. Require a stable live handle, the exact
+   request hash, token and job hash.
+7. Save the bootstrap identity in the running row and the latest attempt, in
+   one atomic queue transaction.
+8. Publish the grant.
 
-With `interrupted=True` the notification inventory is not read, so no rank
-identity is matched to it and a direct child needs no complete runtime binding.
-Every other check stays: the request, approval and unchanged running journal,
-the active original ledger row, an earlier complete observation that contains
-every registered handle, two absence passes around one direct GPU inventory and
-idle selected devices. The record has basis `bounded_interrupted_owner_recovery`,
-`notifications: null` and `workload_complete: false`. It releases devices only;
-the queue's `--recover` then records the job as failed from its saved outputs.
+A timeout, a nonzero guard exit or a mismatch publishes no approval. A
+registration or grant failure calls the same owned-tree supervisor before the
+ledger row is released. A still-live guard keeps its owned process record until
+it exits. Never stop or adopt an unrelated process to make a timeout succeed.
 
-Under the ledger's stable lock, require an active original subreaper attempt,
-matching owner/launch child/GPU list and previously complete containment covering
-every registered descendant. All rank producer handles must exactly match those
-contained descendants. Check owner, launcher and every registered descendant
-twice around a bounded direct `nvidia-smi` sample. Missing or exact terminal
-handles qualify; live, denied or reused handles refuse. Require every selected
-GPU below 1024 MiB, as for existing dispatch. Observation timeouts and invalid
-inventory refuse without writing the ledger.
+The journal keeps the original identity after exec. So the guard's final
+journal check cannot race with a parent rewrite. Child inspection accepts the
+approved model command only after it checks the unchanged request, bootstrap,
+grant and journal binding. The PID and start ticks must stay identical. Old
+direct-launch rows have no such exception. A grant never authorizes a different
+command or a different handle.
 
-Use the existing registry lock/read/write implementation as an internal
-compatibility interface for this one recovery transaction; do not implement a
-second ledger format or writer. Keep `execution/process_registry.py` and `execution/supervision.py`
-bytes unchanged during original source-bound native replay. This scoped route
-does not alter their scientific producer manifests or relax source verification.
+Exclusive publication fsyncs the file and its directory before it returns. The
+queue also syncs its JSON bytes and the atomic replacement before
+`publish_grant`. `wait_registration` calls the owner's refresh callback and
+compares the actual Popen child with the bootstrap. A malformed or changed
+registration is refused. `guard_command` selects only this CLI, with the
+current interpreter.
 
-Successful recovery changes only the selected ledger row's state and adds a
-`recovery` record. Preserve all original identities, commands and observations.
-The new record binds original row/launch/journal/notification/event hashes,
-recovery source, observer and both handle/GPU observations. It states
-`continuous_supervision=false`, `containment_complete=false` and
-`registered_workers_absent=true`. Unknown descendants after owner loss remain
-outside that proof. Preserve interrupted supervision and scientific artifacts.
-The existing queue's explicit `--recover` can then verify the original saved
-completion; it does not manufacture successful external supervision.
+### Recovery of an unapproved guarded launch
 
-The same approved-request route supports a direct one-rank package child.
-Require the exact direct Python `-m` owner from the fixed queue tables, one
-physical GPU mapped to local zero, and the canonical trailing `--gpu-id 0`.
-Training, nested launch/dispatch commands and execution overrides refuse.
-The original journal and latest attempt must bind the same runtime path/hash;
-the recorded environment must bind those bytes, the token/job and budget.
-Validate bounded runtime and result snapshots through the unchanged runtime
-owner. Match the notification budget and require the sole rank-zero producer
-to equal the approved child. Generic runtime uses its single `runtime` phase;
-checker-specific phases retain the original notification inventory. Recheck
-runtime/result bytes with all original launch/journal/event bytes before closure.
+A running row can have a missing PID or no stable identity.
+`inspect_unapproved_launch` handles that case:
 
-This validates saved child measurements and closes exact registered handles
-only. It reports `original_exitcode=null`, `unknown_descendants_unproven=true`
-and `supervision_acceptance=false`. It creates no supervisor result. Public
-queue completion still requires the original successful external-supervision
-receipt. If that receipt is missing after owner loss, scientific acceptance refuses;
-the job needs a fresh attempt with continuous supervision for queue acceptance.
-For example, a passed pruning manifest plus runtime measurements can remain
-scientific evidence, while its interrupted attempt remains unaccepted by the
-queue. Never overwrite its original output or restamp its producer identity.
+1. Check the protocol and the unchanged request.
+2. Require the row and the latest attempt to bind the same job, command, owner
+   PID, environment token, request path and hash and valid attempt start ticks.
+   Verify these fields in the original journal.
+3. Require the original owner to be terminal or missing. A live or reused owner
+   refuses.
+4. Require that no grant exists. A grant with a missing recorded PID is
+   inconsistent approval evidence and cannot authorize takeover.
+5. If a bootstrap exists, require its exact token, job and request identity and
+   the guard command. Inspect its PID and start ticks. A live guard or a changed
+   handle refuses. A terminal matching guard can have an empty Linux zombie
+   command line.
+6. Require the absence of all owned workers. Use the targeted ledger
+   observation. Rows without a recorded ledger use the conservative scan by
+   session and token. Observation errors stay errors.
 
-Worked case: four bound ranks finish all four declared phases, all five saved
-launcher/rank handles and the owner are absent on both passes, and GPU memory is
-`[276,4,4,4]` MiB. Close only that row with the scope above. A missing rank end,
-uncontained rank, live worker, reused PID or busy device leaves it active.
+Without a bootstrap, the absence of a token does not prove that no child
+exists. A child can still be between fork and exec. But a missing grant and a
+terminated original owner prove that such a guard can never start model work.
+The result is `unapproved`, not "a known terminated child". A different owner
+identity can never issue a new approval.
 
-### Registered-process bookkeeping recovery
+Explicit recovery records an unapproved attempt as failed, with recovery
+evidence in its row and latest attempt. It runs no completion checks. It never
+accepts old output as completion of work that was never authorized. It keeps
+partial files, logs, the request and the attempts. It starts no retry and closes
+no active process record. Owned-worker observations still block duplicate
+launches. Old unguarded rows with a missing PID keep the original refusal rule.
 
-`recover_registered_attempt` is a separate explicit route for a direct
-single-process non-training command whose owner ended without an approved queue
-request or final observer result. It requires the shared ledger, token, exact
-expected original-row hash, original launch-evidence path and its expected hash.
-The original launch evidence must bind the child command, token, physical GPU
-and local-to-physical device mapping. Its command must be a direct Python `-m`
-call to an explicitly allowed package non-training owner. Refuse training,
-Accelerate, queue dispatch, supervisory child launch, rank roles and uncontained
-reported identities. No scientific result is interpreted as process exit proof.
+The same proof covers an interrupted registration whose exception handler saved
+a PID but not the stable identity:
 
-Under the same stable ledger lock, require an active original subreaper row with
-one launch child and valid exact identities. Require a complete previous owner
-observation covering every saved child/descendant handle. Check the original
-owner and all registered handles twice around one bounded direct GPU inventory.
-Only missing or exact terminal handles qualify; live, reused, denied or ambiguous
-handles refuse. Every recorded GPU must be currently below 1024 MiB. Recheck
-original launch bytes and the expected row hash before publication. Deadline,
-invalid byte sizes, changed paths or altered bindings leave the row unchanged.
+- A recorded PID must match an available bootstrap.
+- An unknown current handle with no bootstrap refuses, even when it is
+  terminal. Never adopt an unidentified or reused process.
+- The latest attempt can omit the PID before publication. It must not contain a
+  different PID or an identity that is already registered.
+- A dangling bootstrap or grant symlink is unknown evidence and refuses
+  recovery.
 
-Successful recovery closes only the selected operational row and adds a record
-with original row/launch hashes, observer, recovery-source hash and both handle
-passes plus GPU sample. Preserve its original identities, observations and launch
-bytes. Set `registered_processes_absent=true`, `continuous_supervision=false`,
-`containment_complete=false`, `unknown_descendants_unproven=true` and
-`original_exitcode=null`. This is stale own-process bookkeeping cleanup. It does
-not prove unknown descendants absent, original continuous supervision or a
-scientific acceptance result. `process_registry.inspect_record` reports such a row
-with basis `recovered_registered_handles_ended`, `containment_complete=false` and
-`continuous_supervision=false`. Source/profile owners and scientific artifacts stay unchanged.
+Before the latest attempt is marked failed, recovery copies the complete
+earlier JSON record to `launch_recovery.prior_attempt`. This keeps the original
+interruption error, state, PID fields, command, log and environment. The new
+error explains the recovery decision. It does not erase the original failure.
+
+A real controlled interruption after bootstrap leaves a running row with a PID
+and no identity. After the owner and the guard exit, it must recover as
+unapproved. Recovery does not accept saved output, and it keeps the log, the
+claim and the original attempt.
+
+### Ended owned-attempt recovery (`--recover-owned`)
+
+This route reads an existing approved launch request and the shared ledger. It
+does not enter `run_guard` and starts nothing. It adds a separate closure
+record. The record's source identity is separate from the unchanged original
+training producer.
+
+`recover_owned_attempt` does these checks:
+
+1. Require the original request, bootstrap and matching grant. Read them as
+   bounded regular files.
+2. Validate the request hash, token and job, the exact original owner, the
+   child and the approved command against the saved running journal and its
+   latest attempt.
+3. Require the journal's original notification hash and the exact ledger path.
+4. Copy the notification bytes to a private snapshot. Apply the unchanged
+   supervision `_contract` and `_consume` rules. All expected ranks and phases
+   must be complete. No external phase timing is inferred.
+5. Under the stable ledger lock, require an active original subreaper attempt
+   with a matching owner, launch child and GPU list. A complete earlier
+   containment must cover every registered descendant. All rank producer
+   handles must exactly match those contained descendants.
+6. Check the owner, the launcher and every registered descendant twice, around
+   one bounded direct `nvidia-smi` sample. Missing or exact terminal handles
+   qualify. Live, denied or reused handles refuse.
+7. Require every selected GPU below 1,024 MiB, as for dispatch. Observation
+   timeouts and an invalid inventory refuse without a ledger write.
+8. Check the original event and journal hashes again before publication.
+
+The route uses the existing registry lock, read and write code as an internal
+interface for this one transaction. It adds no second ledger format or writer.
+The bytes of `execution/process_registry.py` and `execution/supervision.py`
+stay unchanged during an original source-bound native replay. This route does
+not change their scientific producer manifests or relax source verification.
+
+Successful recovery changes only the state of the selected ledger row and adds
+a `recovery` record. All original identities, commands and observations stay.
+The record binds the original row, launch, journal, notification and event
+hashes, the recovery source, the observer and both handle and GPU
+observations. It states `continuous_supervision=false`,
+`containment_complete=false` and `registered_workers_absent=true`. Unknown
+descendants after owner loss are outside this proof. The interrupted
+supervision and scientific files stay. The queue's `--recover` can then verify
+the original saved completion. It does not create successful external
+supervision.
+
+**Direct one-rank children.** The same route supports a direct one-rank
+package child:
+
+- It requires the exact direct Python `-m` owner from the fixed queue tables,
+  one physical GPU mapped to local zero and the trailing `--gpu-id 0`.
+- Training, nested launch or dispatch commands and execution overrides refuse.
+- The original journal and the latest attempt must bind the same runtime path
+  and hash. The recorded environment must bind those bytes, the token, the job
+  and the budget.
+- Bounded runtime and result snapshots are validated through the unchanged
+  runtime owner. The notification budget must match, and the sole rank-zero
+  producer must equal the approved child.
+- Generic runtime uses its one `runtime` phase. Checker-specific phases keep the
+  original notification list.
+- The runtime and result bytes are checked again, with all original launch,
+  journal and event bytes, before closure.
+
+This route validates saved child measurements and closes exact registered
+handles only. It reports `original_exitcode=null`,
+`unknown_descendants_unproven=true` and `supervision_acceptance=false`. It
+creates no supervisor result. Queue completion still requires the original
+successful supervision receipt. Without that receipt, the job needs a fresh
+attempt with continuous supervision. For example, a passed pruning manifest and
+its runtime measurements can stay scientific evidence, while the interrupted
+attempt stays unaccepted by the queue. Never overwrite its output or restamp its
+producer identity.
+
+Worked case: four bound ranks finish all four declared phases. All five saved
+launcher and rank handles and the owner are absent on both passes. GPU memory
+is `[276,4,4,4]` MiB. Close only that row, with the scope above. A missing rank
+end, an uncontained rank, a live worker, a reused PID or a busy device leaves it
+active.
+
+### Interrupted owned-attempt recovery (`--recover-interrupted`)
+
+This variant closes an attempt whose owner and workload both ended before every
+rank reported every phase, for example a run stopped during startup. Without
+it, such an attempt would hold its devices in the ledger forever.
+
+With `interrupted=True`, the notification list is not read. So no rank identity
+is matched to it, and a direct child needs no complete runtime binding. Every
+other check stays:
+
+- the request, the approval and the unchanged running journal;
+- the active original ledger row;
+- an earlier complete observation that contains every registered handle;
+- two absence passes around one direct GPU inventory;
+- idle selected devices.
+
+The record has basis `bounded_interrupted_owner_recovery`,
+`notifications: null` and `workload_complete: false`. It releases devices only.
+The queue's `--recover` then records the job as failed from its saved outputs.
+
+### Registered-process recovery (`--recover-registered-owned`)
+
+`recover_registered_attempt` is a separate route for a direct single-process
+non-training command. Its owner ended without an approved queue request or a
+final observer result. The route requires the shared ledger, the token, the
+exact expected original-row hash, the original launch-evidence path and its
+expected hash.
+
+- The launch evidence must bind the child command, the token, the physical GPU
+  and the local-to-physical device map.
+- Its command must be a direct Python `-m` call to an allowed package
+  non-training owner (the literal ordinary and experiment module set). Device
+  checks use the shared `execution.devices.GPU_POOL`.
+- Training, Accelerate, queue dispatch, supervisory child launch, rank roles
+  and uncontained reported identities refuse.
+- No scientific result counts as proof of process exit.
+
+Under the same stable ledger lock, the route does these checks:
+
+1. Require an active original subreaper row with one launch child and valid
+   exact identities.
+2. Require a complete earlier owner observation that covers every saved child
+   and descendant handle.
+3. Check the original owner and all registered handles twice, around one
+   bounded direct GPU inventory. Only missing or exact terminal handles
+   qualify. Live, reused, denied or unclear handles refuse.
+4. Require every recorded GPU below 1,024 MiB now.
+5. Check the original launch bytes and the expected row hash again before
+   publication.
+
+A deadline, invalid byte sizes, changed paths or changed bindings leave the row
+unchanged.
+
+Successful recovery closes only the selected row. It adds a record with the
+original row and launch hashes, the observer, the recovery-source hash, both
+handle passes and the GPU sample. The original identities, observations and
+launch bytes stay. The record sets `registered_processes_absent=true`,
+`continuous_supervision=false`, `containment_complete=false`,
+`unknown_descendants_unproven=true` and `original_exitcode=null`.
+
+This is cleanup of stale process bookkeeping only. It does not prove that
+unknown descendants are absent, that supervision was continuous or that a
+scientific result is accepted. `process_registry.inspect_record` reports such a
+row with basis `recovered_registered_handles_ended`,
+`containment_complete=false` and `continuous_supervision=false`. Source and
+profile owners and scientific files stay unchanged.
 
 Worked case: an original `adapter_effect_check` owner and its one registered
-child are absent, the saved complete observation covers that child, exact original
-row/launch hashes match, and its physical GPU uses 272 MiB. Close that row only
-with the limited scope above. Missing launch evidence, an extra uncontained rank,
-a live handle or GPU use of 1024 MiB refuses without changing the ledger.
+child are absent. The saved complete observation covers that child. The exact
+original row and launch hashes match. Its physical GPU uses 272 MiB. Close only
+that row, with the limited scope above. Missing launch evidence, an extra
+uncontained rank, a live handle or GPU use of 1,024 MiB refuses, and the ledger
+does not change.
 
 ## Invariants
 
-No model imports or scientific parameter changes occur here. Ordinary launch
-does not discover GPUs; explicit ended-attempt recovery samples direct inventory.
-Publication never replaces another record. Model execution requires a matching
-persisted journal and grant. Request, bootstrap and grant have distinct producers.
-Owner absence before approval never authorizes work. Guarded recovery requires
-proof of absent approval and a terminated original owner; missing tokens or a
-registration timeout alone cannot authorize takeover.
+- No model import and no change of scientific parameters happen here.
+- Ordinary launch does not discover GPUs. Explicit ended-attempt recovery takes
+  a direct inventory sample.
+- Publication never replaces another record.
+- Model execution requires a matching saved journal and grant.
+- The request, the bootstrap and the grant have different producers.
+- Owner absence before approval never authorizes work.
+- Guarded recovery requires proof of absent approval and a terminated original
+  owner. Missing tokens or a registration timeout alone cannot authorize
+  takeover.
 
 ## Gotchas
 
-The child can be between fork and Python startup when its owner dies. It cannot
-execute the model because no grant exists, even if its environment token is not
-yet visible in `/proc`. Waiting must stay finite. A startup timeout leaves launch
-evidence for explicit recovery; it is not a training contention retry.
-A guard that already execs has a different command line but the same process
-identity. Old unguarded journal entries retain their conservative recovery rules.
+- The child can be between fork and Python startup when its owner dies. It
+  cannot run the model, because no grant exists, even if its environment token
+  is not yet visible in `/proc`.
+- Waiting must stay finite. A startup timeout leaves launch evidence for
+  explicit recovery. It is not a training contention retry.
+- A guard that already ran exec has a different command line but the same
+  process identity.
+- Old unguarded journal entries keep their conservative recovery rules.
 
 ## Tests
 
-Use real CPU children and inspect bootstrap identity while they wait. Prove no
-consumer output before approval, same PID/start ticks after exec, refusal of
-missing/mismatched journal data and changed requests, owner disappearance,
-exclusive record publication, and finite timeout. These checks establish the
-launch-control protocol. Real dispatcher checks also prove journal-before-grant ordering, exact approved
-command transition, changed-evidence refusal and claim retention on interrupted
-registration. They do not prove model execution, native GPU behavior, FSDP
-correctness or safe recovery of old unguarded entries.
-Bounded ended-attempt controls check complete rank inventory, exact handle
-absence/terminal state, live/reused/denied refusal, bound approval/journal bytes,
-busy/incomplete devices and unchanged original-row evidence. The returned scope
-explicitly excludes continuous supervision and complete post-owner containment.
-Direct approved-request controls additionally reject unsupported commands,
-device/rank mapping changes, runtime/attempt/environment hash mismatches,
-failed child results, budget/phase/policy changes and mutated runtime bytes.
-Existing Accelerate recovery controls retain their original semantics.
-Registered-process recovery controls cover the direct E2 case, missing/changed
-row or launch hash, unsupported module/training/dispatch, rank roles, uncontained
-identities, live/reused/denied handles, mutation between passes, nonregular input,
-device mapping, busy or missing inventory, original-row/launch preservation and
-the explicitly limited closure result.
+Guard tests use real CPU children and inspect the bootstrap identity while
+they wait. They prove:
 
-### Dispatcher integration design
+- no consumer output before approval;
+- the same PID and start ticks after exec;
+- refusal of missing or mismatched journal data and of changed requests;
+- owner disappearance, exclusive record publication and a finite timeout.
 
-Implemented dispatcher order: publish a fresh request under the queue state's
-`launches/<token>/` directory; save a running attempt with protocol, request
-path/hash and intended command; spawn the model-free guard in a new session;
-refresh the owned process-ledger record with its PID; wait for a valid bootstrap. Require the
-bootstrap's PID to equal the child returned by Popen and its actual command to
-equal the guard command. Require a stable live handle, exact request hash,
-token and job hash. Bound the wait and refresh the owned process-ledger record while waiting.
-A timeout, nonzero guard exit or mismatch publishes no approval.
+Real dispatcher tests also prove the journal-before-grant order, the exact
+approved command change, refusal of changed evidence and claim retention on an
+interrupted registration. These tests prove the launch-control protocol. They
+do not prove model execution, native GPU behavior, FSDP correctness or safe
+recovery of old unguarded entries.
 
-Save the bootstrap identity in the running row and latest attempt using the
-queue's atomic transaction, then publish the grant. Keep that original identity
-in the journal after exec so the guard's final journal verification cannot race
-with a parent rewrite. Child inspection can accept the approved model command
-only after checking the unchanged request, bootstrap, grant and journal binding;
-PID/start ticks must remain identical. Old direct-launch rows have no such
-exception. A grant never authorizes a different command or a different handle.
+Ended-attempt tests check the complete rank list, exact handle absence or
+terminal state, refusal of live, reused or denied handles, bound approval and
+journal bytes, busy or incomplete devices and unchanged original-row evidence.
+The returned scope excludes continuous supervision and complete containment
+after owner loss. Direct approved-request tests also refuse unsupported
+commands, device or rank map changes, runtime, attempt or environment hash
+mismatches, failed child results, budget, phase or policy changes and changed
+runtime bytes. Accelerate recovery tests keep their original meaning.
 
-Persistent queued dispatch must use this protocol for all prepared job kinds.
-The transient internal run_child interface without a journal cannot produce a
-bound approval and remains explicitly outside persisted launch recovery.
-Registration failure keeps a still-live guard and its owned process record until it
-exits; never kill or adopt an unrelated process to make a timeout succeed.
-Guarded unapproved recovery is implemented below. Old unguarded recovery stays conservative.
+Registered-process tests cover the direct E2 case, a missing or changed row or
+launch hash, unsupported module, training or dispatch, rank roles, uncontained
+identities, live, reused or denied handles, a change between passes, nonregular
+input, the device map, busy or missing inventory, preservation of the original
+row and launch and the limited closure result.
 
+## Process observation ownership
 
-Before returning from exclusive publication, fsync the file and its containing
-directory. The queue likewise syncs its JSON bytes and atomic replacement before
-`publish_grant`. `wait_registration` calls the owner's refresh callback and checks the actual
-Popen child against the bootstrap; malformed or changed registration refuses.
-`guard_command` selects only this model-free CLI using the current interpreter.
-
-### Guarded launch recovery design
-
-For a running row with missing PID or stable identity, `inspect_unapproved_launch` checks
-the protocol and unchanged request. Require the row and latest attempt to bind
-the same job, command, owner PID, environment token, request path/hash and valid
-attempt start ticks. Read the original journal and verify those fields there.
-The original owner must be terminal or missing; a live or reused owner refuses.
-No grant may exist. An existing grant with a missing recorded PID is inconsistent
-approval evidence and cannot authorize takeover.
-
-If a bootstrap exists, require its exact token/job/request identity and guard
-command. Inspect its PID/start ticks. A live guard or changed handle refuses;
-a terminal matching guard may have an empty Linux zombie command line. Require
-complete owned-worker absence through the targeted ledger observation; rows
-without a recorded ledger use the conservative session and token scan. Observation errors
-remain errors.
-Without a bootstrap, absence of a token alone does not prove no child exists:
-a child can still be between fork and exec. The missing grant plus terminated
-original owner proves that such a guard can never start model work. Report this
-as `unapproved`, not as a known terminated child. No new approval can be issued
-by a different owner identity.
-
-Explicit recovery records an unapproved attempt as failed, with attributed
-recovery evidence in its row and latest attempt. Do not run completion checks
-or accept old output as a completion of work that was never authorized. Preserve
-partial files, logs, request and attempts. Recovery neither launches a retry nor
-closes active process records. Owned-worker observations still block duplicate launches.
-Old unguarded missing-PID rows retain the original refusal rule.
-
-The same proof also covers an interrupted registration whose exception handler
-saved a PID but not the stable identity. Require any recorded PID to match an
-available bootstrap. An unknown current handle with no bootstrap refuses even
-when terminal; do not adopt an unidentified or reused process. The latest
-attempt may omit the PID before publication, but must not contain a different
-PID or an already-registered identity. A dangling bootstrap or grant symlink is
-unknown evidence and refuses recovery. A live original owner still refuses.
-
-A real controlled interruption after bootstrap leaves a running row with a
-PID and no identity. After owner/guard exit it must recover as unapproved,
-without accepting saved output or discarding its log, claim or original attempt.
-
-Before marking the latest attempt failed, capture its complete prior JSON record
-in `launch_recovery.prior_attempt`. This preserves its original interruption
-error, state, PID fields, command, log and environment. Recovery's new error
-explains its own decision; it must not erase the original failure observation.
-
-Dispatch bounds registration by the remaining original job deadline. A
-registration or grant failure invokes the same owned-tree supervisor before
-ledger release. Current registered non-training recovery permits the literal
-ordinary and experiment module set; device validation uses the single shared
-`execution.devices.GPU_POOL`. It does not infer scientific completion.
+Import stable process observations from `execution/processes.py`.
+Read direct GPU inventory through `execution/devices.py`.
+No infrastructure helper imports the queue scheduler. Preserve existing observation and cleanup gates.

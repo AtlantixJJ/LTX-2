@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 
 from scripts.onestep_avatar import evaluate
-from scripts.onestep_avatar.corpus import dataset
+from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.hashing import sha256
 
@@ -48,7 +48,7 @@ def resolve_cells(spec: dict, hashes: dict, levels: dict) -> None:
         if (Path(job["output"]).resolve() != args.output.resolve()
                 or job["completion"].get("records") != [str(record)]):
             raise ValueError("result-bound sweep result inventory differs")
-        membership = json.loads(args.subset.read_text())
+        membership = subset.load_membership(args.subset)
         if membership["objective"] != "white":
             raise ValueError("result-bound sweep paired masters differ")
         source = next(row for row in membership["sources"] if row["relative_dir"] == args.source[0])

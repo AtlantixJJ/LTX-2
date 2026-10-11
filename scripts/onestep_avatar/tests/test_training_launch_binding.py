@@ -11,6 +11,9 @@ import pytest
 import torch
 from accelerate.utils import DistributedType
 
+from scripts.onestep_avatar.execution import attempt as queue_attempt
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.execution.queue_protocol import LAUNCH_ENV
 from scripts.onestep_avatar.hashing import sha256
@@ -58,8 +61,8 @@ def original_job(tmp_path: Path, *, tolerance: dict | None = None) -> tuple:
     }
     job_path = tmp_path / "original_job.json"
     job_path.write_text(json.dumps(raw))
-    prepared = queue.prepare_job(raw, tmp_path)
-    launch = queue.training_launch_record(prepared)
+    prepared = queue_jobs.prepare_job(raw, tmp_path)
+    launch = queue_jobs.training_launch_record(prepared)
     output.mkdir()
     (output / "checkpoints").mkdir()
     saved = {"world_size": 4, "queue_job_sha256": prepared["sha256"], "queue_launch": launch}
@@ -121,9 +124,9 @@ def test_single_job_authority_matches_list_and_prepared_reconstruction(tmp_path:
     raw, prepared, launch, _, _, _ = original_job(tmp_path)
     path = tmp_path / "jobs.json"
     path.write_text(json.dumps({"schema_version": 1, "jobs": [raw]}))
-    assert queue.prepare_jobs(path)[0] == prepared
-    assert queue.prepare_job(prepared, tmp_path) == prepared
-    assert queue.verify_training_launch(launch, raw) == prepared
+    assert queue_jobs.prepare_jobs(path)[0] == prepared
+    assert queue_jobs.prepare_job(prepared, tmp_path) == prepared
+    assert queue_jobs.verify_training_launch(launch, raw) == prepared
     assert base64.b64decode(launch["accelerate_config_bytes_base64"]) == (tmp_path / "fsdp.yaml").read_bytes()
     assert prepared["resource_budget_sha256"] == sha256(tmp_path / "native_protocol.json")
 
@@ -137,21 +140,21 @@ def test_changed_budget_refuses_prepared_command_and_dispatch_launch_before_chil
     raw["arguments"][raw["arguments"].index("--output") + 1] = str(output)
     raw["output"] = str(output)
     raw["completion"]["checkpoint"] = str(output / "checkpoints/lora_weights_step_00001.safetensors")
-    prepared = queue.prepare_job(raw, tmp_path)
+    prepared = queue_jobs.prepare_job(raw, tmp_path)
     budget_path = tmp_path / "native_protocol.json"
     # Preserve valid values while changing the exact predeclared bytes.
     budget_path.write_text(budget_path.read_text() + "\n")
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("started a child"))
     with pytest.raises(ValueError, match=r"resource budget.*changed"):
-        queue.prepare_job(prepared, tmp_path)
+        queue_jobs.prepare_job(prepared, tmp_path)
     with pytest.raises(ValueError, match=r"resource budget.*changed"):
-        queue.job_command(prepared, queue.GPU_POOL[: queue.TRAIN_PROCESSES])
+        queue_jobs.job_command(prepared, queue.GPU_POOL[: queue.TRAIN_PROCESSES])
     with pytest.raises(ValueError, match=r"resource budget.*changed"):
-        queue.training_launch_record(prepared)
+        queue_jobs.training_launch_record(prepared)
     released = []
     claims = SimpleNamespace(owned=set(queue.GPU_POOL[: queue.TRAIN_PROCESSES]), release=lambda: released.append(True))
     with pytest.raises(ValueError, match=r"resource budget.*changed"):
-        queue.run_child(prepared, claims, tmp_path / "logs/child.log")
+        queue_attempt.run_child(prepared, claims, tmp_path / "logs/child.log")
     assert released == [True]
     assert not output.exists()
     assert not (tmp_path / "logs").exists()
@@ -161,7 +164,7 @@ def test_claimed_budget_hash_must_match_actual_bytes(tmp_path: Path) -> None:
     raw, _, _, _, _, _ = original_job(tmp_path)
     raw["resource_budget_sha256"] = "f" * 64
     with pytest.raises(ValueError, match="resource budget changed from its claimed hash"):
-        queue.prepare_job(raw, tmp_path)
+        queue_jobs.prepare_job(raw, tmp_path)
 
 
 @pytest.mark.parametrize("step", [0, 1])
@@ -176,10 +179,10 @@ def test_shared_marker_reader_checks_actual_bytes_for_zero_and_one(tmp_path: Pat
         "sha256": sha256(checkpoint),
     }
     checkpoint.with_suffix(".complete.json").write_text(json.dumps(marker))
-    assert queue.read_training_marker(checkpoint, step) == marker
+    assert queue_completion.read_training_marker(checkpoint, step) == marker
     checkpoint.write_bytes(b"changed checkpoint bytes")
     with pytest.raises(ValueError, match="checkpoint completion marker"):
-        queue.read_training_marker(checkpoint, step)
+        queue_completion.read_training_marker(checkpoint, step)
 
 
 @pytest.mark.parametrize("mode", ["bidirectional", "causal"])
@@ -194,9 +197,9 @@ def test_engine_actual_accelerator_refuses_checked_queued_launch_before_models_o
     raw["arguments"][raw["arguments"].index("--output") + 1] = str(output)
     raw["output"] = str(output)
     raw["completion"]["checkpoint"] = str(output / "checkpoints/lora_weights_step_00001.safetensors")
-    job = queue.prepare_job(raw, tmp_path)
+    job = queue_jobs.prepare_job(raw, tmp_path)
     launch_path = tmp_path / "fresh_training.launch.json"
-    launch_path.write_text(json.dumps(queue.training_launch_record(job)))
+    launch_path.write_text(json.dumps(queue_jobs.training_launch_record(job)))
     monkeypatch.setenv(LAUNCH_ENV, str(launch_path))
     for key, value in numerics.ENVIRONMENT.items():
         monkeypatch.setenv(key, value)

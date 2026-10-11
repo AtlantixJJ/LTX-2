@@ -5,6 +5,7 @@ the requested training/single-device topology. Validate strict integer IDs and
 memory values and an optional explicit pool; filter pool order by idle memory and active ownership; return
 the first four free devices for training or the first one for other work.
 Outputs: a complete selected tuple, or None when too few devices are free.
+GPU parsing rejects duplicate, missing, negative or malformed rows.
 This policy grants no ownership: the registry locks and rechecks before launch.
 One active attempt per original owner preserves targeted descendant containment.
 """
@@ -17,9 +18,12 @@ TRAIN_PROCESSES = 4
 
 def validate_pool(pool: tuple[int, ...]) -> None:
     """Reject empty, repeated or out-of-range physical device pools."""
-    if (not isinstance(pool, tuple) or not pool
-            or any(type(gpu) is not int or gpu not in GPU_POOL for gpu in pool)
-            or len(set(pool)) != len(pool)):
+    if (
+        not isinstance(pool, tuple)
+        or not pool
+        or any(type(gpu) is not int or gpu not in GPU_POOL for gpu in pool)
+        or len(set(pool)) != len(pool)
+    ):
         raise ValueError("GPU pool requires unique allowed physical devices")
 
 
@@ -57,3 +61,24 @@ def select_devices(
     free = tuple(gpu for gpu in pool if memory[gpu] < 1024 and gpu not in busy)
     count = TRAIN_PROCESSES if training else 1
     return free[:count] if len(free) >= count else None
+
+
+def parse_gpu_memory(output: str) -> dict[int, int]:
+    """Reject incomplete/malformed inventory rather than assuming a free card."""
+    result = {}
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split(",")
+        if len(fields) != 2:
+            raise ValueError("malformed GPU memory inventory")
+        try:
+            gpu, memory = (int(field.strip()) for field in fields)
+        except ValueError as error:
+            raise ValueError("malformed GPU memory inventory") from error
+        if gpu < 0 or memory < 0 or gpu in result:
+            raise ValueError("invalid or duplicate GPU memory inventory")
+        result[gpu] = memory
+    if not set(GPU_POOL).issubset(result):
+        raise ValueError("GPU inventory omits an allowed device")
+    return result

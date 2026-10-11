@@ -5,13 +5,26 @@ each workflow and each experiment. The [package README](../README.md) explains
 the terms and the data flow. The [design index](../doc/README.md) links the
 module designs.
 
+## Usage: choose your launch path
+
+- **Agent:** use the queue's `--execute --loop` with detached supervision.
+- **Human, through the queue:** use `--foreground` with a one-job list to
+  launch one task, see its live output and stop it with Ctrl+C.
+- **Human, directly:** start the task module from the CLI. Training uses four-rank
+  Accelerate; single-GPU tasks use `python -m` with a selected visible GPU.
+
+The [human and agent usage guide](../doc/usage.md) gives complete commands,
+task mappings, log viewing and stopping for all three paths.
+The queue kinds in the recipes below describe the managed path.
+Humans may run the corresponding modules directly with the same task arguments.
+
 ## 1. Rules for every run
 
 **Directory and environment.** Run every command from the LTX-2 root as a
 module: `python -m scripts.onestep_avatar.<module>`. Use the `ltx` conda
 environment. Only guide rendering (`corpus.build_guidance`) uses `argavatar`.
-Call the environment's interpreter directly for long runs; `conda run` buffers
-output until the process ends.
+Activate the environment or call its interpreter directly for live output.
+If you use `conda run`, pass `--no-capture-output`.
 
 ```bash
 cd LTX-2
@@ -22,8 +35,10 @@ PY=$(conda run -n ltx python -c 'import sys; print(sys.executable)')
 
 - The package queue (`execution.queue`) starts training, evaluation, previews,
   product generation, decoding, comparison rendering, cost measurement and every
-  experiment that loads a model. Do not start these modules directly; their
-  `--gpu-id` belongs to the queue.
+  experiment that loads a model for agents and managed human runs.
+  Humans can also start these modules directly using the
+  [direct CLI recipes](../doc/usage.md#human-direct-cli).
+  In queued arguments, omit `--gpu-id`; the queue assigns it.
 - Corpus production (`corpus.precompute`, `corpus.build_guidance`) and input
   preparation (`media --prepare-training-references`, `prepare_inputs`) run
   directly on one free GPU that you select.
@@ -47,7 +62,8 @@ file, `../expr/onestep_avatar/processes.json`: PID, start ticks, command, GPUs
 and owned descendants. Pass this same path to every queue owner.
 
 **Long runs survive the terminal.** Start a queue owner or a long corpus run in
-its own session, with a log file and a CPU thread limit:
+its own session, with a log file and a CPU thread limit. For attached human
+runs, use `--foreground` inside `tmux` instead:
 
 ```bash
 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 setsid -f "$PY" -m scripts.onestep_avatar.execution.queue \
@@ -105,7 +121,16 @@ queue stops the job's processes and records reason `overall_deadline`.
 
 ### Commands
 
+`--state` is optional. The default is `state.json` in the directory that contains `--jobs`.
+For `/abs/run/jobs.json`, the default is `/abs/run/state.json`.
+Use an explicit `--state` when several independent lists share a directory.
+
 ```bash
+# Human: wait for GPUs, show child output, save logs; Ctrl+C stops owned work.
+# A one-job list runs one task. No --execute or --loop is needed here.
+"$PY" -m scripts.onestep_avatar.execution.queue --jobs <JOBS.json> --state <STATE.json> \
+  --foreground --process-ledger ../expr/onestep_avatar/processes.json
+
 # Check identities and print the planned commands; writes nothing and claims no GPU.
 "$PY" -m scripts.onestep_avatar.execution.queue --jobs <JOBS.json> --state <STATE.json> --dry-run
 
@@ -130,9 +155,11 @@ queue stops the job's processes and records reason `overall_deadline`.
   --process-ledger ../expr/onestep_avatar/processes.json
 ```
 
-Never stop a queue owner while it has a child: check `pgrep -P <owner PID>`
-first. An attempt without its owner keeps its GPUs in the ledger until the
-closure above runs, and its result is recorded as failed.
+Press Ctrl+C to stop a foreground owner. For a detached owner you launched,
+send `kill -TERM <owner PID>`. Both request bounded owned-worker cleanup.
+Wait until cleanup ends; SIGINT returns 130 and SIGTERM returns 143.
+Partial outputs and failure evidence stay in place. Start a fresh job ID and
+output to retry. After an unexpected owner exit, use the recovery steps above.
 
 How the queue behaves:
 
@@ -256,7 +283,9 @@ workspace. The order is fixed: capture first, then guides, then guide encodes.
 
 ## 4. Train an adapter
 
-Training is a queue `train` job (section 2). The arguments select one mode.
+Training is a queue `train` job (section 2), or a
+[direct four-rank CLI command](../doc/usage.md#direct-training) for humans.
+The arguments select one mode.
 Check them on CPU first; a dry run reads the membership, masters, plans and
 conditions, loads no weights and writes nothing:
 

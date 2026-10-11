@@ -8,6 +8,26 @@ set of trainable weights added to the frozen base model.
 workflow and each experiment. The [design index](doc/README.md) links every
 module design.
 
+## Usage
+
+Agents launch model work through the queue. Humans can use the queue or start
+each task directly from the CLI. See [human and agent usage](doc/usage.md) for
+setup, all task modules, live output and stopping.
+
+For a human queue run, use a one-job list and one foreground command:
+
+```bash
+python -m scripts.onestep_avatar.execution.queue \
+  --jobs /abs/jobs.json --state /abs/state.json --foreground \
+  --process-ledger ../expr/onestep_avatar/processes.json
+```
+
+This waits for free GPUs, streams output and saves logs. Press Ctrl+C to stop
+the owned workers and save the interrupted attempt.
+Direct training uses four-rank `accelerate launch`; other tasks use
+`python -m scripts.onestep_avatar.<module>`.
+The [direct CLI recipes](doc/usage.md#human-direct-cli) include both cases.
+
 ## Terms used here
 
 - **Capture video:** the recorded real video. Training uses it as the correct output.
@@ -129,8 +149,8 @@ size and time by update. `bench.py` measures warmed generation cost.
 - Run from the LTX-2 root as `python -m scripts.onestep_avatar.<module>` in the
   `ltx` environment. Only `corpus/build_guidance.py` uses `argavatar`. Keep
   `LTX-2/scripts/` a namespace package (no `__init__.py`).
-- The package queue starts all model work except corpus production and input
-  preparation. Query `nvidia-smi` first; use free GPUs 0–7; training uses four.
+- Agents use the package queue for model work. Humans can also use direct CLI
+  commands. Query `nvidia-smi` before direct work; use free GPUs 0–7; training uses four.
 - Each saved data type has one producer. Readers fail on missing or changed
   inputs; they never recreate them.
 - Code under `expr/` only builds reports from saved results. It never starts
@@ -149,3 +169,5 @@ size and time by update. `bench.py` measures warmed generation cost.
 Files over 100 lines have a design at `doc/<source path>.md`; smaller files
 describe their logic in their header. Documents use short sentences and one
 term for each concept (about 80% ASD-STE100 style).
+
+The default journal is `state.json` beside the queue job list. `--state` overrides that path.

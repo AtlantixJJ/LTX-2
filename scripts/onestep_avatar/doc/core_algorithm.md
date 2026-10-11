@@ -2,8 +2,12 @@
 
 This document owns the numerical and conditioning rules that both modes share.
 The training CLI requires an explicit mode. Start with the [design index](README.md).
-Required means an agreed rule. Current means inspected code. The
-[known gaps](known_gaps.md) list where current code and native evidence fall short.
+
+- **Required** means an agreed rule.
+- **Current** means the behavior of the inspected code.
+
+The [known gaps](known_gaps.md) list where the current code and the native
+evidence do not meet the rules.
 
 ## 1. Symbols
 
@@ -101,11 +105,15 @@ Typed bidirectional code backpropagates `MSE/A` per segment.
 Do not weight blocks by token count or divide the loss again in the engine.
 Training does not decode RGB video.
 
-For multi-step generation, `model.sampling.euler_to` owns each update. At a
-positive next level it uses the stock Euler step and its dtype conversions.
-At zero it returns the model prediction exactly, preserving direct-step
-training/generation equality. The stock bf16 reconstructed endpoint can differ;
-see [direct endpoint and stock terminal rounding](known_gaps.md#direct-endpoint-and-stock-terminal-rounding).
+For multi-step generation, `model.sampling.euler_to` owns each update.
+
+- At a positive next level, it uses the stock Euler step and its dtype
+  conversions.
+- At level zero, it returns the model prediction exactly. So a direct step
+  gives the same result in training and in generation.
+
+The stock bf16 endpoint can differ. See
+[direct endpoint and stock terminal rounding](known_gaps.md#direct-endpoint-and-stock-terminal-rounding).
 
 See [common](model/common.md), [bidirectional](model/bidirectional.md),
 [causal](model/causal.md), and [engine](training/engine.md) for the ordered steps.
@@ -145,35 +153,46 @@ Direct causal generation has K denoises and K refreshes.
 Direct bidirectional execution has one denoise and no prime/refresh.
 Guidance and gradient checkpointing add actual work.
 
-FSDP distributes training across GPU processes. They must agree on calls,
-backward calculations, reductions and saves; equal K alone is not sufficient.
-Typed FSDP disables root-input casting to preserve float32 modality sigma,
-timesteps and positions. Keep the bf16 parameter/reduction policy and fp32
-adapter storage. These are actual runtime settings, not merely checkpoint
-fields. E4 compares the four-rank update with a fixed serial reference.
+FSDP spreads training across GPU processes. The processes must agree on the
+calls, the backward calculations, the reductions and the saves. An equal `K`
+alone is not sufficient.
+
+- Typed FSDP disables root-input casting. This keeps the modality sigma, the
+  timesteps and the positions in float32.
+- Parameters and reductions stay in bf16. Adapter storage stays in fp32.
+- These are actual runtime settings, not only checkpoint fields.
+
+E4 compares the four-rank update with a fixed serial reference.
 
 Typed evaluation and product files use one [adapter checker](training/checkpoints.md).
 They call the selected mode's generation function.
 D0 is for training/evaluation tests; product generation accepts only D1.
 Evaluation can use people excluded from training.
 
-The selected causal computation refreshes clean frames at whole-model sigma
-zero. Recomputed history at the active denoise sigma and joint-history paths
-are diagnostic computations. Prompt AdaLN and, after eviction, changed old-frame
-context make them different from the cache; numerical equality is not assumed.
-For a causal adapter, the checker maps `cached_refresh_global_sigma0` to the
-explicit cache/refresh request. Changed history/K/V choices require the
-research override and recorded differences. Product permits only cache/refresh.
-E3 measures quality and cost before and after eviction.
+The selected causal calculation refreshes clean frames at whole-model sigma
+zero. Two other paths are diagnostics only:
 
-Required adapter application is frozen bf16 base weights with unmerged fp32 PEFT
-adapters, matching training. Typed evaluation and inference use the shared
-`model.adapters` path; E2 measures its effect (see
-[fused adapter application](known_gaps.md#fused-adapter-application)). Fusion is
-an explicitly changed research condition; nothing falls back to it.
-Product support is scoped to clip-start inputs and the recorded frame counts.
-The pilot uses seven encoded frames in both modes; longer or
-random-start-trained product support needs separate validation.
+- recomputed history at the active denoise sigma;
+- joint history.
+
+These paths differ from the cache, because of prompt AdaLN and, after eviction,
+a changed old-frame context. Do not assume numerical equality.
+
+For a causal adapter, the checker maps `cached_refresh_global_sigma0` to the
+explicit `cache`/`refresh` request. A different history or K/V choice requires
+the research override, and the record keeps the differences. The product
+allows only `cache`/`refresh`. E3 measures quality and cost before and after
+eviction.
+
+The required adapter application is frozen bf16 base weights with unmerged
+fp32 PEFT adapters, the same as in training. Typed evaluation and inference
+use the shared `model.adapters` path. E2 measures its effect (see
+[fused adapter application](known_gaps.md#fused-adapter-application)). Fusion
+is an explicit research condition. No path falls back to it.
+
+Product support applies to clip-start inputs and the recorded frame counts
+only. The pilot uses seven encoded frames in both modes. Longer outputs and
+random-start training need separate validation.
 
 ## 7. End-to-end data flow
 

@@ -216,7 +216,7 @@ def test_cli_publishes_new_list_without_changing_inputs(current_membership: dict
     output = tmp_path / "membership.json"
     arguments = ["--corpus-root", str(root), "--objective", "white", "--splits", str(groups), "--output", str(output)]
     assert subset.main(arguments) == 0
-    membership = json.loads(output.read_text())
+    membership = subset.load_membership(output)
     subset.validate_membership(membership)
     subset.verify_prepared_membership(membership)
     assert all(sha256(path) == digest for path, digest in inputs.items())
@@ -258,7 +258,8 @@ def test_cli_publication_race_preserves_other_writer(
     def publish(destination: Path, writer: object, **options: object) -> None:
         def peer_write(temporary: Path) -> None:
             writer(temporary)
-            destination.write_bytes(b"another complete list")
+            if destination == output:
+                destination.write_bytes(b"another complete list")
 
         original(destination, peer_write, **options)
 
@@ -268,4 +269,52 @@ def test_cli_publication_race_preserves_other_writer(
             ["--corpus-root", current_membership["corpus_root"], "--objective", "white", "--output", str(output)]
         )
     assert output.read_bytes() == b"another complete list"
+    assert not subset.sources_csv_path(output).exists()
     assert not list(tmp_path.glob(".membership.tmp.*"))
+
+
+def test_membership_is_a_small_json_and_a_pure_csv(current_membership: dict, tmp_path: Path) -> None:
+    root = Path(current_membership["corpus_root"])
+    out = tmp_path / "lists"
+    out.mkdir()
+    groups = out / "groups.json"
+    groups.write_text(json.dumps(current_membership["splits"]))
+    output = out / "list.json"
+    arguments = ["--corpus-root", str(root), "--objective", "white", "--splits", str(groups), "--output", str(output)]
+    assert subset.main([*arguments, "--workers", "2"]) == 0
+    assert sorted(path.name for path in out.iterdir()) == ["groups.json", "list.csv", "list.json"]
+    meta = json.loads(output.read_text())
+    assert "sources" not in meta
+    assert "excluded" not in meta
+    lines = (out / "list.csv").read_text().splitlines()
+    assert lines[0].split(",")[0] == "relative_dir"
+    assert len(lines) == 1 + meta["sources_csv"]["rows"]
+    membership = subset.load_membership(output)
+    assert membership["sha256"] == meta["sha256"]
+    assert membership["sha256"] == subset.membership_hash(membership)
+    assert [s["relative_dir"] for s in membership["sources"]] == sorted(
+        s["relative_dir"] for s in current_membership["sources"]
+    )
+    dataset.ClipStore(membership).verify()
+    (out / "list.csv").write_text((out / "list.csv").read_text().replace("Part", "Prt", 1))
+    with pytest.raises(ValueError, match="does not match its SHA-256"):
+        subset.load_membership(output)
+
+
+def test_membership_csv_round_trips_unusual_fields(current_membership: dict, tmp_path: Path) -> None:
+    record = copy.deepcopy(current_membership)
+    record.pop("excluded", None)
+    record["sources"][0]["optional_note"] = 'a, "quoted"\nvalue'
+    record["sha256"] = subset.membership_hash(record)
+    output = tmp_path / "membership.json"
+    subset.write_membership(output, record)
+    loaded = subset.load_membership(output)
+    assert loaded == record
+    assert "optional_note" not in loaded["sources"][1]
+    single = tmp_path / "single.json"
+    single.write_text(json.dumps(record))
+    assert subset.load_membership(single) == record
+    with pytest.raises(ValueError, match="must be a new file"):
+        subset.write_membership(output, record)
+    with pytest.raises(ValueError, match="summarize"):
+        subset.membership_files({**record, "excluded": {}}, tmp_path / "other.json")

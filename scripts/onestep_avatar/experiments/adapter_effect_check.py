@@ -17,7 +17,7 @@ from PIL import Image
 from safetensors.torch import load_file
 
 from scripts.onestep_avatar import evaluate, hashing, infer, media
-from scripts.onestep_avatar.corpus import dataset
+from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import queue, software
 from scripts.onestep_avatar.experiments import spec_protocol
 from scripts.onestep_avatar.hashing import sha256
@@ -222,7 +222,7 @@ def native_numerics(saved: dict) -> dict:
 
 def evaluation_store(original: dataset.ClipStore, path: Path | None, corpus_root: Path | None) -> dataset.ClipStore:
     """Choose separately checked evaluation membership without rewriting calibration."""
-    selected = original if path is None else dataset.ClipStore(json.loads(path.read_text()), corpus_root)
+    selected = original if path is None else dataset.ClipStore(subset.load_membership(path), corpus_root)
     if selected.objective != original.objective:
         raise ValueError("adapter-effect evaluation membership has a different objective")
     return selected
@@ -760,7 +760,7 @@ def verify_saved(directory: Path) -> dict:  # noqa: PLR0912, PLR0915 -- ordered 
     check_current(prepared)
     evaluation = protocol.get("evaluation_membership", {})
     membership_path = Path(evaluation["path"])
-    membership = json.loads(membership_path.read_text())
+    membership = subset.load_membership(membership_path)
     store = dataset.ClipStore(membership)
     if (evaluation["sha256"] != prepared["pins"].get(str(membership_path.resolve()))
             or evaluation["membership_sha256"] != store.membership["sha256"]):

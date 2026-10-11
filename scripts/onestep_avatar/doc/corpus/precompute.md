@@ -2,35 +2,91 @@
 
 ## Objective
 
-Turn corpus pixels into the master latents the trainer reads, for **one or both** objectives,
-resumably. Every product lives **beside its source video**, one per view; there is no
-experiment-side latent tree.
+Turn corpus pixels into the master latents that the trainer reads. The module
+can make one or both objectives (`bg`, `white`), and it can resume. Every
+output is stored **beside its source video**, one per view. There is no
+separate latent tree for experiments.
 
-Product still preparation is owned by [prepare_inputs.py](../prepare_inputs.md).
-It reuses this module's bundle contract and native encoder helper for one actual
-RGB image, with its own fresh output directory and input-role provenance.
-It neither slices nor rewrites continuous corpus video masters.
+[prepare_inputs.py](../prepare_inputs.md) prepares a product still image. It
+reuses this module's bundle contract and native encoder helper for one actual
+RGB image. It has its own fresh output directory and input-role provenance. It
+never slices or rewrites the continuous corpus video masters.
 
-| Artifact | Written by | Is |
+| File | Written by | Content |
 |---|---|---|
 | `ltx_vae_latent[_white].pt` | `--process_gt_latent` | `z_y`, the capture master |
 | `argavatar_ltx_vae_latent[_white].pt` | `--process_syn_latent` | `z_g`, the guide master |
-| `argavatar_alpha.mp4` | `build_guidance.py` | the rendered alpha, 256², lossless |
-| `capture_mask_crop.mp4` | `--process_syn_latent` | the capture matte cropped to the same box, 256², lossless |
-| `<subject>/qa/capture_mask_crop.mp4` | `--process_gt_latent` | review crop for view 0 of the first five subjects in each `Part_*` only |
-| `capture_latent_manifest.json` | `--process_gt_latent` | **the crop box of record** — `build_guidance.py` renders into it |
-| `manifest[.white].json` | `--process_syn_latent` | paired-run provenance manifest at the corpus root (default: `--corpus-root`) |
+| `argavatar_alpha.mp4` | `build_guidance.py` | The rendered alpha, 256², lossless |
+| `capture_mask_crop.mp4` | `--process_syn_latent` | The capture matte cropped to the same box, 256², lossless |
+| `<subject>/qa/capture_mask_crop.mp4` | `--process_gt_latent` | A review crop, for view 0 of the first five subjects in each `Part_*` only |
+| `capture_latent_manifest.json` | `--process_gt_latent` | **The recorded crop box.** `build_guidance.py` renders into it. |
+| `manifest[.white].json` | `--process_syn_latent` | The provenance manifest of the paired run, at the corpus root (default `--corpus-root`) |
 
-There is deliberately no `loss_mask_grids.pt`. The two MP4s are the canonical masks;
-`stats.py` pools them to the active latent geometry for QA/measurement. `train.py` reads
-the latent masters only and computes unweighted full-frame MSE. The white capture target
-already incorporates the source matte before VAE encoding.
+There is no `loss_mask_grids.pt`. The two MP4 files are the canonical masks.
+`stats.py` pools them to the active latent geometry for QA and measurement.
+`train.py` reads only the latent masters and computes unweighted full-frame
+MSE. The `white` capture target already includes the source matte before VAE
+encoding.
+
+## Usage
+
+Run the module directly from `LTX-2` in the `ltx` environment, on one free GPU
+that you select. Check `nvidia-smi` first. The order is fixed: capture first,
+then guides ([build_guidance](build_guidance.md#usage)), then guide encodes.
+See [run guide §3](../../configs/README.md#3-prepare-the-corpus).
+
+1. Encode the capture masters and record the crop boxes:
+
+   ```bash
+   cd LTX-2
+   "$PY" -m scripts.onestep_avatar.corpus.precompute --process_gt_latent \
+     --objective bg white --model 2.5 --gpu-id <FREE_GPU>
+   ```
+
+2. After the guides exist, encode the guide masters:
+
+   ```bash
+   "$PY" -m scripts.onestep_avatar.corpus.precompute --process_syn_latent \
+     --objective white --model 2.5 --gpu-id <FREE_GPU>
+   ```
+
+| Argument | Meaning |
+|---|---|
+| `--process_gt_latent` | Pass 1: encode `z_y` from raw `rgb.mp4` crops. Writes the crop-box manifest. |
+| `--process_syn_latent` | Pass 2: encode `z_g` from the ARGAvatar guide renders. |
+| `--objective {bg,white} ...` | One or both objectives. Both together cost one decode for each source. |
+| `--model {2.3,2.5}` | The VAE version. |
+| `--gpu-id` | The GPU to use. |
+| `--rank`, `--n-rank` | Split the corpus over several processes: rank `r` takes `items[r::n_rank]`. |
+| `--corpus-root` | The corpus root. Default `data/AnimatableHuman/DNARenderingVideo`. |
+| `--manifest-root` | Where the paired-run manifest goes. Default: the corpus root. |
+| `--resolution`, `--pad-factor` | Pass 1 only: the square crop edge and the bbox padding factor. |
+| `--crop-workers N` | Pass 1 only: parallel crop workers. Default 6. Lower it when host RAM is tight. |
+| `--mask-qa-only` | With pass 1: write only the mask QA gallery. The VAE does not load. |
+| `--limit N` | Encode at most N whole sources after rank sharding. For trials. |
+| `--overwrite` | Encode every selected source again. |
+| `--dry-run` | Print the plan only. |
+
+A rerun encodes only the missing bundles. For a long run, use `setsid` and a
+log file (see [run guide §1](../../configs/README.md#1-rules-for-every-run)).
+To use four free GPUs, start one process for each rank:
+
+```bash
+for rank in 0 1 2 3; do
+  OMP_NUM_THREADS=8 setsid -f "$PY" -m scripts.onestep_avatar.corpus.precompute \
+    --process_gt_latent --objective bg white --gpu-id "$rank" --rank "$rank" --n_rank 4 \
+    > precompute_rank$rank.log 2>&1 < /dev/null
+done
+```
+
+Replace the GPU IDs with free GPUs. Use every rank in `[0, n_rank)` exactly
+once.
 
 ## Data flow
 
-Two passes, one per CLI flag.
+The module has two passes. A CLI flag selects each pass.
 
-**`--process_gt_latent`** — owns the crop box and the capture master:
+**`--process_gt_latent`** owns the crop box and the capture master:
 
 ```mermaid
 flowchart LR
@@ -60,9 +116,9 @@ flowchart LR
   class FRAMES mem;
 ```
 
-`--mask-qa-only` skips the VAE and runs the QA crop alone.
+`--mask-qa-only` skips the VAE and runs only the QA crop.
 
-**`--process_syn_latent`** — the paired guide pass:
+**`--process_syn_latent`** is the paired guide pass:
 
 ```mermaid
 flowchart LR
@@ -90,148 +146,170 @@ flowchart LR
 
 ## Organization logic
 
-### Core pixel and encoding transformations
+### Pixel and encoding steps
 
-For white capture targets, blend capture RGB with white using the recorded capture matte at full resolution.
-Then apply the recorded crop/resize. For `bg`, use the capture pixels without that white blend.
-Use the same fixed crop for the complete video; do not move it per frame.
-Normalize RGB to the VAE's `[-1,1]` convention and encode one continuous aligned prefix per requested objective.
-Store `[C,F,H,W]` encoded data with frame rate, crop, VAE, source, dimensions, and encoding identities.
-The paired guide pass reads the already-composited guide RGB; it does not blend guide/capture latents.
+1. For a `white` capture target, blend the capture RGB with white. Use the
+   recorded capture matte at full resolution. For `bg`, use the capture pixels
+   with no blend.
+2. Apply the recorded crop and resize. Use the same fixed crop for the full
+   video. Do not move it for each frame.
+3. Normalize the RGB to the VAE range `[-1,1]`.
+4. Encode one continuous aligned prefix for each requested objective.
+5. Store the `[C,F,H,W]` encoding with the frame rate, crop, VAE, source,
+   dimensions and encoding identities.
 
-Worked frame check: a 130-RGB-frame input at temporal scale eight uses
-`8*floor((130-1)/8)+1 = 129` RGB frames and produces 17 encoded frames.
-At a `1024x1024` crop with scale 32 and 128 channels, the stored shape is `[128,17,32,32]`.
-The one incomplete trailing RGB frame is excluded.
-Requesting `bg` and `white` decodes source pixels once and writes two objective-specific master records.
+The paired guide pass reads the guide RGB, which is already composited. It
+does not blend guide and capture latents.
 
-**One continuous encode per source, and the master is what is stored.** “Source” here means
-the complete VAE-aligned prefix: `time * floor((F-1)/time) + 1` pixel frames.
-Only the incomplete trailing VAE block is dropped; there is no window/overlap setting. A genuine causal
-keyframe only exists at latent frame 0 of a truly continuous encode, and nothing re-keys
-mid-rollout. Encoding each window independently *manufactured* a fresh keyframe at every
-window's local frame 0 — measured: window 0 sliced vs. independently encoded differs ~0.1 %
-(the bf16 noise floor), a mid-clip window differs ~24 %. Since the master is stored, a window
-is not a unit of anything and the block geometry can change without re-encoding a source.
+Worked frame check: a 130-frame RGB input at temporal scale eight uses
+`8*floor((130-1)/8)+1 = 129` RGB frames. It gives 17 encoded frames. At a
+1024×1024 crop, with scale 32 and 128 channels, the stored shape is
+`[128,17,32,32]`. The one incomplete trailing RGB frame is not used. A request
+for `bg` and `white` decodes the source pixels once and writes two master
+records.
 
-**Both objectives come out of ONE decode.** The expensive part is the sequential h264 decode
-of a 4096×3000 source; the white matte is a per-frame blend over pixels already in hand. So
-`--objective bg white` pays one decode and writes two bundles.
+### One continuous encode per source
 
-**Resume is a property of what is on disk, not of a progress file.** Currency is checked per
-**(source, objective)** and each bundle is written by one atomic save, so a bundle is either
-current or absent — there is no half-done state a restart could inherit. Consequences:
+The module encodes each source once, as one continuous sequence, and stores
+that master. Here, "source" means the complete VAE-aligned prefix:
+`time * floor((F-1)/time) + 1` pixel frames. Only the incomplete trailing VAE
+block is dropped. There is no window or overlap setting.
 
-- a run killed mid-corpus resumes at whole-bundle granularity;
-- adding `white` to a corpus already encoded as `bg` re-encodes only `white`;
-- a source is decoded only for the objectives it is actually missing.
+Why: a real causal keyframe exists only at latent frame 0 of a continuous
+encode. Nothing sets a new keyframe during a rollout. An independent encode of
+each window made a false keyframe at the local frame 0 of every window.
+Measured: window 0, sliced or encoded independently, differs by about 0.1%
+(the bf16 noise floor). A mid-clip window differs by about 24%. Because the
+master is stored, the block geometry can change without a new encode.
 
-“Current” is an explicit provenance check, not “a tensor with the expected shape.” A bundle
-must match `ENCODE_CONTRACT_VERSION`, source, objective, input fingerprint (RGB, plus the matte for
-`white`), VAE fingerprint, crop box, pixel/latent frame counts, FPS, edge, channels and spatial
-scale. A bundle missing that metadata or disagreeing on any field is atomically regenerated.
+### Both objectives from one decode
 
-**Crop boxes are read through `dataset.CaptureManifest.load(root).boxes`, not a second
-parser.** `discover_pairs` and the paired-encode loop use that one reader of
-`capture_latent_manifest.json`.
+The expensive part is the sequential H.264 decode of a 4096×3000 source. The
+white matte is a blend over pixels that are already in memory. So
+`--objective bg white` costs one decode and writes two bundles.
 
-**Multi-GPU ownership is `items[rank::n_rank]`.** Discovery and ordering happen before the
-slice, and capture mode slices whole sources rather than windows. Therefore every window and
-both requested objectives for one source stay on exactly one rank. Paired mode applies the
-same rule to its sorted pair list. All ranks write the same full-corpus manifest through
-PID-unique temporary files; identical atomic replacements are safe, whereas rank-local
-manifests would omit other ranks' crop boxes. Rank 0 alone writes the sampled QA gallery.
+### Resume from what is on disk
 
-For four GPUs, launch four processes with unique ranks. Call the module directly, and detach a
-long run with `setsid` so a signal to the shell does not take it down:
+The module checks each **(source, objective)** pair. One atomic save writes
+each bundle. So a bundle is current or absent. There is no half-done state.
 
-```bash
-for rank in 0 1 2 3; do
-  setsid -f conda run -n ltx python -m scripts.onestep_avatar.corpus.precompute \
-    --process_gt_latent --objective bg white --gpu-id "$rank" --rank "$rank" --n_rank 4 \
-    </dev/null >/dev/null 2>&1 &
-done
-```
+- A run that stops mid-corpus resumes at whole-bundle level.
+- Adding `white` to a corpus encoded as `bg` encodes only `white`.
+- A source is decoded only for the objectives that are missing.
 
-**The matte is applied at full resolution, before the resize**, so matte and pixels are
-resampled together — the same reason the guide's composite is built while the full-resolution
-alpha is still live. It is used **continuous**, not re-thresholded: the stored mask is already
-a threshold off lossy video, and hardening it again would quantise the silhouette edge that
-the `white` objective makes the whole task.
+"Current" is an explicit provenance check, not only an expected shape. A bundle
+must match all of these: `ENCODE_CONTRACT_VERSION`, source, objective, input
+fingerprint (RGB, plus the matte for `white`), VAE fingerprint, crop box, pixel
+and latent frame counts, fps, edge, channels and spatial scale. A bundle that
+lacks this metadata, or disagrees on any field, is regenerated atomically. A
+bundle without a schema-two master is regenerated. It is never converted.
 
-**The two mask MP4s are the only stored mask representations.** The capture matte is cropped
-to 256² once and stored losslessly beside the render alpha (~0.23 MB per view; see
-[mask_video.md](mask_video.md)). Persisting a latent-grid `.pt` duplicated these masks and
-bound them to one geometry. Readers instead pool both MP4s by the same spatial and causal
-temporal rules when a latent grid is needed.
+### Crop boxes
 
-**Mask visualization is deliberately sampled.** The canonical per-view MP4 remains beside
-each paired view for training. A human-review copy is written to
-`<Part_*>/<subject>/qa/capture_mask_crop.mp4` only for view 0 of the lexicographically first
-five subject directories in each `Part_*`. No QA copy is written for other subjects or views.
+- The crop box comes from `geometry.canonical_crop_box`. This pass is its only
+  producer. The module imports it as `crop_geometry`, because `geometry` is
+  already a parameter name for a `CaptureGeometry` (whole-clip VAE alignment,
+  which is separate from spatial cropping).
+- Readers get the boxes from `dataset.CaptureManifest.load(root).boxes`.
+  `discover_pairs` and the paired-encode loop use this one reader of
+  `capture_latent_manifest.json`. There is no second parser.
 
-**Both masks reach the latent grid by the same route** (full res → 256 → latent). Pooling the
-capture matte straight to latent resolution while the render's alpha goes via 256 would give the
-band between them a small resampling mismatch unrelated to alignment. Measured cost of the extra
-hop: mean 6e-5, max 2e-3 of a cell's coverage.
+### Several GPUs
 
-**The crop box comes from `geometry.canonical_crop_box`, not a copy of it.** This pass is its
-single producer. Note the module is
-imported as `crop_geometry`: `geometry` is already this module's parameter name for a
-`CaptureGeometry` (whole-clip VAE alignment, separate from spatial cropping).
+Rank `r` owns `items[r::n_rank]`. Discovery and ordering happen before the
+slice. Capture mode slices whole sources, not windows. So every window and both
+objectives of one source stay on one rank. Paired mode uses the same rule on
+its sorted pair list.
 
-**Cropping runs in worker processes, the VAE in this one.** The pool is entered *before* the
-encoder so workers never fork after this process has touched CUDA.
+All ranks write the same full-corpus manifest through temporary files with a
+unique PID. Identical atomic replacements are safe. A manifest for each rank
+would omit the crop boxes of the other ranks. Only rank 0 writes the sampled
+QA gallery.
+
+### Masks
+
+- **The matte is applied at full resolution, before the resize.** So the matte
+  and the pixels are resampled together. The guide composite is built while the
+  full-resolution alpha is in memory for the same reason.
+- **The matte stays continuous.** It is not thresholded again. The stored mask
+  is already a threshold of lossy video. A second threshold would quantize the
+  silhouette edge, and the edge is the main task of the `white` objective.
+- **The two mask MP4s are the only stored mask forms.** The capture matte is
+  cropped to 256² once and stored losslessly beside the render alpha (about
+  0.23 MB per view; see [mask_video.md](mask_video.md)). A latent-grid `.pt`
+  file would duplicate these masks and bind them to one geometry. Readers pool
+  both MP4s with the same spatial and causal temporal rules when they need a
+  latent grid.
+- **Both masks reach the latent grid by the same route:** full resolution, then
+  256, then latent. If the capture matte went directly to latent resolution
+  while the alpha went through 256, the band between them would get a
+  resampling mismatch. The measured cost of the extra step is a mean of 6e-5
+  and a maximum of 2e-3 of a cell's coverage.
+- **Mask review copies are sampled.** The canonical MP4 stays beside each
+  paired view for training. A review copy goes to
+  `<Part_*>/<subject>/qa/capture_mask_crop.mp4` only for view 0 of the first
+  five subject directories (in name order) in each `Part_*`.
+
+### Worker processes
+
+Cropping runs in worker processes. The VAE runs in the main process. The pool
+starts *before* the encoder, so workers never fork after this process has used
+CUDA.
 
 ## Invariants
 
-- `z_y` is never re-encoded by the paired pass. The capture pass is its only producer and the
-  trainer reads that bundle directly; a copy is free to disagree with its original.
-- The two masks remain **uncombined MP4s**. Which region a consumer measures is its own
-  decision; pre-combining or persisting a derived grid would bake one answer and one geometry
-  into the corpus.
-- Every source's windows share one fixed crop box.
-- **The on-disk plan cache (`enumerate_capture_jobs`, `.capture_plan_cache.json`) is keyed on
-  BOTH `rgb_fingerprint` and `bbox_fingerprint`**. `plan_source` computes the box from
-  `bbox.npy`, so keying on the RGB file's fingerprint alone would let a corpus re-ingest that
-  corrects a bbox with the RGB file untouched keep serving the cached box — silently, since
-  nothing else re-derives it. An entry without `bbox_fingerprint` always misses (replanned
-  once, then cached again).
-- A live multi-GPU run uses every rank in `[0, n_rank)` exactly once. Duplicate ranks would
-  duplicate work even though atomic writes prevent partial bundles.
-- **`capture_latent_manifest.json` validation and direct overwrite**: `--process_gt_latent` always
-  processes all available views. When an existing
-  `capture_latent_manifest.json` is present at `--corpus-root`, its validity is checked via
-  `is_capture_manifest_valid` against the current run's `geometry`, `resolution`, `pad_factor`
-  and manifest `kind`.
-  If the existing manifest is valid and `--overwrite` is not requested, the manifest is overwritten
-  directly without forcing bundle re-encoding (unmodified bundles are skipped). If the existing
-  manifest is invalid (or if `--overwrite` is passed), `overwrite` is set to `True`, replacing the
-  manifest and re-encoding all capture bundles. Limitation: the write happens before
-  `encode_capture_jobs` confirms the bundles it describes actually exist/match (so a killed or
-  partially-failed run can still publish a box ahead of its bundle).
-- A bundle without a schema-two master is regenerated, never converted.
+- The paired pass never encodes `z_y` again. The capture pass is its only
+  producer, and the trainer reads that bundle directly. A copy could disagree
+  with the original.
+- The two masks stay **separate MP4 files**. Each consumer decides which region
+  to measure. A combined or derived grid would fix one answer and one geometry
+  in the corpus.
+- All windows of a source use one fixed crop box.
+- **The plan cache on disk (`enumerate_capture_jobs`,
+  `.capture_plan_cache.json`) uses both `rgb_fingerprint` and
+  `bbox_fingerprint` as its key.** `plan_source` computes the box from
+  `bbox.npy`. With only the RGB fingerprint, a corrected bbox with an unchanged
+  RGB file would keep the old cached box, and nothing else would detect it. An
+  entry without `bbox_fingerprint` always misses. It is planned again once and
+  then cached.
+- A live multi-GPU run uses every rank in `[0, n_rank)` exactly once. Duplicate
+  ranks duplicate work, although atomic writes prevent partial bundles.
+- **Manifest validation.** `--process_gt_latent` always processes all available
+  views. If `capture_latent_manifest.json` exists at `--corpus-root`,
+  `is_capture_manifest_valid` checks it against the current `geometry`,
+  `resolution`, `pad_factor` and manifest `kind`.
+  - Valid manifest, no `--overwrite`: the manifest is overwritten directly.
+    Bundles are not encoded again. Unchanged bundles are skipped.
+  - Invalid manifest, or `--overwrite`: `overwrite` becomes `True`. The
+    manifest is replaced and all capture bundles are encoded again.
+  - Limitation: the manifest is written before `encode_capture_jobs` confirms
+    that its bundles exist and match. A stopped or partly failed run can
+    publish a box before its bundle.
 
 ## Gotchas
 
-- **Host RAM, not GPU, is the failure mode.** A severe leak in `encode_capture_jobs` caused
-  two SIGKILLs before it was found. The fixes that matter are still in place and load-bearing:
-  chunked `as_completed` (it holds its own internal set of futures, and with it the ~0.5–0.7 GB
-  frame array cached on each, for the generator's whole lifetime) and
-  `max_tasks_per_child=1` (numpy/cv2 do not reliably return freed heap to the OS between
-  tasks in a long-lived worker).
-- Asking for both objectives puts a **second** uint8 frame array in each worker (~0.5 GB at
-  150 frames). `--crop-workers` is the knob if host RAM is tight.
-- `--limit` is applied after rank sharding and counts whole sources/views, never windows.
-- `_read_cropped_masks` streams one frame at a time on purpose — a 3000×4096 mask is 36 MB a
-  frame, so a whole-clip `get_batch` costs ~11 GB.
-- The **corpus decode paths are sequential, never seeking** (`crop_source`,
-  `_read_cropped_masks`). These sources have extremely sparse keyframes, so
-  `CAP_PROP_POS_FRAMES` would silently re-decode from frame 0 anyway — and seeking on B-frame
-  content is a known source of off-by-a-few-frames errors. `VideoReader.get_batch` *does* call
-  `CAP_PROP_POS_FRAMES`, and is safe only because every caller here starts its range at frame
-  0 (`plan_source`/`_video_info` take frame 0; `encode_pairs` takes `range(pixel_frames)`).
-  Asking it for a mid-clip range would reintroduce exactly the seek this rule forbids.
+- **Host RAM is the failure mode, not the GPU.** A severe leak in
+  `encode_capture_jobs` caused two SIGKILLs. Two fixes stay in place and are
+  necessary:
+  - chunked `as_completed`. Without chunks, it holds all futures, each with its
+    cached frame array of about 0.5–0.7 GB, for the full generator lifetime.
+  - `max_tasks_per_child=1`. numpy and cv2 do not always return freed heap to
+    the OS between tasks in a long-lived worker.
+- A request for both objectives puts a **second** uint8 frame array in each
+  worker (about 0.5 GB at 150 frames). Lower `--crop-workers` if host RAM is
+  tight.
+- `--limit` applies after rank sharding. It counts whole sources or views,
+  never windows.
+- `_read_cropped_masks` reads one frame at a time on purpose. A 3000×4096 mask
+  is 36 MB per frame, so a whole-clip `get_batch` costs about 11 GB.
+- **The corpus decode paths read in order and never seek** (`crop_source`,
+  `_read_cropped_masks`). These sources have very sparse keyframes, so
+  `CAP_PROP_POS_FRAMES` would decode again from frame 0. Seeking on B-frame
+  content can also be off by a few frames. `VideoReader.get_batch` does use
+  `CAP_PROP_POS_FRAMES`. It is safe only because every caller here starts at
+  frame 0 (`plan_source` and `_video_info` take frame 0; `encode_pairs` takes
+  `range(pixel_frames)`). A mid-clip range would bring back the seek that this
+  rule forbids.
 
 ## Tests
 

@@ -10,7 +10,8 @@ import torch
 
 from scripts.onestep_avatar import evaluate
 from scripts.onestep_avatar.corpus import dataset, subset
-from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.experiments import sigma_sweep
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_evaluation_completion import (
@@ -188,16 +189,16 @@ def test_result_bound_decode_and_receipt_reverify_all_generation_evidence(
     }
     jobs = path.parent / "decoding_jobs.json"
     jobs.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
-    prepared = queue.prepare_jobs(jobs)[0]
+    prepared = queue_jobs.prepare_jobs(jobs)[0]
     before = len(calls)
     receipt = controlled_scientific_receipt(prepared, monkeypatch)
-    assert queue.verify_receipt(prepared, receipt)
+    assert queue_completion.verify_receipt(prepared, receipt)
     assert len(calls) == before
     spec = json.loads(path.read_text())
     text = Path(spec["cells"][0]["evaluation_job"]["output"]) / "text.pt"
     torch.save(torch.load(text, weights_only=True) + 1, text)
     with pytest.raises(ValueError, match=r"queue evaluation|sweep"):
-        queue.verify_receipt(prepared, receipt)
+        queue_completion.verify_receipt(prepared, receipt)
     assert len(calls) == before
 
 
@@ -229,25 +230,25 @@ def test_decoder_readiness_requires_all_eight_unchanged_receipts(
     }
     jobs_path = path.parent / "pipeline_jobs.json"
     jobs_path.write_text(json.dumps({"schema_version": 1, "jobs": [*generation, decode]}))
-    jobs = queue.prepare_jobs(jobs_path)
+    jobs = queue_jobs.prepare_jobs(jobs_path)
     state = {"jobs": {job["id"]: {"sha256": job["sha256"], "state": "pending"} for job in jobs}}
     before = len(calls)
     for job in jobs[:-2]:
         state["jobs"][job["id"]].update(state="complete", receipt=controlled_scientific_receipt(job, monkeypatch))
-    assert [job["id"] for job in queue.ready_jobs(jobs, state)] == [generation[-1]["id"]]
+    assert [job["id"] for job in queue_completion.ready_jobs(jobs, state)] == [generation[-1]["id"]]
     last = jobs[-2]
     state["jobs"][last["id"]].update(state="complete", receipt=controlled_scientific_receipt(last, monkeypatch))
-    assert [job["id"] for job in queue.ready_jobs(jobs, state)] == ["decode"]
+    assert [job["id"] for job in queue_completion.ready_jobs(jobs, state)] == ["decode"]
     text = Path(generation[0]["output"]) / "text.pt"
     torch.save(torch.load(text, weights_only=True) + 1, text)
     with pytest.raises(ValueError, match="receipt evidence changed"):
-        queue.ready_jobs(jobs, state)
+        queue_completion.ready_jobs(jobs, state)
     assert len(calls) == before
 
 
 def test_late_evidence_change_refuses_before_decoder(completed_sweep: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
     _, path, output, calls = completed_sweep
-    verify = queue.verify_completion
+    verify = queue_completion.verify_completion
 
     def change_after_verification(job: dict) -> bool:
         result = verify(job)
@@ -255,7 +256,7 @@ def test_late_evidence_change_refuses_before_decoder(completed_sweep: tuple, mon
         torch.save(torch.load(text, weights_only=True) + 1, text)
         return result
 
-    monkeypatch.setattr(queue, "verify_completion", change_after_verification)
+    monkeypatch.setattr(queue_completion, "verify_completion", change_after_verification)
     before = len(calls)
     with pytest.raises(ValueError, match="evidence changed during verification"):
         sigma_sweep.prepare(path, output)

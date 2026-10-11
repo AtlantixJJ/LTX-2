@@ -1,9 +1,9 @@
 # `model/sampling.py` — choose denoising steps
 
-Own `one_step_schedule`, `truncated_schedule`, `thinned_truncated_schedule`,
-`rescaled_schedule`, `euler_to`, and `validate_schedule`.
-Keep the exact direct-step endpoint. Reject nonfinite levels and values
-outside `[0,1]` before execution.
+This module owns `one_step_schedule`, `truncated_schedule`,
+`thinned_truncated_schedule`, `rescaled_schedule`, `euler_to` and
+`validate_schedule`. It keeps the exact direct-step endpoint. It refuses
+nonfinite levels and values outside `[0,1]` before execution.
 
 ## Objective
 
@@ -57,19 +57,28 @@ Save exact executed levels. Do not round them in the run record.
 Check the base first, then check the adapter's recorded training levels.
 A base-supported level can still differ from adapter training.
 
-For a next level above zero, call the native `EulerDiffusionStep.step` with
-the two levels in a float32 tensor on the sample device. The native step forms
-velocity in float32, rounds velocity to the sample dtype, then forms the update
-in float32 and casts back. An algebraically equivalent bf16 interpolation does
-not produce the same bytes. Do not implement a second copy of this arithmetic.
-At the final zero level, return the prediction directly. This is the exact
-one-step training/generation contract. The stock step instead rounds velocity
-and reconstructs its endpoint; its bf16 endpoint can differ from the prediction.
-E1 must report and measure this deliberate final-step difference rather than
-claim bit-identical stock execution.
-Restore the first-image input, `c0`, after every step.
-The mode calls the predictor once per interval, updates the current state with this equation,
-and restores `c0` before the next interval. It does not mix the source with new noise again.
+### Apply one step
+
+**Next level above zero.** Call the native `EulerDiffusionStep.step` with the
+two levels in a float32 tensor on the sample device. The native step does
+these operations:
+
+1. Form the velocity in float32.
+2. Round the velocity to the sample dtype.
+3. Form the update in float32 and cast it back.
+
+An algebraically equal bf16 interpolation does not give the same bytes. Do not
+write a second copy of this arithmetic.
+
+**Final zero level.** Return the prediction directly. This is the exact
+one-step contract between training and generation. The stock step instead
+rounds the velocity and rebuilds its endpoint, so its bf16 endpoint can differ
+from the prediction. E1 must report and measure this deliberate final-step
+difference. It must not claim bit-identical stock execution.
+
+The mode calls the predictor once for each interval. It updates the current
+state with this equation and restores the first-image input, `c0`, before the
+next interval. It does not mix the source with new noise again.
 
 ## Invariants
 

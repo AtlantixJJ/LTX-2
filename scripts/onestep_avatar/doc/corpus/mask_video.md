@@ -2,11 +2,13 @@
 
 ## Objective
 
-Persist a coverage mask as a **lossless** grayscale MP4 instead of a raw array. Two masks use
-it: the render's own alpha (`argavatar_alpha.mp4`) and the capture matte cropped to the same
-box (`capture_mask_crop.mp4`), both at 256².
+Store a coverage mask as a **lossless** grayscale MP4, not as a raw array. Two
+masks use this format, both at 256²:
 
-## Why, in one table
+- the render's own alpha (`argavatar_alpha.mp4`);
+- the capture matte cropped to the same box (`capture_mask_crop.mp4`).
+
+## Why MP4: size
 
 Measured on real corpus alphas (256², uint8):
 
@@ -16,11 +18,11 @@ Measured on real corpus alphas (256², uint8):
 | lossless gray MP4 | **0.232 MB** | **0.361 MB** |
 | | 42× | 41× |
 
-The comparison that makes the point: the dataset's own `mask.mp4`, at **4096×3000**, is
-330–570 KB — a mask 180× larger in pixels than our 256² grid, in a fraction of the space. The
-raw form was never justified; at corpus scale it is tens of GB of almost entirely flat data.
+For comparison, the dataset's own `mask.mp4` at **4096×3000** is 330–570 KB. It
+has 180× more pixels than the 256² grid, but it uses less space than the raw
+array. At corpus scale, the raw form is tens of GB of almost entirely flat data.
 
-## Lossless, and not negotiable
+## Why lossless
 
 Lossy settings were measured and rejected:
 
@@ -30,17 +32,21 @@ Lossy settings were measured and rejected:
 | crf 12 | 0.136 MB | 58 | 3.20 |
 | crf 18 | 0.085 MB | 60 | 6.74 |
 
-crf 12 buys 1.7× over lossless and pays for it on **exactly** the 1.4 % of pixels that carry
-the anti-aliased silhouette edge — the part the composite's smooth boundary and the latent
-coverage both come from. And masks here are already one generation of lossy video away from
-the truth (the capture matte is a hard threshold off h264); the rule is that this
-pipeline does not add a second. 42× for free beats 72× for a corrupted edge.
+crf 12 is 1.7× smaller than lossless. But the errors fall **exactly** on the
+1.4% of pixels that carry the anti-aliased silhouette edge. The smooth boundary
+of the composite and the latent coverage both come from that edge. Also, the
+masks are already one generation of lossy video away from the truth: the
+capture matte is a hard threshold of H.264 video. The rule is that this
+pipeline does not add a second lossy generation. So lossless storage (42×
+smaller than raw, no error) is the choice, not crf 12 (72× smaller, damaged
+edge).
 
 ## Why MP4 rather than `.npz` or FFV1
 
-It reads through the same OpenCV path every other video here uses — no new dependency, no new
-failure mode — plays in any viewer for a review pass, and decodes frame by frame rather than
-materializing the whole clip.
+- It reads through the same OpenCV path as every other video here. So there is
+  no new dependency and no new failure mode.
+- It plays in any viewer for a review.
+- It decodes frame by frame, so the whole clip is never in memory.
 
 ## Data flow
 
@@ -89,21 +95,22 @@ This preserves the current resize/quantization order.
 It does not threshold coverage into a binary training mask or save another derived file.
 Training full-frame MSE does not use this coverage as a weight.
 
-**`MASK_ENCODE_ARGS` is asserted by a test, not just its effect.** The module was transcribed
-into both of the package's former trees (different conda envs, no shared import); consolidating
-removed the copy, but the risk it guarded did not go away — a drift to a lossy `crf` while
-"tuning storage" would be invisible in every downstream number, so the setting itself is
-pinned.
+**A test asserts `MASK_ENCODE_ARGS` itself, not only its effect.** The module
+was once copied into two separate trees (different conda environments, no shared
+import). The copy is gone, but the risk stays: a change to a lossy `crf` during
+"storage tuning" would be invisible in every later number. So the setting
+itself is pinned.
 
 **`read_mask(stem)` takes a suffix-less path** and requires its lossless MP4; a raw
 array is not a supported stored mask (it would cost about 42× more storage).
 
-**Writes are atomic** (temp file, then rename), for the same reason every other artifact here
-is: a killed ffmpeg must not leave something that looks complete.
+**Writes are atomic** (a temporary file, then a rename), as for every other file
+here. A stopped ffmpeg must not leave a file that looks complete.
 
-**Latent grids are derived, never stored.** `pool_to_latent_grid` applies area pooling and the
-causal VAE's `1, 8, 8, ...` temporal grouping when a reader asks for coverage. This keeps the
-MP4s as the only mask artifacts and permits a geometry change without mask regeneration.
+**Latent grids are derived, never stored.** When a reader asks for coverage,
+`pool_to_latent_grid` applies area pooling and the causal VAE's `1, 8, 8, ...`
+temporal grouping. So the MP4 files stay the only mask files, and the geometry
+can change without new masks.
 
 ## Stored format
 

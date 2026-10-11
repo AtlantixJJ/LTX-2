@@ -14,6 +14,12 @@ from PIL import Image
 
 from ltx_trainer.video_utils import save_video
 from scripts.onestep_avatar import decode_saved, evaluate, media
+from scripts.onestep_avatar.execution import attempt as queue_attempt
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import devices as queue_devices
+from scripts.onestep_avatar.execution import jobs as queue_jobs
+from scripts.onestep_avatar.execution import journal as queue_journal
+from scripts.onestep_avatar.execution import processes as queue_processes
 from scripts.onestep_avatar.execution import queue, supervision
 from scripts.onestep_avatar.execution.process_registry import ProcessRegistry
 from scripts.onestep_avatar.hashing import sha256
@@ -23,10 +29,10 @@ from scripts.prune.core import model_registry
 
 
 def test_inventory_requires_all_allowed_devices() -> None:
-    assert queue.parse_gpu_memory("\n".join(f"{gpu}, 0" for gpu in range(8))) == dict.fromkeys(range(8), 0)
+    assert queue_devices.parse_gpu_memory("\n".join(f"{gpu}, 0" for gpu in range(8))) == dict.fromkeys(range(8), 0)
     for text in ("", "0, 0", "0, unavailable", "\n".join(f"{gpu}, 0" for gpu in [0, 1, 2, 3, 4, 5, 5])):
         with pytest.raises(ValueError, match="GPU"):
-            queue.parse_gpu_memory(text)
+            queue_devices.parse_gpu_memory(text)
 
 
 def test_job_list_requires_explicit_mode_and_matching_outputs() -> None:
@@ -38,7 +44,7 @@ def test_job_list_requires_explicit_mode_and_matching_outputs() -> None:
         "dependencies": [],
         "completion": {"records": ["/result/result.json"]},
     }
-    assert queue.validate_job_list({"schema_version": 1, "jobs": [job]}) == [job]
+    assert queue_jobs.validate_job_list({"schema_version": 1, "jobs": [job]}) == [job]
     for replacement in (
         {"arguments": ["--output", "/result"]},
         {"output": "/other"},
@@ -47,9 +53,9 @@ def test_job_list_requires_explicit_mode_and_matching_outputs() -> None:
         {"kind": "shell"},
     ):
         with pytest.raises(ValueError, match="queue"):
-            queue.validate_job_list({"schema_version": 1, "jobs": [{**job, **replacement}]})
+            queue_jobs.validate_job_list({"schema_version": 1, "jobs": [{**job, **replacement}]})
     with pytest.raises(ValueError, match="unique"):
-        queue.validate_job_list({"schema_version": 1, "jobs": [job, job]})
+        queue_jobs.validate_job_list({"schema_version": 1, "jobs": [job, job]})
 
 
 def test_prepared_jobs_reuse_owner_parser_and_hash_resolved_settings(tmp_path: Path) -> None:
@@ -73,18 +79,18 @@ def test_prepared_jobs_reuse_owner_parser_and_hash_resolved_settings(tmp_path: P
     }
     path = tmp_path / "queue.json"
     path.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
-    first = queue.prepare_jobs(path)[0]
+    first = queue_jobs.prepare_jobs(path)[0]
     assert first["output"] == str(tmp_path / "result")
     assert str(tmp_path / "membership.json") in first["arguments"]
-    assert queue.prepare_jobs(path)[0]["sha256"] == first["sha256"]
+    assert queue_jobs.prepare_jobs(path)[0]["sha256"] == first["sha256"]
     assert not (tmp_path / "result").exists()
     job["arguments"] += ["--seed", "99"]
     path.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
-    assert queue.prepare_jobs(path)[0]["sha256"] != first["sha256"]
+    assert queue_jobs.prepare_jobs(path)[0]["sha256"] != first["sha256"]
     job["arguments"] += ["--gpu-id", "6"]
     path.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
     with pytest.raises(ValueError, match="forbidden execution override"):
-        queue.prepare_jobs(path)
+        queue_jobs.prepare_jobs(path)
 
 
 def test_training_launch_identity_pins_config_bytes(tmp_path: Path) -> None:
@@ -102,16 +108,16 @@ def test_training_launch_identity_pins_config_bytes(tmp_path: Path) -> None:
     }
     path = tmp_path / "jobs.json"
     path.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
-    first = queue.prepare_jobs(path)[0]
+    first = queue_jobs.prepare_jobs(path)[0]
     assert first["accelerate_config_sha256"] == sha256(config)
-    queue.job_command(first, (0, 1, 2, 3))
+    queue_jobs.job_command(first, (0, 1, 2, 3))
     config.write_text("num_processes: 4\nfsdp_forward_prefetch: true\n")
-    assert queue.prepare_jobs(path)[0]["sha256"] != first["sha256"]
+    assert queue_jobs.prepare_jobs(path)[0]["sha256"] != first["sha256"]
     with pytest.raises(ValueError, match="configuration changed"):
-        queue.job_command(first, (0, 1, 2, 3))
+        queue_jobs.job_command(first, (0, 1, 2, 3))
     config.unlink()
     with pytest.raises(ValueError, match="configuration is missing"):
-        queue.prepare_jobs(path)
+        queue_jobs.prepare_jobs(path)
     assert not (tmp_path / "result").exists()
 
 
@@ -127,22 +133,22 @@ def test_decoder_job_identity_pins_list_contents(tmp_path: Path) -> None:
     }
     path = tmp_path / "queue.json"
     path.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
-    first = queue.prepare_jobs(path)[0]
-    queue.job_command(first, (5,))
+    first = queue_jobs.prepare_jobs(path)[0]
+    queue_jobs.job_command(first, (5,))
     saved.write_text(json.dumps({"jobs": [{"id": "changed", "latent": "other.pt"}]}))
-    assert queue.prepare_jobs(path)[0]["sha256"] != first["sha256"]
+    assert queue_jobs.prepare_jobs(path)[0]["sha256"] != first["sha256"]
     with pytest.raises(ValueError, match="decoder job list changed"):
-        queue.job_command(first, (5,))
+        queue_jobs.job_command(first, (5,))
     saved.unlink()
     with pytest.raises(ValueError, match="decoder job list is missing"):
-        queue.prepare_jobs(path)
+        queue_jobs.prepare_jobs(path)
     assert not (tmp_path / "result").exists()
 
 
 def test_commands_mask_physical_devices_and_use_fixed_package_owners(tmp_path: Path) -> None:
 
     job = {"kind": "evaluate", "arguments": ["--mode", "causal"]}
-    command, environment = queue.job_command(job, (5,))
+    command, environment = queue_jobs.job_command(job, (5,))
     assert command == [sys.executable, "-m", "scripts.onestep_avatar.evaluate", "--mode", "causal", "--gpu-id", "0"]
     assert environment == {"CUDA_VISIBLE_DEVICES": "5"}
     config = tmp_path / "fsdp.yaml"
@@ -162,13 +168,13 @@ def test_commands_mask_physical_devices_and_use_fixed_package_owners(tmp_path: P
         "accelerate_config": str(config),
         "accelerate_config_sha256": sha256(config),
     }
-    command, environment = queue.job_command(training, (0, 1, 2, 3))
+    command, environment = queue_jobs.job_command(training, (0, 1, 2, 3))
     assert command[:3] == [sys.executable, "-m", "accelerate.commands.launch"]
     assert "scripts.onestep_avatar.train" in command
     assert environment["CUDA_VISIBLE_DEVICES"] == "0,1,2,3"
     for gpus in ((8,), (4, 5), (5, 5)):
         with pytest.raises(ValueError, match=r"GPU|four"):
-            queue.job_command(job, gpus)
+            queue_jobs.job_command(job, gpus)
 
 
 @pytest.mark.usefixtures("controlled_evaluation_conditions")
@@ -181,22 +187,22 @@ def test_completion_verifies_raw_bytes_and_rejects_unrelated_outputs(tmp_path: P
         "arguments": ["--mode", "causal"],
         "completion": {"records": [str(output / "result.json")]},
     }
-    assert not queue.verify_completion(job)
+    assert not queue_completion.verify_completion(job)
     evaluate.save_case(torch.zeros(1, 2, 7, 2, 2), {"mode": "causal"}, output)
-    assert queue.verify_completion(job)
+    assert queue_completion.verify_completion(job)
     (output / "generated.pt").write_bytes(b"changed")
     with pytest.raises(ValueError, match="content changed"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
     job["completion"]["records"] = [str(tmp_path / "outside.json")]
     with pytest.raises(ValueError, match="escapes"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 def test_training_is_pending_without_completed_marker(tmp_path: Path) -> None:
     checkpoint = tmp_path / "adapter.safetensors"
     checkpoint.write_bytes(b"incomplete")
     job = {"kind": "train", "output": str(tmp_path), "completion": {"checkpoint": str(checkpoint), "step": 7}}
-    assert not queue.verify_completion(job)
+    assert not queue_completion.verify_completion(job)
 
 
 @pytest.mark.usefixtures("controlled_training_conditions")
@@ -208,32 +214,32 @@ def test_checkpoint_completion_checks_real_contract_and_marker(tmp_path: Path) -
         "arguments": ["--mode", "bidirectional"],
         "completion": {"checkpoint": str(checkpoint), "step": 100},
     }
-    assert queue.verify_completion(job)
+    assert queue_completion.verify_completion(job)
     job["arguments"] = ["--mode", "causal"]
     with pytest.raises(ValueError, match="wrong mode"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
     job["arguments"] = ["--mode", "bidirectional"]
     checkpoint.write_bytes(b"changed checkpoint")
     with pytest.raises(ValueError, match="marker is invalid"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 def test_state_preserves_job_identities_and_aborted_transaction(tmp_path: Path) -> Never:
     path = tmp_path / "state.json"
     jobs = [{"id": "first", "sha256": "a" * 64}]
-    with queue.queue_state(path, jobs) as state:
+    with queue_journal.queue_state(path, jobs) as state:
         state["jobs"]["first"]["state"] = "complete"
     original = path.read_bytes()
-    with pytest.raises(RuntimeError), queue.queue_state(path, jobs) as state:  # noqa: PT012 -- assert rollback and lifecycle reporting across the whole transaction
+    with pytest.raises(RuntimeError), queue_journal.queue_state(path, jobs) as state:  # noqa: PT012 -- assert rollback and lifecycle reporting across the whole transaction
         state["jobs"]["first"]["state"] = "failed"
         raise RuntimeError("interrupted transaction")
     assert path.read_bytes() == original
     appended = [*jobs, {"id": "second", "sha256": "b" * 64}]
-    assert queue.read_queue_state(path, appended)["jobs"]["second"]["state"] == "pending"
+    assert queue_journal.read_queue_state(path, appended)["jobs"]["second"]["state"] == "pending"
     assert path.read_bytes() == original
     for changed in ([{"id": "first", "sha256": "c" * 64}], [], list(reversed(appended))):
         with pytest.raises(ValueError, match="queue"):
-            queue.read_queue_state(path, changed)
+            queue_journal.read_queue_state(path, changed)
 
 
 def test_state_protects_surviving_child_without_live_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -247,8 +253,8 @@ def test_state_protects_surviving_child_without_live_owner(tmp_path: Path, monke
     }
     path.write_text(json.dumps(state))
     original = path.read_bytes()
-    monkeypatch.setattr(queue, "process_alive", lambda pid: pid == 98)
-    with pytest.raises(ValueError, match="surviving child"), queue.queue_state(path, jobs):
+    monkeypatch.setattr(queue_processes, "process_alive", lambda pid: pid == 98)
+    with pytest.raises(ValueError, match="surviving child"), queue_journal.queue_state(path, jobs):
         pytest.fail("surviving child permitted another owner")
     assert path.read_bytes() == original
 
@@ -305,7 +311,7 @@ def test_decoder_completion_checks_inventory_and_every_output_hash(  # noqa: PLR
         "arguments": ["--jobs", str(jobs_path), "--output", str(tmp_path)],
         "completion": {"manifest": str(manifest)},
     }
-    assert queue.verify_completion(job)
+    assert queue_completion.verify_completion(job)
     with pytest.raises(ValueError, match="frame count or playback rate differs"):
         media.verify_saved_video(video, 8, 30)
     with pytest.raises(ValueError, match="frame count or playback rate differs"):
@@ -314,37 +320,37 @@ def test_decoder_completion_checks_inventory_and_every_output_hash(  # noqa: PLR
     row["samples"][0]["sha256"] = sha256(sample)
     manifest.write_text(json.dumps({"jobs": [row], "comparisons": []}))
     with pytest.raises(ValueError, match="dimensions differ from video"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
     Image.new("RGB", (64, 64)).save(sample)
     row["samples"][0]["sha256"] = sha256(sample)
     manifest.write_text(json.dumps({"jobs": [row], "comparisons": []}))
     model.scale_factors.width = 64
     with pytest.raises(ValueError, match="dimensions differ from selected model"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
     model.scale_factors.width = 32
     model.caps.latent_channels = 4
     with pytest.raises(ValueError, match="invalid shape/content"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
     model.caps.latent_channels = 2
     row["decoder"]["seed"] += 1
     manifest.write_text(json.dumps({"jobs": [row], "comparisons": []}))
     with pytest.raises(ValueError, match="decoder identity differs"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
     row["decoder"]["seed"] -= 1
     row["frames"] += 1
     manifest.write_text(json.dumps({"jobs": [row], "comparisons": []}))
     with pytest.raises(ValueError, match="coverage differs"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
     row["frames"] -= 1
     manifest.write_text(json.dumps({"jobs": [row], "comparisons": []}))
     sample.write_bytes(b"changed sample")
     with pytest.raises(ValueError, match="artifact content changed"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
     sample.unlink()
-    assert not queue.verify_completion(job)
+    assert not queue_completion.verify_completion(job)
     manifest.write_text(json.dumps({"jobs": [], "comparisons": []}))
     with pytest.raises(ValueError, match="inventory differs"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 @pytest.mark.usefixtures("controlled_evaluation_conditions")
@@ -358,17 +364,17 @@ def test_receipt_rejects_rewritten_result_even_when_new_output_hash_matches(tmp_
         "arguments": ["--mode", "causal"],
         "completion": {"records": [str(tmp_path / "result.json")]},
     }
-    receipt = queue.completion_receipt(job)
-    assert queue.verify_receipt(job, receipt)
+    receipt = queue_completion.completion_receipt(job)
+    assert queue_completion.verify_receipt(job, receipt)
     with pytest.raises(ValueError, match="another job"):
-        queue.verify_receipt({**job, "sha256": "b" * 64}, receipt)
+        queue_completion.verify_receipt({**job, "sha256": "b" * 64}, receipt)
     record = json.loads((tmp_path / "result.json").read_text())
     torch.save(torch.ones(1, 2, 7, 2, 2), tmp_path / "generated.pt")
     record["output"]["sha256"] = sha256(tmp_path / "generated.pt")
     (tmp_path / "result.json").write_text(json.dumps(record))
-    assert queue.verify_completion(job)
+    assert queue_completion.verify_completion(job)
     with pytest.raises(ValueError, match="receipt evidence changed"):
-        queue.verify_receipt(job, receipt)
+        queue_completion.verify_receipt(job, receipt)
 
 
 @pytest.mark.parametrize("publish", [False, True])
@@ -397,22 +403,22 @@ def test_child_requires_verified_outputs_and_releases_reaped_claims(
         return SimpleNamespace(pid=99999, poll=lambda: 0, wait=lambda: 0)
 
     monkeypatch.setattr(subprocess, "Popen", launch)
-    monkeypatch.setattr(queue, "process_alive", lambda _pid: False)
+    monkeypatch.setattr(queue_processes, "process_alive", lambda _pid: False)
     state_path = tmp_path / "state.json"
     if publish:
-        result = queue.run_child(job, claims, tmp_path / "child.log", state_path=state_path, jobs=[job])
+        result = queue_attempt.run_child(job, claims, tmp_path / "child.log", state_path=state_path, jobs=[job])
         assert result["returncode"] == 0
         assert result["receipt"]["job_sha256"] == job["sha256"]
     else:
         with pytest.raises(ValueError, match="incomplete queue outputs"):
-            queue.run_child(job, claims, tmp_path / "child.log", state_path=state_path, jobs=[job])
+            queue_attempt.run_child(job, claims, tmp_path / "child.log", state_path=state_path, jobs=[job])
     row = json.loads(state_path.read_text())["jobs"]["case"]
     assert row["state"] == ("complete" if publish else "failed")
     assert row["child_pid"] == 99999
     assert len(row["attempts"]) == 1
     assert row["attempts"][0]["child_pid"] == 99999
     if publish:
-        assert queue.verify_receipt(job, row["receipt"])
+        assert queue_completion.verify_receipt(job, row["receipt"])
     assert not claims.owned
     assert not (tmp_path / "claims/5").exists()
 
@@ -426,13 +432,13 @@ def test_refused_child_preserves_existing_running_journal(tmp_path: Path) -> Non
         "arguments": ["--mode", "causal"],
     }
     path = tmp_path / "state.json"
-    with queue.queue_state(path, [job]) as state:
+    with queue_journal.queue_state(path, [job]) as state:
         state["jobs"]["case"].update(state="running", child_pid=12345)
     original = path.read_bytes()
     claims = GPUClaims(tmp_path / "claims")
     assert claims.acquire((5,), job="case")
     with pytest.raises(ValueError, match="pending saved job"):
-        queue.run_child(job, claims, tmp_path / "child.log", state_path=path, jobs=[job])
+        queue_attempt.run_child(job, claims, tmp_path / "child.log", state_path=path, jobs=[job])
     assert path.read_bytes() == original
     assert not claims.owned
 
@@ -449,7 +455,7 @@ def test_interrupted_owner_preserves_claim_for_live_child(tmp_path: Path, monkey
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: SimpleNamespace(pid=99999, poll=lambda: None))
     monkeypatch.setattr(supervision, "supervise", lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()))
     with pytest.raises(KeyboardInterrupt):
-        queue.run_child(job, claims, tmp_path / "child.log")
+        queue_attempt.run_child(job, claims, tmp_path / "child.log")
     assert claims.owned == {5}
     assert json.loads((tmp_path / "claims/5").read_text())["child_pid"] == 99999
 
@@ -508,13 +514,13 @@ def test_queue_execute_once_uses_shared_own_ledger(monkeypatch: pytest.MonkeyPat
         assert row["job"] == job["id"]
         assert row["state"] == "active"
         assert row["gpus"] == [0]
-        assert row["owner"] == queue.process_identity(os.getpid())
+        assert row["owner"] == queue_processes.process_identity(os.getpid())
         claims.release()
 
-    monkeypatch.setattr(queue, "prepare_jobs", lambda _: [job])
-    monkeypatch.setattr(queue, "read_queue_state", lambda *_: state)
-    monkeypatch.setattr(queue, "ready_jobs", lambda *_: [job])
-    monkeypatch.setattr(queue, "run_child", dispatch)
+    monkeypatch.setattr(queue_jobs, "prepare_jobs", lambda _: [job])
+    monkeypatch.setattr(queue_journal, "read_queue_state", lambda *_: state)
+    monkeypatch.setattr(queue_completion, "ready_jobs", lambda *_: [job])
+    monkeypatch.setattr(queue_attempt, "run_child", dispatch)
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -548,7 +554,7 @@ def test_queue_execute_requires_shared_process_ledger_before_preparation(
     def forbidden(*_args) -> None:
         pytest.fail("invalid execution request prepared jobs")
 
-    monkeypatch.setattr(queue, "prepare_jobs", forbidden)
+    monkeypatch.setattr(queue_jobs, "prepare_jobs", forbidden)
     with pytest.raises(SystemExit):
         queue.main(["--jobs", "jobs.json", "--state", str(tmp_path / "state.json"), "--execute", "--once"])
     assert not list(tmp_path.iterdir())
@@ -561,25 +567,25 @@ def test_process_identity_handles_names_and_terminal_states(tmp_path: Path, stat
     fields = [state, *(["0"] * 18), "987654", "0"]
     (root / "stat").write_text("42 (worker (with spaces)) " + " ".join(fields))
     (root / "cmdline").write_bytes(b"python\0-m\0scripts.onestep_avatar.evaluate\0")
-    assert queue.process_identity(42, proc_root=tmp_path) == {
+    assert queue_processes.process_identity(42, proc_root=tmp_path) == {
         "pid": 42,
         "start_ticks": 987654,
         "command": ["python", "-m", "scripts.onestep_avatar.evaluate"],
         "terminal": terminal,
     }
-    assert queue.process_identity(43, proc_root=tmp_path) is None
+    assert queue_processes.process_identity(43, proc_root=tmp_path) is None
 
 
 def test_process_alive_does_not_treat_unreadable_identity_as_dead(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(queue.os, "kill", lambda *_args: None)
-    monkeypatch.setattr(queue, "process_identity", lambda *_args: (_ for _ in ()).throw(PermissionError()))
-    assert queue.process_alive(42)
-    monkeypatch.setattr(queue, "process_identity", lambda *_args: {"terminal": True})
-    assert not queue.process_alive(42)
+    monkeypatch.setattr(queue_processes, "process_identity", lambda *_args: (_ for _ in ()).throw(PermissionError()))
+    assert queue_processes.process_alive(42)
+    monkeypatch.setattr(queue_processes, "process_identity", lambda *_args: {"terminal": True})
+    assert not queue_processes.process_alive(42)
 
 
 def test_process_identity_inspects_current_handle() -> None:
-    identity = queue.process_identity(os.getpid())
+    identity = queue_processes.process_identity(os.getpid())
     assert identity["pid"] == os.getpid()
     assert identity["start_ticks"] > 0
     assert identity["command"]
@@ -588,20 +594,20 @@ def test_process_identity_inspects_current_handle() -> None:
 
 def test_child_inspection_rejects_reused_pid_and_unrecorded_handle(monkeypatch: pytest.MonkeyPatch) -> None:
     identity = {"pid": 42, "start_ticks": 100, "command": ["python", "-m", "owner"], "terminal": False}
-    monkeypatch.setattr(queue, "process_identity", lambda _pid: identity)
+    monkeypatch.setattr(queue_processes, "process_identity", lambda _pid: identity)
     row = {"child_pid": 42, "child_identity": dict(identity)}
-    assert queue.inspect_child(row) == "live"
+    assert queue_processes.inspect_child(row) == "live"
     identity["terminal"] = True
-    assert queue.inspect_child(row) == "terminal"
+    assert queue_processes.inspect_child(row) == "terminal"
     identity["start_ticks"] += 1
     with pytest.raises(ValueError, match="identity differs"):
-        queue.inspect_child(row)
+        queue_processes.inspect_child(row)
     with pytest.raises(ValueError, match="identity differs"):
-        queue.inspect_child({"child_pid": 42})
+        queue_processes.inspect_child({"child_pid": 42})
     with pytest.raises(ValueError, match="no recorded PID"):
-        queue.inspect_child({})
-    monkeypatch.setattr(queue, "process_identity", lambda _pid: None)
-    assert queue.inspect_child(row) == "missing"
+        queue_processes.inspect_child({})
+    monkeypatch.setattr(queue_processes, "process_identity", lambda _pid: None)
+    assert queue_processes.inspect_child(row) == "missing"
 
 
 @pytest.mark.parametrize("publish", [False, True])
@@ -628,19 +634,19 @@ def test_dead_owner_recovery_requires_explicit_transaction(
     }
     path.write_text(json.dumps(state))
     original = path.read_bytes()
-    monkeypatch.setattr(queue, "process_alive", lambda _pid: False)
-    monkeypatch.setattr(queue, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(queue_processes, "process_alive", lambda _pid: False)
+    monkeypatch.setattr(queue_processes, "process_identity", lambda _pid: None)
     if publish:
         evaluate.save_case(torch.zeros(1, 2, 7, 2, 2), {"mode": "causal"}, output)
-    with pytest.raises(ValueError, match="explicit recovery"), queue.queue_state(path, [job]):
+    with pytest.raises(ValueError, match="explicit recovery"), queue_journal.queue_state(path, [job]):
         pytest.fail("interrupted job silently adopted")
     assert path.read_bytes() == original
-    with queue.queue_state(path, [job], recover=True) as recovered:
+    with queue_journal.queue_state(path, [job], recover=True) as recovered:
         row = recovered["jobs"]["case"]
         assert row["state"] == ("complete" if publish else "failed")
         assert row["child_pid"] == 98
         if publish:
-            assert queue.verify_receipt(job, row["receipt"])
+            assert queue_completion.verify_receipt(job, row["receipt"])
     assert json.loads(path.read_text())["jobs"]["case"]["state"] == row["state"]
 
 
@@ -655,8 +661,8 @@ def test_recovery_preserves_unknown_launch_window(tmp_path: Path, monkeypatch: p
     }
     path.write_text(json.dumps(state))
     original = path.read_bytes()
-    monkeypatch.setattr(queue, "process_alive", lambda _pid: False)
-    with pytest.raises(ValueError, match="no recorded PID"), queue.queue_state(path, [job], recover=True):
+    monkeypatch.setattr(queue_processes, "process_alive", lambda _pid: False)
+    with pytest.raises(ValueError, match="no recorded PID"), queue_journal.queue_state(path, [job], recover=True):
         pytest.fail("unresolved launch permitted takeover")
     assert path.read_bytes() == original
 
@@ -678,20 +684,20 @@ def test_ready_jobs_require_unchanged_completed_dependencies(tmp_path: Path) -> 
     decode = {"id": "decode", "kind": "decode", "sha256": "c" * 64, "dependencies": ["first"]}
     jobs = [first, train, decode]
     state = {"jobs": {job["id"]: {"sha256": job["sha256"], "state": "pending"} for job in jobs}}
-    assert queue.ready_jobs(jobs, state) == [first]
-    receipt = queue.completion_receipt(first)
+    assert queue_completion.ready_jobs(jobs, state) == [first]
+    receipt = queue_completion.completion_receipt(first)
     state["jobs"]["first"].update(state="complete", receipt=receipt)
     original = json.dumps(state)
-    assert queue.ready_jobs(jobs, state) == [decode, train]
+    assert queue_completion.ready_jobs(jobs, state) == [decode, train]
     assert json.dumps(state) == original
     raw = (output / "generated.pt").read_bytes()
     (output / "generated.pt").unlink()
-    assert queue.ready_jobs(jobs, state) == []
+    assert queue_completion.ready_jobs(jobs, state) == []
     assert json.dumps(state) == original
     (output / "generated.pt").write_bytes(raw)
     (output / "result.json").write_text("{}")
     with pytest.raises(ValueError, match="receipt evidence changed"):
-        queue.ready_jobs(jobs, state)
+        queue_completion.ready_jobs(jobs, state)
 
 
 @pytest.mark.usefixtures("controlled_evaluation_conditions")
@@ -711,22 +717,23 @@ def test_ready_jobs_verify_only_receipts_that_gate_pending_work(
     other = {"id": "other", "kind": "decode", "sha256": "c" * 64}
     jobs = [first, other]
     state = {"jobs": {job["id"]: {"sha256": job["sha256"], "state": "pending"} for job in jobs}}
-    state["jobs"]["first"].update(state="complete", receipt=queue.completion_receipt(first))
+    state["jobs"]["first"].update(state="complete", receipt=queue_completion.completion_receipt(first))
     checked = []
-    original = queue.verify_receipt
+    original = queue_completion.verify_receipt
+
     def counted(job: dict, receipt: dict) -> bool:
         checked.append(job["id"])
         return original(job, receipt)
 
-    monkeypatch.setattr(queue, "verify_receipt", counted)
+    monkeypatch.setattr(queue_completion, "verify_receipt", counted)
     # No pending job depends on "first", so its receipt is not rehashed before dispatch.
     (output / "result.json").write_text("{}")
-    assert queue.ready_jobs(jobs, state) == [other]
+    assert queue_completion.ready_jobs(jobs, state) == [other]
     assert checked == []
     # A completed job without a receipt is still refused.
     del state["jobs"]["first"]["receipt"]
     with pytest.raises(ValueError, match="no verified receipt"):
-        queue.ready_jobs(jobs, state)
+        queue_completion.ready_jobs(jobs, state)
 
 
 @pytest.mark.parametrize("changed_receipt", [False, True])
@@ -744,7 +751,7 @@ def test_persistent_child_cannot_start_with_pending_or_changed_dependency(
     }
     path = tmp_path / "state.json"
     prior_receipt = {"job_sha256": source["sha256"], "evidence": []}
-    with queue.queue_state(path, [source, job]) as state:
+    with queue_journal.queue_state(path, [source, job]) as state:
         if changed_receipt:
             state["jobs"]["source"].update(state="complete", receipt={**prior_receipt, "changed": True})
     original = path.read_bytes()
@@ -752,8 +759,14 @@ def test_persistent_child_cannot_start_with_pending_or_changed_dependency(
     assert claims.acquire((5,), job="case")
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("blocked child started"))
     with pytest.raises(ValueError, match="dependencies are not verified"):
-        queue.run_child(job, claims, tmp_path / "child.log", state_path=path, jobs=[source, job],
-                        dependency_receipts={"source": prior_receipt} if changed_receipt else None)
+        queue_attempt.run_child(
+            job,
+            claims,
+            tmp_path / "child.log",
+            state_path=path,
+            jobs=[source, job],
+            dependency_receipts={"source": prior_receipt} if changed_receipt else None,
+        )
     assert path.read_bytes() == original
     assert not claims.owned
 
@@ -768,6 +781,6 @@ def test_corrupt_state_rows_cannot_become_new_pending_jobs(tmp_path: Path, row: 
         row = {"sha256": job["sha256"], "state": "pending", **row}
     path.write_text(json.dumps({"schema_version": 1, "job_order": ["case"], "jobs": {"case": row}}))
     original = path.read_bytes()
-    with pytest.raises(ValueError, match="queue"), queue.queue_state(path, [job]):
+    with pytest.raises(ValueError, match="queue"), queue_journal.queue_state(path, [job]):
         pytest.fail("corrupt state permitted ownership")
     assert path.read_bytes() == original

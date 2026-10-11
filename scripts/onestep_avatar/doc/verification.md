@@ -1,10 +1,15 @@
 # Verification — worked checks and acceptance gates
 
-This file defines checks across modules. It is not a per-source-file doc, so the
-100-line rule does not apply. Read the [symbols](core_algorithm.md#1-symbols)
-first. V1–V8 are design checks with worked numbers; the CPU test suite covers
-each of them. The acceptance gates E1–E5 define native evidence. A passing CPU
-check never establishes a native numerical result, video quality, speed or memory use.
+This file defines checks across modules. It is not a document for one source
+file, so the 100-line rule does not apply. Read the
+[symbols](core_algorithm.md#1-symbols) first.
+
+- V1–V8 are design checks with worked numbers. The CPU test suite covers each
+  of them.
+- The acceptance gates E1–E5 define the native evidence.
+
+A passing CPU check never proves a native numerical result, video quality,
+speed or memory use.
 
 ## V1 — Is the first image a clean model input?
 
@@ -134,81 +139,122 @@ the preview.
 
 Native acceptance uses the [run guide](../configs/README.md#9-experiments)
 recipes, fresh output directories and the current source. A result keeps the
-source and inputs that produced it; a changed producer needs a fresh affected
-check. Each gate states its scope; numeric agreement does not establish
-appearance quality.
+source and inputs that made it. A changed producer needs a fresh check of the
+affected results. Each gate states its scope. Numerical agreement does not
+prove appearance quality.
 
 ### E1 — Supported sampler (`experiments/stock_parity.py`)
 
-Compare the native stock and package video samplers with the same weights,
-first image, text, saved noise, geometry, fps, schedule and guidance calls.
-Build stock schedules with `LTX2Scheduler().execute(steps=N)` and no latent
-argument. Compare raw encodings, intermediate calls, repeats and the decoded
-17-frame/129-RGB output with a declared dtype tolerance. The direct
-`[sigma, 0]` endpoint differs from the stock bf16 endpoint by terminal rounding
-([known gaps](known_gaps.md#direct-endpoint-and-stock-terminal-rounding)).
+Compare the native stock video sampler with the package sampler. Keep these
+items the same: weights, first image, text, saved noise, geometry, fps,
+schedule and guidance calls.
+
+- Build stock schedules with `LTX2Scheduler().execute(steps=N)` and no latent
+  argument.
+- Compare the raw encodings, the intermediate calls, repeats and the decoded
+  17-frame (129 RGB) output with a declared dtype tolerance.
+- The direct `[sigma, 0]` endpoint differs from the stock bf16 endpoint by
+  terminal rounding
+  ([known gaps](known_gaps.md#direct-endpoint-and-stock-terminal-rounding)).
+
 Pure-noise parity does not prove D1 or video quality. Outer stock
 preprocessing and joint audio-video are outside this video-only check.
 
 ### E2 — Learned adapter function (`experiments/adapter_effect_check.py`)
 
-In both modes, compare the training reference, ordinary evaluation and product
-under identical c0, guide, text and noise: base, zero adapter and trained
-unmerged adapter. Report correction RMS, absolute and relative gaps, raw output,
-decoded appearance and measured cost. The relative effect L2 must be **under
-0.05**; when the reference RMS is below `1e-8`, the absolute difference RMS must
-be **at most `1e-8`**. A zero adapter equals its own base. Near-zero agreement
-permits the bounded pilot but does not prove a learned effect. Complete **two
-camera views and trained steps 20 and 60**. Fused bf16 application is a
-separate diagnostic.
+In both modes, compare three paths: the training reference, ordinary
+evaluation and the product. Use the same `c0`, guide, text and noise. Compare
+three model states: the base, a zero adapter and the trained unmerged adapter.
+
+- Report the correction RMS, the absolute and relative gaps, the raw output,
+  the decoded appearance and the measured cost.
+- The relative effect L2 must be **under 0.05**. When the reference RMS is
+  below `1e-8`, the absolute difference RMS must be **at most `1e-8`**.
+- A zero adapter equals its own base.
+- Complete **two camera views and trained steps 20 and 60**.
+
+Near-zero agreement allows the bounded pilot. It does not prove a learned
+effect. Fused bf16 application is a separate diagnostic.
 
 ### E3 — Causal continuation (`experiments/continuation_check.py`, `experiments/causality.py`)
 
-Require an exact same-input cached repeat and independent c0, prefix and
-future-noise controls. Compare cache refresh with block-causal recomputation
-with weights, adapter method, source, text, saved noise, schedule, B/D and
-coverage fixed. Use **17 encoded frames**, distinguish blocks before and after
-eviction at D8 and keep the after-eviction block `[11,13)`. Start with one view
-at direct `[1,0]` and `[0.909375,0]`; save block output and layerwise K/V.
-Keep capture-history diagnostics separate from generated-history comparisons.
-Measure seams, identity, motion, calls, allocated/reserved peaks and warmed
-latency; review matched capture RGB and VAE reconstruction. Then complete
-**three held-out people, two seeds, one matched view each**. The seven-frame
-short controls do not replace eviction or quality acceptance.
+Require an exact same-input cached repeat, and independent `c0`, prefix and
+future-noise controls. Compare the cache refresh with block-causal
+recomputation. Keep fixed: weights, adapter method, source, text, saved noise,
+schedule, B and D, and coverage.
+
+1. Use **17 encoded frames**. Separate the blocks before and after eviction at
+   D8. Keep the after-eviction block `[11,13)`.
+2. Start with one view at direct `[1,0]` and `[0.909375,0]`. Save the block
+   output and the layerwise K/V.
+3. Keep capture-history diagnostics separate from generated-history
+   comparisons.
+4. Measure seams, identity, motion, calls, allocated and reserved peaks and
+   warmed latency. Review the matched capture RGB and VAE reconstruction.
+5. Then complete **three held-out people, two seeds and one matched view
+   each**.
+
+The seven-frame short controls do not replace the eviction or quality
+acceptance.
 
 ### E4 — Distributed training update (`experiments/training_update_check.py`)
 
-In each mode, compare the deterministic four-rank, accumulation-two first update
-with a fixed serial reference: same visits, text, noise and configuration;
-768 named gradients, Adam moments and exports; loss and norm; zero no-op; and
-the actual step-one reload. Relative L2 stays **0.02**; near-zero and absolute
-RMS stay **`1e-8`**. Causal samples keep block-zero and later starts, equal K3,
-block sets `[0,1,2]`/`[3,4,5]`, refresh/removal and checkpoint recomputation.
-Check canonical launch reconstruction, actual world size and dtype agreement,
-per-rank resource evidence and negative changed-launch, budget and source
-controls. Gradients below norm one prove clipping is a no-op, not active
-clipping. Complete **one fixed base/step-one preview and one public
-supplied-image product per mode**, with c0, finite outputs, call counts,
-generated history, worker absence and synchronized full/narrow media.
-`experiments/training_slice_check.py` localizes a mismatch on one GPU; it cannot
+In each mode, compare the deterministic first update (four ranks, accumulation
+two) with a fixed serial reference. Use the same visits, text, noise and
+configuration. Compare:
+
+- 768 named gradients, the Adam moments and the exports;
+- the loss and the norm, a zero no-op and the actual step-one reload.
+
+The relative L2 limit is **0.02**. The near-zero and absolute RMS limit is
+**`1e-8`**.
+
+Causal samples keep block-zero and later starts, equal K3, block sets
+`[0,1,2]` and `[3,4,5]`, refresh and eviction, and checkpoint recomputation.
+Also check:
+
+- canonical launch reconstruction, the actual world size and dtype agreement;
+- resource evidence for each rank;
+- negative controls for a changed launch, budget and source.
+
+Gradients with a norm below one prove that clipping is a no-op. They do not
+prove active clipping.
+
+Complete **one fixed base/step-one preview and one public supplied-image
+product for each mode**. Each must show `c0`, finite outputs, call counts,
+generated history, absent workers and synchronized full and narrow media.
+`experiments/training_slice_check.py` finds a mismatch on one GPU. It cannot
 complete this gate.
 
 ### E5 — Bounded learning, controls and cost
 
-Use the same **two checked clips**, separate runs per mode, D1, white, dev
-LTX-2.5, direct **`[0.725,0]`**, seven encoded frames (49 RGB), clip-start
-c0, LoRA rank and alpha 8 on attention, fresh noise, seed 42, learning rate
-`1e-4`, 20-update warmup and norm-one clipping. Four ranks use one sample per
-rank per update. Causal uses B2/K3/D8 with generated history and sigma-zero
-refresh. Save updates **0/20/60**. Stop at **60 updates or 7,200 seconds
-overall per mode**, whichever comes first, and report incomplete coverage
-without changing settings. Compare fixed base/zero/20/60 and prove **D0 ≡ D1 at
-sigma one with the same model, adapter, c0, noise, text and history**. Include
-wrong-guide and wrong-text controls, judge identity and action from matched
-videos and measure the separate D0 capacity question. Complete **three held-out
-people × two seeds** and warmed latency and memory. Latent MSE or reduced motion
-alone cannot establish quality. Do not tune on the final test set or claim
-longer coverage from this pilot.
+Fixed settings for both modes:
+
+- the same **two checked clips**, with a separate run for each mode;
+- D1, `white`, dev LTX-2.5, direct **`[0.725,0]`**;
+- seven encoded frames (49 RGB) and clip-start `c0`;
+- LoRA rank and alpha 8 on attention, fresh noise and seed 42;
+- learning rate `1e-4`, a 20-update warmup and norm-one clipping;
+- four ranks with one sample per rank for each update;
+- causal: B2/K3/D8 with generated history and sigma-zero refresh.
+
+Save updates **0, 20 and 60**. Stop at **60 updates or 7,200 seconds overall
+for each mode**, whichever comes first. Report incomplete coverage without a
+change of settings.
+
+Then do these comparisons:
+
+1. Compare the fixed base, zero, 20 and 60 states.
+2. Prove **D0 ≡ D1 at sigma one with the same model, adapter, `c0`, noise,
+   text and history**.
+3. Run wrong-guide and wrong-text controls. Judge identity and action from
+   matched videos.
+4. Measure the separate D0 capacity question.
+5. Complete **three held-out people × two seeds**, and the warmed latency and
+   memory.
+
+Latent MSE or reduced motion alone cannot prove quality. Do not tune on the
+final test set. Do not claim longer coverage from this pilot.
 
 ## Limits of these checks
 

@@ -2,12 +2,65 @@
 
 ## Objective
 
-Run one fixed comparison through `evaluate.sample_case`: replace the checked
-guide with a separately checked foreign guide, replace text, or compare D0 and
-D1 at sigma one. The separate `capture_oracle` control compares D0 and D1 at
-the pilot's sigma 0.725 with the same model and adapter. It measures access to
-the supplied capture, which product generation cannot have. These controls do
-not measure D0 learning capacity; that requires separate D0 training.
+Run one fixed comparison through `evaluate.sample_case`. The `run` operation
+has four controls:
+
+- `guide`: replace the checked guide with a separately checked guide of another
+  person;
+- `text`: replace the text;
+- `sigma_one`: compare D0 and D1 at sigma one;
+- `capture_oracle`: compare D0 and D1 at the pilot's sigma 0.725, with the
+  same model and adapter. It measures access to the supplied capture, which
+  product generation cannot have.
+
+These controls do not measure the D0 learning capacity. That needs separate D0
+training.
+
+The same selector has three more operations. Each operation sends the work to
+its own owner:
+
+- `prepare_references` → [reference_inputs](reference_inputs.md);
+- `past_influence` → [past_influence_check](past_influence_check.md);
+- `capacity_review` → [capacity_review](capacity_review.md).
+
+## Usage
+
+Humans can use the foreground queue or run this module directly.
+See [launch, output and stop commands](../usage.md). Agents use the queue.
+The queue recipes below describe managed execution.
+
+Start each control as a queue `experiment` job with selector
+`conditioning_check`. See
+[run guide §9, E5](../../configs/README.md#e5--bounded-learning-pilots) and the
+[spec format](spec_protocol.md).
+
+This is the agent path. A person can also run the same module directly, or start the queue in the foreground; see [usage](../usage.md).
+
+```json
+{"schema_version": 1, "protocol": "conditioning_check", "operation": "run",
+ "arguments": ["--control", "guide", "--mode", "causal", "--subset", "/abs/membership.json",
+               "--source", "<TARGET_VIEW>", "--donor-source", "<OTHER_PERSON_VIEW>",
+               "--noise-file", "/abs/seven_frame_noise.pt", "--seed", "42", "--decode"]}
+```
+
+| Scientific argument | Meaning |
+|---|---|
+| `--control {guide,text,sigma_one,capture_oracle}` | Required. The control. |
+| `--mode {bidirectional,causal}` | Required. The attention mode. |
+| `--subset`, `--source` | Required. The checked membership and the target view. |
+| `--noise-file` | Required. Saved noise for seven encoded frames. |
+| `--checkpoint` | The selected saved adapter. Omit it for the base. |
+| `--donor-source` | `guide` only: a view of another person in the same membership. |
+| `--prompt`, `--wrong-prompt` | `text` only: the prompt and a different, nonempty wrong prompt. |
+| `--research-override` | Required for `sigma_one` and `capture_oracle`. |
+| `--decode` | Also make matched references, decoded outputs and full and narrow reviews. |
+| `--split`, `--seed` | The data group and the seed. |
+
+All controls use seven encoded frames and `white` dev LTX-2.5. The guide and
+text controls use D1. `sigma_one` and `capture_oracle` compare D0 with D1. The
+schedule is direct `[0.725, 0]`, except `sigma_one`, which uses `[1, 0]`.
+
+For the other operations, see the Usage section of their owner.
 
 ## Data flow
 
@@ -25,74 +78,82 @@ flowchart LR
 
 ## Organization logic
 
-The scientific specification names one control and one target source. Ordinary
-evaluation preflight checks the target, base, exact seven-frame shape, noise and
-adapter. The guide control loads its donor from the same content-pinned
-membership. Target and donor must differ and have equal selected shape, timebase
-and VAE identity. Their individual crop and producer records stay distinct.
-No tensor is resized, relabeled as the target guide or written into the corpus.
+### Inputs
 
-Both arms keep capture, clean first-image input, complete saved noise, model,
-adapter, schedule and history fixed. The guide control changes guide tensor
-values and their explicit donor identity. The text control changes the actual
-saved text tensor and prompt. Sigma-one changes only the D0/D1 source selection;
-both branches preflight their actual adapter conditions under an explicit
-research override. The selected adapter is never changed to pass this control.
-`capture_oracle` also records the explicit D0 research override and keeps the
-adapter fixed.
+The spec names one control and one target source. The ordinary evaluation
+checks verify the target, the base, the exact seven-frame shape, the noise and
+the adapter.
 
-The explicit `prepare_references` operation dispatches the independent
-[original membership reference owner](reference_inputs.md). It accepts
-`--subset`, `--source`, `--encoded-frames`, `--seed`, optional `--guide-mode`
-and `--model`. The existing queue selector owns GPU claims and supervision.
-There are no model-output dependencies. It validates the saved crop manifest
-and original encoding records before copying their exact crop into the public
-RGB reader's in-memory source row. Original membership bytes and recorded
-producer identity remain unchanged. The same checked source-row adapter is used
-by conditioning and capacity reviews; a missing duplicate crop field is never
-a reason to recompute a crop or relabel inputs.
+The guide control loads its donor from the same content-pinned membership.
 
-The independent `past_influence` operation dispatches
-[changed-past-frame checks](past_influence_check.md). It owns its own scientific
-arguments, dependencies, source extras, native execution and saved verification.
-Lazy operation routing keeps that owner outside the unrelated conditioning,
-reference and capacity software profiles.
+- The target and the donor must differ.
+- They must have equal selected shape, time base and VAE identity.
+- Their individual crop and producer records stay separate.
+- No tensor is resized, relabeled as the target guide or written into the
+  corpus.
 
-The explicit `capacity_review` operation reads a frozen list of completed
-ordinary D0 evaluation jobs. It dispatches the independent saved-only
-[capacity review owner](capacity_review.md). Its spec arguments are `--mode`
-and `--evaluation-list`; every evaluation output is an in-list queue dependency.
-The operation requires separately D0-trained updates 0, 20 and 60. It loads no
-transformer and cannot regenerate a missing output. The ordinary `run`
-operation keeps the two-arm conditioning comparison defined above.
+### What changes
 
-The shared native session and unmerged adapter loader open once. Each arm calls
-the ordinary sampler with a new cache. Save text, noise, raw outputs, actual
-scientific settings, file hashes and software identity. The module does not
-launch children or claim GPUs. With `--decode`, it uses the public media owner
-and native VAE to prepare matched capture RGB, VAE-decoded capture and paired
-guide RGB. It decodes both outputs with fresh equal-seed generators. A guide
-review adds the donor's guide RGB in that donor's recorded crop. This is a
-deliberately changed condition, not a target-coordinate overlay. The generic
-queue phase bounds sampling, decoding and review together at 1,800 seconds and
-48,000,000,000 allocated bytes unless the job declares its own bound.
+Both arms keep fixed: the capture, the clean first-image input, the complete
+saved noise, the model, the adapter, the schedule and the history.
 
-The full review puts three equally high, padded panels in each row. The narrow
-review uses the public readable-layout selector at 480 pixels. Keep the matched
-and changed outputs beside each other. For a guide control, place the paired
-and donor guide together above those outputs in the narrow review. For other
-controls, use the shared compact-training layout, with the unused guide slot
-explicitly labeled. Capture RGB,
-capture VAE and paired guide appear first. Matched and changed VAE outputs
-follow, with a donor guide last for the guide intervention. Titles state each
-role; value lines state RGB versus VAE decoding and the donor's person. All
-moving panels map to source frames 0 through 48 and recorded FPS. Save full
-panel pixel tensors, reference provenance, MP4s and poster PNGs. Original
-capture and guide videos remain in the corpus with their content pins. Save
-exact prompts, noise, crops, objective, VAE bytes, decoder settings and runtime
-cost. Cost reports the cumulative CUDA peak through decoding without resetting
-the queue's peak. These records support a separate visual identity/action
-judgment; sensitivity alone is never quality acceptance.
+| Control | Changes |
+|---|---|
+| `guide` | The guide tensor values and their explicit donor identity. |
+| `text` | The actual saved text tensor and the prompt. |
+| `sigma_one` | Only the D0/D1 source selection. |
+| `capture_oracle` | Only the D0/D1 source selection, at sigma 0.725. |
+
+For `sigma_one`, both branches check their actual adapter conditions under an
+explicit research override. `capture_oracle` also records the explicit D0
+research override and keeps the adapter fixed. The selected adapter is never
+changed to pass a control.
+
+### Execution
+
+The shared native session and the unmerged adapter loader open once. Each arm
+calls the ordinary sampler with a new cache. The module saves the text, the
+noise, the raw outputs, the actual scientific settings, the file hashes and the
+software identity. It starts no children and claims no GPUs.
+
+### Decoded review
+
+With `--decode`, the module uses the public media owner and the native VAE:
+
+1. Prepare the matched capture RGB, the VAE-decoded capture and the paired
+   guide RGB.
+2. Decode both outputs with fresh generators with the same seed.
+3. For a guide control, add the donor's guide RGB in the donor's recorded crop.
+   This is a deliberately changed condition, not an overlay in target
+   coordinates.
+
+The generic queue phase limits sampling, decoding and review together to
+1,800 seconds and 48,000,000,000 allocated bytes, unless the job declares its
+own limit.
+
+**Layout.**
+
+- The full review puts three padded panels of equal height in each row.
+- The narrow review uses the public readable-layout selector at 480 pixels.
+- The matched and changed outputs stay next to each other.
+- For a guide control, the narrow review puts the paired guide and the donor
+  guide together above those outputs. For other controls, it uses the shared
+  compact-training layout, with the unused guide slot labeled.
+
+**Panel order.** Capture RGB, capture VAE and paired guide come first. The
+matched and changed VAE outputs follow. For the guide control, the donor guide
+is last. The titles state each role. The value lines state RGB or VAE decoding
+and the donor's person. All moving panels map to source frames 0 through 48 at
+the recorded fps.
+
+**Saved files.** Full panel pixel tensors, reference provenance, MP4s and
+poster PNGs. The original capture and guide videos stay in the corpus with
+their content pins. The record also has the exact prompts, noise, crops,
+objective, VAE bytes, decoder settings and runtime cost. The cost is the
+cumulative CUDA peak through decoding. It does not reset the queue's peak.
+
+These records support a separate visual judgment of identity and action.
+Sensitivity alone is never quality acceptance.
 
 ```mermaid
 flowchart LR
@@ -111,64 +172,112 @@ flowchart LR
   class V out;
 ```
 
-Saved completion repeats input and adapter preflight on CPU, checks source
-software, exact arm inventory, text and noise identity, output shape, unchanged
-first image and actual call counts. It recomputes all numerical summaries from
-saved tensors, including each arm's encoded metrics against the unchanged
-capture. Records use ordinary sampler schema two. The exact native call
-inventory is `model_calls=1, denoise_calls=1, prime_calls=0, refresh_calls=0`
-for bidirectional mode, and `model_calls=6, denoise_calls=3, prime_calls=0,
-refresh_calls=3` for causal mode. Generation refreshes the final causal block;
-training's skipped final refresh does not change this count. Missing, extra or
-non-integer call fields fail completion. Sigma-one must be bit-identical. A changed guide or text that
-leaves output unchanged is recorded as insensitive; it is not a failed
-integrity check and is never labeled quality success. Completion loads no native
-model, encoder, decoder, prompt-cache producer or GPU handle.
-For a decoded review, completion loads saved RGB panels and replays recorded
-capture/guide preprocessing on CPU to check exact pixels. It checks
-VAE/crop/objective/source identities and decoder keys, synchronized coverage,
-panel roles and titles, full and narrow placement, readable labels,
-aspect-preserving padding, actual MP4 dimensions, frame count and FPS, and
-poster pixels rebuilt from saved panels. Missing media or a changed review
-record fails completion.
+### Other operations
 
-Recheck original raw/preprocessed input pins, selected checkpoint bytes and the
-software profile after sampling and before publication. The software profile
-includes the experiment marker and specification owner. `evidence_paths` accepts
-`verified=True` only when its caller has already run scientific completion; it
-still inspects the byte inventory and specification. This avoids a second
-scientific verification inside one queue receipt check.
+- **`prepare_references`** sends the work to the independent
+  [original membership reference owner](reference_inputs.md). It accepts
+  `--subset`, `--source`, `--encoded-frames`, `--seed` and the optional
+  `--guide-mode` and `--model`. It has no model-output dependencies. It
+  validates the saved crop manifest and the original encoding records before
+  it copies their exact crop into the public RGB reader's in-memory source
+  row. The original membership bytes and the recorded producer identity stay
+  unchanged. Conditioning and capacity reviews use the same checked source-row
+  adapter. A missing duplicate crop field is never a reason to compute a crop
+  again or relabel inputs.
+- **`past_influence`** sends the work to the
+  [changed-past-frame checks](past_influence_check.md). That owner has its own
+  scientific arguments, dependencies, source extras, native execution and saved
+  verification. Lazy operation routing keeps it outside the software profiles
+  of the conditioning, reference and capacity operations.
+- **`capacity_review`** reads a frozen list of completed ordinary D0
+  evaluation jobs and sends it to the saved-only
+  [capacity review owner](capacity_review.md). Its arguments are `--mode` and
+  `--evaluation-list`. Every evaluation output in the list is a queue
+  dependency. It requires separately D0-trained updates 0, 20 and 60. It loads
+  no transformer and cannot generate a missing output again.
 
-Worked control: paired guide values `[1,2]` and donor guide `[9,8]` share the
-target first-image input `10` and noise. Both output first frames must be `10`.
-Their guide hashes must differ, while their capture, noise and text hashes
-agree. In a sigma-one control the two outputs must agree exactly, even when
-capture and guide differ. Different adapters cannot prove that equality.
+### Saved completion
+
+Saved completion repeats the input and adapter checks on CPU. It checks the
+source software, the exact arm list, the text and noise identity, the output
+shape, the unchanged first image and the actual call counts. It recomputes all
+numerical summaries from the saved tensors, including each arm's encoded
+metrics against the unchanged capture.
+
+Records use ordinary sampler schema two. The exact native call counts are:
+
+| Mode | `model_calls` | `denoise_calls` | `prime_calls` | `refresh_calls` |
+|---|---:|---:|---:|---:|
+| bidirectional | 1 | 1 | 0 | 0 |
+| causal | 6 | 3 | 0 | 3 |
+
+Generation refreshes the final causal block. Training skips its final refresh,
+but that does not change this count. Missing, extra or non-integer call fields
+fail completion.
+
+- `sigma_one` must be bit-identical.
+- A changed guide or text that leaves the output unchanged is recorded as
+  insensitive. It is not a failed integrity check, and it is never called a
+  quality success.
+
+Completion loads no native model, encoder, decoder, prompt-cache producer or
+GPU handle. For a decoded review, completion loads the saved RGB panels and
+replays the recorded capture and guide preprocessing on CPU to check exact
+pixels. It also checks:
+
+- the VAE, crop, objective and source identities and the decoder keys;
+- synchronized coverage, panel roles and titles;
+- full and narrow placement, readable labels and aspect-preserving padding;
+- the actual MP4 dimensions, frame count and fps;
+- poster pixels rebuilt from the saved panels.
+
+Missing media or a changed review record fails completion.
+
+The module checks again the original raw and preprocessed input pins, the
+selected checkpoint bytes and the software profile, after sampling and before
+publication. The software profile includes the experiment marker and the spec
+owner. `evidence_paths` accepts `verified=True` only when its caller already ran
+the scientific completion. It still inspects the byte list and the spec. This
+avoids a second scientific verification in one queue receipt check.
+
+Worked control: the paired guide values `[1,2]` and the donor guide `[9,8]`
+share the target first-image input `10` and the noise.
+
+- Both output first frames must be `10`.
+- Their guide hashes must differ. Their capture, noise and text hashes must
+  agree.
+- In a `sigma_one` control, the two outputs must agree exactly, even when the
+  capture and the guide differ. Different adapters cannot prove that equality.
 
 ## Invariants
 
-- Preserve original target and paired-guide provenance beside donor provenance.
-- Reject empty/no-op controls, altered shape, timebase, noise or first image.
-- Use unmerged fp32 adapters against the frozen bf16 base.
-- Record research overrides; never reinterpret a D1 pilot as D0 training.
-- Byte inventory and scientific checks are both required for completion.
+- Keep the original target and paired-guide provenance beside the donor
+  provenance.
+- Refuse empty or no-op controls, and changed shape, time base, noise or first
+  image.
+- Use unmerged fp32 adapters with the frozen bf16 base.
+- Record research overrides. Never treat a D1 pilot as D0 training.
+- Completion requires both the byte list and the scientific checks.
 
 ## Gotchas
 
-Foreign guide crops are deliberately mismatched conditions. Their geometric
-records explain the intervention; a video must label the donor. Latent output
-change measures sensitivity, not correct identity or motion. Judge those from
-matched capture RGB and decoded videos. Wrong-text output change also does not
-establish that the requested action is correct.
+- Foreign guide crops are deliberately mismatched conditions. Their geometry
+  records explain the intervention. A video must label the donor.
+- A change of the latent output measures sensitivity, not correct identity or
+  motion. Judge those from the matched capture RGB and the decoded videos.
+- A change of the output for the wrong text also does not prove that the
+  requested action is correct.
 
 ## Tests
 
-`test_conditioning_check.py` checks one-factor records, changed input rejection,
-clean first-image preservation, exact sigma-one equality, call counts, changed
-summary and per-arm metric rejection, and saved completion with native loaders
-blocked. Native sampler tests cover both modes and the schema-two call inventory.
-Use the actual `EncodedVideo` dataclass in saved fixtures, so public corpus field
-names remain checked. Media tests check adjacent matched/changed panels in both
-reading widths, and reject changed donor pixels, references, decoder keys,
-prompts, labels, poster pixels and cost. Controlled decoder/video doubles test
-saved verification and layout; they do not establish native appearance or cost.
+`test_conditioning_check.py` checks one-factor records, refusal of changed
+inputs, preservation of the clean first image, exact `sigma_one` equality, call
+counts, refusal of changed summaries and per-arm metrics and saved completion
+with the native loaders blocked. Native sampler tests cover both modes and the
+schema-two call counts. Saved fixtures use the actual `EncodedVideo`
+dataclass, so the public corpus field names stay checked.
+
+Media tests check adjacent matched and changed panels at both reading widths.
+They refuse changed donor pixels, references, decoder keys, prompts, labels,
+poster pixels and cost. Controlled decoder and video doubles test saved
+verification and layout. They do not prove native appearance or cost.

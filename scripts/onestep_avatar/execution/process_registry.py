@@ -16,13 +16,14 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
+from scripts.onestep_avatar.execution import devices
+from scripts.onestep_avatar.execution import processes as process_handles
 from scripts.onestep_avatar.execution.devices import GPU_POOL, select_devices, validate_inventory, validate_selection
 
 
 def _identity(pid: int) -> dict | None:
-    from scripts.onestep_avatar.execution.queue import process_identity  # noqa: PLC0415 -- single stable identity owner
 
-    return process_identity(pid)
+    return process_handles.process_identity(pid)
 
 
 def _same_handle(left: dict | None, right: dict) -> bool:
@@ -50,9 +51,8 @@ def gpu_memory(*, timeout: float = 5) -> dict[int, int]:
         ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
         check=True, capture_output=True, text=True, timeout=timeout,
     )
-    from scripts.onestep_avatar.execution.queue import parse_gpu_memory  # noqa: PLC0415 -- existing inventory contract
 
-    return parse_gpu_memory(result.stdout)
+    return devices.parse_gpu_memory(result.stdout)
 
 
 class ProcessRegistry:

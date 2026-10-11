@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from scripts.onestep_avatar.execution import devices
+from scripts.onestep_avatar.execution import processes as process_handles
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
 
 if TYPE_CHECKING:
@@ -93,12 +95,9 @@ def notify_phase(phase: str, event: str, rank: int, *, budget_sha256: str | None
             or type(rank) is not int or not 0 <= rank < contract["world"]
             or phase not in contract["phases"] or event not in ("begin", "end")):
         raise ValueError("phase notification differs from its bound attempt/rank/phase")
-    from scripts.onestep_avatar.execution.queue import (  # noqa: PLC0415 -- one model-free identity owner
-        process_identity,
-    )
 
     index = contract["phases"].index(phase)
-    identity = process_identity(os.getpid())
+    identity = process_handles.process_identity(os.getpid())
     if identity is None or identity["terminal"]:
         raise ValueError("phase producer identity is unavailable")
     record = {"schema_version": 1, "contract_sha256": digest, "token": contract["token"],
@@ -114,11 +113,10 @@ def _positive(value: float, name: str) -> None:
 
 
 def _observe(identity: dict, command: list[str], worker_record: dict) -> dict | None:
-    from scripts.onestep_avatar.execution.queue import process_identity  # noqa: PLC0415 -- existing identity authority
 
     deadline = time.monotonic() + 0.1
     while True:
-        current = process_identity(identity["pid"])
+        current = process_handles.process_identity(identity["pid"])
         if current is None:
             return None
         if any(current[key] != identity[key] for key in ("pid", "start_ticks")):
@@ -194,9 +192,8 @@ def _gpu_inventory(gpus: tuple[int, ...], timeout: float) -> dict[int, int]:
         ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
         capture_output=True, text=True, timeout=timeout, check=True,
     )
-    from scripts.onestep_avatar.execution.queue import parse_gpu_memory  # noqa: PLC0415 -- shared inventory validation
 
-    rows = parse_gpu_memory(result.stdout)
+    rows = devices.parse_gpu_memory(result.stdout)
     if not set(gpus).issubset(rows):
         raise ValueError("sampled total-device inventory omits a selected GPU")
     return {gpu: rows[gpu] * 1024 * 1024 for gpu in gpus}
@@ -434,8 +431,7 @@ def supervise(  # noqa: PLR0912, PLR0913, PLR0915 -- one finite lifecycle, expli
                     # Linux also clears cmdline during exec. Reobserve that exact
                     # handle while continuing phase/deadline/worker supervision;
                     # an empty command alone never authorizes a blocking reap.
-                    from scripts.onestep_avatar.execution.queue import process_identity  # noqa: PLC0415
-                    latest = process_identity(child.pid)
+                    latest = process_handles.process_identity(child.pid)
                     empty_owned_command = (latest is not None and not latest["command"]
                                            and all(latest[key] == identity[key] for key in ("pid", "start_ticks")))
                     if _pidfd_terminal(descriptor):
@@ -487,7 +483,7 @@ def supervise(  # noqa: PLR0912, PLR0913, PLR0915 -- one finite lifecycle, expli
                 next_sample = time.monotonic() + sample_seconds
             time.sleep(poll_seconds)
         result["state"] = "passed"
-    except Exception as error:
+    except (Exception, KeyboardInterrupt) as error:
         result["error"] = f"{type(error).__name__}: {error}"
         result["events"].append({"event": "failure", "elapsed_s": time.monotonic() - started,
                                   "error": result["error"]})

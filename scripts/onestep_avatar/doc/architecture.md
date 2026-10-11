@@ -6,8 +6,9 @@ one shared own-process ledger, GPUs 0–7) are in the [package guidance](../CLAU
 and the [run guide](../configs/README.md). Do not copy test counts or run status
 into this document.
 
-Required means the agreed rule. Current means inspected source behavior.
-Verified means a check with saved evidence and an explicit scope.
+- **Required** means the agreed rule.
+- **Current** means the behavior of the inspected source.
+- **Verified** means a check with saved evidence and an explicit scope.
 
 ## Objective and authority
 
@@ -75,8 +76,8 @@ corpus/              dataset, subset, precompute, build_guidance,
 model/               common, backbone, adapters, sampling, bidirectional, causal
 training/            config, engine, checkpoints, startup, runtime,
                      resources, numerics, consumer_trace, update_state
-execution/           queue, queue_launch, queue_protocol,
-                     process_registry, supervision, software, devices, runtime
+execution/           queue, jobs, journal, recovery, completion, attempt, clock, processes,
+                     queue_launch, queue_protocol, process_registry, supervision, software, devices, runtime, terminal
 experiments/         training_update_check, training_slice_check,
                      adapter_effect_check, continuation_check, causality,
                      stock_parity, fusion_parity, sigma_sweep,
@@ -103,7 +104,7 @@ can merge ARGAvatar's `scripts.inference` at run time.
 | `model/` | Token layout, noise, `c0`, loss, base weights, adapter function, exact denoising steps, both mode algorithms, cache state and diagnostic numerical paths | Settings parsing, optimizer loop, comparison orchestration |
 | `training/` | Typed settings and preflight, the one optimizer loop, checkpoint contract and export, runtime/resource/numerical evidence, preview enqueue | Evaluation, sampling CLIs, studies |
 | Root run support | Ordinary evaluation, product, previews, saved comparisons, decoding, media, preparation, cost and plots | Interventions, comparison protocols, study inventories |
-| `execution/` | The only launch path for model work: queue kinds, GPU pool and claims, launch gate, own-process ledger, bounded supervision and deadlines; software manifests | Model calculations, study logic |
+| `execution/` | Managed launches: queue kinds, GPU pool and claims, launch gate, own-process ledger, bounded supervision and deadlines; terminal output; software manifests | Model calculations, study logic |
 | Root leaf utilities | Repository roots (`__init__.py`) and file/tensor content hashes (`hashing.py`) | Any package import; heavy imports at module load |
 | `experiments/` | Comparison protocols, acceptance checkers, interventions and study-only metrics | A second trainer, sampler, adapter loader, condition checker, decoder, registry, queue or launcher |
 | `expr/` report code | Sections, captions, report plots, saved-result summaries, report validation | Any model, VAE, training or queue execution |
@@ -124,7 +125,7 @@ The table lists package-internal imports. Lazy imports inside functions count.
 | `model/` | `model/`, `corpus/`, root leaf utilities | `training/`, root run support, `execution/`, `experiments/` |
 | `training/` | `training/`, `model/`, `corpus/`, `execution/`, root leaf utilities; lazily `previews.py` and `evaluate.parse_args` for preview jobs | Other root run support, `experiments/` |
 | Root run support | Any package code outside `experiments/` | `experiments/`, `train.py` |
-| `execution/` | `execution/`, root leaf utilities; lazily `corpus/`, `training/` and root run support for each job kind | `experiments/`, except through the literal table in `execution/queue.py` |
+| `execution/` | `execution/`, root leaf utilities; lazily `corpus/`, `training/` and root run support for each job kind | `experiments/`, except through the literal table in `execution/jobs.py` |
 | `experiments/` | Public names of every package owner, other experiments | Private `_names` of other modules, `expr/` code, `train.py` |
 | `expr/` report code | Model-free readers: `corpus/` readers, `hashing.py`, saved-record readers | Model, VAE or text-encoder loaders, queue execution, `experiments/` CLIs |
 | `scripts/prune/` | Public `corpus/` readers and `model/` owners | `experiments/`, root run support, `training/` |
@@ -147,20 +148,21 @@ Rules that the table does not show:
 7. Study data paths can point into `expr/`. A path argument never permits
    importing Python from `expr/` or running a data field as code.
 8. Only `execution/` claims GPUs, writes own-process ledger rows or supervises
-   a child process. Run support and experiments run inside a queue job and do
-   none of these. A command that loads no model and uses no GPU (job builders,
-   converters, saved-result metrics) may run directly.
+   a child process. Run support and experiments do none of these.
+   Agents run model work inside queue jobs. Humans can use those jobs or run
+   the same task modules directly. Direct launches have no queue receipt,
+   process ledger or external supervision. CPU commands can run directly.
 
 **Corpus ownership.** `corpus.subset` surveys saved producer files, assigns
 person groups and writes content-pinned membership. Frame selection belongs
 to `training.config`, which calls the canonical model frame planner. Corpus
 imports, including lazy imports, load no model or training owner.
 
-`model.adapters` owns `LORA_TARGETS`. Its loader receives a validated contract
-and its bound adapter SHA-256 as data. Callers use the public
-`training.checkpoints.recheck_adapter` immediately before opening weights;
-the model owner checks the file identity again, without importing training.
-No contract validation is duplicated in the model owner.
+`model.adapters` owns `LORA_TARGETS`. Its loader receives a validated
+contract and the adapter SHA-256 as data. Callers run the public
+`training.checkpoints.recheck_adapter` immediately before they open the
+weights. The model owner checks the file identity again, without an import of
+`training`. The model owner does not repeat the contract validation.
 
 The first diagram shows imports that run when a module loads. They form one
 direction, from run support down to corpus code. Two kinds of edge are not
@@ -187,13 +189,13 @@ into `experiments/` exists only through the queue's literal table.
 
 ```mermaid
 flowchart LR
-  E["execution/queue.py"] -.->|"experiment kind: literal table"| X["experiments/"]
+  E["execution/jobs.py"] -.->|"experiment kind: literal table"| X["experiments/"]
   E -.->|"train kind"| T["training/"]
   E -.->|"run-support kinds"| R["root run support"]
-  E -.->|"publication helper"| C["corpus/dataset.py"]
+  J["execution/journal.py"] -.->|"publication helper"| C["corpus/dataset.py"]
   T2["training/engine.py"] -.->|"preview jobs"| P["previews.py, evaluate.parse_args"]
   classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
-  class E,X,T,R,C,T2,P proc;
+  class E,J,X,T,R,C,T2,P proc;
 ```
 
 `hashing.py` imports only the standard library at module import. Tensor
@@ -261,7 +263,9 @@ file identity, not a root calculation.
 
 ### Queue kinds and experiment dispatch
 
-Every run that loads a model or uses a GPU is a queue job. Each kind starts one
+Agent model work and managed human runs use queue jobs. Humans can also use
+the [direct CLI recipes](usage.md#human-direct-cli).
+Each queue kind starts one
 module with `python -m scripts.onestep_avatar.<module>` from `LTX_ROOT` and
 has a model-free completion check.
 
@@ -284,7 +288,7 @@ pick one free device from the same ordered pool. Selections may be noncontiguous
 
 **Experiment selection.** An `experiment` job carries `experiment` (a
 selector), `spec`, `spec_sha256` and `arguments`. The canonical job hash covers
-every field. `execution/queue.py` holds one literal table. Each entry is an
+every field. `execution/jobs.py` holds one literal table. Each entry is an
 experiment module that loads a model or uses a GPU:
 
 ```python
@@ -313,43 +317,54 @@ unknown selector fails before any claim, write or child process. Ordinary kinds
 never read the table. Adding a queued study means editing this literal table
 and its tests. There is no registration API, discovery or plugin loading.
 
-`prepare_continuation` is a CPU-only comparison owner. It prepares content-pinned
-E3 noise and ordinary baseline jobs, then seals protocols only after the public
-saved verifier proves the baseline and exact repeat. It is not a queue selector.
-`continuation_identity_check` adds independent 17-frame image and prefix arms
-through `evaluate.sample_case`. Public transformer hooks observe native input
-and refresh data without changing the shared numerical path.
-`conditioning_check` changes one checked guide or text input, or compares D0/D1
-at sigma one or as a capture oracle, through that same public evaluator. Its
-optional decoding produces matched RGB/VAE reviews. Its explicit
-`capacity_review` operation delegates to the independent saved-output owner:
-that owner verifies completed ordinary D0 base and updates 0, 20 and 60, then
-loads only the decoder for matched reviews. Every consumed evaluation output
-must be a declared queue dependency. Ordinary jobs import none of these owners
-and their ordinary software profiles list no experiment.
+Some experiment owners are not in the table, or have extra operations:
 
-The same `conditioning_check` selector has explicit `prepare_references` and
-`past_influence` operations. `reference_inputs` checks the original recorded
-crop before adapting a copied source descriptor for public RGB/VAE preparation;
-membership files remain immutable. `past_influence_check` first reconstructs
-the exact original cache transaction order or recomputed native input, proving
-every layer K/V and current prediction against fresh continuation producers.
-It then changes only completed non-c0 past frames. Its `--review-of` branch
-loads the decoder for exact-prefix diagnostic reviews. Each operation captures
-its own source pins; changing this independent past owner does not invalidate
-other conditioning/reference/capacity producers. Both source continuation
-outputs and the completed past output consumed by decoding are dependencies.
+- `prepare_continuation` runs on CPU only and is not a queue selector. It
+  prepares content-pinned E3 noise and ordinary baseline jobs. It seals the
+  protocols only after the public saved verifier proves the baseline and the
+  exact repeat.
+- `continuation_identity_check` adds independent 17-frame image and prefix
+  arms through `evaluate.sample_case`. Public transformer hooks observe the
+  native input and the refresh data. They do not change the shared numerical
+  path.
+- `conditioning_check` changes one checked guide or text input, or compares
+  D0 with D1 at sigma one or as a capture oracle. It uses the same public
+  evaluator. Its optional decoding makes matched RGB/VAE reviews.
+- `conditioning_check` has an explicit `capacity_review` operation. It passes
+  the work to the independent saved-output owner. That owner verifies the
+  completed ordinary D0 base and updates 0, 20 and 60. Then it loads only the
+  decoder for matched reviews.
+- `conditioning_check` has explicit `prepare_references` and `past_influence`
+  operations. `reference_inputs` checks the original recorded crop before it
+  adapts a copied source descriptor for RGB/VAE preparation. Membership files
+  stay unchanged.
+- `past_influence_check` first rebuilds the exact original cache transaction
+  order, or the recomputed native input. It proves every layer K/V and the
+  current prediction against fresh continuation producers. Then it changes only
+  completed past frames that are not `c0`. Its `--review-of` branch loads the
+  decoder for exact-prefix diagnostic reviews.
 
-`prune_baseline` is a bounded reproduction protocol for one saved pruning
-case. Its experiment owner supplies pinned scientific settings to the public
-`scripts.prune.evaluate.whole_clip_baseline` producer. The numerical producer
-stays in prune, which imports no avatar experiment or execution owner. Queue
-supervision, claims and resource receipts stay in `execution/`. The protocol
-keeps the producer's original files under `baseline/` and publishes separate
-input/software acceptance and saved-completion records at the job root.
+Each operation records its own source pins. A change to the past-influence
+owner does not invalidate the other conditioning, reference or capacity
+producers. Every evaluation or continuation output that an operation reads
+must be a declared queue dependency. Ordinary jobs import none of these owners,
+and no ordinary software profile lists an experiment.
+
+`prune_baseline` reproduces one saved pruning case under bounds. Its
+experiment owner gives pinned scientific settings to the public
+`scripts.prune.evaluate.whole_clip_baseline` producer.
+
+- The numerical producer stays in `prune`. `prune` imports no avatar
+  experiment or execution owner.
+- Queue supervision, claims and resource receipts stay in `execution/`.
+- The protocol keeps the producer's original files under `baseline/`. It
+  publishes separate input/software acceptance and saved-completion records at
+  the job root.
+
 `prune_reproduction` tests why that case differs from a saved reference. It
-reuses the same producer functions and applies each control only at the model
-call or through a process flag, so neither prune nor the model owners change.
+uses the same producer functions. It applies each control only at the model
+call or through a process flag. So neither `prune` nor the model owners
+change.
 
 **Bounded supervision for every kind.** A job may name a resource budget in the
 existing `training/resources.py` format. `train` keeps its typed
@@ -415,25 +430,30 @@ There are five profiles: `training`, `evaluation`, `inference`, `decoding` and
 | `sigma_sweep_boundary_metrics` | `experiments/sigma_sweep.py` |
 | `saved_latent_metrics`, `measure_saved_probe` | `experiments/saved_probe_metrics.py` |
 
-`previews.py` imports the ordinary evaluator in one direction. A fixed preview
-passes its one public `verify_preview_tensors` checker through the typed,
+`previews.py` imports the ordinary evaluator in one direction only. A fixed
+preview passes its public `verify_preview_tensors` checker through the typed,
 keyword-only `execute_evaluation(..., preview_tensor_validator=...)` API.
-The evaluator requires that callable whenever `preview_fixed` is present,
-before native handles, model loads or output writes. It invokes the checker
-once after execution tensors are assembled, at the original pre-transformer
-boundary. Evaluation software evidence binds the validator source owner.
-The evaluator does not import previews or discover a checker.
+
+- The evaluator requires that callable when `preview_fixed` is present. It
+  checks this before native handles, model loads or output writes.
+- It calls the checker once, after the execution tensors are assembled and
+  before the transformer runs.
+- The evaluation software evidence binds the source file of the validator.
+- The evaluator does not import `previews` and does not discover a checker.
 
 `metrics.py` may load the LPIPS network. It never loads the transformer, text
 encoder or VAE.
 
 **Ordinary evaluation options.** `evaluate.py` keeps `--history-mode
 {cache,recompute,joint}` and `--kv-source {refresh,denoise}`. They select
-shared diagnostic paths in `model/causal.py`, are recorded in every output and
-default to `cache` and `refresh`. Product refuses the non-default values.
-Future-noise and fusion interventions belong to experiment CLIs. Fixed-preview
-jobs belong to `previews.py`; saved comparisons belong to `comparisons.py`.
-Unsupported ordinary options fail as unknown arguments before any write.
+shared diagnostic paths in `model/causal.py`. Every output records them. The
+defaults are `cache` and `refresh`. The product refuses other values.
+
+- Future-noise and fusion interventions belong to experiment CLIs.
+- Fixed-preview jobs belong to `previews.py`.
+- Saved comparisons belong to `comparisons.py`.
+
+An unsupported ordinary option fails as an unknown argument before any write.
 
 ### Cross-package caller: `scripts/prune/`
 
@@ -442,12 +462,17 @@ and `model.causal`. `scripts/prune/data/whole_clip.py` reads the saved
 whole-clip rollout format.
 
 The whole-clip producer is the prune-owned CLI
-`scripts/prune/evaluate/whole_clip_baseline.py`, documented in
-`scripts/prune/doc/evaluate/whole_clip_baseline.md`. It keeps the saved output
-format and explicit view, sigma, prompt, seed, model, guidance, and transformer options.
-It calls public `corpus/` readers and `model/` owners. It has no adapter or causal
-history setting. Native baseline reproduction requires matched scientific inputs,
-numerical policy, source identity, and successful bounded supervision.
+`scripts/prune/evaluate/whole_clip_baseline.py`. Its document is
+`scripts/prune/doc/evaluate/whole_clip_baseline.md`.
+
+- It keeps the saved output format.
+- It has explicit view, sigma, prompt, seed, model, guidance and transformer
+  options.
+- It calls public `corpus/` readers and `model/` owners.
+- It has no adapter or causal history setting.
+
+A native baseline reproduction requires matched scientific inputs, numerical
+policy and source identity, and successful bounded supervision.
 
 ### Tests and docs
 
@@ -467,31 +492,37 @@ numerical policy, source identity, and successful bounded supervision.
 
 ## Saved report ownership
 
-Report code under `expr/` can read immutable saved settings, observations, metrics,
-media, and provenance. It cannot execute models, decode tensors, launch a queue, or
-repair missing scientific results. A missing cited artifact fails before children
-or writes. Maintained report generators rebuild from checked saved inputs;
-report-specific sections, captions, sheets, and plots belong there.
+Report code under `expr/` can read saved settings, observations, metrics,
+media and provenance. It cannot run models, decode tensors, start a queue or
+repair missing scientific results. A missing cited file fails before any child
+process or write. Maintained report generators rebuild from checked saved
+inputs. Report-specific sections, captions, sheets and plots belong there.
 
-Saved observations retain their producer hashes and original scientific meaning.
-A current verifier can reject an observation without changing its recorded bytes.
-Non-executable source provenance is data, never an import or execution fallback.
-The report-disposition inventory controls which reports can be rebuilt.
+Saved observations keep their producer hashes and their original scientific
+meaning. A current verifier can reject an observation. It does not change the
+recorded bytes. Non-executable source provenance is data. It is never an import
+or an execution fallback. The report-disposition inventory controls which
+reports can be rebuilt.
 
 ## Change and acceptance rules
 
-Before removing an interface, audit package, prune, tests, recipes, and maintained
-report callers. Preserve required behavior in a current public owner and check it
-on CPU. A strict saved-data reader also needs an inventory proving that selected
-inputs meet its contract; do not infer missing settings or rewrite evidence to pass.
-No forwarding module, compatibility alias, or second execution owner is permitted.
-Invalid options and unsupported contracts fail before model handles and writes.
+Before you remove an interface, find all its callers: in the package, in
+`prune`, in tests, in recipes and in maintained reports. Keep the required
+behavior in a current public owner and check it on CPU. A strict saved-data
+reader also needs an inventory that proves the selected inputs meet its
+contract. Do not infer missing settings. Do not rewrite evidence to pass a
+check.
 
-Source, import, documentation, and CPU acceptance is separate from native scientific
-acceptance. Changed source profiles require new affected native observations with
-matched inputs. Full workflow, numerical, quality, cost, and pilot acceptance stay
-required even when focused CPU checks pass; see the
-[acceptance gates](verification.md#acceptance-gates).
+- No forwarding module, compatibility alias or second execution owner is
+  allowed.
+- Invalid options and unsupported contracts fail before model handles and
+  writes.
+
+Source, import, documentation and CPU acceptance are separate from native
+scientific acceptance. A changed source profile requires new native
+observations, with matched inputs, for the affected results. Full workflow,
+numerical, quality, cost and pilot acceptance stay required even when focused
+CPU checks pass. See the [acceptance gates](verification.md#acceptance-gates).
 
 ## Boundary checks
 
@@ -508,7 +539,7 @@ report code. The [run guide](../configs/README.md#10-check-the-code) lists the s
   and `--help` for `previews`, `comparisons`, `decode_saved`,
   `prepare_inputs` and the queue.
 - **B3 Static imports.** An AST test finds no `experiments` import outside
-  `experiments/`, except the literal table in `execution/queue.py`. It also
+  `experiments/`, except the literal table in `execution/jobs.py`. It also
   checks the [dependency table](#allowed-dependencies) and private-name rule.
 - **B4 Roots.** Only the package marker computes roots from `__file__`.
   An AST check tracks file-path aliases, helper returns and function parameters;
@@ -556,3 +587,16 @@ before any claim.
 **Maintained saved report.** With complete saved outputs, the AR report
 rebuilds while model, decoder and queue execution are disabled. Removing a
 cited artifact makes the rebuild fail before any child or write. A source-provenance file cannot satisfy a missing scientific result or serve as an executor.
+
+## Queue execution ownership
+
+The queue delegates normalized job contracts to jobs, state publication
+to journal, interrupted recovery to recovery, receipt verification to completion
+and one child lifecycle to attempt. Process inspection belongs to processes.
+GPU inventory parsing belongs to devices. Clock owns the original overall deadline.
+Infrastructure must not import execution.queue. The queue exports compatibility aliases.
+Journal transactions check ownership; recovery decisions run only on explicit recovery.
+The literal experiment table lives in jobs and retains lazy selected imports.
+Training software identity includes the extracted owners. Saved source hashes remain strict.
+
+The queue defaults its journal to state.json beside the job list. An explicit --state overrides that path.

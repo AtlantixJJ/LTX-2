@@ -8,7 +8,8 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution import completion as queue_completion
+from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters
 from scripts.onestep_avatar.tests.test_applied_runtime import inventory
@@ -74,8 +75,8 @@ def completed(checked_settings: tuple, monkeypatch: pytest.MonkeyPatch) -> tuple
         }
         jobs_path = initial.output.parent / "jobs.json"
         jobs_path.write_text(json.dumps({"schema_version": 1, "jobs": [raw_job]}))
-        job = queue.prepare_jobs(jobs_path)[0]
-        launch = queue.training_launch_record(job)
+        job = queue_jobs.prepare_jobs(jobs_path)[0]
+        launch = queue_jobs.training_launch_record(job)
         applied_runtime = inventory()
         settings.world_size = 4
         budget = job["effective_budget"]
@@ -162,7 +163,7 @@ def completed(checked_settings: tuple, monkeypatch: pytest.MonkeyPatch) -> tuple
             },
         }
         checkpoint.with_suffix(".complete.json").write_text(json.dumps(marker))
-        assert queue.verify_completion(job)
+        assert queue_completion.verify_completion(job)
         return job, settings, checkpoint
 
     return produce, initial, fsdp
@@ -176,7 +177,7 @@ def test_both_training_modes_verify_without_models_and_keep_fresh_output_gate(
     job, settings, _ = produce(mode=mode)
     with pytest.raises(ValueError, match="output already has a run"):
         engine.prepare_run(settings)
-    assert queue.verify_completion(job)
+    assert queue_completion.verify_completion(job)
     resolved = json.loads((settings.output / "config.json").read_text())
     assert resolved["resource_budget"] == resources.default_budget()
     assert "resource_budget_sha256" not in job
@@ -185,7 +186,7 @@ def test_both_training_modes_verify_without_models_and_keep_fresh_output_gate(
     resources.validate_records(records, 4, resources.training_phases(settings), job["effective_budget"])
     receipt = controlled_scientific_receipt(job, monkeypatch)
     assert len(receipt["evidence"]) == 4
-    assert queue.verify_receipt(job, receipt)
+    assert queue_completion.verify_receipt(job, receipt)
 
 
 @pytest.mark.parametrize("mode", ["bidirectional", "causal"])
@@ -205,7 +206,7 @@ def test_budget_backed_completion_binds_record_and_complete_rank_phase_evidence(
     assert len(records) == 16
     assert {record["phase"] for record in records} == {"load", "update:1", "update:2", "export:2"}
     assert marker["resource_evidence"] == evidence
-    assert queue.verify_receipt(job, controlled_scientific_receipt(job, monkeypatch))
+    assert queue_completion.verify_receipt(job, controlled_scientific_receipt(job, monkeypatch))
 
 
 @pytest.mark.parametrize(
@@ -235,7 +236,7 @@ def test_checkpoint_cannot_complete_different_scientific_request(completed: tupl
     if option == "--lora-rank":
         job["arguments"][job["arguments"].index("--lora-alpha") + 1] = value
     with pytest.raises((ValueError, SystemExit)):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 @pytest.mark.parametrize(
@@ -273,7 +274,7 @@ def test_saved_config_mutation_fails_even_after_marker_hash_is_updated(
     marker["training_record"]["config_sha256"] = sha256(path)
     marker_path.write_text(json.dumps(marker))
     with pytest.raises(ValueError, match="saved configuration or frame plan"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 @pytest.mark.parametrize("field", ["queue_job_sha256", "producer_source_sha256", "training_record"])
@@ -285,7 +286,7 @@ def test_marker_requires_matching_run_identity(completed: tuple, field: str) -> 
     del marker[field]
     path.write_text(json.dumps(marker))
     with pytest.raises(ValueError, match="different run provenance"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 @pytest.mark.parametrize("asset", ["config", "plan", "base", "master", "checkpoint_path"])
@@ -310,7 +311,7 @@ def test_changed_or_relocated_training_evidence_is_refused(completed: tuple, ass
         other.with_suffix(".complete.json").write_text(json.dumps(marker))
         job["completion"]["checkpoint"] = str(other)
     with pytest.raises(ValueError):  # noqa: PT011 -- mutation controls check refusal type and preserved bytes across different validators
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)
 
 
 @pytest.mark.parametrize("asset", ["config", "plan"])
@@ -326,9 +327,9 @@ def test_receipt_preserves_initial_config_and_plan_bytes_even_after_valid_marker
     marker = json.loads(marker_path.read_text())
     marker["training_record"]["config_sha256" if asset == "config" else "frame_plan_sha256"] = sha256(path)
     marker_path.write_text(json.dumps(marker))
-    assert queue.verify_completion(job)
+    assert queue_completion.verify_completion(job)
     with pytest.raises(ValueError, match="receipt evidence changed"):
-        queue.verify_receipt(job, receipt)
+        queue_completion.verify_receipt(job, receipt)
 
 
 @pytest.mark.parametrize("changed", [None, "bytes", "cross_mode_permission"])
@@ -360,7 +361,7 @@ def test_parent_bytes_and_cross_mode_fresh_initialization_lineage(completed: tup
         job["arguments"].remove("--allow-cross-mode-init")
     if changed:
         with pytest.raises(ValueError):  # noqa: PT011 -- mutation controls check refusal type and preserved bytes across different validators
-            queue.verify_completion(job)
+            queue_completion.verify_completion(job)
 
 
 def test_training_model_owner_change_invalidates_current_completion(
@@ -373,4 +374,4 @@ def test_training_model_owner_change_invalidates_current_completion(
     monkeypatch.setattr(engine.software, "sha256", lambda p: "f" * 64 if p.name == "common.py" else original(p))
     engine.software.validate(manifest)
     with pytest.raises(ValueError, match=r"software.*changed since preflight"):
-        queue.verify_completion(job)
+        queue_completion.verify_completion(job)

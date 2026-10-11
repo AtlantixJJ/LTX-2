@@ -12,7 +12,7 @@ import pytest
 import torch
 
 from scripts.onestep_avatar import LTX_ROOT
-from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.tests.test_applied_runtime import inventory
 from scripts.onestep_avatar.tests.test_training_launch_binding import original_job
 from scripts.onestep_avatar.training import numerics, runtime
@@ -116,7 +116,7 @@ def test_schema_two_never_default_fills_missing_or_malformed_flags(change: str) 
 
 def test_current_queue_environment_is_explicit(tmp_path: Path) -> None:
     _raw, prepared, current, *_ = original_job(tmp_path)
-    _, environment = queue.job_command(prepared, (0, 1, 2, 3))
+    _, environment = queue_jobs.job_command(prepared, (0, 1, 2, 3))
     assert current["schema_version"] == 2
     assert current["numerical_environment"] == numerics.ENVIRONMENT
     assert all(environment[key] == value for key, value in numerics.ENVIRONMENT.items())
@@ -130,7 +130,7 @@ def test_changed_schema_two_environment_refuses_launch(tmp_path: Path, missing: 
     else:
         launch["numerical_environment"]["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
     with pytest.raises(ValueError, match="launch identity"):
-        queue.verify_training_launch(launch, prepared)
+        queue_jobs.verify_training_launch(launch, prepared)
 
 
 def test_typed_cli_is_import_light_then_bootstraps_before_native_imports() -> None:

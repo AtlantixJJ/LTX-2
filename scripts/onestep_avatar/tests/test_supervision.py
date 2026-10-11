@@ -13,7 +13,8 @@ from typing import ClassVar, Never
 
 import pytest
 
-from scripts.onestep_avatar.execution import process_registry, queue, supervision
+from scripts.onestep_avatar.execution import process_registry, supervision
+from scripts.onestep_avatar.execution import processes as queue_processes
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
 
 TOKEN = "1" * 32
@@ -65,7 +66,7 @@ def spawn(tmp_path: Path, code: str, env: dict[str, str]) -> tuple:
     while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
         time.sleep(0.01)
     assert ready.exists(), "CPU control child did not become ready"
-    return child, command, queue.process_identity(child.pid)
+    return child, command, queue_processes.process_identity(child.pid)
 
 
 def run(
@@ -136,7 +137,7 @@ def test_empty_command_before_terminal_event_reobserves_only_exact_child(
         tmp_path, f"Path(READY).write_text('ready')\nwhile not Path({str(finish)!r}).exists(): time.sleep(.005)\n", {}
     )
     original_observe = supervision._observe
-    original_identity = queue.process_identity
+    original_identity = queue_processes.process_identity
     calls = []
     empty_reads = []
 
@@ -156,7 +157,7 @@ def test_empty_command_before_terminal_event_reobserves_only_exact_child(
             return {**identity, "command": [], "terminal": False}
         return original_identity(pid)
 
-    monkeypatch.setattr(queue, "process_identity", read_identity)
+    monkeypatch.setattr(queue_processes, "process_identity", read_identity)
     try:
         result = run(tmp_path, child, command, identity, None, overall_seconds=2)
         assert result["state"] == "passed"
@@ -171,7 +172,7 @@ def test_pidfd_acquisition_rechecks_transient_empty_command(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     child, command, identity = spawn(tmp_path, "Path(READY).write_text('ready')\ntime.sleep(20)\n", {})
-    original_identity = queue.process_identity
+    original_identity = queue_processes.process_identity
     reads = []
 
     def read_identity(pid: int) -> dict | None:
@@ -180,7 +181,7 @@ def test_pidfd_acquisition_rechecks_transient_empty_command(
             return {**identity, "command": [], "terminal": False}
         return original_identity(pid)
 
-    monkeypatch.setattr(queue, "process_identity", read_identity)
+    monkeypatch.setattr(queue_processes, "process_identity", read_identity)
     descriptor = None
     try:
         descriptor = supervision._owned_pidfd(identity, command, {})
@@ -200,7 +201,7 @@ def test_empty_command_during_exec_keeps_observing_live_child(
         tmp_path, f"Path(READY).write_text('ready')\nwhile not Path({str(finish)!r}).exists(): time.sleep(.005)\n", {}
     )
     original_observe = supervision._observe
-    original_identity = queue.process_identity
+    original_identity = queue_processes.process_identity
     calls = []
     empty_reads = []
 
@@ -223,7 +224,7 @@ def test_empty_command_during_exec_keeps_observing_live_child(
                 finish.touch()
 
     monkeypatch.setattr(supervision, "_observe", observe)
-    monkeypatch.setattr(queue, "process_identity", read_identity)
+    monkeypatch.setattr(queue_processes, "process_identity", read_identity)
     try:
         result = run(tmp_path, child, command, identity, None, registry=ContinuingClaims(), overall_seconds=2)
         assert empty_reads == [child.pid]
@@ -240,7 +241,7 @@ def test_persistent_empty_command_preserves_external_deadline(
 ) -> None:
     child, command, identity = spawn(tmp_path, "Path(READY).write_text('ready')\ntime.sleep(20)\n", {})
     original_observe = supervision._observe
-    original_identity = queue.process_identity
+    original_identity = queue_processes.process_identity
     calls = []
 
     def observe(*args) -> dict | None:
@@ -255,7 +256,7 @@ def test_persistent_empty_command_preserves_external_deadline(
         return original_identity(pid)
 
     monkeypatch.setattr(supervision, "_observe", observe)
-    monkeypatch.setattr(queue, "process_identity", read_identity)
+    monkeypatch.setattr(queue_processes, "process_identity", read_identity)
     try:
         result = run(tmp_path, child, command, identity, None, shutdown_seconds=0.5, overall_seconds=0.05)
         assert result["state"] == "failed"
@@ -380,7 +381,7 @@ def test_escaped_real_new_session_worker_receives_own_bounded_stop(
     )
     child, command, identity = spawn(tmp_path, code, env)
     worker_pid = json.loads(worker_file.read_text())["pid"]
-    worker_identity = queue.process_identity(worker_pid)
+    worker_identity = queue_processes.process_identity(worker_pid)
     assert os.getsid(worker_pid) == worker_pid
     assert os.getsid(child.pid) == child.pid
     # This control uses real targeted subreaper inventory, with no host-wide scan.
@@ -394,13 +395,13 @@ def test_escaped_real_new_session_worker_receives_own_bounded_stop(
             event["pid"] == worker_pid and event["start_ticks"] == worker_identity["start_ticks"] for event in signals
         )
         assert any(event["pid"] == child.pid for event in signals)
-        worker = queue.process_identity(worker_pid)
+        worker = queue_processes.process_identity(worker_pid)
         assert worker is None or worker["terminal"] is True
         assert result["elapsed_s"] < 2
         registry.release()
     finally:
         cleanup(child)
-        worker = queue.process_identity(worker_pid)
+        worker = queue_processes.process_identity(worker_pid)
         if worker is not None and not worker["terminal"]:
             descriptor = supervision._pidfd_open(worker_pid)
             try:
@@ -417,7 +418,7 @@ def test_unproven_handle_never_signals_replacement(
 ) -> None:
     path, env = contract(tmp_path)
     child, command, identity = spawn(tmp_path, "Path(READY).write_text('ready')\ntime.sleep(20)\n", env)
-    original = queue.process_identity
+    original = queue_processes.process_identity
     sent = []
 
     def observe(pid: int) -> dict | None:
@@ -427,7 +428,7 @@ def test_unproven_handle_never_signals_replacement(
             raise PermissionError("controlled observation denial")
         return None if observation == "missing" else {**identity, "start_ticks": identity["start_ticks"] + 1}
 
-    monkeypatch.setattr(queue, "process_identity", observe)
+    monkeypatch.setattr(queue_processes, "process_identity", observe)
     monkeypatch.setattr(supervision, "_pidfd_signal", lambda *args: sent.append(args))
     try:
         result = run(tmp_path, child, command, identity, path)

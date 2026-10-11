@@ -9,7 +9,7 @@ import pytest
 import torch
 from accelerate.utils import DistributedType
 
-from scripts.onestep_avatar.execution import queue
+from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.experiments import training_update_check as check
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.tests.test_training_launch_binding import original_job as ordinary_job
@@ -69,7 +69,7 @@ def test_fully_bound_wrong_frozen_tolerance_refuses_before_scientific_inputs(
 ) -> None:
     _, prepared, launch, job_path, _, _ = original_job(tmp_path, tolerance=tolerance)
     # All job, marker and resource hashes agree with these predeclared bytes.
-    assert queue.verify_training_launch(launch, prepared) == prepared
+    assert queue_jobs.verify_training_launch(launch, prepared) == prepared
     monkeypatch.setattr(check.engine, "prepare_run", lambda *_args, **_kwargs: pytest.fail("opened scientific inputs"))
     monkeypatch.setattr(check.engine, "build_transformer", lambda *_args: pytest.fail("loaded model"))
     output = tmp_path / "serial"

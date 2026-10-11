@@ -1,59 +1,78 @@
 # `training/checkpoints.py` — save adapters and check their settings
 
-Own adapter saves, parent initialization, typed contract checks and tensor
-validation. Normal training, evaluation and product execution require the
-version-two record described below. The eight-block causality diagnostic has a
-separate flat-metadata condition checker. Schedule validation belongs to
-`model/sampling.py`; this owner starts no model or CLI execution.
+This module owns adapter saves, parent initialization, typed contract checks
+and tensor validation. Normal training, evaluation and product execution
+require the version-two record that this document describes. The eight-block
+causality diagnostic has a separate flat-metadata condition checker.
+`model/sampling.py` owns schedule validation. This owner starts no model or
+CLI execution.
+
+A **contract** here means the recorded training conditions of an adapter.
 
 ## Objective
 
-**Precision contract.** Every record declares `training.global_sigma_dtype` from
-the shared ordinary runtime constant, and execution requests declare the same
-condition. A contract without it, or with an unknown value, is invalid and is
-refused even with a research override. Explicit
-`bfloat16` calibration may differ under a recorded research override; product
-refuses the difference. Do not infer calibration from weight dtype or current
-defaults. Parent tensor initialization does not inherit another stage's
-calibration: the new stage records its own actual training precision.
+Use one adapter settings record and one checker. Check requests before the
+model weights load.
 
-Parent-stage tensor initialization delegates to `model.adapters.load_weights`,
-the same strict exported-matrix owner used by inference. Require its complete
-PEFT matrix inventory, shapes and finite contents; base-model missing keys are
-expected, missing adapter keys are not.
-Requested `application_method` is required and must name `peft_unmerged_fp32`
-or `fused_bf16`. Compare it with the recorded training application before
-weight loading. A supported changed method needs the existing research override;
-product always refuses the difference. Unsupported/missing methods are malformed
-requests and cannot be overridden.
+- Evaluation can record an explicit research override.
+- Product generation refuses incompatible requests.
 
-Use one adapter settings record and one checker.
-Check requests before loading model weights.
-Evaluation can record an explicit research override.
-Product generation rejects incompatible requests.
+**Precision contract.** Every record declares `training.global_sigma_dtype`
+from the shared ordinary runtime constant. Execution requests declare the same
+condition.
+
+- A contract without this field, or with an unknown value, is invalid. It is
+  refused, even with a research override.
+- An explicit `bfloat16` calibration can differ under a recorded research
+  override. The product refuses the difference.
+- Do not infer the calibration from the weight dtype or from current defaults.
+- Parent tensor initialization does not inherit the calibration of another
+  stage. The new stage records its own actual training precision.
+
+**Application method.** The requested `application_method` is required. It must
+name `peft_unmerged_fp32` or `fused_bf16`. It is compared with the recorded
+training application before the weights load. A supported changed method needs
+the existing research override. The product always refuses the difference. A
+missing or unsupported method is a malformed request and cannot be overridden.
+
+**Parent initialization.** Parent-stage tensor initialization uses
+`model.adapters.load_weights`, the same strict exported-matrix owner that
+inference uses. It requires the complete PEFT matrix list, the shapes and finite
+contents. Missing base-model keys are expected. Missing adapter keys are not.
 
 ## Data flow
 
-Read training settings and data/frame-plan hashes to write the adapter record.
-Read that record and requested generation settings to check compatibility.
-Return either a compatible request or a named list of differences.
-Keep the current ComfyUI tensor key format.
+1. Read the training settings and the data and frame-plan hashes. Write the
+   adapter record.
+2. Read that record and the requested generation settings. Check
+   compatibility.
+3. Return a compatible request or a named list of differences.
+
+The ComfyUI tensor key format stays the same.
 
 ## Organization logic
 
-Export only adapter matrices. First initialize the root hierarchy through the
-public FSDP `check_is_root()` method. Require the outer transformer to be the
-root. This establishes all nested wrapper roles without unsharding frozen
-weights; summoning an uninitialized leaf first would incorrectly make it a root
-and fail the first forward. Under FSDP, all ranks summon each separately
-wrapped LoRA leaf, one at a time, and rank zero copies its full fp32 parameters
-to CPU. Never request a full frozen-transformer state dictionary just to discard
-it. One-rank NO_SHARD otherwise clones the resident frozen model on GPU and can
-exceed the unchanged 48 GB allocated-memory limit. Verify collected names equal
-the complete named LoRA inventory, then let PEFT perform its canonical adapter
-selection and the existing writer perform its bf16 export conversion. Ordinary
-non-FSDP export uses that same PEFT selection. The serialized tensors, metadata,
-zero check and atomic publication remain one calculation here.
+### Export the adapter matrices
+
+The module exports only the adapter matrices.
+
+1. Initialize the root hierarchy first, through the public FSDP
+   `check_is_root()` method. The outer transformer must be the root. This sets
+   all nested wrapper roles without unsharding frozen weights. If an
+   uninitialized leaf were summoned first, it would become a root by mistake
+   and fail the first forward.
+2. Under FSDP, all ranks summon each separately wrapped LoRA leaf, one at a
+   time. Rank zero copies its full fp32 parameters to CPU.
+3. Never request a full frozen-transformer state dictionary only to discard it.
+   One-rank NO_SHARD would clone the resident frozen model on GPU and could
+   exceed the unchanged 48 GB allocated-memory limit.
+4. Verify that the collected names equal the complete named LoRA list.
+5. Let PEFT do its canonical adapter selection, and let the existing writer do
+   its bf16 export conversion.
+
+Ordinary non-FSDP export uses the same PEFT selection. The serialized tensors,
+the metadata, the zero check and the atomic publication stay one calculation
+here.
 
 ```mermaid
 flowchart LR
@@ -68,199 +87,257 @@ flowchart LR
 ```
 
 Worked check: the complete wrapped model has 768 named LoRA matrices. Every
-rank visits the same 768 leaves; rank zero collects all 768 canonical names.
-No frozen tensor enters the CPU payload. A missing leaf fails the inventory
-check before publication. An initial adapter with all B matrices zero exports
-the same canonical values as the ordinary PEFT path.
+rank visits the same 768 leaves. Rank zero collects all 768 canonical names. No
+frozen tensor enters the CPU payload. A missing leaf fails the list check
+before publication. An initial adapter with all B matrices at zero exports the
+same canonical values as the ordinary PEFT path.
 
-The engine's completion marker binds the saved config and its original
-`queue_launch` record, plus the observed applied-runtime evidence. Adapter
-metadata describes scientific conditions; it cannot prove which launcher or
-FSDP policy was applied. Current queue completion/replay therefore checks both
-the adapter contract and these original config/marker facts; a record without
+### Completion marker
+
+The engine's completion marker binds the saved config, its original
+`queue_launch` record and the observed applied-runtime evidence. Adapter
+metadata describes the scientific conditions. It cannot prove which launcher
+or FSDP policy was applied. So queue completion and replay check both the
+adapter contract and these original config and marker facts. A record without
 launch facts cannot pass replay.
-The shared `queue.read_training_marker` reader validates actual completion state,
-integer schema/step, checkpoint path and checkpoint byte hash. Queue completion,
-training provenance and replay use this one readiness check. Adapter contracts
-remain this module's owner; a valid contract alone does not establish readiness.
 
-Store JSON in safetensors string metadata under `onestep_avatar_contract`.
-Use `schema_version=2`.
-A contract here means the adapter's recorded training conditions.
+The shared `queue.read_training_marker` reader validates the actual completion
+state, the integer schema and step, the checkpoint path and the checkpoint byte
+hash. Queue completion, training provenance and replay use this one readiness
+check. This module owns the adapter contracts. A valid contract alone does not
+prove readiness.
 
-The JSON has these exact objects: `model`, `task`, `shape`, `training`, `data`,
-`adapter`, and `mode_settings`. Root fields are `schema_version`, `mode`, and
-`attention`. Only causal records have a `causal` object.
-`model` contains version, variant, base filename, and full base SHA-256.
-`shape` contains channels, encoded height/width, and supported selected frame counts.
-`training` stores exact levels and direct schedules, draw rule, noise rule, and seeds.
-`data` stores list/plan hashes and sample coverage. For random-start training,
-coverage contains window templates, not a claim that every update started at
-zero. The required `segment_selection` record stores each master's frame count,
-inclusive allowed start bounds, window length, the exact seed key and draw rule,
-and the accepted random-start first-image difference (recorded as
-`known_gap: "G9"`). Readers validate its consistency with the templates,
-mode settings and noise seed. A saved frame plan must have the matching
-`start_draw`; changing its seed/key with a newly calculated hash still fails.
-Causal random-start records also require one block and window length B+1.
-An omitted bidirectional window length selects each whole master, whose only
-allowed start is zero; it still records the declared random draw descriptor.
-`adapter` stores rank, alpha, target name/modules, step, parent, application method,
-and exported `tensor_shapes`. Saving fills the tensor-shape inventory from the
-actual exported tensors, before the atomic write.
+### Record format
 
-`read_contract` rejects missing or malformed version-two records.
-`contract_condition_problems` compares a complete requested model/task/mode/shape,
-schedule, and mode settings. It does not compare people or membership hashes.
-`check_contract` permits a research override only when the caller asks for one;
-the product path cannot override differences.
-`validate_adapter_tensors` checks exported keys, paired A/B shapes, and actual rank
-without loading the transformer. A complete contract does not prove fused/unmerged
-numerical equality; record the actual application method in result records.
+The JSON is stored in safetensors string metadata under
+`onestep_avatar_contract`, with `schema_version=2`. The root fields are
+`schema_version`, `mode` and `attention`. The record has exactly these objects:
+`model`, `task`, `shape`, `training`, `data`, `adapter` and `mode_settings`.
+Only causal records have a `causal` object.
+
+- `model`: the version, the variant, the base file name and the full base
+  SHA-256.
+- `shape`: the channels, the encoded height and width and the supported
+  selected frame counts.
+- `training`: the exact levels and direct schedules, the draw rule, the noise
+  rule and the seeds.
+- `data`: the list and plan hashes and the sample coverage.
+- `adapter`: the rank, alpha, target name and modules, step, parent,
+  application method and exported `tensor_shapes`. A save fills the tensor-shape
+  list from the actual exported tensors, before the atomic write.
+
+**Random-start coverage.** For random-start training, the coverage holds window
+templates. It does not claim that every update started at zero. The required
+`segment_selection` record stores:
+
+- the frame count of each master;
+- the inclusive allowed start bounds and the window length;
+- the exact seed key and draw rule;
+- the accepted random-start first-image difference (`known_gap: "G9"`).
+
+Readers check its consistency with the templates, the mode settings and the
+noise seed. A saved frame plan must have the matching `start_draw`. A changed
+seed or key with a newly calculated hash still fails. Causal random-start
+records also require one block and window length B+1. An omitted bidirectional
+window length selects each whole master, whose only allowed start is zero. It
+still records the declared random draw descriptor.
 
 | Record | Required facts |
 |---|---|
-| Model | version, dev/distilled choice, base weight file identity/hash |
+| Model | version, dev/distilled choice, base weight file identity and hash |
 | Task | D0/D1, background, `clean_c0_v1`, `full_frame_x0_mse` |
 | Mode | bidirectional/causal, attention, encoded frame count and start rule |
-| Training | exact sigma levels/draw rule, direct `[sigma,0]`, seeds, noise rule |
+| Training | exact sigma levels and draw rule, direct `[sigma,0]`, seeds, noise rule |
 | Data | fixed video list hash, frame-plan hash, selected frame coverage |
 | Adapter | rank, alpha, target layers, parent stage, update number, training application method |
-| Causal only | block length, K, stored past-frame limit, first-frame retention, refresh/priming rule, history policy |
+| Causal only | block length, K, stored past-frame limit, first-frame retention, refresh and priming rule, history policy |
 
-Check mode, base weights, task, sigma levels, schedule, and mode-specific frame settings.
-Keep training records distinct from evaluation inputs.
-Evaluation can use people excluded from training.
-A random-start-trained adapter can be evaluated from frame zero if the difference is
-recorded; the [random-start first-image gap](../known_gaps.md#random-start-first-image-distribution) still applies.
+### Functions
 
-An adapter trained with capture past frames uses that history for an evaluation under the same conditions.
-Generated-history evaluation changes those conditions and must be labeled.
-Product generation only has generated past frames.
+- `read_contract` refuses missing or malformed version-two records.
+- `contract_condition_problems` compares a complete requested model, task,
+  mode, shape, schedule and mode settings. It does not compare people or
+  membership hashes.
+- `check_contract` allows a research override only when the caller asks for
+  one. The product path cannot override differences.
+- `validate_adapter_tensors` checks the exported keys, the paired A/B shapes
+  and the actual rank, without loading the transformer.
 
-For a causal execution request, `history_mode` and `kv_source` are required
-fields outside `mode_settings`. The recorded refresh calculation
+A complete contract does not prove numerical equality of fused and unmerged
+application. Result records keep the actual application method.
+
+### What the checker compares
+
+The checker compares the mode, the base weights, the task, the sigma levels,
+the schedule and the mode-specific frame settings. Training records stay
+separate from evaluation inputs.
+
+- Evaluation can use people that training did not see.
+- A random-start-trained adapter can be evaluated from frame zero if the
+  difference is recorded. The
+  [random-start first-image gap](../known_gaps.md#random-start-first-image-distribution)
+  still applies.
+- An adapter trained with capture past frames uses that history for an
+  evaluation under the same conditions. Generated-history evaluation changes
+  those conditions and must be labeled.
+- Product generation has only generated past frames.
+
+**History fields.** A causal execution request requires `history_mode` and
+`kv_source`, outside `mode_settings`. The recorded refresh calculation
 `cached_refresh_global_sigma0` maps to `history_mode="cache"` and
-`kv_source="refresh"`. Compare both before weight loading. Recomputed or joint
-history, or denoise-produced K/V, changes the trained computation and needs the
-existing research override. Save each field, its trained/requested values and
-the refresh-calculation reason with the result. Product requests explicitly
-use cache/refresh and permit no override. These settings do not change the
-training mode or the cache's global-sigma-zero refresh semantics.
+`kv_source="refresh"`. Both are compared before the weights load.
 
-Missing or unsupported history fields are malformed requests, not research
-conditions. Refuse them even with an override. Denoise-produced K/V only supports
-cached generated history. Bidirectional requests cannot contain history fields.
-Base-only diagnostics have no adapter calibration to override; their result
-conditions still record the explicit selected history and K/V settings.
+- Recomputed or joint history, or K/V from denoising, changes the trained
+  calculation. It needs the existing research override. The result saves each
+  field, its trained and requested values and the reason from the refresh
+  calculation.
+- Product requests use `cache`/`refresh` explicitly and allow no override.
+- These settings do not change the training mode or the global-sigma-zero
+  refresh of the cache.
+- Missing or unsupported history fields are malformed requests, not research
+  conditions. They are refused, even with an override.
+- K/V from denoising supports only cached generated history.
+- Bidirectional requests cannot contain history fields.
+- Base-only diagnostics have no adapter calibration to override. Their result
+  conditions still record the explicit history and K/V settings.
 
-Worked check: a matching causal request with cache/refresh has no differences.
-Change only `history_mode` to `recompute`: ordinary and product checks fail;
-research evaluation with an explicit override returns a `history_mode` difference
-that cites `cached_refresh_global_sigma0`. Change only `kv_source` to `denoise`
-with cached generated history: return a `kv_source` difference under the same
-rule. Omit either field: fail independently of the override.
+Worked check:
 
-The checker names all differences.
-Evaluation needs an explicit override to proceed with a difference.
-Save that list with the output.
-Product generation fails on the difference.
-[model/sampling](../model/sampling.md) checks the base's supported noise levels separately.
+- A matching causal request with `cache`/`refresh` has no differences.
+- Change only `history_mode` to `recompute`. The ordinary and product checks
+  fail. Research evaluation with an explicit override returns a `history_mode`
+  difference that cites `cached_refresh_global_sigma0`.
+- Change only `kv_source` to `denoise` with cached generated history. The
+  result is a `kv_source` difference under the same rule.
+- Omit either field. The check fails, with or without the override.
 
-### Read and decide before model loading
+The checker names all differences. Evaluation needs an explicit override to
+continue with a difference, and it saves that list with the output. Product
+generation fails on the difference. [model/sampling](../model/sampling.md)
+checks the base's supported noise levels separately.
 
-1. Read the safetensors header and parse the single structured JSON record.
-   Check schema version, required fields, mode, finite levels, and mode-specific fields.
-2. Inspect adapter tensor keys/shapes and alpha/rank support without opening the base model.
-   A malformed record or unusable tensor layout fails; an override cannot make it loadable.
-3. Resolve the requested base identity and exact schedule using shared helpers.
-4. Compare recorded conditions with the requested conditions field by field.
-   Return differences with field name, trained value, requested value, and reason.
-5. Do not compare evaluation video membership with training membership for compatibility.
-   Save both identities as provenance. Check evaluation files against their own pinned list.
-6. For no differences, return a checked request.
-   For evaluation differences, require the explicit research override and return its difference list.
-   For product differences, fail. Do not quietly repair the requested mode or schedule.
+### Read and decide before the model loads
 
-Compare exact sigma/schedule values rather than rounded text or directory names.
-Record random-start/frame-zero and recorded/generated-history changes explicitly.
-Base support, adapter calibration, and actual tensor loadability are separate checks.
+1. Read the safetensors header and parse the one structured JSON record. Check
+   the schema version, the required fields, the mode, finite levels and the
+   mode-specific fields.
+2. Inspect the adapter tensor keys and shapes and the alpha/rank support,
+   without opening the base model. A malformed record or an unusable tensor
+   layout fails. An override cannot make it loadable.
+3. Resolve the requested base identity and the exact schedule with shared
+   helpers.
+4. Compare the recorded conditions with the requested conditions, field by
+   field. Return each difference with the field name, the trained value, the
+   requested value and the reason.
+5. Do not compare evaluation membership with training membership for
+   compatibility. Save both identities as provenance. Check the evaluation
+   files against their own pinned list.
+6. With no differences, return a checked request. With evaluation differences,
+   require the explicit research override and return its difference list. With
+   product differences, fail. Never repair the requested mode or schedule
+   quietly.
+
+Compare exact sigma and schedule values, not rounded text or directory names.
+Record random-start and frame-zero changes, and recorded and generated history
+changes, explicitly. Base support, adapter calibration and actual tensor
+loadability are separate checks.
+
+### Recheck a checked adapter before loading weights
+
+The public `recheck_adapter(path, contract, expected_sha256)` owns the repeat
+check after an ordinary caller's preflight.
+
+1. Require the complete expected file digest. Compare the current bytes.
+2. Use the existing `read_contract` and `validate_adapter_tensors`.
+3. Compare the checked metadata record.
+4. Compare the file bytes again.
+
+A missing or changed identity, changed metadata, incomplete keys or wrong
+matrix shapes or rank fail before the model opens. This calls the one current
+validator. It creates no second schema implementation.
+
+Ordinary evaluation, the product and the acceptance comparisons call it
+immediately before their model context. `model.adapters` receives the checked
+contract and the bound digest as data. It verifies the byte identity
+independently, without a reverse import. A metadata-only or tensor-only change
+after preflight fails. Unchanged adapters keep their tensor payload and
+function.
+
+Normal reads, saves, condition checks, tensor validation and
+`random_segment_selection` stay shared here. The public `require_digest` is the
+one checker of full lowercase SHA-256 syntax for current adapter contracts.
 
 ### Save a completed checkpoint
 
-Gather adapter tensors, rewrite keys once, and save atomically.
-All distributed processes participate in the required gather in the same order.
-The main process validates tensor keys/shapes, builds metadata from checked settings,
-and writes a temporary sibling safetensors file.
-Close and validate that file before atomic replacement of the final checkpoint path.
-Only then calculate/record its content hash and mark it ready for evaluation previews.
-Readers require the same checkpoint path and content hash in a complete version-two
-marker. Serial replay checks both the zero and one-update markers before using
-the adapters as accepted distributed evidence.
-On failure, remove the temporary file, preserve any previous completed checkpoint,
-and do not create a preview job for the failed save.
-A freshly initialized adapter's step-zero file must have exactly-zero `lora_B` tensors.
-For a parent-initialized stage, step zero preserves the loaded adapter values and parent identity.
-It is not a zero-adapter/no-op control.
-Loading parent weights starts a new stage; exact optimizer/random-state resume is outside this design.
+1. All distributed processes take part in the required gather, in the same
+   order.
+2. The main process rewrites the keys once and validates the tensor keys and
+   shapes. It builds the metadata from the checked settings.
+3. It writes a temporary sibling safetensors file. It closes and validates that
+   file, then atomically replaces the final checkpoint path.
+4. Only then does it calculate and record the content hash and mark the
+   checkpoint ready for evaluation previews.
 
-Normal execution requires a complete typed contract. Missing or ambiguous
-conditions fail before model loading. A mode label alone cannot establish
-frame selection, conditioning or calibration.
+Readers require the same checkpoint path and content hash in a complete
+version-two marker. Serial replay checks both the step-zero and the
+one-update markers before it uses the adapters as accepted distributed
+evidence.
 
-### Contract and tensor ownership
+On failure, the module removes the temporary file, keeps any earlier completed
+checkpoint and creates no preview job for the failed save.
 
-Normal reads, saves, condition checks, tensor validation and
-`random_segment_selection` stay shared here. Public `require_digest` is the
-one full lowercase SHA-256 syntax checker used by current adapter contracts.
+- A freshly initialized adapter's step-zero file must have `lora_B` tensors
+  that are exactly zero.
+- For a parent-initialized stage, step zero keeps the loaded adapter values and
+  the parent identity. It is not a zero-adapter or no-op control.
+- Loading parent weights starts a new stage. Exact resume of the optimizer and
+  random state is outside this design.
+
+Normal execution requires a complete typed contract. Missing or unclear
+conditions fail before the model loads. A mode label alone cannot prove the
+frame selection, the conditioning or the calibration.
 
 ## Invariants
 
 - Bidirectional records contain no causal history fields.
-- Base identity uses a file hash, not a version name alone.
-- Save exact levels without rounding.
-- Apply LoRA alpha/rank scaling correctly or reject unsupported scaling.
-- Results record the actual fused/unmerged application method.
+- The base identity uses a file hash, not only a version name.
+- Exact levels are saved without rounding.
+- LoRA alpha/rank scaling is applied correctly, or unsupported scaling is
+  refused.
+- Results record the actual fused or unmerged application method.
 - A training-data hash does not forbid evaluation on other people.
 
 ## Gotchas
 
-Fused bf16 and unmerged training LoRA differ numerically
-([known gaps](../known_gaps.md#fused-adapter-application)); metadata does not fix this.
-Matching exported keys does not prove equal predictions.
+- Fused bf16 LoRA and unmerged training LoRA differ numerically
+  ([known gaps](../known_gaps.md#fused-adapter-application)). Metadata does not
+  fix this.
+- Matching exported keys do not prove equal predictions.
 
 ## Tests
 
-The adapter-only export control uses real tiny LTX/PEFT matrices with controlled
-FSDP contexts. It requires root initialization before any leaf, checks complete
-matrix ownership and exact PEFT payload equality, and refuses full state-dict
-collection. Native one-rank export-zero followed by forward/backward and
-export-one checks the actual Torch hierarchy separately.
+The adapter-only export test uses real tiny LTX/PEFT matrices with controlled
+FSDP contexts. It requires root initialization before any leaf. It checks
+complete matrix ownership and exact PEFT payload equality, and it refuses
+full state-dict collection. A native one-rank sequence (export zero, forward
+and backward, export one) checks the actual Torch hierarchy separately.
 
-[V7–V8](../verification.md) check incompatible requests and fixed data identity.
-After implementation, test record read/write, missing fields, mixed levels, and override records.
-Test zero initialization, alpha scaling and incomplete adapter contracts.
-Worked check: an adapter records bidirectional/dev/D1/white and direct sigma `.5`.
-A causal request names the mode difference; a request at `.7` names the sigma difference.
-Evaluation without an override and all product requests fail before loading weights.
-An overridden evaluation saves every detected difference with the output.
-Changing only the held-out person does not add a compatibility difference.
-An interrupted temporary checkpoint save creates no ready checkpoint or preview job.
-Check that rejected requests perform no model load.
-Run real-weight LoRA application checks separately.
+[V7–V8](../verification.md) check incompatible requests and fixed data
+identity. The tests also cover record read and write, missing fields, mixed
+levels, override records, zero initialization, alpha scaling and incomplete
+adapter contracts.
 
-### Recheck a checked adapter before loading weights
+Worked check: an adapter records bidirectional, dev, D1, `white` and direct
+sigma 0.5.
 
-Public `recheck_adapter(path, contract, expected_sha256)` owns repeat validation
-after an ordinary caller's preflight. Require the complete expected file digest,
-compare current bytes, use the existing `read_contract` and
-`validate_adapter_tensors` functions, compare the checked metadata record, then
-compare file bytes again. Fail before model opening on missing/changed identity,
-changed metadata, incomplete keys or wrong matrix shapes/rank. This calls the
-one current validator; it creates no second schema implementation.
+- A causal request names the mode difference. A request at 0.7 names the sigma
+  difference.
+- Evaluation without an override, and all product requests, fail before the
+  weights load.
+- An overridden evaluation saves every detected difference with the output.
+- A change of only the held-out person adds no compatibility difference.
+- An interrupted temporary checkpoint save creates no ready checkpoint and no
+  preview job.
 
-Ordinary evaluation, product and acceptance comparisons call it immediately
-before their model context. `model.adapters` receives the checked contract and
-bound digest as data and verifies byte identity independently without a reverse
-import. A metadata-only or tensor-only change after preflight fails; unchanged
-adapters preserve their tensor payload and function.
+Rejected requests load no model. Real-weight LoRA application checks run
+separately.

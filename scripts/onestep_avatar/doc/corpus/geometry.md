@@ -2,21 +2,24 @@
 
 ## Objective
 
-The crop geometry as one callable rule: **one square box per (clip, view), fixed for the
-whole clip**, sized to contain the subject across every frame, resized to 1024².
+Give the crop geometry as one callable rule: **one square box for each (clip,
+view), fixed for the whole clip**. The box contains the subject in every frame,
+and it is resized to 1024².
 
-Fixed-for-the-clip is not a simplification. A per-frame rect would inject camera motion the
-capture never had, and the temporal RoPE would learn it.
+A fixed box is not a simplification. A different box for each frame would add
+camera motion that the capture never had, and the temporal RoPE would learn it.
 
 ## Data flow
 
-`bbox.npy` (per-frame xyxy + valid) → union over the valid frames → a square of
-`max(w, h) × pad_factor`, centred → `fit_square_to_canvas` (shift, then cap) → the `XYXY`
-consumed by `build_guidance` and `precompute`.
+1. Read `bbox.npy`: a per-frame xyxy box and a valid flag.
+2. Take the union over the valid frames.
+3. Make a centered square of side `max(w, h) × pad_factor`.
+4. `fit_square_to_canvas` shifts the square, then caps it.
+5. `build_guidance` and `precompute` read the resulting `XYXY`.
 
-Pure numpy: no GPU, no torch, no dataset access. That is deliberate — it makes the rule
-unit-testable without the corpus, which is what lets the same arithmetic be pinned across
-two conda envs.
+The module is pure numpy: no GPU, no torch and no dataset access. This is
+deliberate. It makes the rule testable without the corpus, so the same
+arithmetic can be pinned in two conda environments.
 
 ## Organization logic
 
@@ -37,14 +40,15 @@ Use Python's rounding rule. Recorded boxes depend on this exact arithmetic.
 `canonical_crop_box` calculates/checks geometry; capture precompute is the producer of the saved box.
 Guide generation reads that saved box and reports a disagreement rather than choosing another crop.
 
-`canonical_crop_box` is **the whole rule in one call** and the only copy of it.
-`precompute.py --process_gt_latent` calls it to compute the box it records, and
-`build_guidance.py` renders into that recorded box — one producer, one arithmetic.
-`test_geometry.py` is a golden test on exact box values: changing the rule would silently
-re-crop a corpus whose latents are already encoded.
+`canonical_crop_box` is **the whole rule in one call**, and it is the only copy
+of the rule. `precompute.py --process_gt_latent` calls it to compute the box
+that it records. `build_guidance.py` renders into that recorded box. So there is
+one producer and one arithmetic. `test_geometry.py` is a golden test of exact
+box values. A change to the rule would crop again, without an error, a corpus
+whose latents are already encoded.
 
-`crop_from_canvas` crops a fitted box and never pads; capture targets never receive
-synthetic pixels (shift-and-cap, then exclude a subject that does not fit).
+`crop_from_canvas` crops a fitted box and never pads. Capture targets never get
+synthetic pixels: shift and cap, then exclude a subject that does not fit.
 
 ## Invariants
 

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.onestep_avatar.execution import completion as queue_completion
 from scripts.onestep_avatar.execution import devices, queue
 
 
@@ -27,20 +28,20 @@ def test_bad_device_pool_fails(pool: tuple[int, ...]) -> None:
 @pytest.mark.parametrize("pool", ["", "0,0", "8", "-1", "abc"])
 def test_bad_cli_pool_fails_before_job_reads(tmp_path: Path, pool: str) -> None:
     with pytest.raises(SystemExit):
-        queue.main(["--jobs", str(tmp_path / "missing"), "--state", str(tmp_path / "state"),
-                    "--dry-run", "--gpu-pool", pool])
+        queue.main(
+            ["--jobs", str(tmp_path / "missing"), "--state", str(tmp_path / "state"), "--dry-run", "--gpu-pool", pool]
+        )
     assert not list(tmp_path.iterdir())
 
 
 def test_receipt_check_runs_completion_verifier_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"complete": True}))
-    job = {"id": "decode", "kind": "decode", "sha256": "a" * 64,
-           "completion": {"manifest": str(manifest)}}
+    job = {"id": "decode", "kind": "decode", "sha256": "a" * 64, "completion": {"manifest": str(manifest)}}
     calls = []
-    monkeypatch.setattr(queue, "verify_completion", lambda value: calls.append(value["id"]) or True)
-    receipt = queue.completion_receipt(job)
+    monkeypatch.setattr(queue_completion, "verify_completion", lambda value: calls.append(value["id"]) or True)
+    receipt = queue_completion.completion_receipt(job)
     assert calls == ["decode"]
     calls.clear()
-    assert queue.verify_receipt(job, receipt)
+    assert queue_completion.verify_receipt(job, receipt)
     assert calls == ["decode"]
