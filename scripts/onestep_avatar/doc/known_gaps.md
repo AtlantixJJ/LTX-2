@@ -141,6 +141,14 @@ span needs its own protocol, not an override.
 
 ## Supervision and reproduction records
 
+**E3 changed-past native verification.** The isolated past observer restores
+the original refresh layouts from saved generated-history values: contiguous
+for the c0 block, packed preserve-format copies for later blocks. Focused CPU
+checks cover both history computations, schedules and eviction targets. Fresh
+native original replay must still reproduce every layer's K/V and the current
+prediction bit-for-bit before changed-past results can be accepted. The saved
+failed original reconstruction remains failed; no tolerance is relaxed.
+
 Scientific output completion and continuous queue supervision are separate. An
 ended queue owner or a complete tensor file cannot create missing supervisor
 evidence; recovery records the attempt as failed with reason

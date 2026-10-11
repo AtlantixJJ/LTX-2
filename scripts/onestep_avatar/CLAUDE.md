@@ -8,6 +8,9 @@ The [run guide](configs/README.md) gives every workflow and experiment command; 
 [handoff](../../../plans/2026-10-07-onestep-avatar-development-experiment-handoff.md)
 records current progress and next steps.
 
+Use `main` for subsequent avatar changes, as requested by the user. The
+`onestep-avatar-refactor` branch is merged. Check the active branch before edits.
+
 Use the package queue for all native model work. It checks direct `nvidia-smi` occupancy
 and records only its own processes in one shared JSON ledger: PID, start ticks,
 command, GPU IDs, and owned descendants. Independent runs can use free GPUs 0–7.

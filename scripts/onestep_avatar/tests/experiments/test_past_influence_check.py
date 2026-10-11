@@ -17,7 +17,7 @@ from scripts.onestep_avatar.tests.test_causal_core import _context, _geometry, _
 from scripts.prune.core import session
 
 
-def tiny_sources(root: Path, sigma: float) -> tuple:
+def tiny_sources(root: Path, sigma: float, *, channel_major: bool = False) -> tuple:
     torch.manual_seed(17)
     model = _model(prompt_adaln=True)
     grid = _grid(_geometry(8), 17)
@@ -25,6 +25,9 @@ def tiny_sources(root: Path, sigma: float) -> tuple:
     context = _context()
     capture, guide, noise = [torch.randn(1, 68, 8, generator=torch.Generator().manual_seed(seed))
                              for seed in (11, 12, 13)]
+    if channel_major:
+        capture, guide, noise = [value.transpose(1, 2).contiguous().transpose(1, 2)
+                                 for value in (capture, guide, noise)]
     predict = common.denoised_from_velocity_model(model)
     snapshot = root / "capture"
     snapshot.mkdir()
@@ -42,10 +45,12 @@ def tiny_sources(root: Path, sigma: float) -> tuple:
 
 @pytest.mark.parametrize("sigma", [1., .909375])
 @pytest.mark.parametrize("history", ["cache", "recompute"])
+@pytest.mark.parametrize("channel_major", [False, True])
 def test_real_public_transactions_exactly_reconstruct_both_boundaries_then_change_past(
-    tmp_path: Path, sigma: float, history: str,
+    tmp_path: Path, sigma: float, history: str, channel_major: bool,
 ) -> None:
-    model, predict, grid, geometry, snapshot, rows, reference, observations, blocks = tiny_sources(tmp_path, sigma)
+    model, predict, grid, geometry, snapshot, rows, reference, observations, blocks = tiny_sources(
+        tmp_path, sigma, channel_major=channel_major)
     for row, block in zip(rows, blocks, strict=True):
         phase = row["phase"]
         values = continuation.load_inputs(snapshot, row)
@@ -58,9 +63,29 @@ def test_real_public_transactions_exactly_reconstruct_both_boundaries_then_chang
         for changed in (False, True):
             arm = "changed" if changed else "original"
             folder = tmp_path / history / phase / arm
-            result = check.run_arm(predict, model, grid, geometry, values, row, snapshot, folder,
-                history, sigma, changed=changed, expected_layers=expected)
+            actual_layouts = []
+            def observe_layout(_module: torch.nn.Module, _args: tuple, kwargs: dict,
+                               observed: list = actual_layouts) -> None:
+                modality = kwargs["video"]
+                observed.append((modality.kv_write, modality.latent.shape, modality.latent.stride()))
+            handle = model.register_forward_pre_hook(observe_layout, with_kwargs=True)
+            try:
+                result = check.run_arm(predict, model, grid, geometry, values, row, snapshot, folder,
+                    history, sigma, changed=changed, expected_layers=expected)
+            finally:
+                handle.remove()
             trace = torch.load(folder / "trace.pt", weights_only=True)
+            if history == "cache" and channel_major:
+                assert trace[0]["latent"].is_contiguous()
+                refresh_layouts = [(shape, stride) for write, shape, stride in actual_layouts if write]
+                assert refresh_layouts[0][1] == (96, 8, 1)
+                assert torch.equal(trace[0]["latent"],
+                                   (check.changed_history(values["clean_history"], grid, tuple(row["span"]))
+                                    if changed else values["clean_history"])[:, :12])
+                for shape, stride in refresh_layouts[1:]:
+                    # Native later blocks are packed channel-major, while the
+                    # recorder's full-history slices retain a padded channel stride.
+                    assert stride[1:] == (1, shape[1])
             check.verify_trace(trace, grid, geometry, values, tuple(row["span"]), history, sigma,
                                changed, len(model.transformer_blocks))
             assert result["actual_calls"] == (1 if history == "recompute" else 2 if phase == "before" else 6)

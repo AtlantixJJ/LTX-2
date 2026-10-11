@@ -27,6 +27,17 @@ The original denoise forwards were read-only and contributed no cache writes.
 Consequently this replay preserves the cache transaction order exactly.
 It never calls the approximate `prime_cache` operation.
 
+The snapshot recorder copies token values into one full-span history buffer;
+its narrow views do not retain the original refresh block's memory layout.
+Replay restores the first block as contiguous, matching the rollout's clean-c0
+`torch.cat`. Later blocks use a preserve-format clone, which packs the saved
+buffer's channel-major slices into the original dense channel-major blocks
+(or retains dense row-major blocks in the tiny fixture). This restoration
+preserves every value exactly and applies equally to original and changed
+arms. Native GEMM rounding can depend on strides, so equal values alone do
+not justify replaying a padded view. All-layer K/V and prediction equality
+remain mandatory; no tolerance is introduced.
+
 Before denoising, stream and compare every reconstructed layer's actual cache
 against the capture's saved K/V, bit-for-bit. `causal.denoise_block` must also
 reproduce the saved cached prediction exactly. Original cache tensors reuse
@@ -161,7 +172,10 @@ public CPU or CUDA arithmetic, and bind every observed call to that saved grid.
 
 Tiny real-transformer tests cover both sigmas, both history computations,
 both eviction targets, original all-layer/prediction equality and changed-past
-effects. Negative tests change c0, past content, current noise, positions,
+effects. Channel-major saved histories additionally exercise original
+c0-concatenation and packed later-refresh strides, and bind the original
+replay to those operation-specific layouts without changing token values.
+Negative tests change c0, past content, current noise, positions,
 timesteps, text, cache lengths, transaction order and an original layer.
 Source tests reject different sigma/history/snapshot or missing targets.
 Saved-only checks block model/session loading and reject changed predictions,

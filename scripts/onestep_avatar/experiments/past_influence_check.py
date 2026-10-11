@@ -184,7 +184,12 @@ def run_arm(predict: object, transformer: torch.nn.Module, grid: common.ClipGrid
                 if previous[1] > span[0]:
                     break
                 lo, hi = grid.token_span(*previous)
-                causal.refresh_block(predict, grid, cache, clean[:, lo:hi], context, previous)
+                block = clean[:, lo:hi]
+                # The recorder copied values into a full-span buffer. Restore
+                # the rollout's c0 concatenation or packed later-block layout:
+                # a padded slice can change native GEMM rounding despite equal values.
+                block = block.contiguous() if previous[0] == 0 else block.clone()
+                causal.refresh_block(predict, grid, cache, block, context, previous)
             layers = observe_cache(cache, destination / "kv" if changed else None, expected_layers)
             prediction = causal.denoise_block(predict, grid, cache, noisy, context, sigma, span)
             del cache
