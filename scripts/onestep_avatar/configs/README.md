@@ -60,6 +60,11 @@ Children inherit the owner's environment. Without the limit each child uses all
 48 CPU threads; on this shared host that made the chunked K/V comparisons about
 1,000 times slower, and an E3 reference job missed its deadline.
 
+Verify saved results with the same `OMP_NUM_THREADS=8 MKL_NUM_THREADS=8`.
+Completion checks compare recomputed CPU metrics exactly, and another thread
+count can fail a valid result
+([known gap](../doc/known_gaps.md#thread-dependent-saved-metric-verification)).
+
 A queue owner that ends with its terminal cannot publish its supervisor result.
 The queue then records the attempt as failed with reason `missing_supervision`,
 even when the scientific output is complete.

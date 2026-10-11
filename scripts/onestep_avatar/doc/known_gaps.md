@@ -114,6 +114,24 @@ per case, and a saved comparison render names each state's output file.
 four-state evaluation must equal the matching one-state outputs bit-for-bit
 under the deterministic policy, with its peak memory recorded.
 
+## Thread-dependent saved-metric verification
+
+**Required.** Verifying a saved result gives the same answer in any process
+that reads the same bytes.
+
+**Current.** Completion checks recompute encoded metrics on CPU and compare
+them with the saved floats exactly. CPU reductions depend on the thread count.
+A saved conditioning control verified at `OMP_NUM_THREADS=8`, the queue
+owners' setting, and failed at 4 with "conditioning arm metrics differ from
+saved outputs".
+
+**Impact.** A valid result can fail verification in a process with another
+thread count. Run every verifier (receipt checks, `--verify`, saved reviews)
+with `OMP_NUM_THREADS=8 MKL_NUM_THREADS=8`.
+
+**Closing evidence.** Metric verification that passes at several thread counts
+on the same saved outputs, for example a fixed-order float64 reduction.
+
 ## Eight-block causality diagnostic
 
 `experiments.causality` protocol `eight_block` uses the typed adapter contract
