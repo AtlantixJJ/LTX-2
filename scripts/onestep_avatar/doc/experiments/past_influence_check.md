@@ -120,6 +120,20 @@ public `ClipStore.verify`, then derives a copied RGB source descriptor through
 `reference_inputs.checked_source`. Original membership and crop bytes remain
 immutable. Current VAE fingerprint must equal the original capture encoder.
 
+`execute_review` obtains one fresh `review_preparation` before opening the
+decoder. It keeps that verified input object within the same invocation, then
+calls the private `_verify_review_prepared` to check the saved decoder outputs.
+This private function checks all presentation latents, RGB identities, reference
+attribution, labels, layouts, frame maps, videos and posters. It does not repeat
+the already completed native prerequisite calculation inside that child.
+The prepared object is not saved or exposed as a verification option.
+
+The public `verify_review(args)` always obtains a new `review_preparation`
+before calling the same private output checker. Standalone and queue completion
+checks therefore repeat the full native prerequisite verification independently
+of the child. They cannot reuse its prepared object. Source software checks,
+exact original replay, all-layer checks and declared budgets remain unchanged.
+
 For each boundary, concatenate the saved supplied generated prefix with that
 arm's exact current prediction, unpatchify through the public grid, and save
 the exact presentation latent. Fresh public VAE decoding produces lossless
@@ -151,6 +165,8 @@ dimensions and poster pixels without opening a model or decoder.
 - Original prediction and every original layer require exact equality.
 - Cache replay keeps every original refresh/eviction transaction; no priming.
 - Both targets and every native layer are required.
+- A decoder verifies native prerequisites before opening its session. Prepared
+  input reuse stays within one child; public saved verification prepares afresh.
 - Source and owner pins are operation-specific. Other conditioning,
   reference and capacity profiles do not include this helper.
 - Generic queue supervision bounds the whole operation; observations are
@@ -167,6 +183,9 @@ Full native K/V can occupy many gigabytes. Layers are read and compared one at
 a time; only one GPU cache is resident. Native CUDA and CPU timestamp division
 may differ by one float32 ULP. Save the actual native full grid, require exact
 public CPU or CUDA arithmetic, and bind every observed call to that saved grid.
+The whole-attempt deadline includes the queue's saved completion checks after
+the decoder exits. Removing repeated child preparation does not establish that
+the full attempt meets its bound; fresh native and decoder evidence must prove it.
 
 ## Tests
 
@@ -187,6 +206,10 @@ matching native decode calls; verify exact supplied-past/current latents and
 reject changed latent, RGB bytes, source mapping, crop or poster. The shared
 media owner supplies real layout tests; local decoder tests use a bounded
 pixel fixture and never initialize CUDA.
+Decoder lifecycle tests reject failed native preparation before a decoder can
+open, require one preparation per child, and reject corrupt saved outputs even
+with that prepared input. Standalone verification must reject a changed native
+prediction after decoding; an earlier child check cannot supply that proof.
 Real public geometry tests also cover the complete reference/diagnostic labels
 at both boundaries, five panels in the full two-by-three grid, readable narrow
 titles, unchanged frame maps and original/changed adjacency.

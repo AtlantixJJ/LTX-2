@@ -520,11 +520,16 @@ def execute_review(args: argparse.Namespace) -> dict:
     software.check_current(prepared["software"])
     write_json(args.output / "review.json", {"sources": prepared["pins"], "software": prepared["software"],
                                             "records": records, "quality_acceptance": None})
-    return verify_review(args)
+    return _verify_review_prepared(args, prepared)
 
 
 def verify_review(args: argparse.Namespace) -> dict:
-    prepared = review_preparation(args)
+    """Independently verify current native prerequisites and decoder outputs."""
+    return _verify_review_prepared(args, review_preparation(args))
+
+
+def _verify_review_prepared(args: argparse.Namespace, prepared: dict) -> dict:
+    """Check saved outputs; only the executing child may reuse preparation."""
     review = json.loads((args.output / "review.json").read_text())
     if (review.get("sources") != prepared["pins"] or review.get("software") != prepared["software"]
             or [(v["phase"], v["span"]) for v in review["records"]]

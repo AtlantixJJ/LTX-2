@@ -320,8 +320,8 @@ def test_presentation_uses_supplied_past_and_exact_current_prediction(span: tupl
 
 
 @pytest.fixture
-def decoded_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
-    native, capture, _reference, pins, _producer, grid = saved_case(tmp_path, "recompute")
+def decoded_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    native, capture, reference, pins, native_producer, grid = saved_case(tmp_path, "recompute")
     args = SimpleNamespace(**vars(native), review_of=native.output, gpu_id=0)
     args.output = tmp_path / "decoded"
     member, vae = tmp_path / "member.json", tmp_path / "vae.bin"
@@ -336,7 +336,11 @@ def decoded_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
     prepared = {"capture": {**capture, "fixed_inputs": {"noise": "fixed"}},
         "protocol": {"membership": str(member), "source": "same original view"}, "references": inputs,
         "pins": pins, "software": {"tiny": "decoder only"}, "grid": grid, "seed": 42}
-    monkeypatch.setattr(check, "review_preparation", lambda _args: prepared)
+    preparations = []
+    def prepare(_args: SimpleNamespace) -> dict:
+        preparations.append(_args)
+        return prepared
+    monkeypatch.setattr(check, "review_preparation", prepare)
     monkeypatch.setattr(check.software, "check_current", lambda _profile: None)
     requested, decoded = [], []
     def rgb(_source: dict, _root: Path, _objective: str, count: int) -> torch.Tensor:
@@ -388,12 +392,53 @@ def decoded_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
     assert check.execute_review(args)["state"] == "passed"
     assert requested == [(5, 42), (13, 42)]
     assert decoded == [(5, 42), (5, 42), (13, 42), (13, 42)]
-    return args
+    return SimpleNamespace(args=args, native=native, capture=capture, reference=reference,
+        pins=pins, native_producer=native_producer, grid=grid, prepared=prepared, preparations=preparations)
+
+
+def test_decoder_requires_native_preparation_before_opening_session(tmp_path: Path,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    args = SimpleNamespace(output=tmp_path / "decoded")
+    def failed_native_preparation(_args: SimpleNamespace) -> dict:
+        raise ValueError("native prerequisite failed")
+    monkeypatch.setattr(check, "review_preparation", failed_native_preparation)
+    monkeypatch.setattr(check.media, "open_decoder_session", lambda *_args, **_kwargs: pytest.fail("decoder opened"))
+    with pytest.raises(ValueError, match="native prerequisite failed"):
+        check.execute_review(args)
+    assert not args.output.exists()
+
+
+def test_decoder_reuses_preparation_without_accepting_corrupt_outputs(decoded_review: SimpleNamespace) -> None:
+    assert len(decoded_review.preparations) == 1
+    args = decoded_review.args
+    path = args.output / "after/changed_rgb.pt"
+    torch.save(torch.load(path, weights_only=True) + 1, path)
+    with pytest.raises(ValueError, match="past review decoded pixels or identities differ"):
+        check._verify_review_prepared(args, decoded_review.prepared)
+    assert len(decoded_review.preparations) == 1
+
+
+def test_standalone_decoder_verification_rechecks_changed_native_prediction(
+    decoded_review: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = decoded_review
+    monkeypatch.setattr(check, "source_records", lambda _args: (case.capture, case.reference, case.pins))
+    monkeypatch.setattr(check.software, "capture", lambda *_args, **_kwargs: case.native_producer)
+    monkeypatch.setattr(common.ClipGrid, "build", lambda *_args, **_kwargs: case.grid)
+    def fresh_native_preparation(_args: SimpleNamespace) -> dict:
+        check.verify(case.native)
+        return case.prepared
+    monkeypatch.setattr(check, "review_preparation", fresh_native_preparation)
+    path = case.native.output / "after/original/prediction.pt"
+    torch.save(torch.load(path, weights_only=True) + 1, path)
+    with pytest.raises(ValueError, match=r"past original reconstruction|E3"):
+        check.verify_review(case.args)
 
 
 @pytest.mark.parametrize("corruption", ["latent", "pixels", "mapping", "crop", "poster"])
-def test_decoder_saved_verifier_rejects_changed_diagnostic_evidence(decoded_review: tuple, corruption: str) -> None:
-    args = decoded_review
+def test_decoder_saved_verifier_rejects_changed_diagnostic_evidence(decoded_review: SimpleNamespace,
+                                                                   corruption: str) -> None:
+    args = decoded_review.args
     if corruption in ("latent", "pixels"):
         path = args.output / "after" / ("changed_latent.pt" if corruption == "latent" else "changed_rgb.pt")
         value = torch.load(path, weights_only=True)

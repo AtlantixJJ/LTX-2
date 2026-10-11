@@ -132,6 +132,30 @@ with `OMP_NUM_THREADS=8 MKL_NUM_THREADS=8`.
 **Closing evidence.** Metric verification that passes at several thread counts
 on the same saved outputs, for example a fixed-order float64 reduction.
 
+## Changed-past decoder total deadline
+
+**Required.** A changed-past decoder attempt completes both child execution and
+the queue's independent saved completion checks within its declared whole-attempt
+deadline. Child exit zero does not establish complete bounded execution.
+
+**Current.** The decoder checks its full native prerequisites before opening a
+session. It reuses those prepared inputs for its own saved-output checks within
+that child. Public `verify_review` always prepares afresh, so the queue still
+rechecks native all-layer evidence and every saved decoder output independently.
+That completion work counts toward the original deadline. Native attempts have
+finished their supervised child successfully but failed the total deadline
+during parent completion checks. The current preparation reuse has CPU checks;
+its complete native timing has not yet been established.
+
+**Impact.** Saved videos or a passed child supervisor cannot accept an attempt
+whose queue records `overall_deadline`. Keep those attempts failed and preserve
+their failure observations. A source change requires fresh affected native and decoder jobs.
+
+**Closing evidence.** Fresh source-matching native interventions and decoder
+attempts complete their canonical queue checks within the unchanged bounds.
+Record both child and total attempt timing; do not increase the budget or omit
+independent completion verification.
+
 ## Eight-block causality diagnostic
 
 `experiments.causality` protocol `eight_block` uses the typed adapter contract

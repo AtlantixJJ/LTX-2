@@ -65,7 +65,7 @@ reads saved inputs and cannot run models, decoding, or queue work.
 | `experiments/continuation_check.py` | [experiments/continuation_check.md](experiments/continuation_check.md) | 917 |
 | `experiments/continuation_identity_check.py` | [experiments/continuation_identity_check.md](experiments/continuation_identity_check.md) | 474 |
 | `experiments/fusion_parity.py` | [experiments/fusion_parity.md](experiments/fusion_parity.md) | 330 |
-| `experiments/past_influence_check.py` | [experiments/past_influence_check.md](experiments/past_influence_check.md) | 589 |
+| `experiments/past_influence_check.py` | [experiments/past_influence_check.md](experiments/past_influence_check.md) | 594 |
 | `experiments/prune_baseline.py` | [experiments/prune_baseline.md](experiments/prune_baseline.md) | 201 |
 | `experiments/prune_reproduction.py` | [experiments/prune_reproduction.md](experiments/prune_reproduction.md) | 417 |
 | `experiments/prepare_continuation.py` | [experiments/prepare_continuation.md](experiments/prepare_continuation.md) | 521 |
