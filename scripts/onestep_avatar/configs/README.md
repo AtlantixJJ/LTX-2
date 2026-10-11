@@ -451,7 +451,8 @@ adapter and trained adapter under identical inputs.
 
 `--update-job` names the one-update E4 job when `--job` is a longer run;
 `--subset` selects a separate checked evaluation membership. Declare the E4
-reference job as a dependency. See [design](../doc/experiments/adapter_effect_check.md).
+reference job as a dependency. A pilot check binds the pilot's resource budget on its queue
+job; the calibration job is checked under its own budget. See [design](../doc/experiments/adapter_effect_check.md).
 
 ### E3 — causal continuation (`continuation_check`, `continuation_identity_check`, `causality`)
 

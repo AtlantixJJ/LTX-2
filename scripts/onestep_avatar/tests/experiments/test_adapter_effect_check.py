@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import os
 import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
@@ -1141,3 +1142,60 @@ def test_saved_reader_rejects_changed_evidence_even_if_summary_is_restated(  # n
     (directory / "result.json").write_text(json.dumps(result))
     with pytest.raises((ValueError, FileNotFoundError), match=r"adapter-effect|changed"):
         effect.verify_saved(directory)
+
+
+def _bound_budget(tmp_path: Path, name: str, **fields: int) -> dict:
+    path = tmp_path / f"{name}.json"
+    path.write_text(json.dumps({"wall_seconds_per_phase": 1800, "memory_limit_allocated_bytes": 48_000_000_000,
+                                **fields}))
+    return resources.read_budget(path)
+
+
+def _bind(budget: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV  # noqa: PLC0415
+
+    monkeypatch.setenv(TOKEN_ENV, "a" * 32)
+    monkeypatch.setenv(JOB_ENV, "b" * 64)
+    for name, value in resources.budget_environment(budget).items():
+        monkeypatch.setenv(name, value)
+
+
+def test_unbound_queue_budget_hides_only_this_attempts_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pilot = _bound_budget(tmp_path, "pilot", overall_seconds=7200)
+    _bind(pilot, monkeypatch)
+    monkeypatch.setenv("UNRELATED_SETTING", "kept")
+    before = dict(os.environ)
+    with effect.unbound_queue_budget():
+        assert resources.budget_from_environment() is None
+        assert os.environ["UNRELATED_SETTING"] == "kept"
+    assert dict(os.environ) == before
+    with pytest.raises(RuntimeError, match="calibration check failed"), effect.unbound_queue_budget():
+        raise RuntimeError("calibration check failed")
+    assert dict(os.environ) == before
+    assert resources.budget_from_environment() == pilot
+
+
+def test_pilot_checks_calibration_job_under_its_own_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pilot = _bound_budget(tmp_path, "pilot", overall_seconds=7200)
+    calibration = _bound_budget(tmp_path, "calibration")
+    _bind(pilot, monkeypatch)
+    # The defect: the engine's budget check binds any verified job to this attempt's budget.
+    with pytest.raises(ValueError, match="differs from its bound queue budget"):
+        resources.check_budget(calibration)
+    seen = []
+
+    def verify(job: dict, step1: Path, contract: dict) -> None:
+        seen.append((resources.budget_from_environment(), step1, contract))
+        resources.check_budget(job["effective_budget"])
+
+    monkeypatch.setattr(effect.engine, "verify_training_conditions", verify)
+    monkeypatch.setattr(effect.checkpoints, "read_contract", lambda path: {"read": str(path)})
+    step1 = tmp_path / "lora_weights_step_00001.safetensors"
+    contract = effect.verify_calibration_conditions({"effective_budget": calibration}, step1)
+    assert contract == {"read": str(step1)}
+    assert seen == [(None, step1, contract)]
+    assert resources.budget_from_environment() == pilot
+    calibration["memory_limit_allocated_bytes"] = 1
+    with pytest.raises(ValueError, match="changed since preflight"):
+        effect.verify_calibration_conditions({"effective_budget": calibration}, step1)
+    assert resources.budget_from_environment() == pilot

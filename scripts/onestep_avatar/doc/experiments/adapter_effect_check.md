@@ -53,7 +53,18 @@ invent a step-20 completion claim from the step-60 marker.
 
 The original E4 result still verifies its exact original zero/one files, budget,
 world size and input inventory. The pilot keeps a separate lineage and uses its
-own saved text, resources and contracts. Require the same mode, base identity,
+own saved text, resources and contracts.
+
+The two training jobs ran under different resource budgets, and the queue binds
+this attempt to the pilot's budget. `engine.verify_training_conditions` requires
+a verified job's budget to equal the bound budget, which holds only for the
+pilot. `verify_calibration_conditions` therefore checks the calibration job
+inside `unbound_queue_budget`, which hides only the two bound-budget variables.
+`resources.check_budget` still confirms the calibration budget's bytes, and the
+engine still compares that budget with the calibration run's saved config and
+resource journals. Preflight and saved verification both use this helper. Worked
+check: under a bound pilot budget, `check_budget(calibration budget)` fails;
+`verify_calibration_conditions` passes and the pilot binding is unchanged after it. Require the same mode, base identity,
 first-image, loss, adapter method and native numerical policy as the calibration.
 The pilot membership and accumulation can differ as prescribed by E5. Pin both
 jobs and both runs' evidence through the existing software/input inventory.
@@ -171,7 +182,8 @@ For pilot checks, replace the job and checkpoint paths. Add `--update-job` with
 the original E4 job and `--subset` with the checked two-camera membership. Keep
 steps zero, 20 and 60 together. The queue owns `--output` and `--gpu-id`; neither
 option may occur in `arguments`. Bind the original resource-budget path on the
-queue job and request the original deterministic numerical policy.
+queue job (the pilot's budget for a pilot check) and request the original
+deterministic numerical policy.
 
 CPU preflight uses the same strict interface, without model sessions or output
 writes:
@@ -249,7 +261,8 @@ and product generation agree with nonzero and zero saved matrices. Controlled
 comparisons must reject a 5% boundary, large effect error hidden by small raw
 error, changed zero controls and malformed/nonfinite arrays; near-zero metrics
 must never invent a ratio. Check the independent preparation and E4 failure gates
-before model work, plus input/source mutation and fresh-output refusal. Native
+before model work, the calibration check without the pilot's queue binding (the
+binding is restored afterwards, also after a failure), plus input/source mutation and fresh-output refusal. Native
 two-view correction, resources, decoded inspection and supervision are E2 checks.
 Saved-reader controls use real serialized tensors and process journals to reject
 changed/missing/redirected outputs, altered numerical summaries, input identities,

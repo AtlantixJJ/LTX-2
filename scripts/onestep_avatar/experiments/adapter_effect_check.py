@@ -292,6 +292,34 @@ def check_calibration_contract(selected: dict, original: dict) -> dict:
             "selected": {field: selected[field] for field in ("shape", "mode_settings", "data")}}
 
 
+@contextlib.contextmanager
+def unbound_queue_budget() -> Iterator[None]:
+    """Hide this attempt's queue-bound budget while a different completed job is checked.
+
+    `engine.verify_training_conditions` passes the verified job's budget to
+    `resources.check_budget`, which requires it to equal the budget bound to the
+    current queue attempt. A pilot check runs under the 60-update pilot's budget,
+    but the separate one-update E4 calibration ran under its own, different budget.
+    Without a binding, `check_budget` still confirms that budget's bytes, and the
+    engine still compares it with the calibration run's saved config and resource
+    journals. The pilot job itself is verified under this attempt's binding.
+    """
+    saved = {name: os.environ.pop(name) for name in (resources.BUDGET_ENV, resources.BUDGET_SHA_ENV)
+             if name in os.environ}
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
+
+
+def verify_calibration_conditions(update_job: dict, step1: Path) -> dict:
+    """Verify the one-update E4 calibration under its own budget; return its step-one contract."""
+    original = checkpoints.read_contract(step1)
+    with unbound_queue_budget():
+        engine.verify_training_conditions(update_job, step1, original)
+    return original
+
+
 def prepare(args: argparse.Namespace, *, require_fresh_output: bool = True) -> dict:  # noqa: PLR0912, PLR0915 -- complete pre-weight evidence gates
     if require_fresh_output and (args.output.exists() or args.output.is_symlink()):
         raise ValueError("adapter-effect comparison requires a fresh output directory")
@@ -329,8 +357,7 @@ def prepare(args: argparse.Namespace, *, require_fresh_output: bool = True) -> d
     original_numerics = native_numerics(saved)
     condition_binding = None
     if pilot:
-        original_contract = checkpoints.read_contract(update_paths["step1"])
-        engine.verify_training_conditions(update_job, update_paths["step1"], original_contract)
+        original_contract = verify_calibration_conditions(update_job, update_paths["step1"])
         condition_binding = check_calibration_contract(contracts["step60"], original_contract)
         calibration_saved = json.loads((update_settings.output / "config.json").read_text())
         if native_numerics(calibration_saved) != original_numerics:
@@ -701,8 +728,7 @@ def _verify_pilot_protocol(protocol: dict, prepared: dict, selected: dict, contr
                     "step1": update_settings.output / "checkpoints/lora_weights_step_00001.safetensors"}
     validate_update_result(
         result_path, update_job, update_paths, resources.read_budget(update_settings.resource_budget))
-    original = checkpoints.read_contract(update_paths["step1"])
-    engine.verify_training_conditions(update_job, update_paths["step1"], original)
+    original = verify_calibration_conditions(update_job, update_paths["step1"])
     if calibration.get("condition_binding") != check_calibration_contract(contracts["step60"], original):
         raise ValueError("adapter-effect saved pilot and original E4 condition binding differs")
     store, plan, _specification, _used = engine.prepare_run(settings, require_fresh_output=False)
