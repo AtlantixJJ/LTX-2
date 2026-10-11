@@ -206,3 +206,8 @@ matching guide identity. Reject this before a decoder or transformer is opened.
 ## Current preview publication contract
 
 Every invocation requires an explicit output matching the immutable preview job. Raw-only output omission is unsupported. Completion binds raw results and rendered RGB references; no absent reference data is created by the executor.
+
+The queue may request `evidence_paths(..., verified=True)` only after it has
+completed this owner's scientific verifier in the same receipt check. That path
+reads the checked inventory without repeating the verifier. Direct callers keep
+the default `verified=False`, which verifies before exposing evidence.

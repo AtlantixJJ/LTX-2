@@ -173,7 +173,8 @@ def test_saved_map_retains_original_metrics_and_clean_first_frame(tmp_path: Path
         stats._saved_map(args, raw)
 
 
-def test_native_replay_budget_matches_original_job(tmp_path: Path) -> None:
+@pytest.mark.parametrize("operation", ["reference", "compare"])
+def test_native_replay_budget_matches_original_job(tmp_path: Path, operation: str) -> None:
     budget = tmp_path / "budget.json"
     budget.write_text("{}")
     job = tmp_path / "job.json"
@@ -193,5 +194,8 @@ def test_native_replay_budget_matches_original_job(tmp_path: Path) -> None:
             }
         )
     )
-    spec = write_spec(tmp_path / "spec.json", "training_update_check", ["--job", str(job)], "reference")
+    arguments = ["--job", str(job)]
+    if operation == "compare":
+        arguments.extend(["--reference", str(tmp_path / "reference")])
+    spec = write_spec(tmp_path / "spec.json", "training_update_check", arguments, operation)
     assert training_update_check.resource_budget(spec) == budget

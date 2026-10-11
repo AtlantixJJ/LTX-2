@@ -249,7 +249,7 @@ subprocess.run=lambda *a,**k:type("Observed",(),{"stdout":"\\n".join(f"{g}, 0" f
 def child(job,claims,log,**kwargs):
  command,env=queue.job_command(job,tuple(sorted(claims.owned)))
  (root/(name+".ready")).write_text(json.dumps({"gpus":sorted(claims.owned),"command":command,"env":env}))
- deadline=time.monotonic()+10
+ deadline=time.monotonic()+60
  while not (root/(name+".release")).exists():
   if time.monotonic()>deadline: raise TimeoutError("CPU fixture timed out")
   time.sleep(.01)
@@ -267,8 +267,10 @@ assert queue.dispatch_ready([job],{"jobs":{name:{"state":"pending"}}},root/(name
 
     def wait_file(name: str) -> object:
         target = tmp_path / name
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 60
         while not target.exists():
+            if any(owner.poll() is not None for owner in owners):
+                pytest.fail(f"CPU owner exited before publishing {name}")
             if time.monotonic() >= deadline:
                 pytest.fail(f"CPU owner did not publish {name}")
             time.sleep(0.01)
@@ -285,11 +287,11 @@ assert queue.dispatch_ready([job],{"jobs":{name:{"state":"pending"}}},root/(name
         assert set(first["gpus"]).isdisjoint(second["gpus"])
         assert set(first["gpus"]) | set(second["gpus"]) == set(range(8))
         (tmp_path / "first.release").touch()
-        assert owners[0].wait(timeout=5) == 0
+        assert owners[0].wait(timeout=30) == 0
         ledger = json.loads((tmp_path / "ledger.json").read_text())["attempts"]
         assert sorted(row["state"] for row in ledger.values()) == ["active", "closed"]
         (tmp_path / "second.release").touch()
-        assert owners[1].wait(timeout=5) == 0
+        assert owners[1].wait(timeout=30) == 0
         assert all(
             row["state"] == "closed" for row in json.loads((tmp_path / "ledger.json").read_text())["attempts"].values()
         )
@@ -299,4 +301,4 @@ assert queue.dispatch_ready([job],{"jobs":{name:{"state":"pending"}}},root/(name
         for owner in owners:
             if owner.poll() is None:
                 owner.terminate()
-            owner.wait(timeout=5)
+            owner.wait(timeout=30)

@@ -156,3 +156,8 @@ fixed `rel_tol=1e-5`, `abs_tol=1e-6` for numerical metric readback only; this do
 not change the original `.1` and `.6` heuristic thresholds. Zero weight produces
 an invalid nonfinite measurement and cannot pass completion. The source decoder
 and transformer are never invoked by this saved verifier.
+
+The queue may request `evidence_paths(..., verified=True)` only after it has
+completed this owner's scientific verifier in the same receipt check. That path
+reads the checked inventory without repeating the verifier. Direct callers keep
+the default `verified=False`, which verifies before exposing evidence.

@@ -523,12 +523,15 @@ def verify_completion(arguments: list[str], root: Path) -> dict:
     return {"records": [str(path.resolve()) for path in paths]}
 
 
-def evidence_paths(arguments: list[str], root: Path) -> list[Path]:
+def evidence_paths(arguments: list[str], root: Path, *, verified: bool = False) -> list[Path]:
     """Return every verified measured result and its ordinary saved input/output."""
-    record = verify_completion(arguments, root)
     args = parse_args(arguments)
     if args.operation_timing:
+        if not verified:
+            verify_completion(arguments, root)
         return [args.out]
+    record = ({"records": list(map(str, _ordinary_records(args)))} if verified
+              else verify_completion(arguments, root))
     from scripts.onestep_avatar import evaluate  # noqa: PLC0415 -- shared byte inventory
 
     paths = evaluate.evaluation_evidence_paths(args.evaluation_arguments, [Path(path) for path in record["records"]])

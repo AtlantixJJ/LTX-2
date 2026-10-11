@@ -633,8 +633,9 @@ def verify_completion(spec: Path, root: Path) -> dict:  # noqa: PLR0912 -- order
     return record
 
 
-def evidence_paths(spec: Path, root: Path) -> list[Path]:
-    verify_completion(spec, root)
+def evidence_paths(spec: Path, root: Path, *, verified: bool = False) -> list[Path]:
+    if not verified:
+        verify_completion(spec, root)
     return spec_protocol.evidence(spec_protocol.inspect(read_spec(spec, root), "stock_parity"), root)
 
 

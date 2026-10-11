@@ -107,14 +107,10 @@ noise and first-image inputs match. Diagnose source, input, precision and
 backend-policy differences with one-factor controls; never fit a tolerance to a
 failed result.
 
-**E4 compare budget.** Required: a `training_update_check` compare job runs
-under the training job's resource budget, as its reference does. Current:
-`resource_budget(spec)` returns no budget for `compare`, so the queue binds its
-generic budget, and `resources.check_budget` then refuses the saved training
-records ("phase resource budget differs from its bound queue budget"). Until
-the owner returns the original budget for `compare`, declare the training
-budget on the compare job. The fix changes a source that saved E4 references
-pin, so it waits until the E4 checks finish.
+**E4 compare budget.** Both `training_update_check` operations now bind the
+original training job's absolute resource budget. A different declared budget
+fails normalization. Fresh native reference and compare evidence remains
+required for this producer.
 
 **Saved pruning reference.** The saved whole-clip D0 reference
 `expr/refiner_prune/2.5/recheck_20260930/baseline` was made with a BF16 global

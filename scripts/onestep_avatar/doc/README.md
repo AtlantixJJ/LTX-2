@@ -38,7 +38,7 @@ reads saved inputs and cannot run models, decoding, or queue work.
 | Source | Design | Physical lines |
 |---|---|---:|
 | `__init__.py` | source header | 13 |
-| `bench.py` | [bench.md](bench.md) | 574 |
+| `bench.py` | [bench.md](bench.md) | 577 |
 | `comparisons.py` | [comparisons.md](comparisons.md) | 501 |
 | `corpus/build_guidance.py` | [corpus/build_guidance.md](corpus/build_guidance.md) | 778 |
 | `corpus/dataset.py` | [corpus/dataset.md](corpus/dataset.md) | 397 |
@@ -50,31 +50,37 @@ reads saved inputs and cannot run models, decoding, or queue work.
 | `corpus/subset.py` | [corpus/subset.md](corpus/subset.md) | 400 |
 | `decode_saved.py` | [decode_saved.md](decode_saved.md) | 192 |
 | `evaluate.py` | [evaluate.md](evaluate.md) | 740 |
-| `execution/devices.py` | source header | 50 |
-| `execution/process_registry.py` | [execution/process_registry.md](execution/process_registry.md) | 357 |
-| `execution/queue.py` | [execution/queue.md](execution/queue.md) | 2015 |
+| `execution/devices.py` | source header | 59 |
+| `execution/process_registry.py` | [execution/process_registry.md](execution/process_registry.md) | 358 |
+| `execution/queue.py` | [execution/queue.md](execution/queue.md) | 2056 |
 | `execution/queue_launch.py` | [execution/queue_launch.md](execution/queue_launch.md) | 1060 |
 | `execution/queue_protocol.py` | source header | 11 |
 | `execution/runtime.py` | [execution/runtime.md](execution/runtime.md) | 173 |
 | `execution/software.py` | [execution/software.md](execution/software.md) | 195 |
-| `execution/supervision.py` | [execution/supervision.md](execution/supervision.md) | 508 |
-| `experiments/adapter_effect_check.py` | [experiments/adapter_effect_check.md](experiments/adapter_effect_check.md) | 956 |
-| `experiments/causality.py` | [experiments/causality.md](experiments/causality.md) | 763 |
-| `experiments/continuation_check.py` | [experiments/continuation_check.md](experiments/continuation_check.md) | 916 |
-| `experiments/fusion_parity.py` | [experiments/fusion_parity.md](experiments/fusion_parity.md) | 329 |
-| `experiments/prune_baseline.py` | [experiments/prune_baseline.md](experiments/prune_baseline.md) | 199 |
-| `experiments/prune_reproduction.py` | [experiments/prune_reproduction.md](experiments/prune_reproduction.md) | 415 |
+| `execution/supervision.py` | [execution/supervision.md](execution/supervision.md) | 525 |
+| `experiments/adapter_effect_check.py` | [experiments/adapter_effect_check.md](experiments/adapter_effect_check.md) | 957 |
+| `experiments/capacity_review.py` | [experiments/capacity_review.md](experiments/capacity_review.md) | 256 |
+| `experiments/causality.py` | [experiments/causality.md](experiments/causality.md) | 764 |
+| `experiments/conditioning_check.py` | [experiments/conditioning_check.md](experiments/conditioning_check.md) | 595 |
+| `experiments/continuation_check.py` | [experiments/continuation_check.md](experiments/continuation_check.md) | 917 |
+| `experiments/continuation_identity_check.py` | [experiments/continuation_identity_check.md](experiments/continuation_identity_check.md) | 474 |
+| `experiments/fusion_parity.py` | [experiments/fusion_parity.md](experiments/fusion_parity.md) | 330 |
+| `experiments/past_influence_check.py` | [experiments/past_influence_check.md](experiments/past_influence_check.md) | 584 |
+| `experiments/prune_baseline.py` | [experiments/prune_baseline.md](experiments/prune_baseline.md) | 201 |
+| `experiments/prune_reproduction.py` | [experiments/prune_reproduction.md](experiments/prune_reproduction.md) | 417 |
+| `experiments/prepare_continuation.py` | [experiments/prepare_continuation.md](experiments/prepare_continuation.md) | 521 |
+| `experiments/reference_inputs.py` | [experiments/reference_inputs.md](experiments/reference_inputs.md) | 149 |
 | `experiments/saved_probe_metrics.py` | [experiments/saved_probe_metrics.md](experiments/saved_probe_metrics.md) | 141 |
 | `experiments/short_causal_check.py` | [experiments/short_causal_check.md](experiments/short_causal_check.md) | 573 |
 | `experiments/sigma_sweep.py` | [experiments/sigma_sweep.md](experiments/sigma_sweep.md) | 329 |
 | `experiments/sigma_sweep_results.py` | source header | 70 |
 | `experiments/spec_protocol.py` | [experiments/spec_protocol.md](experiments/spec_protocol.md) | 139 |
-| `experiments/stats.py` | [experiments/stats.md](experiments/stats.md) | 469 |
-| `experiments/stock_parity.py` | [experiments/stock_parity.md](experiments/stock_parity.md) | 653 |
-| `experiments/training_slice_check.py` | [experiments/training_slice_check.md](experiments/training_slice_check.md) | 461 |
-| `experiments/training_update_check.py` | [experiments/training_update_check.md](experiments/training_update_check.md) | 704 |
+| `experiments/stats.py` | [experiments/stats.md](experiments/stats.md) | 470 |
+| `experiments/stock_parity.py` | [experiments/stock_parity.md](experiments/stock_parity.md) | 654 |
+| `experiments/training_slice_check.py` | [experiments/training_slice_check.md](experiments/training_slice_check.md) | 462 |
+| `experiments/training_update_check.py` | [experiments/training_update_check.md](experiments/training_update_check.md) | 703 |
 | `hashing.py` | source header | 34 |
-| `infer.py` | [infer.md](infer.md) | 695 |
+| `infer.py` | [infer.md](infer.md) | 696 |
 | `media.py` | [media.md](media.md) | 714 |
 | `metrics.py` | [metrics.md](metrics.md) | 151 |
 | `model/adapters.py` | [model/adapters.md](model/adapters.md) | 145 |
@@ -85,7 +91,7 @@ reads saved inputs and cannot run models, decoding, or queue work.
 | `model/sampling.py` | [model/sampling.md](model/sampling.md) | 150 |
 | `plot_training.py` | [plot_training.md](plot_training.md) | 481 |
 | `prepare_inputs.py` | [prepare_inputs.md](prepare_inputs.md) | 381 |
-| `previews.py` | [previews.md](previews.md) | 605 |
+| `previews.py` | [previews.md](previews.md) | 606 |
 | `train.py` | source header | 38 |
 | `training/checkpoints.py` | [training/checkpoints.md](training/checkpoints.md) | 584 |
 | `training/config.py` | [training/config.md](training/config.md) | 406 |

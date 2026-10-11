@@ -185,3 +185,8 @@ Generated-only rendering writes its decoder content/VAE/shape/method/seed/settin
 key and video/poster hashes to `rendering.json`. Raw generation is saved first.
 
 After product data preflight and before native handles, text encoding or output writes, recheck the pinned adapter. Repeat immediately before opening the product transformer: recheck the adapter contract, actual tensor slices and preflight file identity through public `checkpoints.recheck_adapter`. Pass the checked identity to `model.adapters`; product does not select a second contract checker.
+
+The queue may request `evidence_paths(..., verified=True)` only after it has
+completed this owner's scientific verifier in the same receipt check. That path
+reads the checked inventory without repeating the verifier. Direct callers keep
+the default `verified=False`, which verifies before exposing evidence.

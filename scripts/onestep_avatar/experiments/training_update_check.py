@@ -558,8 +558,6 @@ def resource_phases(spec: Path) -> list[str]:
 
 def resource_budget(spec: Path) -> Path | None:
     args = read_spec(spec, spec.parent / "unused-output")
-    if args.operation == "compare":
-        return None
     path = config.parse_settings(json.loads(args.job.read_text())["arguments"]).resource_budget
     if path is None or not path.is_absolute():
         raise ValueError("native replay requires its original absolute resource budget")
@@ -671,8 +669,9 @@ def verify_completion(spec: Path, root: Path) -> None:
         raise ValueError("saved E4 comparison differs from actual reference")
 
 
-def evidence_paths(spec: Path, root: Path) -> list[Path]:
-    verify_completion(spec, root)
+def evidence_paths(spec: Path, root: Path, *, verified: bool = False) -> list[Path]:
+    if not verified:
+        verify_completion(spec, root)
     return spec_protocol.evidence(spec_protocol.inspect(read_spec(spec, root), "training_update_check"), root)
 
 

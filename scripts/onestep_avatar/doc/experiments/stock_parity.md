@@ -199,3 +199,8 @@ decoder. The saved manifest is excluded from the producer's older raw inventory.
 It loads no model or decoder, starts no child, and never repairs missing output.
 A missing, changed or escaped artifact prevents completion. CPU fixtures prove
 these refusals.
+
+The queue may request `evidence_paths(..., verified=True)` only after it has
+completed this owner's scientific verifier in the same receipt check. That path
+reads the checked inventory without repeating the verifier. Direct callers keep
+the default `verified=False`, which verifies before exposing evidence.

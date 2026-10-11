@@ -128,7 +128,7 @@ def test_terminal_observation_between_poll_and_reap_is_normal_exit(
         cleanup(child)
 
 
-def test_empty_command_before_terminal_event_reaps_only_exact_child(
+def test_empty_command_before_terminal_event_reobserves_only_exact_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     finish = tmp_path / "allow-exit"
@@ -163,6 +163,106 @@ def test_empty_command_before_terminal_event_reaps_only_exact_child(
         assert result["workers_absent"]
         assert result["returncode"] == 0
         assert empty_reads == [child.pid]
+    finally:
+        cleanup(child)
+
+
+def test_pidfd_acquisition_rechecks_transient_empty_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child, command, identity = spawn(tmp_path, "Path(READY).write_text('ready')\ntime.sleep(20)\n", {})
+    original_identity = queue.process_identity
+    reads = []
+
+    def read_identity(pid: int) -> dict | None:
+        reads.append(pid)
+        if len(reads) == 1:
+            return {**identity, "command": [], "terminal": False}
+        return original_identity(pid)
+
+    monkeypatch.setattr(queue, "process_identity", read_identity)
+    descriptor = None
+    try:
+        descriptor = supervision._owned_pidfd(identity, command, {})
+        assert reads == [child.pid] * 3
+        assert child.poll() is None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        cleanup(child)
+
+
+def test_empty_command_during_exec_keeps_observing_live_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finish = tmp_path / "allow-exit"
+    child, command, identity = spawn(
+        tmp_path, f"Path(READY).write_text('ready')\nwhile not Path({str(finish)!r}).exists(): time.sleep(.005)\n", {}
+    )
+    original_observe = supervision._observe
+    original_identity = queue.process_identity
+    calls = []
+    empty_reads = []
+
+    def observe(*args) -> dict | None:
+        calls.append(1)
+        if len(calls) == 3:
+            raise ValueError("transient exec command")
+        return original_observe(*args)
+
+    def read_identity(pid: int) -> dict | None:
+        if len(calls) == 3 and pid == child.pid and not empty_reads:
+            empty_reads.append(pid)
+            return {**identity, "command": [], "terminal": False}
+        return original_identity(pid)
+
+    class ContinuingClaims(Claims):
+        def refresh(self, *, child_pid: int) -> None:
+            super().refresh(child_pid=child_pid)
+            if empty_reads:
+                finish.touch()
+
+    monkeypatch.setattr(supervision, "_observe", observe)
+    monkeypatch.setattr(queue, "process_identity", read_identity)
+    try:
+        result = run(tmp_path, child, command, identity, None, registry=ContinuingClaims(), overall_seconds=2)
+        assert empty_reads == [child.pid]
+        assert finish.exists()
+        assert result["state"] == "passed"
+        assert result["workers_absent"]
+        assert not result["events"]
+    finally:
+        cleanup(child)
+
+
+def test_persistent_empty_command_preserves_external_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child, command, identity = spawn(tmp_path, "Path(READY).write_text('ready')\ntime.sleep(20)\n", {})
+    original_observe = supervision._observe
+    original_identity = queue.process_identity
+    calls = []
+
+    def observe(*args) -> dict | None:
+        calls.append(1)
+        if len(calls) >= 3:
+            raise ValueError("persistent empty command")
+        return original_observe(*args)
+
+    def read_identity(pid: int) -> dict | None:
+        if len(calls) >= 3 and pid == child.pid:
+            return {**identity, "command": [], "terminal": False}
+        return original_identity(pid)
+
+    monkeypatch.setattr(supervision, "_observe", observe)
+    monkeypatch.setattr(queue, "process_identity", read_identity)
+    try:
+        result = run(tmp_path, child, command, identity, None, shutdown_seconds=0.5, overall_seconds=0.05)
+        assert result["state"] == "failed"
+        assert "overall_deadline" in result["error"]
+        # Failure cleanup retains its two bounded shutdown grace periods.
+        assert result["elapsed_s"] < 1.5
+        assert result["workers_absent"] is False
     finally:
         cleanup(child)
 

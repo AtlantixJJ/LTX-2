@@ -45,7 +45,9 @@ The import-light `execution/devices.py` is the sole pool/topology owner:
 GPUs `(0,1,2,3,4,5,6,7)` and exactly four training processes. Require a complete
 strict-integer memory inventory for all eight devices. Pick the first four
 idle, unowned pool members for training, or the first idle unowned member for
-other work. Noncontiguous sets are valid; fewer than four cannot start training.
+other work. An optional explicit pool restricts selection, preserving its order;
+the default remains all eight devices. Pool IDs must be unique integers in
+0–7. Noncontiguous sets are valid; fewer than four cannot start training.
 Acquisition validates one-device or four-device topology, locks the ledger and
 requeries occupancy before publishing the complete device set atomically.
 A live active row from the same owner PID/start handle prevents selection and

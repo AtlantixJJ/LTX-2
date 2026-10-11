@@ -566,9 +566,10 @@ def verify_completion(arguments: list[str], root: Path) -> dict:
     return record
 
 
-def evidence_paths(arguments: list[str], root: Path) -> list[Path]:
+def evidence_paths(arguments: list[str], root: Path, *, verified: bool = False) -> list[Path]:
     """Inventory only verified artifacts under the preview output directory."""
-    record = verify_completion(arguments, root)
+    record = (json.loads((root / "preview_completion.json").read_text()) if verified
+              else verify_completion(arguments, root))
     return sorted([root / "preview_completion.json", *(Path(row["path"]) for row in record["evidence"])])
 
 

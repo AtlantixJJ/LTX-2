@@ -28,12 +28,19 @@ PY=$(conda run -n ltx python -c 'import sys; print(sys.executable)')
   preparation (`media --prepare-training-references`, `prepare_inputs`) run
   directly on one free GPU that you select.
 - CPU commands run directly: `corpus.subset`, `plot_training`,
-  `experiments.saved_probe_metrics`, every `--dry-run` and every `--help`.
+  `experiments.saved_probe_metrics`, `experiments.prepare_continuation`,
+  every `--dry-run` and every `--help`.
 
 **GPUs.** The pool is GPUs 0–7. A GPU is free when `nvidia-smi` shows less
 than 1,024 MiB in use. Check before every direct run; the queue checks before
 every launch. Training uses exactly four free GPUs, which need not be adjacent.
 Never use a busy GPU and never stop another user's process.
+
+`--gpu-pool` restricts one queue owner's ordered pool. For four-rank training
+on GPUs 0–3, pass `--gpu-pool 0,1,2,3` to its owner. Single-GPU owners can use
+`--gpu-pool 4,5,6,7` to run beside it, or another explicitly selected free
+pool. The restriction does not reserve a busy GPU; the owner waits until its
+required devices are free. Training still launches exactly four ranks.
 
 **Process ledger.** Every queue owner records its own processes in one shared
 file, `../expr/onestep_avatar/processes.json`: PID, start ticks, command, GPUs
@@ -436,7 +443,32 @@ adapter and trained adapter under identical inputs.
 `--subset` selects a separate checked evaluation membership. Declare the E4
 reference job as a dependency. See [design](../doc/experiments/adapter_effect_check.md).
 
-### E3 — causal continuation (`continuation_check`, `causality`)
+### E3 — causal continuation (`continuation_check`, `continuation_identity_check`, `causality`)
+
+Prepare first-view or held-out membership and fresh baseline jobs on CPU:
+
+```bash
+"$PY" -m scripts.onestep_avatar.experiments.prepare_continuation plan \
+  --membership <CHECKED_MEMBERSHIP.json> --source <VIEW_ID> --seeds 42 \
+  --cohort first_view --resource-budget <E3_BUDGET.json> --output <FRESH_PREPARATION>
+```
+
+For `--cohort held_out`, give three `--source` values from three held-out
+people and exactly two seeds. This writes one saved noise set per source/seed
+and `baseline_jobs.json`: cached, identical cached repeat and recompute at
+direct `[1,0]` and `[0.909375,0]`, each on 17 encoded frames with B2/D8.
+Run those jobs with the shared queue. After all six baseline jobs per case
+pass, seal the protocols on CPU:
+
+```bash
+"$PY" -m scripts.onestep_avatar.experiments.prepare_continuation seal \
+  --plan <PREPARATION>/plan.json --output <FRESH_SEALED_PROTOCOLS>
+```
+
+The sealed `continuation_jobs.json` includes the unchanged baseline jobs and
+their dependent diagnostic jobs. Preserve baseline terminal receipts when
+using the same list/state; do not rerun completed work into an occupied output.
+See [preparation design](../doc/experiments/prepare_continuation.md).
 
 `continuation_check` runs three phases on 17 encoded frames: `capture` saves
 cached generation and layerwise K/V; `reference` recomputes from that capture's
@@ -461,6 +493,44 @@ changed future noise at boundaries 3 and 5) use the same selector:
                "--checkpoints", "/abs/step0.safetensors", "/abs/step1.safetensors",
                "--changed-noise-3", "/abs/noise_changed_3.pt", "--changed-noise-5", "/abs/noise_changed_5.pt"]}
 ```
+
+Independent 17-frame first-image and prefix controls use the
+`continuation_identity_check` selector:
+
+```json
+{"schema_version": 1, "protocol": "continuation_identity_check",
+ "arguments": ["--subset", "/abs/current_membership.json", "--source", "<VIEW_ID>",
+               "--noise-file", "/abs/full_17_frame_noise.pt", "--sigma", "0.909375", "--history", "cache",
+               "--donor-image", "/abs/independent_image/image.pt", "--donor-image-sha256", "<SHA256>",
+               "--donor-export", "/abs/image_export.json", "--donor-export-sha256", "<SHA256>",
+               "--donor-view", "/abs/corpus/Part_1/0097_04/views/view00_cam51", "--seed", "42"]}
+```
+
+Run one job per sigma and history (`cache`, `recompute`). Each job runs
+original and exact-repeat 17 frames, prefixes of 5 and 13 frames, then changes
+only `c0` to the pinned real first-image encoding from another person. Public
+transformer hooks save actual clean-image inputs, timesteps, refresh payloads
+and the observed cache sink before and after eviction. Reused preprocessing
+must pass its unchanged-input and current-encoding checks. See
+[independent controls](../doc/experiments/continuation_identity_check.md).
+
+An independent changed-past control uses the existing conditioning selector:
+
+```json
+{"schema_version": 1, "protocol": "conditioning_check", "operation": "past_influence",
+ "arguments": ["--snapshot", "/abs/generated_capture/continuation.json",
+               "--reference", "/abs/generated_reference/continuation.json",
+               "--sigma", "0.909375", "--history", "cache"]}
+```
+
+Both fresh continuation producers must be complete, matching and declared
+dependencies. Run both schedules and both `cache`/`recompute` computations.
+Each attempt covers before and after eviction. Exact original prediction and
+all-layer K/V equality precede the artificial changed-past intervention.
+For a separate decoder-only job, add `--review-of /abs/completed_past_output`
+and declare that output as another dependency. It creates fresh exact-prefix
+RGB/VAE references and full/narrow diagnostic videos; it does not run another
+rollout. See [past influence design](../doc/experiments/past_influence_check.md).
 
 `causality` with `"protocol": "future_noise"` keeps earlier saved noise bytes,
 changes later ones and runs ordinary evaluation twice. Its `arguments` are
@@ -491,10 +561,8 @@ match eight causal blocks over 17 frames. See the
     "arguments": ["--job", "/abs/update_job.json", "--world-size", "4", "--reference", "/abs/reference_out"]}
    ```
 
-   Give the comparison job the training job's `"resource_budget"` (as the
-   reference has). Without it the queue binds its generic budget, and the
-   comparison refuses the saved training records (see
-   [known gaps](../doc/known_gaps.md#supervision-and-reproduction-records)).
+   Both operations use the original training job's resource budget. An explicit
+   `"resource_budget"` on either queue job must name that same budget.
 
 The comparison checks 768 named gradients, Adam moments, exports, loss, norm and
 the step-one reload against relative L2 0.02 (near-zero RMS `1e-8`). A failed
@@ -509,6 +577,56 @@ GPUs each and a budget with `overall_seconds: 7200`. Save updates 0, 20 and 60.
 Then compare the saved adapters with `adapter_effect_check`, evaluation and
 product jobs on held-out people and seeds, and measure cost with `bench`. The
 fixed settings are in [verification](../doc/verification.md#acceptance-gates).
+
+Queue matched conditioning controls with the `conditioning_check` selector:
+
+```json
+{"schema_version": 1, "protocol": "conditioning_check", "operation": "run",
+ "arguments": ["--control", "guide", "--mode", "causal", "--subset", "/abs/membership.json",
+               "--source", "<TARGET_VIEW>", "--donor-source", "<OTHER_PERSON_VIEW>",
+               "--noise-file", "/abs/seven_frame_noise.pt", "--seed", "42", "--decode"]}
+```
+
+Use `--control guide`, `text`, `sigma_one` or `capture_oracle`. The guide
+control requires a distinct `--donor-source` in the checked membership; the
+text control requires `--prompt` and a distinct nonempty `--wrong-prompt`.
+All controls use seven encoded frames and white dev LTX-2.5. Guide and text
+controls use D1; `sigma_one` and `capture_oracle` compare D0 with D1. Direct
+`[0.725, 0]` is fixed except for `sigma_one`, which uses `[1, 0]`.
+Omit `--checkpoint` for base or supply the selected saved adapter. Both
+`sigma_one` and `capture_oracle` require `--research-override` to preflight
+the actual D0 and D1 conditions of that same adapter. `--decode` saves
+matched capture RGB, capture VAE and paired guide references, decoded outputs,
+and synchronized full and narrow reviews. See
+[conditioning design](../doc/experiments/conditioning_check.md).
+
+Review separately D0-trained learning pilots with that selector's explicit
+saved-output operation:
+
+```json
+{"schema_version": 1, "protocol": "conditioning_check", "operation": "capacity_review",
+ "arguments": ["--mode", "causal", "--evaluation-list", "/abs/d0_evaluation_jobs.json"]}
+```
+
+The list must contain verified ordinary D0 base and updates 0, 20 and 60 under
+the fixed seven-frame direct `[0.725, 0]` setup. Include all those evaluation
+jobs as queue dependencies. This operation loads only the decoder and creates
+matched RGB/VAE reviews from saved outputs; it never fills missing evaluations.
+See [capacity review design](../doc/experiments/capacity_review.md).
+
+Prepare fresh references through that same selector, preserving the original
+membership hash and checked recorded crop:
+
+```json
+{"schema_version": 1, "protocol": "conditioning_check", "operation": "prepare_references",
+ "arguments": ["--subset", "/abs/original_membership.json", "--source", "<VIEW_ID>",
+               "--encoded-frames", "17", "--seed", "42", "--guide-mode", "d1"]}
+```
+
+This operation loads only the current decoder and public recorded RGB readers.
+Its copied source crop must equal the original capture manifest and encoding
+records; the original membership is unchanged. See
+[reference input design](../doc/experiments/reference_inputs.md).
 
 ### Pruning baseline (`prune_baseline`)
 

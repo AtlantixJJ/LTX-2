@@ -16,6 +16,7 @@ from scripts.onestep_avatar import LTX_ROOT
 from scripts.onestep_avatar.execution.devices import (
     GPU_POOL,
     TRAIN_PROCESSES,
+    validate_pool,
     validate_selection,
 )
 from scripts.onestep_avatar.execution.queue_protocol import LAUNCH_PROTOCOL
@@ -35,6 +36,8 @@ EXPERIMENTS = {
     "continuation_check": "scripts.onestep_avatar.experiments.continuation_check",
     "training_update_check": "scripts.onestep_avatar.experiments.training_update_check",
     "training_slice_check": "scripts.onestep_avatar.experiments.training_slice_check",
+    "conditioning_check": "scripts.onestep_avatar.experiments.conditioning_check",
+    "continuation_identity_check": "scripts.onestep_avatar.experiments.continuation_identity_check",
     "stats": "scripts.onestep_avatar.experiments.stats",
 }
 
@@ -1349,10 +1352,15 @@ def verify_decoder_completion(job: dict) -> bool:  # noqa: PLR0912, PLR0915 -- e
 
 def completion_receipt(job: dict, *, attempt: dict | None = None) -> dict:
     """Capture verified evidence identities; child lifecycle enforcement is caller-owned."""
-    from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- immutable receipt identities
-
     if not verify_completion(job):
         raise ValueError("cannot receipt incomplete queue outputs")
+    return _completion_receipt(job, attempt=attempt)
+
+
+def _completion_receipt(job: dict, *, attempt: dict | None = None) -> dict:
+    """Build the inventory only after the caller has verified completion once."""
+    from scripts.onestep_avatar.hashing import sha256  # noqa: PLC0415 -- immutable receipt identities
+
     completion = job["completion"]
     if job["kind"] == "train":
         checkpoint = Path(completion["checkpoint"])
@@ -1373,13 +1381,14 @@ def completion_receipt(job: dict, *, attempt: dict | None = None) -> dict:
         paths.extend(Path(value) for value in completion.get("records", []))
         selected = importlib.import_module(experiment_entry(job["experiment"]))
         if hasattr(selected, "evidence_paths"):
-            paths = selected.evidence_paths(Path(job["spec"]), Path(job["output"]))
+            paths = selected.evidence_paths(Path(job["spec"]), Path(job["output"]), verified=True)
             if any(not path.resolve().is_relative_to(Path(job["output"]).resolve()) for path in paths):
                 raise ValueError("experiment receipt evidence escapes its output directory")
     elif job["kind"] in ("decode", "render"):
         paths = [Path(completion["manifest"])]
     elif job["kind"] in ("preview", "product", "bench"):
-        paths = importlib.import_module(ORDINARY[job["kind"]]).evidence_paths(job["arguments"], Path(job["output"]))
+        paths = importlib.import_module(ORDINARY[job["kind"]]).evidence_paths(
+            job["arguments"], Path(job["output"]), verified=True)
         if any(not path.resolve().is_relative_to(Path(job["output"]).resolve()) for path in paths):
             raise ValueError("ordinary receipt evidence escapes its output directory")
     else:
@@ -1420,7 +1429,7 @@ def verify_receipt(job: dict, receipt: dict) -> bool:
             raise ValueError("completion receipt evidence changed")
     if not verify_completion(job):
         return False
-    current = completion_receipt(job)
+    current = _completion_receipt(job)
     if current != {key: value for key, value in receipt.items() if key != "execution"}:
         raise ValueError("completion receipt evidence inventory differs")
     if "execution" in receipt:
@@ -1474,6 +1483,7 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
     poll_seconds: float = 1,
     state_path: Path | None = None,
     jobs: list[dict] | None = None,
+    dependency_receipts: dict[str, dict] | None = None,
 ) -> dict:
     """Run one claimed package child with optional persistent attempt records."""
     import subprocess  # noqa: PLC0415 -- package-only subprocess execution
@@ -1550,7 +1560,17 @@ def run_child(  # noqa: PLR0912, PLR0915 -- child lifecycle and persistent journ
                 row = state["jobs"][job["id"]]
                 if row["state"] != "pending":
                     raise ValueError("queue child requires a pending saved job")
-                if job not in ready_jobs(jobs, state):
+                if dependency_receipts is None:
+                    ready = job in ready_jobs(jobs, state)
+                else:
+                    dependencies = job.get("dependencies", [])
+                    ready = set(dependency_receipts) == set(dependencies) and all(
+                        state["jobs"][dependency]["state"] == "complete"
+                        and state["jobs"][dependency]["receipt"] == dependency_receipts[dependency]
+                        and state["jobs"][dependency]["sha256"] == dependency_receipts[dependency]["job_sha256"]
+                        for dependency in dependencies
+                    )
+                if not ready:
                     raise ValueError("queue child dependencies are not verified complete")
                 request_path = queue_launch.prepare_request(
                     state_path.parent / "launches" / claims.token,
@@ -1853,7 +1873,8 @@ def retry_startup_failure(job: dict, jobs: list[dict], state_path: Path) -> bool
         raise
 
 
-def dispatch_ready(jobs: list[dict], state: dict, state_path: Path, claims_dir: Path) -> bool:
+def dispatch_ready(jobs: list[dict], state: dict, state_path: Path, claims_dir: Path,
+                   *, gpu_pool: tuple[int, ...] = GPU_POOL) -> bool:
     """Refresh device availability and run at most one eligible reserved child."""
     import subprocess  # noqa: PLC0415 -- GPU inventory for live selection
 
@@ -1880,7 +1901,8 @@ def dispatch_ready(jobs: list[dict], state: dict, state_path: Path, claims_dir: 
             return True
         from scripts.onestep_avatar.execution.process_registry import ProcessRegistry  # noqa: PLC0415 -- current policy
         claims = ProcessRegistry(claims_dir)
-        gpus = claims.choose(memory, training=job["kind"] == "train")
+        selection_options = {} if gpu_pool == GPU_POOL else {"pool": gpu_pool}
+        gpus = claims.choose(memory, training=job["kind"] == "train", **selection_options)
         if gpus is None or not claims.acquire(gpus, job=job["id"], training=job["kind"] == "train"):
             continue
         # Claims cannot prevent an external process from starting between
@@ -1895,7 +1917,9 @@ def dispatch_ready(jobs: list[dict], state: dict, state_path: Path, claims_dir: 
             continue
         log = state_path.parent / "logs" / f"{claims.token}.log"
         try:
-            run_child(job, claims, log, state_path=state_path, jobs=jobs)
+            receipts = {dependency: json.loads(json.dumps(state["jobs"][dependency]["receipt"]))
+                        for dependency in job.get("dependencies", [])}
+            run_child(job, claims, log, state_path=state_path, jobs=jobs, dependency_receipts=receipts)
         except QueueChildError:
             if not retry_startup_failure(job, jobs, state_path):
                 raise
@@ -1904,13 +1928,19 @@ def dispatch_ready(jobs: list[dict], state: dict, state_path: Path, claims_dir: 
     return False
 
 
-def execute_jobs(jobs_path: Path, state_path: Path, claims_dir: Path, *, once: bool, poll_seconds: float = 30) -> int:  # noqa: PLR0912 -- append-only dispatch and failure gates
+def execute_jobs(  # noqa: PLR0912 -- append-only dispatch and failure gates
+    jobs_path: Path, state_path: Path, claims_dir: Path, *, once: bool,
+    poll_seconds: float = 30, gpu_pool: tuple[int, ...] = GPU_POOL,
+) -> int:
     """Reread append-only work, verify dependencies, and wait without reserving devices."""
     if not math.isfinite(poll_seconds) or not 0 < poll_seconds <= 60:
         raise ValueError("queue polling interval must be finite, positive and at most 60 seconds")
+    validate_pool(gpu_pool)
     observed = []
     while True:
         jobs = prepare_jobs(jobs_path)
+        if any(job["kind"] == "train" for job in jobs) and len(gpu_pool) < TRAIN_PROCESSES:
+            raise ValueError("training GPU pool must contain at least four devices")
         identities = [(job["id"], job["sha256"]) for job in jobs]
         if identities[:len(observed)] != observed:
             raise ValueError("queue revisions may only append unchanged jobs")
@@ -1928,7 +1958,8 @@ def execute_jobs(jobs_path: Path, state_path: Path, claims_dir: Path, *, once: b
                     if not isinstance(receipt, dict) or not verify_receipt(job, receipt):
                         raise ValueError("completed queue job has missing verified evidence")
                 return 0
-        if dispatch_ready(jobs, state, state_path, claims_dir):
+        dispatch_options = {} if gpu_pool == GPU_POOL else {"gpu_pool": gpu_pool}
+        if dispatch_ready(jobs, state, state_path, claims_dir, **dispatch_options):
             if once:
                 updated = read_queue_state(state_path, jobs)
                 if any(row["state"] == "failed" for row in updated["jobs"].values()):
@@ -1972,7 +2003,14 @@ def main(argv: list[str] | None = None) -> int:
     execution.add_argument("--once", action="store_true")
     execution.add_argument("--loop", action="store_true")
     parser.add_argument("--poll-seconds", type=float, default=30, help="loop wait interval, at most 60 seconds")
+    parser.add_argument("--gpu-pool", default=",".join(map(str, GPU_POOL)),
+                        help="comma-separated allowed physical GPU IDs for this owner")
     args = parser.parse_args(argv)
+    try:
+        gpu_pool = tuple(int(value) for value in args.gpu_pool.split(","))
+        validate_pool(gpu_pool)
+    except ValueError as error:
+        parser.error(str(error))
     if sum((args.dry_run, args.execute, args.recover)) != 1:
         parser.error("choose exactly one of --dry-run, --execute or --recover")
     ledger = args.process_ledger
@@ -1986,12 +2024,15 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(recover_jobs(args.jobs, args.state), indent=2))  # noqa: T201 -- requested recovery summary
         return 0
     if args.execute:
-        return execute_jobs(args.jobs, args.state, ledger, once=args.once, poll_seconds=args.poll_seconds)
+        return execute_jobs(args.jobs, args.state, ledger, once=args.once, poll_seconds=args.poll_seconds,
+                            gpu_pool=gpu_pool)
     jobs = prepare_jobs(args.jobs)
+    if any(job["kind"] == "train" for job in jobs) and len(gpu_pool) < TRAIN_PROCESSES:
+        parser.error("training GPU pool must contain at least four devices")
     state = read_queue_state(args.state, jobs)
     planned = []
     for job in jobs:
-        gpus = GPU_POOL[:TRAIN_PROCESSES] if job["kind"] == "train" else GPU_POOL[:1]
+        gpus = gpu_pool[:TRAIN_PROCESSES] if job["kind"] == "train" else gpu_pool[:1]
         command, changes = job_command(job, gpus)
         planned.append(
             {

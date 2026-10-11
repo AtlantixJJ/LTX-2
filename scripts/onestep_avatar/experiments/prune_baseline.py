@@ -165,8 +165,10 @@ def verify_completion(spec: Path, root: Path) -> dict:
     return inspect_completion(read_spec(spec, root), root)
 
 
-def evidence_paths(spec: Path, root: Path) -> list[Path]:
-    return spec_protocol.evidence(verify_completion(spec, root), root)
+def evidence_paths(spec: Path, root: Path, *, verified: bool = False) -> list[Path]:
+    record = (spec_protocol.inspect(read_spec(spec, root), SELECTOR) if verified
+              else verify_completion(spec, root))
+    return spec_protocol.evidence(record, root)
 
 
 def main(argv: list[str] | None = None) -> int:

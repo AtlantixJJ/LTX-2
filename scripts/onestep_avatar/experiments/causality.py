@@ -682,9 +682,10 @@ def verify_completion(spec: Path, root: Path) -> dict:
     return manifest
 
 
-def evidence_paths(spec: Path, root: Path) -> list[Path]:
+def evidence_paths(spec: Path, root: Path, *, verified: bool = False) -> list[Path]:
     """Return the fully verified byte inventory to the generic queue receipt."""
-    manifest = verify_completion(spec, root)
+    manifest = (json.loads((root / "manifest.json").read_text()) if verified
+                else verify_completion(spec, root))
     return sorted([root / "manifest.json", *map(Path, manifest["artifacts"])])
 
 

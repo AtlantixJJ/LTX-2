@@ -487,9 +487,10 @@ def verify_completion(arguments: list[str], root: Path) -> dict:
     return record
 
 
-def evidence_paths(arguments: list[str], root: Path) -> list[Path]:
+def evidence_paths(arguments: list[str], root: Path, *, verified: bool = False) -> list[Path]:
     """Return the fully checked raw/text/noise and requested media byte inventory."""
-    verify_completion(arguments, root)
+    if not verified:
+        verify_completion(arguments, root)
     args = parse_args(arguments)
     paths = [root / "result.json", root / "generated.pt", root / "generation_inputs.pt"]
     if args.decode:

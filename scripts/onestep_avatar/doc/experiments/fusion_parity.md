@@ -125,3 +125,8 @@ zero-effect handling and fresh-output refusal.
 `test_extracted_queue_protocols.py` checks pinned/normalized specs,
 model-free completion, missing outputs, changed inputs, rehashed false metrics
 and joint raw-output shape/c0/precision tampering.
+
+The queue may request `evidence_paths(..., verified=True)` only after it has
+completed this owner's scientific verifier in the same receipt check. That path
+reads the checked inventory without repeating the verifier. Direct callers keep
+the default `verified=False`, which verifies before exposing evidence.

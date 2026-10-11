@@ -145,3 +145,8 @@ uses the existing calculation; queued comparisons additionally require one
 FSDP arm and one serial arm. Their first moments and all adapter matrices must
 pass unchanged E4 tolerances. A missing or rehashed nonfinite/mismatched artifact
 prevents completion. The compare job records the generic `runtime` phase.
+
+The queue may request `evidence_paths(..., verified=True)` only after it has
+completed this owner's scientific verifier in the same receipt check. That path
+reads the checked inventory without repeating the verifier. Direct callers keep
+the default `verified=False`, which verifies before exposing evidence.

@@ -45,11 +45,18 @@ Sampled total-device occupancy is explicitly a different quantity.
 When the exact registered child becomes terminal between `Popen.poll()` and its
 targeted observation, reap only that original Popen child within the existing
 shutdown bound, then apply the usual exit-code, phase and descendant checks.
-Linux may clear its command line briefly before reaping. A pidfd terminal event
-can resolve that race. It can also precede the terminal event: bracket the exact
-PID/start ticks again, require an empty command line, and wait only for the
-original Popen child within the same shutdown bound. A changed PID/start identity
-never authorizes takeover.
+Linux may clear its command line briefly during exec as well as before reaping.
+Only a pidfd terminal event permits waiting for the original Popen child. When
+the exact PID/start ticks still match and its command is empty, reobserve on the
+next ordinary poll while continuing all phase, overall, device and descendant
+checks. This uncertainty is bounded by the existing shutdown limit. A restored
+command must pass the original approved-transition check. A changed PID/start
+identity never authorizes takeover.
+Each targeted observation first retries empty command reads for at most 0.1
+seconds, including the two reads around pidfd acquisition. Every retry checks
+the same PID/start ticks; it grants no authority until a nonempty approved
+command or a terminal state is observed. If the command restores between the
+failed observation and its follow-up read, validate the restored command again.
 Do not classify the normal terminal/reaping interval as lost ownership.
 
 Validate all limits as finite positive values. Require exact registry/token/job and

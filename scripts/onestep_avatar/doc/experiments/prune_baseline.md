@@ -66,3 +66,8 @@ text-encoder parity remain owned by the pruning prompt-cache command.
 queue routing and source/input pin refusals with small files. Prune's
 `tests/test_whole_clip_baseline.py` exercises saved-only coverage, tensor,
 hash, `c0` and containment refusals using its tiny CPU producer fixture.
+
+The queue may request `evidence_paths(..., verified=True)` only after it has
+completed this owner's scientific verifier in the same receipt check. That path
+reads the checked inventory without repeating the verifier. Direct callers keep
+the default `verified=False`, which verifies before exposing evidence.

@@ -16,7 +16,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
-from scripts.onestep_avatar.execution.devices import select_devices, validate_inventory, validate_selection
+from scripts.onestep_avatar.execution.devices import GPU_POOL, select_devices, validate_inventory, validate_selection
 
 
 def _identity(pid: int) -> dict | None:
@@ -153,14 +153,15 @@ class ProcessRegistry:
         if identity["command"] and identity["command"] not in previous["commands"]:
             previous["commands"].append(identity["command"])
 
-    def choose(self, memory: dict[int, int], *, training: bool) -> tuple[int, ...] | None:
+    def choose(self, memory: dict[int, int], *, training: bool,
+               pool: tuple[int, ...] = GPU_POOL) -> tuple[int, ...] | None:
         validate_inventory(memory)
         with self._lock():
             active = [row for row in self._read()["attempts"].values() if row["state"] != "closed"]
             if any(_same_handle(row["owner"], self.owner) for row in active):
                 return None
             busy = {gpu for row in active for gpu in row["gpus"]}
-        return select_devices(memory, training=training, busy=busy)
+        return select_devices(memory, training=training, busy=busy, pool=pool)
 
     def acquire(self, gpus: tuple[int, ...], *, job: str, training: bool | None = None) -> bool:
         validate_selection(gpus, training=training)

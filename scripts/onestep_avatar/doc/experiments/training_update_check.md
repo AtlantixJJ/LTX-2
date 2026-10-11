@@ -218,8 +218,8 @@ reference. It replays the same fixed Adam comparator over checked saved tensors.
 No self-supervised reference command remains. Both phases use the original
 four-rank job and accumulation evidence; serial process world stays one.
 
-`resource_budget(spec)` returns the original job's absolute budget path for a
-reference. Queue normalization requires that exact declared path. The compare
+`resource_budget(spec)` returns the original job's absolute budget path for both
+reference and compare. Queue normalization requires that exact declared path. The compare
 operation uses the queue's generic `runtime` phase. `dependency_outputs(spec)`
 returns its separate reference directory; the queue checks a dependency receipt
 for that output before launch. The reference parser fixes original world four.
@@ -231,3 +231,8 @@ local initial/final/reload exports, actual fp32 Adam moments and phase records.
 It recomputes every comparison at the unchanged tolerance. Doubling a saved
 first moment and rehashing that tensor still fails completion. No native model
 or decoder opens during these checks; saved evidence is never rewritten.
+
+The queue may request `evidence_paths(..., verified=True)` only after it has
+completed this owner's scientific verifier in the same receipt check. That path
+reads the checked inventory without repeating the verifier. Direct callers keep
+the default `verified=False`, which verifies before exposing evidence.

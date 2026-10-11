@@ -116,11 +116,18 @@ def _positive(value: float, name: str) -> None:
 def _observe(identity: dict, command: list[str], worker_record: dict) -> dict | None:
     from scripts.onestep_avatar.execution.queue import process_identity  # noqa: PLC0415 -- existing identity authority
 
-    current = process_identity(identity["pid"])
-    if current is None:
-        return None
-    if any(current[key] != identity[key] for key in ("pid", "start_ticks")):
-        raise ValueError("registered child PID/start identity changed")
+    deadline = time.monotonic() + 0.1
+    while True:
+        current = process_identity(identity["pid"])
+        if current is None:
+            return None
+        if any(current[key] != identity[key] for key in ("pid", "start_ticks")):
+            raise ValueError("registered child PID/start identity changed")
+        if current["terminal"] or current["command"] or time.monotonic() >= deadline:
+            break
+        # A Linux exec transition can transiently expose an empty command even
+        # before pidfd acquisition. Never approve it; wait for a checked read.
+        time.sleep(0.001)
     if not current["terminal"] and current["command"] != identity["command"]:
         from scripts.onestep_avatar.execution.queue_launch import verify_command_transition  # noqa: PLC0415
 
@@ -406,6 +413,7 @@ def supervise(  # noqa: PLR0912, PLR0913, PLR0915 -- one finite lifecycle, expli
     identity_uncertain = False
     seen: dict[str, str] = {}
     next_sample = started
+    empty_command_since = None
     try:
         descriptor = _owned_pidfd(identity, command, worker_record)
         while True:
@@ -421,20 +429,29 @@ def supervise(  # noqa: PLR0912, PLR0913, PLR0915 -- one finite lifecycle, expli
             if returncode is None:
                 try:
                     current = _observe(identity, command, worker_record)
+                    empty_command_since = None
                 except (OSError, ValueError):
-                    # Linux may clear cmdline just before the terminal stat appears.
-                    # Only this exact Popen child's reaped exit can resolve that race.
+                    # Linux also clears cmdline during exec. Reobserve that exact
+                    # handle while continuing phase/deadline/worker supervision;
+                    # an empty command alone never authorizes a blocking reap.
                     from scripts.onestep_avatar.execution.queue import process_identity  # noqa: PLC0415
                     latest = process_identity(child.pid)
                     empty_owned_command = (latest is not None and not latest["command"]
                                            and all(latest[key] == identity[key] for key in ("pid", "start_ticks")))
-                    if _pidfd_terminal(descriptor) or empty_owned_command:
+                    if _pidfd_terminal(descriptor):
                         returncode = child.wait(timeout=shutdown_seconds)
+                    elif empty_owned_command:
+                        if empty_command_since is None:
+                            empty_command_since = now
+                        if now - empty_command_since >= shutdown_seconds:
+                            raise TimeoutError("registered child command remained empty") from None
+                        current = latest
                     else:
                         time.sleep(poll_seconds)
                         returncode = child.poll()
-                    if returncode is None:
-                        raise
+                        if returncode is None:
+                            current = _observe(identity, command, worker_record)
+                            empty_command_since = None
                 if current is not None and current["terminal"] and returncode is None:
                     returncode = child.wait(timeout=shutdown_seconds)
             if returncode is not None:

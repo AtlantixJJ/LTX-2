@@ -82,7 +82,9 @@ experiments/         training_update_check, training_slice_check,
                      stock_parity, fusion_parity, sigma_sweep,
                      sigma_sweep_results, short_causal_check,
                      stats, saved_probe_metrics, spec_protocol,
-                     prune_baseline, prune_reproduction
+                     prune_baseline, prune_reproduction, prepare_continuation,
+                     continuation_identity_check, conditioning_check,
+                     capacity_review, reference_inputs, past_influence_check
 configs/             fsdp.yaml, fsdp_forward_prefetch.yaml, README.md recipes
 doc/                 mirrored module designs and cross-module contracts
 tests/               ordinary tests; tests/experiments/ for experiment tests
@@ -290,6 +292,8 @@ EXPERIMENTS = {
     "stock_parity": "scripts.onestep_avatar.experiments.stock_parity",
     "adapter_effect_check": "scripts.onestep_avatar.experiments.adapter_effect_check",
     "continuation_check": "scripts.onestep_avatar.experiments.continuation_check",
+    "continuation_identity_check": "scripts.onestep_avatar.experiments.continuation_identity_check",
+    "conditioning_check": "scripts.onestep_avatar.experiments.conditioning_check",
     "training_update_check": "scripts.onestep_avatar.experiments.training_update_check",
     "training_slice_check": "scripts.onestep_avatar.experiments.training_slice_check",
     "causality": "scripts.onestep_avatar.experiments.causality",
@@ -308,6 +312,33 @@ The queue checks `spec_sha256` before launch and again before completion. An
 unknown selector fails before any claim, write or child process. Ordinary kinds
 never read the table. Adding a queued study means editing this literal table
 and its tests. There is no registration API, discovery or plugin loading.
+
+`prepare_continuation` is a CPU-only comparison owner. It prepares content-pinned
+E3 noise and ordinary baseline jobs, then seals protocols only after the public
+saved verifier proves the baseline and exact repeat. It is not a queue selector.
+`continuation_identity_check` adds independent 17-frame image and prefix arms
+through `evaluate.sample_case`. Public transformer hooks observe native input
+and refresh data without changing the shared numerical path.
+`conditioning_check` changes one checked guide or text input, or compares D0/D1
+at sigma one or as a capture oracle, through that same public evaluator. Its
+optional decoding produces matched RGB/VAE reviews. Its explicit
+`capacity_review` operation delegates to the independent saved-output owner:
+that owner verifies completed ordinary D0 base and updates 0, 20 and 60, then
+loads only the decoder for matched reviews. Every consumed evaluation output
+must be a declared queue dependency. Ordinary jobs import none of these owners
+and their ordinary software profiles list no experiment.
+
+The same `conditioning_check` selector has explicit `prepare_references` and
+`past_influence` operations. `reference_inputs` checks the original recorded
+crop before adapting a copied source descriptor for public RGB/VAE preparation;
+membership files remain immutable. `past_influence_check` first reconstructs
+the exact original cache transaction order or recomputed native input, proving
+every layer K/V and current prediction against fresh continuation producers.
+It then changes only completed non-c0 past frames. Its `--review-of` branch
+loads the decoder for exact-prefix diagnostic reviews. Each operation captures
+its own source pins; changing this independent past owner does not invalidate
+other conditioning/reference/capacity producers. Both source continuation
+outputs and the completed past output consumed by decoding are dependencies.
 
 `prune_baseline` is a bounded reproduction protocol for one saved pruning
 case. Its experiment owner supplies pinned scientific settings to the public

@@ -26,6 +26,8 @@ def test_literal_experiment_table_has_only_reviewed_current_owner() -> None:
         "continuation_check": "scripts.onestep_avatar.experiments.continuation_check",
         "training_update_check": "scripts.onestep_avatar.experiments.training_update_check",
         "training_slice_check": "scripts.onestep_avatar.experiments.training_slice_check",
+        "conditioning_check": "scripts.onestep_avatar.experiments.conditioning_check",
+        "continuation_identity_check": "scripts.onestep_avatar.experiments.continuation_identity_check",
         "stats": "scripts.onestep_avatar.experiments.stats",
     }
 

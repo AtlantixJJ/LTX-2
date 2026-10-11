@@ -181,3 +181,8 @@ The tests also check that completion loads no model, that the queue routes the
 selector, that a rewritten RMS in `results.json` fails completion even with a
 rebuilt inventory, that changed saved tensors fail, that each flag control
 changes one flag and restores it, and the argument and saved-run refusals.
+
+The queue may request `evidence_paths(..., verified=True)` only after it has
+completed this owner's scientific verifier in the same receipt check. That path
+reads the checked inventory without repeating the verifier. Direct callers keep
+the default `verified=False`, which verifies before exposing evidence.

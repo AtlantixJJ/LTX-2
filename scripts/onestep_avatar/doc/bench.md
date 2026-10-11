@@ -173,3 +173,8 @@ After implementation, compare returned counts with instrumented model calls.
 Use a fake clock/call trace to check timing boundaries and excluded warmup repetitions.
 Reject a benchmark comparison with different saved noise or coverage.
 Measure one small same-input real-weight case.
+
+The queue may request `evidence_paths(..., verified=True)` only after it has
+completed this owner's scientific verifier in the same receipt check. That path
+reads the checked inventory without repeating the verifier. Direct callers keep
+the default `verified=False`, which verifies before exposing evidence.

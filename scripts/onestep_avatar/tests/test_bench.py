@@ -124,3 +124,18 @@ def test_explicit_mode_cli_measures_and_saves_ordinary_result(
 def test_benchmark_cli_rejects_invalid_counts_before_input_access(options: list[str]) -> None:
     with pytest.raises(SystemExit):
         bench.main(options)
+
+
+def test_verified_operation_inventory_never_reads_generation_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operation timing has its own artifact and has no evaluation argument inventory."""
+    path = tmp_path / "operation_timing.json"
+    monkeypatch.setattr(bench, "parse_args", lambda _arguments: Namespace(operation_timing=True, out=path))
+    monkeypatch.setattr(bench, "_ordinary_records", lambda _args: pytest.fail("read generation-only arguments"))
+    calls = []
+    monkeypatch.setattr(bench, "verify_completion", lambda *_args: calls.append(1))
+    assert bench.evidence_paths([], tmp_path, verified=True) == [path]
+    assert calls == []
+    assert bench.evidence_paths([], tmp_path) == [path]
+    assert calls == [1]

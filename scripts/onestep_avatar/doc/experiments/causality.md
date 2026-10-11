@@ -170,3 +170,8 @@ master signed-zero byte mismatches and wrong output precision.
 ## Current adapter and CLI contract
 
 Eight-block inputs require a typed causal DEV/D1/white adapter at the exact direct schedule, clean c0, full-frame loss, cache/refresh, and shared unmerged fp32 application. Read and validate contract/tensor inventory before any native model session, bind and recheck file bytes, then use model.adapters.inference_transformer. Keep eight blocks, shared first four noise blocks, changed last four, global noise mapping and 16 model calls per branch. The module CLI accepts only a pinned scientific spec; public kernel helpers remain usable by current short/continuation owners.
+
+The queue may request `evidence_paths(..., verified=True)` only after it has
+completed this owner's scientific verifier in the same receipt check. That path
+reads the checked inventory without repeating the verifier. Direct callers keep
+the default `verified=False`, which verifies before exposing evidence.

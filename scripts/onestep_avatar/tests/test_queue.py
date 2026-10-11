@@ -729,7 +729,10 @@ def test_ready_jobs_verify_only_receipts_that_gate_pending_work(
         queue.ready_jobs(jobs, state)
 
 
-def test_persistent_child_cannot_start_with_pending_dependency(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("changed_receipt", [False, True])
+def test_persistent_child_cannot_start_with_pending_or_changed_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed_receipt: bool
+) -> None:
     source = {"id": "source", "kind": "evaluate", "sha256": "a" * 64}
     job = {
         "id": "case",
@@ -740,14 +743,17 @@ def test_persistent_child_cannot_start_with_pending_dependency(tmp_path: Path, m
         "dependencies": ["source"],
     }
     path = tmp_path / "state.json"
-    with queue.queue_state(path, [source, job]):
-        pass
+    prior_receipt = {"job_sha256": source["sha256"], "evidence": []}
+    with queue.queue_state(path, [source, job]) as state:
+        if changed_receipt:
+            state["jobs"]["source"].update(state="complete", receipt={**prior_receipt, "changed": True})
     original = path.read_bytes()
     claims = GPUClaims(tmp_path / "claims")
     assert claims.acquire((5,), job="case")
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("blocked child started"))
     with pytest.raises(ValueError, match="dependencies are not verified"):
-        queue.run_child(job, claims, tmp_path / "child.log", state_path=path, jobs=[source, job])
+        queue.run_child(job, claims, tmp_path / "child.log", state_path=path, jobs=[source, job],
+                        dependency_receipts={"source": prior_receipt} if changed_receipt else None)
     assert path.read_bytes() == original
     assert not claims.owned
 

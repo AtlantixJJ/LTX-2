@@ -154,7 +154,11 @@ non-training kinds first and in saved order within each group; a `render` job al
 tries each ready job in that order: it builds a `ProcessRegistry`, chooses
 devices from the inventory, acquires one token-bound ledger row, queries
 occupancy again and starts the child only if every selected device is still
-free. A busy device leaves that job pending, so a later ready job can start
+free. `--gpu-pool` restricts that owner's device selection to the explicit
+comma-separated physical GPU IDs; its default is all eight devices. It never
+changes the direct occupancy sample. Use separate owners with pool `0,1,2,3`
+for training and pool `4,5,6,7` for single-device work. Training waits if any
+of its four devices is busy. A busy device leaves that job pending, so a later ready job can start
 first. One queue owner runs one child at a time; independent owners use
 separate journals and the same ledger, and concurrent training jobs need
 distinct ports. When nothing can start, the loop waits `--poll-seconds`
@@ -262,6 +266,14 @@ the hash of every declared file. `verify_receipt` requires the same identity
 and unchanged evidence and reruns the artifact checks. A completed row without
 a receipt is invalid; missing receipt artifacts block dependents; changed
 evidence raises.
+
+One receipt check runs its completion verifier once. Evidence inventory
+construction does not repeat that verifier. Dispatch verifies dependency
+receipts once, then binds a copy of those receipts to the selected launch.
+Before journal publication, `run_child` checks that every dependency remains
+complete with the same job hash and receipt. A changed dependency prevents
+launch. Direct persistent callers without a dispatch proof still verify their
+dependencies through `ready_jobs`.
 
 ### Training launch binding
 
