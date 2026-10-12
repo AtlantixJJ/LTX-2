@@ -14,16 +14,17 @@ import os
 import random
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import torch
 
-from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar import train
-from scripts.onestep_avatar.corpus import dataset, precompute, subset
+from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import bidirectional
+from scripts.onestep_avatar.tests.support.corpus import (
+    two_videos as two_videos,  # noqa: PLC0414 -- explicit fixture re-export
+)
 from scripts.onestep_avatar.training import checkpoints, config, engine
 
 # --- the one typed entry point ---------------------------------------------------------
@@ -220,58 +221,6 @@ def test_random_start_is_uniform_reproducible_and_bounded() -> None:
 
 
 # --- startup refusal of a defective second video ---------------------------------------
-
-
-def _write_guides(membership: dict) -> None:
-    """Give each saved view a current guide encode, render and compositing sidecar."""
-    root = Path(membership["corpus_root"])
-    for source in membership["sources"]:
-        view = root / source["relative_dir"]
-        render = view / dataset.render_name("white")
-        render.write_bytes(b"render" + source["actor"].encode())
-        sidecar = view / dataset.render_metadata_name("white")
-        sidecar.write_text(json.dumps({"compositing_version": dataset.GUIDE_COMPOSITING_VERSION, "objective": "white"}))
-        capture = torch.load(view / dataset.capture_bundle_name("white"), weights_only=True)
-        guide = {**capture, "master": capture["master"] + 1, "input_fingerprint": sha256(render)}
-        guide_path = view / dataset.guide_bundle_name("white")
-        torch.save(guide, guide_path)
-        source.update(
-            guide_sha256=sha256(render),
-            guide_latent_sha256=sha256(guide_path),
-            guide_sidecar_sha256=sha256(sidecar),
-            guide_encode_record={key: value for key, value in guide.items() if key != "master"},
-        )
-    membership["requires_guide_latent"] = True
-    membership["sha256"] = subset.membership_hash(membership)
-
-
-@pytest.fixture
-def two_videos(current_membership: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
-    membership = current_membership
-    _write_guides(membership)
-    path = tmp_path / "membership.json"
-    path.write_text(json.dumps(membership))
-    specification = SimpleNamespace(
-        scale_factors=SpatioTemporalScaleFactors(8, 32, 32),
-        caps=SimpleNamespace(latent_channels=2),
-        sigmas=[0.725],
-        paths=SimpleNamespace(transformer=lambda: tmp_path / "base.safetensors", video_vae=lambda: tmp_path / "vae"),
-    )
-    monkeypatch.setattr(engine.backbone, "resolve", lambda *_args: specification)
-    monkeypatch.setattr(precompute, "file_fingerprint", lambda _path: "saved VAE identity")
-    monkeypatch.setattr(
-        engine.backbone,
-        "identity",
-        lambda *_args, **_kwargs: {
-            "base_transformer_sha256": "a" * 64,
-            "base_transformer_file": "base.safetensors",
-            "base_variant": "dev",
-            "model_key": "2.5",
-        },
-    )
-    monkeypatch.setattr(engine, "build_transformer", lambda *_args: pytest.fail("preflight loaded a transformer"))
-    monkeypatch.setattr(engine, "Accelerator", lambda *_args, **_kwargs: pytest.fail("preflight reached Accelerator"))
-    return path, membership
 
 
 def _repin(path: Path, membership: dict, source: dict, role: str, bundle: Path) -> None:

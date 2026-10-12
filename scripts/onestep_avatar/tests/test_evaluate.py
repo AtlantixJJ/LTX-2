@@ -21,18 +21,18 @@ from scripts.onestep_avatar import comparisons, evaluate, hashing
 from scripts.onestep_avatar import metrics as metrics_ops
 from scripts.onestep_avatar.corpus import precompute
 from scripts.onestep_avatar.model import common
-from scripts.onestep_avatar.tests.test_causal_core import _geometry, _grid, _model
+from scripts.onestep_avatar.tests.support.model import _geometry, _grid, _model
 from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
 
 
-def test_saved_comparison_renderer_rejects_empty_spec_before_model_session(tmp_path):  # noqa: ANN001, ANN201
+def test_saved_comparison_renderer_rejects_empty_spec_before_model_session(tmp_path: object) -> None:
     spec = tmp_path / "spec.json"
     spec.write_text('{"comparisons": []}')
     with pytest.raises(ValueError, match="specification is empty"):
         comparisons.render_saved_comparisons(spec, tmp_path / "out", gpu_id=0)
 
 
-def test_saved_comparison_renderer_rejects_missing_latent_before_model_session(tmp_path):  # noqa: ANN001, ANN201
+def test_saved_comparison_renderer_rejects_missing_latent_before_model_session(tmp_path: object) -> None:
     spec = tmp_path / "spec.json"
     spec.write_text('{"comparisons": [{"name": "case", "panels": [{"title": "x", "latent": "missing.pt"}]}]}')
     with pytest.raises(ValueError, match="latent is missing"):

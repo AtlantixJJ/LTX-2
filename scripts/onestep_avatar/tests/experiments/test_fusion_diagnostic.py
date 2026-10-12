@@ -15,7 +15,7 @@ import scripts.prune.core.session as sessions
 from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.experiments import fusion_parity as evaluate
 from scripts.onestep_avatar.model import causal, common
-from scripts.onestep_avatar.tests.test_causal_core import CHANNELS, SCALE, _context, _model
+from scripts.onestep_avatar.tests.support.model import CHANNELS, SCALE, _context, _model
 from scripts.prune.core.session import DTYPE
 
 
@@ -81,7 +81,7 @@ def test_fusion_orchestration_preserves_paths_and_result_values(
     events = []
 
     class Model:
-        def __init__(self, name: str):
+        def __init__(self, name: str) -> None:
             self.name = name
 
         def requires_grad_(self, value: bool) -> None:

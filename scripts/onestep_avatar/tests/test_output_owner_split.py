@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import json
-import os
 import subprocess
 import sys
 from hashlib import sha256
@@ -15,6 +14,7 @@ import pytest
 import torch
 
 from scripts.onestep_avatar import LTX_ROOT, PACKAGE_ROOT, evaluate, hashing
+from scripts.onestep_avatar.tests.support.children import normal_environment, run_help_rows
 
 
 def test_tensor_identity_preserves_shape_dtype_and_original_contiguous_bytes() -> None:
@@ -72,21 +72,17 @@ def test_preview_validation_dependency_has_one_direction() -> None:
     assert "preview_tensor_validator=verify_preview_tensors" in (PACKAGE_ROOT / "previews.py").read_text()
 
 
-@pytest.mark.parametrize("owner", ["previews", "comparisons"])
-def test_moved_output_clis_help_without_loading_models(owner: str) -> None:
-    environment = {**os.environ, "CUDA_VISIBLE_DEVICES": ""}
-    completed = subprocess.run(
-        [sys.executable, "-m", "scripts.onestep_avatar." + owner, "--help"],
-        cwd=LTX_ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
+@pytest.mark.subprocess
+def test_moved_output_clis_help_without_loading_models(subtests: object) -> None:
+    rows = run_help_rows(
+        ["scripts.onestep_avatar.previews", "scripts.onestep_avatar.comparisons"], normal_environment()
     )
-    assert completed.returncode == 0, completed.stderr
-    expected = "--preview-job" if owner == "previews" else "--render-saved-comparisons"
-    assert expected in completed.stdout
+    for row in rows:
+        with subtests.test(module=row["id"]):
+            assert row["returncode"] == 0, row["stderr"]
+            assert "usage:" in row["stdout"]
+            expected = "--preview-job" if row["id"].endswith("previews") else "--render-saved-comparisons"
+            assert expected in row["stdout"]
 
 
 @pytest.mark.parametrize("flag", ["--preview-job", "--render-saved-comparisons"])

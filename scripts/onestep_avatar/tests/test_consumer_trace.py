@@ -12,7 +12,7 @@ import torch
 from torch.distributed.fsdp._runtime_utils import _cast_forward_inputs
 
 from scripts.onestep_avatar.model import adapters, bidirectional, causal, common
-from scripts.onestep_avatar.tests.test_causal_core import _geometry, _grid, _model
+from scripts.onestep_avatar.tests.support.model import _geometry, _grid, _model
 from scripts.onestep_avatar.training.consumer_trace import Trace, validate
 
 BINDING = {
@@ -43,7 +43,7 @@ def _fixture(*, bf16: bool = True, checkpointing: bool = False) -> tuple:
     return model, grid, capture, guide, context
 
 
-def _run(model, grid, capture, guide, context, mode):  # noqa: ANN001, ANN202
+def _run(model: object, grid: object, capture: object, guide: object, context: object, mode: object) -> object:
     options = {"sigma": 0.725, "seed": 7, "accumulation": 1}
     if mode == "bidirectional":
         return bidirectional.train_sample(model, context, grid, capture, guide, lambda loss: loss.backward(), **options)

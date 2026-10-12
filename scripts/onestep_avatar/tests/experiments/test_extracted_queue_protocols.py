@@ -17,8 +17,8 @@ from scripts.onestep_avatar.execution import completion as queue_completion
 from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.experiments import causality, fusion_parity
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.tests.experiments.test_causality_diagnostic import fixture_inputs
-from scripts.onestep_avatar.tests.test_causal_core import CHANNELS, SCALE, _context, _model
+from scripts.onestep_avatar.tests.support.fixtures_experiment_test_causality_diagnostic import fixture_inputs
+from scripts.onestep_avatar.tests.support.model import CHANNELS, SCALE, _context, _model
 
 
 def job(selector: str, spec: Path, output: Path) -> dict:

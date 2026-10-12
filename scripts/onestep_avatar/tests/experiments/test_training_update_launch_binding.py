@@ -12,7 +12,7 @@ from accelerate.utils import DistributedType
 from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.experiments import training_update_check as check
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.tests.test_training_launch_binding import original_job as ordinary_job
+from scripts.onestep_avatar.tests.support.fixtures_training_launch_binding import original_job as ordinary_job
 from scripts.onestep_avatar.training import resources
 
 

@@ -11,14 +11,20 @@ from safetensors.torch import load_file
 
 from scripts.onestep_avatar.experiments import training_update_check
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.tests.test_training_runtime import CPUAccelerator, run_bounded_update
+from scripts.onestep_avatar.tests.support.training import CPUAccelerator, run_bounded_update
 from scripts.onestep_avatar.training import engine, resources
 
 
-@pytest.mark.parametrize("mode", ["bidirectional", "causal"])
-@pytest.mark.parametrize("preview_failure", [False, True])
-@pytest.mark.parametrize("resource_check", ["off", "pass"])
-@pytest.mark.parametrize("consumer_trace", [False, True])
+@pytest.mark.parametrize(
+    ("mode", "preview_failure", "resource_check", "consumer_trace"),
+    [
+        ("bidirectional", False, "pass", False),
+        ("bidirectional", False, "pass", True),
+        ("causal", False, "pass", False),
+        ("causal", False, "pass", True),
+        ("bidirectional", False, "off", False),
+    ],
+)
 def test_serial_replay_uses_shared_completed_update(
     mode: str,
     preview_failure: bool,

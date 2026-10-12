@@ -3,160 +3,28 @@
 import json
 import weakref
 from collections.abc import Iterator
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
 from safetensors.torch import save_file
 
-import scripts.prune.core.session as sessions
-import scripts.prune.data.prompt_cache as prompts
-from ltx_core.model.transformer.model import LTXModel, LTXModelType, X0Model
 from scripts.onestep_avatar import evaluate, hashing
 from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import completion as queue_completion
-from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
+from scripts.onestep_avatar.tests.support.contracts import A, B, _contract
+from scripts.onestep_avatar.tests.support.fixtures_evaluation_completion import (
+    completed as completed,  # noqa: PLC0414 -- explicit pytest fixture re-export
+)
+from scripts.onestep_avatar.tests.support.fixtures_evaluation_completion import controlled_scientific_receipt
+from scripts.onestep_avatar.tests.support.tree import restore, snapshot
 from scripts.onestep_avatar.training import checkpoints
 from scripts.onestep_avatar.training.checkpoints import CONTRACT_KEY
 from scripts.prune.core import preflight
 from scripts.prune.data import prompt_cache
-
-
-def controlled_scientific_receipt(job: dict, monkeypatch: pytest.MonkeyPatch) -> dict:
-    """Isolate saved science from the separately tested native supervision proof.
-
-    These CPU producers do not launch a queue child. Supply an explicit fake
-    execution observation without removing the prepared job's effective budget.
-    Queue lifecycle tests retain the real ownership and proof-negative checks.
-    """
-    attempt = {"command": ["controlled CPU scientific fixture"], "gpus": [0], "attempts": []}
-    monkeypatch.setattr(queue_completion, "verify_attempt_evidence", lambda _job, _attempt: [])
-    receipt = queue_completion.completion_receipt(job, attempt=attempt)
-    receipt["execution"]["binding"]["completed_at"] = 1.0
-    return receipt
-
-
-@pytest.fixture
-def completed(checked_settings: tuple, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple:
-    del tmp_path
-    settings, membership = checked_settings
-    specification = evaluate.backbone.resolve("2.5", "dev")
-    Path(specification.paths.transformer()).write_bytes(b"controlled base weights")
-    monkeypatch.setattr(
-        evaluate.backbone, "identity", lambda path, *_a, **_k: {"base_transformer_sha256": sha256(Path(path))}
-    )
-
-    calls = []
-
-    class Session:
-        def __init__(self, *_args):
-            calls.append("session")
-            self.device = torch.device("cpu")
-
-        def transformer(self, **_kwargs) -> nullcontext:
-            calls.append("transformer")
-            model = LTXModel(
-                model_type=LTXModelType.VideoOnly,
-                num_attention_heads=2,
-                attention_head_dim=4,
-                in_channels=2,
-                out_channels=2,
-                num_layers=2,
-                cross_attention_dim=8,
-                caption_projection=torch.nn.Linear(4, 8),
-            )
-            generator = torch.Generator().manual_seed(0)
-            with torch.no_grad():
-                for parameter in model.parameters():
-                    parameter.copy_(torch.randn(parameter.shape, generator=generator) * 0.05)
-            return nullcontext(X0Model(model.to(dtype=torch.bfloat16).eval()))
-
-    monkeypatch.setattr(sessions, "Session", Session)
-    # These synthetic adapter matrices pin completion identity, not a real LTX
-    # target inventory. Actual unmerged effects/loading are tested in test_adapters.
-    monkeypatch.setattr(
-        evaluate.adapter_loader, "inference_transformer", lambda session, *_a, **_kw: session.transformer()
-    )
-    monkeypatch.setattr(preflight, "check", lambda *_a, **_k: calls.append("preflight"))
-    monkeypatch.setattr(prompts, "get_or_build", lambda *_a, **_k: torch.ones(1, 3, 4, dtype=torch.bfloat16))
-    # Keep only the evaluator's device selection on CPU; shared Torch stays intact.
-    monkeypatch.setattr(
-        evaluate, "torch", SimpleNamespace(**{**vars(torch), "device": lambda *_a: torch.device("cpu")})
-    )
-    arguments = [
-        "--mode",
-        "bidirectional",
-        "--subset",
-        str(settings.subset),
-        "--output",
-        str(settings.output),
-        "--variant",
-        "dev",
-        "--guide-mode",
-        "d0",
-        "--schedule",
-        "0.725",
-        "0",
-        "--seed",
-        "42",
-    ]
-
-    def execute(
-        extra: tuple[str, ...] = (),
-        *,
-        mode: str | None = None,
-        guide_mode: str | None = None,
-        execution_owner: ModuleType | None = None,
-    ) -> tuple:
-        command = arguments + list(extra)
-        if mode is not None:
-            command[command.index("--mode") + 1] = mode
-        if guide_mode is not None:
-            command[command.index("--guide-mode") + 1] = guide_mode
-        if execution_owner is None:
-            args = evaluate.parse_args(command)
-            evaluate.execute_evaluation(args)
-        else:
-            scientific = list(command)
-            index = scientific.index("--output")
-            del scientific[index : index + 2]
-            spec = settings.output.parent / "causality_spec.json"
-            spec.write_text(json.dumps({"schema_version": 1, "protocol": "future_noise", "arguments": scientific}))
-            execution_owner.main(["--spec", str(spec), "--output", str(settings.output)])
-        paths = sorted(settings.output.glob("case_*/variant_*/result.json"))
-        if not paths:
-            paths = sorted(settings.output.glob("case_*/variant_*/*/result.json"))
-        assert paths
-        job = {
-            "id": "checked",
-            "kind": "evaluate",
-            "arguments": command,
-            "output": str(settings.output),
-            "completion": {"records": [str(path) for path in paths]},
-        }
-        if execution_owner is not None:
-            job.update(
-                kind="experiment",
-                experiment="causality",
-                spec=str(spec),
-                spec_sha256=sha256(spec),
-                arguments=["--spec", str(spec), "--output", str(settings.output)],
-                completion={"manifest": str(settings.output / "manifest.json")},
-            )
-        jobs_path = settings.output.parent / "queue_jobs.json"
-        jobs_path.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
-        job = queue_jobs.prepare_jobs(jobs_path)[0]
-        before = len(calls)
-        assert queue_completion.verify_completion(job)
-        assert len(calls) == before, "completion opened a native model session"
-        return job, paths
-
-    return execute, arguments, settings, membership, calls
 
 
 def test_completed_science_and_normal_fresh_output_gate(completed: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -257,9 +125,12 @@ def test_causal_physical_prefix_roundtrip_preserves_null_span_c0_calls_and_saved
     assert calls == before
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
+def test_result_cannot_claim_other_scientific_conditions(subtests: object, tmp_path: object, completed: tuple) -> None:
+    execute, _, _, _, _ = completed
+    job, paths = execute()
+    saved_job = json.dumps(job)
+    pristine = snapshot(tmp_path)
+    for case in [
         ("seed", 43),
         ("schedule", [0.5, 0]),
         ("source", "other/video"),
@@ -268,83 +139,112 @@ def test_causal_physical_prefix_roundtrip_preserves_null_span_c0_calls_and_saved
         ("mode_settings", {"span_latent_frames": 5}),
         ("conditions", {}),
         ("input_file_hashes", {}),
-        ("membership_sha256", "b" * 64),
+        ("membership_sha256", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
         ("adapter", "/other/adapter"),
         ("application_method", "unmerged"),
         ("prompt", "other prompt"),
         ("negative_prompt", "other negative"),
         ("guidance", {}),
-        ("text_sha256", "b" * 64),
-        ("capture_sha256", "b" * 64),
-        ("guide_sha256", "b" * 64),
-        ("c0_sha256", "b" * 64),
-        ("noise_sha256", "b" * 64),
-        ("producer_source_sha256", "b" * 64),
-    ],
-)
-def test_result_cannot_claim_other_scientific_conditions(completed: tuple, field: str, value: object) -> None:
+        ("text_sha256", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        ("capture_sha256", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        ("guide_sha256", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        ("c0_sha256", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        ("noise_sha256", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        ("producer_source_sha256", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+    ]:
+        with subtests.test(case=case):
+            restore(tmp_path, pristine)
+            field, value = case
+            job = json.loads(saved_job)
+            record = json.loads(paths[0].read_text())
+            record[field] = value
+            paths[0].write_text(json.dumps(record))
+            with pytest.raises(ValueError, match="scientific settings or input evidence"):
+                queue_completion.verify_completion(job)
+
+    restore(tmp_path, pristine)
+
+
+def test_result_cannot_complete_different_requested_job(subtests: object, tmp_path: object, completed: tuple) -> None:
+    execute, _, _, _, _ = completed
+    job, paths = execute()  # noqa: RUF059 -- pytest hook or fixture interface
+    saved_job = json.dumps(job)
+    pristine = snapshot(tmp_path)
+    for case in [("--seed", "43"), ("--guide-mode", "d1"), ("--variant", "distilled")]:
+        with subtests.test(case=case):
+            restore(tmp_path, pristine)
+            option, value = case
+            job = json.loads(saved_job)
+            job["arguments"][job["arguments"].index(option) + 1] = value
+            with pytest.raises((ValueError, FileNotFoundError)):
+                queue_completion.verify_completion(job)
+
+    restore(tmp_path, pristine)
+
+
+def test_exact_case_inventory_is_required(subtests: object, tmp_path: object, completed: tuple) -> None:
     execute, _, _, _, _ = completed
     job, paths = execute()
-    record = json.loads(paths[0].read_text())
-    record[field] = value
-    paths[0].write_text(json.dumps(record))
-    with pytest.raises(ValueError, match="scientific settings or input evidence"):
-        queue_completion.verify_completion(job)
+    saved_job = json.dumps(job)
+    pristine = snapshot(tmp_path)
+    for case in ["missing", "duplicate", "extra", "wrong_path"]:
+        with subtests.test(case=case):
+            restore(tmp_path, pristine)
+            defect = case
+            job = json.loads(saved_job)
+            if defect == "missing":
+                job["completion"]["records"].pop()
+            elif defect == "duplicate":
+                job["completion"]["records"].append(str(paths[0]))
+            else:
+                alias = paths[0].parent / "unrequested.json"
+                alias.write_bytes(paths[0].read_bytes())
+                if defect == "extra":
+                    job["completion"]["records"].append(str(alias))
+                else:
+                    job["completion"]["records"][0] = str(alias)
+            with pytest.raises(ValueError, match="inventory differs"):
+                queue_completion.verify_completion(job)
+
+    restore(tmp_path, pristine)
 
 
-@pytest.mark.parametrize(("option", "value"), [("--seed", "43"), ("--guide-mode", "d1"), ("--variant", "distilled")])
-def test_result_cannot_complete_different_requested_job(completed: tuple, option: str, value: str) -> None:
-    execute, _, _, _, _ = completed
-    job, _ = execute()
-    job["arguments"][job["arguments"].index(option) + 1] = value
-    with pytest.raises((ValueError, FileNotFoundError)):
-        queue_completion.verify_completion(job)
-
-
-@pytest.mark.parametrize("defect", ["missing", "duplicate", "extra", "wrong_path"])
-def test_exact_case_inventory_is_required(completed: tuple, defect: str) -> None:
+def test_saved_evidence_changes_fail_even_with_updated_output_hash(
+    subtests: object, tmp_path: object, completed: tuple
+) -> None:
     execute, _, _, _, _ = completed
     job, paths = execute()
-    if defect == "missing":
-        job["completion"]["records"].pop()
-    elif defect == "duplicate":
-        job["completion"]["records"].append(str(paths[0]))
-    else:
-        alias = paths[0].parent / "unrequested.json"
-        alias.write_bytes(paths[0].read_bytes())
-        if defect == "extra":
-            job["completion"]["records"].append(str(alias))
-        else:
-            job["completion"]["records"][0] = str(alias)
-    with pytest.raises(ValueError, match="inventory differs"):
-        queue_completion.verify_completion(job)
+    saved_job = json.dumps(job)
+    pristine = snapshot(tmp_path)
+    for case in ["text", "noise", "dtype", "first_frame", "shape", "base"]:
+        with subtests.test(case=case):
+            restore(tmp_path, pristine)
+            asset = case
+            execute, _, settings, _, _ = completed
+            job = json.loads(saved_job)
+            record = json.loads(paths[0].read_text())
+            if asset == "base":
+                evaluate.backbone.resolve("2.5", "dev").paths.transformer().write_bytes(b"changed base weights")
+            elif asset in ("text", "noise"):
+                path = settings.output / "text.pt" if asset == "text" else settings.output / "case_0000/noise.pt"
+                value = torch.load(path, weights_only=True)
+                torch.save(value + 1, path)
+            else:
+                path = Path(record["output"]["path"])
+                value = torch.load(path, weights_only=True)
+                if asset == "dtype":
+                    value = value.float()
+                if asset == "first_frame":
+                    value[:, :, :1] += 1
+                if asset == "shape":
+                    value = value[:, :, :5].contiguous()
+                torch.save(value, path)
+                record["output"].update(sha256=sha256(path), shape=list(value.shape))
+                paths[0].write_text(json.dumps(record))
+            with pytest.raises(ValueError):  # noqa: PT011 -- mutation controls check refusal type and preserved bytes across different validators
+                queue_completion.verify_completion(job)
 
-
-@pytest.mark.parametrize("asset", ["text", "noise", "dtype", "first_frame", "shape", "base"])
-def test_saved_evidence_changes_fail_even_with_updated_output_hash(completed: tuple, asset: str) -> None:
-    execute, _, settings, _, _ = completed
-    job, paths = execute()
-    record = json.loads(paths[0].read_text())
-    if asset == "base":
-        evaluate.backbone.resolve("2.5", "dev").paths.transformer().write_bytes(b"changed base weights")
-    elif asset in ("text", "noise"):
-        path = settings.output / "text.pt" if asset == "text" else settings.output / "case_0000/noise.pt"
-        value = torch.load(path, weights_only=True)
-        torch.save(value + 1, path)
-    else:
-        path = Path(record["output"]["path"])
-        value = torch.load(path, weights_only=True)
-        if asset == "dtype":
-            value = value.float()
-        if asset == "first_frame":
-            value[:, :, :1] += 1
-        if asset == "shape":
-            value = value[:, :, :5].contiguous()
-        torch.save(value, path)
-        record["output"].update(sha256=sha256(path), shape=list(value.shape))
-        paths[0].write_text(json.dumps(record))
-    with pytest.raises(ValueError):  # noqa: PT011 -- mutation controls check refusal type and preserved bytes across different validators
-        queue_completion.verify_completion(job)
+    restore(tmp_path, pristine)
 
 
 def test_guidance_saves_actual_negative_text_and_binds_prompt(completed: tuple) -> None:
@@ -356,40 +256,48 @@ def test_guidance_saves_actual_negative_text_and_binds_prompt(completed: tuple) 
         queue_completion.verify_completion(job)
 
 
-@pytest.mark.parametrize("defect", ["bytes", "path", "missing_variant"])
-def test_checked_adapter_bytes_path_and_complete_variant_inventory(completed: tuple, defect: str) -> None:
+def test_checked_adapter_bytes_path_and_complete_variant_inventory(
+    subtests: object, tmp_path: object, completed: tuple
+) -> None:
 
-    execute, _, settings, _, _ = completed
-    contract = _contract()
-    contract["model"]["base_sha256"] = sha256(evaluate.backbone.resolve("2.5", "dev").paths.transformer())
-    contract["shape"]["channels"] = 2
-    contract["task"]["guide_mode"] = "d0"
-    contract["training"]["sigma_levels"] = [0.725]
-    contract["training"]["schedules"] = [[0.725, 0]]
-    checkpoints.validate_contract(contract)
-    adapter = settings.output.parent / "adapter.safetensors"
-    metadata = {checkpoints.CONTRACT_KEY: json.dumps(contract)}
-    save_file(
-        {A: torch.ones(2, 4, dtype=torch.bfloat16), B: torch.zeros(4, 2, dtype=torch.bfloat16)},
-        adapter,
-        metadata=metadata,
-    )
-    job, paths = execute(["--span-latent-frames", "7", "--checkpoint", str(adapter), "--include-base"])
-    assert len(paths) == 4
-    if defect == "bytes":
-        save_file(
-            {A: torch.ones(2, 4, dtype=torch.bfloat16), B: torch.ones(4, 2, dtype=torch.bfloat16)},
-            adapter,
-            metadata=metadata,
-        )
-    elif defect == "path":
-        other = adapter.with_name("other.safetensors")
-        other.write_bytes(adapter.read_bytes())
-        job["arguments"][job["arguments"].index("--checkpoint") + 1] = str(other)
-    else:
-        job["completion"]["records"].pop()
-    with pytest.raises(ValueError, match=r"scientific settings or input evidence|inventory differs"):
-        queue_completion.verify_completion(job)
+    pristine = snapshot(tmp_path)
+    for case in ["bytes", "path", "missing_variant"]:
+        with subtests.test(case=case):
+            restore(tmp_path, pristine)
+            defect = case
+            execute, _, settings, _, _ = completed
+            contract = _contract()
+            contract["model"]["base_sha256"] = sha256(evaluate.backbone.resolve("2.5", "dev").paths.transformer())
+            contract["shape"]["channels"] = 2
+            contract["task"]["guide_mode"] = "d0"
+            contract["training"]["sigma_levels"] = [0.725]
+            contract["training"]["schedules"] = [[0.725, 0]]
+            checkpoints.validate_contract(contract)
+            adapter = settings.output.parent / "adapter.safetensors"
+            metadata = {checkpoints.CONTRACT_KEY: json.dumps(contract)}
+            save_file(
+                {A: torch.ones(2, 4, dtype=torch.bfloat16), B: torch.zeros(4, 2, dtype=torch.bfloat16)},
+                adapter,
+                metadata=metadata,
+            )
+            job, paths = execute(["--span-latent-frames", "7", "--checkpoint", str(adapter), "--include-base"])
+            assert len(paths) == 4
+            if defect == "bytes":
+                save_file(
+                    {A: torch.ones(2, 4, dtype=torch.bfloat16), B: torch.ones(4, 2, dtype=torch.bfloat16)},
+                    adapter,
+                    metadata=metadata,
+                )
+            elif defect == "path":
+                other = adapter.with_name("other.safetensors")
+                other.write_bytes(adapter.read_bytes())
+                job["arguments"][job["arguments"].index("--checkpoint") + 1] = str(other)
+            else:
+                job["completion"]["records"].pop()
+            with pytest.raises(ValueError, match=r"scientific settings or input evidence|inventory differs"):
+                queue_completion.verify_completion(job)
+
+    restore(tmp_path, pristine)
 
 
 @pytest.mark.parametrize("asset", ["text", "noise"])
@@ -449,7 +357,6 @@ def test_causal_diagnostic_adapter_preflight_before_sessions(
 ) -> None:
 
     from scripts.prune.core import (  # noqa: PLC0415 -- defer loader or fixture imports until preflight and test hooks are installed
-        preflight,
         session,
     )
 
@@ -512,7 +419,7 @@ def test_evaluation_releases_each_resident_model_before_the_next_case(
     references = []
 
     @contextmanager
-    def resident(session: object, *_args, **_kwargs) -> Iterator[torch.nn.Module]:
+    def resident(session: object, *_args: object, **_kwargs: object) -> Iterator[torch.nn.Module]:
         assert all(reference() is None for reference in references), "prior full model remains resident"
         with session.transformer() as model:
             references.append(weakref.ref(model))
@@ -546,7 +453,7 @@ def test_changed_model_owner_during_sampling_prevents_publication(
     original_hash = software.sha256
     original_sample = evaluate.sample_case
 
-    def sample(*a, **kw) -> object:
+    def sample(*a: object, **kw: object) -> object:
         result = original_sample(*a, **kw)
         monkeypatch.setattr(software, "sha256", lambda p: "f" * 64 if p.name == "common.py" else original_hash(p))
         return result

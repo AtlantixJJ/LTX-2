@@ -66,6 +66,7 @@ kind.
 | `--foreground` | Execute with live child output; defaults to `--loop`. Requires the shared ledger. |
 | `--loop` | With `--execute`: run until all jobs are complete. |
 | `--once` | With `--execute`: start at most one job, then exit. |
+| `--no-startup-retries` | Stop on the first child failure, including startup OOM. No retry or archive. |
 | `--recover` | Inspect ended children and verify saved outputs. Starts nothing. |
 | `--process-ledger` | The shared ledger file. Give every owner the same path. |
 | `--gpu-pool 0,1,2,3` | Only use these physical GPUs. Default: GPUs 0–7. |
@@ -171,6 +172,10 @@ refuses a state with a `running` job until `--recover` has checked it.
 free GPU, or when a preserved startup retry is pending. An empty list exits with
 zero, without a GPU query or a state file.
 
+
+With `--no-startup-retries`, a child failure remains failed after the existing
+bounded worker cleanup. The owner starts no replacement attempt. Default
+startup retry behavior remains unchanged.
 
 ## Invariants
 

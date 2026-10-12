@@ -20,8 +20,8 @@ from scripts.onestep_avatar.execution import devices, queue, runtime
 from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.execution import journal as queue_journal
 from scripts.onestep_avatar.execution import processes as queue_processes
+from scripts.onestep_avatar.execution.process_registry import ProcessRegistry
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, TOKEN_ENV
-from scripts.onestep_avatar.tests.claims_fixture import GPUClaims
 from scripts.onestep_avatar.training import resources
 
 
@@ -202,20 +202,32 @@ def test_final_transaction_cannot_publish_zero_exit_after_deadline(
     }
     clock = [100.0]
     monkeypatch.setattr(queue.time, "time", lambda: clock[0])
-    claims = GPUClaims(tmp_path / "claims")
+    claims = ProcessRegistry(tmp_path / "ledger.json", inventory=lambda: dict.fromkeys(range(8), 0))
     assert claims.acquire((0,), job="case")
 
-    def launch(*_args, **_kwargs) -> object:
+    def launch(*_args: object, **_kwargs: object) -> object:
         evaluate.save_case(torch.zeros(1, 2, 7, 2, 2), {"mode": "causal"}, output)
         return SimpleNamespace(pid=99999, poll=lambda: 0, wait=lambda: 0)
 
     monkeypatch.setattr(subprocess, "Popen", launch)
     monkeypatch.setattr(queue_processes, "process_alive", lambda _: False)
+    from scripts.onestep_avatar.execution import process_registry  # noqa: PLC0415 -- controlled synthetic child handle
+
+    original_identity = process_registry._identity
+    monkeypatch.setattr(
+        process_registry,
+        "_identity",
+        lambda pid: (
+            {"pid": pid, "start_ticks": 1, "command": ["synthetic child"], "terminal": True}
+            if pid == 99999
+            else original_identity(pid)
+        ),
+    )
     original = queue_journal.queue_state
     transactions = []
 
     @contextmanager
-    def locked(*args, **kwargs) -> object:
+    def locked(*args: object, **kwargs: object) -> object:
         with original(*args, **kwargs) as state:
             transactions.append(1)
             if len(transactions) == 4:
@@ -244,7 +256,6 @@ from types import SimpleNamespace
 
 import torch
 
-from scripts.onestep_avatar import evaluate
 from scripts.onestep_avatar.execution import queue,process_registry,completion,attempt
 name,root=sys.argv[1],Path(sys.argv[2])
 memory=dict.fromkeys(range(8),0)

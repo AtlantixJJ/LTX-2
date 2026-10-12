@@ -239,3 +239,10 @@ content hash, schedule, geometry, noise, image, context and source.
 
 The [verification contract](verification.md) describes the controls and the
 acceptance gates. No entry in this index claims native acceptance.
+
+## CPU test tools
+
+[Changed-file selection](tests/select.md) defines the T0–T3 tool.
+`tests/support/` holds non-collected model, contract, corpus, training, child,
+import, tree-restoration and token helpers. Tests keep their own acceptance
+assertions and use these helpers only to build or isolate inputs.

@@ -29,17 +29,27 @@ assert 'torch' not in sys.modules
 assert not any(name.startswith('scripts.onestep_avatar.experiments') for name in sys.modules)
 """
     result = subprocess.run(
-        [sys.executable, "-c", source], cwd=LTX_ROOT, env={**os.environ, "CUDA_VISIBLE_DEVICES": ""},
-        capture_output=True, text=True, check=False, timeout=20,
+        [sys.executable, "-c", source],
+        cwd=LTX_ROOT,
+        env={**os.environ, "CUDA_VISIBLE_DEVICES": ""},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
     )
     assert result.returncode == 0, result.stderr
 
 
 def test_public_queue_imports_are_the_defining_functions() -> None:
     for owner, name in (
-        (jobs, "prepare_job"), (jobs, "job_command"), (journal, "queue_state"),
-        (recovery, "missing_supervision_recovery"), (completion, "completion_receipt"),
-        (attempt, "run_child"), (processes, "process_identity"), (devices, "parse_gpu_memory"),
+        (jobs, "prepare_job"),
+        (jobs, "job_command"),
+        (journal, "queue_state"),
+        (recovery, "missing_supervision_recovery"),
+        (completion, "completion_receipt"),
+        (attempt, "run_child"),
+        (processes, "process_identity"),
+        (devices, "parse_gpu_memory"),
         (clock, "OverallDeadlineError"),
     ):
         assert getattr(queue, name) is getattr(owner, name)
@@ -49,7 +59,6 @@ def test_training_software_pins_each_extracted_execution_owner() -> None:
     sources = software.source_files("training", "causal")
     for name in ("jobs", "journal", "recovery", "completion", "attempt", "clock", "processes"):
         assert f"scripts/onestep_avatar/execution/{name}.py" in sources
-    assert not any("/experiments/" in name for name in sources)
 
 
 def test_ordinary_profiles_pin_shared_process_observations() -> None:

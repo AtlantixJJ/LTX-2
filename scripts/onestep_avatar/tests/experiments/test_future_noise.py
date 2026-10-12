@@ -11,7 +11,7 @@ from scripts.onestep_avatar.execution import completion as queue_completion
 from scripts.onestep_avatar.experiments import causality
 from scripts.onestep_avatar.model import common
 from scripts.onestep_avatar.tests import test_evaluation_completion
-from scripts.onestep_avatar.tests.test_causal_core import _geometry, _grid, _model
+from scripts.onestep_avatar.tests.support.model import _geometry, _grid, _model
 from scripts.onestep_avatar.training.config import CausalSettings
 
 # Expose the original pytest fixture without shadowing an imported function name.

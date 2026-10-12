@@ -1,110 +1,22 @@
 """Saved study specs retain master coverage, report metrics and shared media ownership."""
 
 import json
-import sys
-from contextlib import nullcontext
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Self
 
 import pytest
 import torch
 
-import scripts.prune.core.session as sessions
 from scripts.onestep_avatar import comparisons, evaluate, media
-from scripts.onestep_avatar.execution import software
-from scripts.prune.core import model_registry
+from scripts.onestep_avatar.tests.support.fixtures_saved_comparisons import (
+    test_saved_study_spec_renders_master_and_output_with_report_metrics as build_saved_render,
+)
+from scripts.onestep_avatar.tests.support.tree import restore, snapshot
 
 
 def test_saved_study_spec_renders_master_and_output_with_report_metrics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    capture = torch.full((3, 4, 2, 2), 0.2)
-    output = capture[:, :2].unsqueeze(0) + 0.1
-    torch.save({"master": capture}, tmp_path / "capture.pt")
-    torch.save(output, tmp_path / "generated.pt")
-    spec = tmp_path / "spec.json"
-    comparison = {
-        "name": "matched",
-        "view": "view",
-        "span": 2,
-        "fps": 30,
-        "caption": "Matched source frames",
-        "panel_size": [80, 80],
-        "viewing_width": 192,
-        "panels": [{"title": "Capture", "latent": "capture:capture.pt"}, {"title": "Output", "latent": "generated.pt"}],
-    }
-    spec.write_text(json.dumps({"comparisons": [comparison]}))
-    loaded = []
-
-    def load_master(path: Path) -> tuple[torch.Tensor, int]:
-        loaded.append(path)
-        return torch.load(path, weights_only=True)["master"], 30
-
-    decoded = []
-
-    def decode(session: object, latent: torch.Tensor, decoder: object, seed: int) -> torch.Tensor:
-        del decoder, session
-        decoded.append((latent.clone(), seed))
-        return latent[0, :, :1].permute(1, 0, 2, 3).repeat(9, 1, 1, 1)
-
-    class Perceptual:
-        def to(self, device: object) -> Self:
-            del device
-            return self
-
-        def eval(self) -> Self:
-            return self
-
-        def __call__(self, left: torch.Tensor, right: torch.Tensor):
-            return (left - right).square().mean(dim=(1, 2, 3), keepdim=True)
-
-    vae = tmp_path / "vae.safetensors"
-    vae.write_bytes(b"controlled decoder identity")
-    monkeypatch.setattr(
-        model_registry,
-        "resolve",
-        lambda *_args: SimpleNamespace(
-            paths=SimpleNamespace(video_vae=lambda: vae), scale_factors=SimpleNamespace(time=8)
-        ),
-    )
-
-    monkeypatch.setattr(evaluate.dataset, "load_training_master", load_master)
-    monkeypatch.setattr(media, "decode", decode)
-    monkeypatch.setattr(sessions, "open_session", lambda *_a, **_k: pytest.fail("saved render prepared text"))
-    monkeypatch.setattr(
-        media,
-        "open_decoder_session",
-        lambda *_args, **_kwargs: SimpleNamespace(device=torch.device("cpu"), decoder=lambda: nullcontext(None)),
-    )
-    monkeypatch.setitem(sys.modules, "lpips", SimpleNamespace(LPIPS=lambda **_kwargs: Perceptual()))
-    result = comparisons.render_saved_comparisons(spec, tmp_path / "rendered", gpu_id=0, seed=99)
-    row = result["results"][0]
-    assert loaded == [tmp_path / "capture.pt"]
-    assert decoded[0][0].shape == (1, 3, 2, 2, 2)
-    assert [seed for _, seed in decoded] == [99, 99]
-    assert row["frames"] == 9
-    assert row["caption"] == comparison["caption"]
-    assert row["metrics"][0]["psnr_full"] is None
-    assert row["metrics"][0]["lpips"] == 0
-    assert row["metrics"][1]["psnr_full"] == pytest.approx(20, abs=1e-5)
-    assert row["metrics"][1]["lpips"] == pytest.approx(0.04, abs=1e-6)
-    assert row["rendering"]["poster_frame"] == 8
-    assert row["rendering"]["layout"] == "comparison"
-    assert len(row["inputs"]) == 2
-    assert all(record["sha256"] for record in row["inputs"])
-    assert (tmp_path / "rendered" / row["video"]).is_file()
-    assert (tmp_path / "rendered" / row["poster"]).is_file()
-    assert comparisons.verify_saved_comparison_completion(spec, tmp_path / "rendered", seed=99)
-
-    original = software.sha256
-    decoder_owner = software.LTX_ROOT / "packages/ltx-core/src/ltx_core/model/video_vae/conv_video_decoder.py"
-    assert str(decoder_owner.relative_to(software.LTX_ROOT)) in result["software"]["sources"]
-    with monkeypatch.context() as changed_owner:
-        changed_owner.setattr(software, "sha256", lambda p: "f" * 64 if p == decoder_owner else original(p))
-        software.validate(result["software"])
-        with pytest.raises(ValueError, match="completion identity differs"):
-            comparisons.verify_saved_comparison_completion(spec, tmp_path / "rendered", seed=99)
+    build_saved_render(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("name", ["../escape", "..", "/outside"])
@@ -136,7 +48,7 @@ def test_saved_comparison_rejects_mismatched_geometry_before_session(
         )
     )
 
-    def forbidden(*_args, **_kwargs) -> None:
+    def forbidden(*_args: object, **_kwargs: object) -> None:
         pytest.fail("invalid geometry opened a model session")
 
     monkeypatch.setattr(media, "open_decoder_session", forbidden)
@@ -245,9 +157,12 @@ def test_unreadable_saved_labels_fail_before_any_decoder_or_output(
     assert not (tmp_path / "out").exists()
 
 
-@pytest.mark.parametrize(
-    "changed",
-    [
+def test_compact_completion_is_required_and_bound_to_full_pixels(  # noqa: PLR0912 -- one test retains the complete verifier branch matrix
+    subtests: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    build_saved_render(tmp_path, monkeypatch)
+    pristine = snapshot(tmp_path)
+    for case in [
         "missing",
         "layout",
         "font",
@@ -263,50 +178,50 @@ def test_unreadable_saved_labels_fail_before_any_decoder_or_output(
         "hash_short",
         "hash_upper",
         "hash_nonhex",
-    ],
-)
-def test_compact_completion_is_required_and_bound_to_full_pixels(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str
-) -> None:
-    test_saved_study_spec_renders_master_and_output_with_report_metrics(tmp_path, monkeypatch)
-    spec = tmp_path / "spec.json"
-    destination = tmp_path / "rendered"
-    path = destination / "render_manifest.json"
-    manifest = json.loads(path.read_text())
-    row = manifest["comparisons"][0]
-    compact = row["compact"]
-    if changed == "missing":
-        del row["compact"]
-    if changed == "layout":
-        compact["rendering"]["layout"] = "stacked_comparison"
-    if changed == "font":
-        compact["rendering"]["font_size"] = 1
-    if changed == "size":
-        compact["rendering"]["display_size"][0] += 2
-    if changed == "times":
-        compact["rendering"]["source_times"][1] += 1
-    if changed == "title":
-        compact["rendering"]["panels"][0]["title"] = "Other"
-    if changed == "pixels":
-        compact["rendering"]["panels"][0]["pixels_sha256"] = "0" * 64
-    if changed in ("video", "poster"):
-        (destination / compact[changed]).write_bytes(b"changed media")
-    if changed.startswith("hash_"):
-        invalid = {
-            "hash_null": None,
-            "hash_number": 123,
-            "hash_short": "a" * 63,
-            "hash_upper": "A" * 64,
-            "hash_nonhex": "g" * 64,
-        }
-        for rendering in (row["rendering"], compact["rendering"]):
-            if changed == "hash_missing":
-                del rendering["panels"][0]["pixels_sha256"]
-            else:
-                rendering["panels"][0]["pixels_sha256"] = invalid[changed]
-    manifest["results"] = manifest["comparisons"]
-    path.write_text(json.dumps(manifest))
-    with pytest.raises(
-        ValueError, match=r"compact|settings differ|readability|titles differ|hash or path differs|pixel hash"
-    ):
-        comparisons.verify_saved_comparison_completion(spec, destination, seed=99)
+    ]:
+        with subtests.test(case=case):
+            restore(tmp_path, pristine)
+            changed = case
+            spec = tmp_path / "spec.json"
+            destination = tmp_path / "rendered"
+            path = destination / "render_manifest.json"
+            manifest = json.loads(path.read_text())
+            row = manifest["comparisons"][0]
+            compact = row["compact"]
+            if changed == "missing":
+                del row["compact"]
+            if changed == "layout":
+                compact["rendering"]["layout"] = "stacked_comparison"
+            if changed == "font":
+                compact["rendering"]["font_size"] = 1
+            if changed == "size":
+                compact["rendering"]["display_size"][0] += 2
+            if changed == "times":
+                compact["rendering"]["source_times"][1] += 1
+            if changed == "title":
+                compact["rendering"]["panels"][0]["title"] = "Other"
+            if changed == "pixels":
+                compact["rendering"]["panels"][0]["pixels_sha256"] = "0" * 64
+            if changed in ("video", "poster"):
+                (destination / compact[changed]).write_bytes(b"changed media")
+            if changed.startswith("hash_"):
+                invalid = {
+                    "hash_null": None,
+                    "hash_number": 123,
+                    "hash_short": "a" * 63,
+                    "hash_upper": "A" * 64,
+                    "hash_nonhex": "g" * 64,
+                }
+                for rendering in (row["rendering"], compact["rendering"]):
+                    if changed == "hash_missing":
+                        del rendering["panels"][0]["pixels_sha256"]
+                    else:
+                        rendering["panels"][0]["pixels_sha256"] = invalid[changed]
+            manifest["results"] = manifest["comparisons"]
+            path.write_text(json.dumps(manifest))
+            with pytest.raises(
+                ValueError, match=r"compact|settings differ|readability|titles differ|hash or path differs|pixel hash"
+            ):
+                comparisons.verify_saved_comparison_completion(spec, destination, seed=99)
+
+    restore(tmp_path, pristine)

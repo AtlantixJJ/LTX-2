@@ -171,6 +171,7 @@ How the queue behaves:
 - `--loop` stops with exit 1 when any job has failed, and refuses a state with a
   `running` job until `--recover` has checked it. A failed job stays failed; add
   a new job with a new ID and a new output to retry it.
+- Pass `--no-startup-retries` to stop on the first child failure, including startup OOM.
 - Training startup contention (CUDA out of memory or a busy rendezvous port
   before any update) is retried at most three times. Earlier outputs move to
   `superseded_startup_contention/`. `--once` exits 2 when such a retry is pending.
@@ -756,16 +757,41 @@ the result: [design](../doc/experiments/prune_reproduction.md).
 
 ## 10. Check the code
 
+The CPU suite pins Torch to one thread and hides CUDA before importing it.
+Children inherit the CPU environment. `ONESTEP_AVATAR_TEST_CUDA=1` is an
+explicit opt-in for tests that need CUDA; routine checks leave it unset.
+
+| Tier | When | Check |
+|---|---|---|
+| T0 | after each edit | changed areas and direct consumers, excluding subprocess tests |
+| T1 | before leaving an area | selected files including children; prune for shared owners |
+| T2 | once before reporting done or committing | complete avatar and prune suites; Ruff on touched files |
+| T3 | import or dispatch changes | boundary tests with experiment imports blocked |
+
+Print selected files and exact commands, then execute them:
+
 ```bash
-CUDA_VISIBLE_DEVICES= "$PY" -m pytest scripts/onestep_avatar/tests -q
-CUDA_VISIBLE_DEVICES= ONESTEP_AVATAR_BLOCK_EXPERIMENTS=1 "$PY" -m pytest scripts/onestep_avatar/tests -q \
-  --ignore=scripts/onestep_avatar/tests/experiments
-CUDA_VISIBLE_DEVICES= "$PY" -m pytest scripts/prune/tests -q
-uv run ruff check scripts/onestep_avatar scripts/prune
+"$PY" -m scripts.onestep_avatar.tests.select --base HEAD --tier T0
+"$PY" -m scripts.onestep_avatar.tests.select --base HEAD --tier T1 --run
+"$PY" -m scripts.onestep_avatar.tests.select --tier T2 --run > <CPU_CHECK_LOG> 2>&1
+ONESTEP_AVATAR_BLOCK_EXPERIMENTS=1 "$PY" -m pytest scripts/onestep_avatar/tests -q -m boundary
+uv run ruff check <TOUCHED_PYTHON_FILES>
 ```
 
-The second command proves that ordinary code runs with experiment imports
-blocked. CPU checks do not establish native numerical results or video quality.
+The selector includes untracked package files, uses an area table and static
+direct imports, and escalates shared test infrastructure to T2. Import edits
+add T3. Fix failures with the selected T0 files and `--lf`; run T2 once after
+all behavior edits. A docs-only or comment-only follow-up needs its own checks,
+not another full suite. Save the T2 summary in the handoff. Existing unrelated
+Ruff findings are outside this task's gate.
+
+The full blocked ordinary-suite rerun remains an optional release audit:
+
+```bash
+ONESTEP_AVATAR_BLOCK_EXPERIMENTS=1 "$PY" -m pytest scripts/onestep_avatar/tests -q
+```
+
+CPU checks do not establish native numerical results or video quality.
 
 ### Direct dev pruning baseline
 

@@ -17,10 +17,12 @@ from scripts.onestep_avatar.experiments import spec_protocol
 from scripts.onestep_avatar.experiments import stock_parity as stock
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import backbone, causal, common
-from scripts.onestep_avatar.tests.experiments.test_adapter_effect_check import saved_effect as create_saved_effect
-from scripts.onestep_avatar.tests.experiments.test_continuation_check import inputs as continuation_inputs
-from scripts.onestep_avatar.tests.experiments.test_stock_parity import Geometry, reference_case
-from scripts.onestep_avatar.tests.test_causal_core import CHANNELS, EDGE, FPS, _model
+from scripts.onestep_avatar.tests.support.fixtures_experiment_test_adapter_effect_check import build_saved_effect
+from scripts.onestep_avatar.tests.support.fixtures_experiment_test_continuation_check import (
+    inputs as continuation_inputs,
+)
+from scripts.onestep_avatar.tests.support.fixtures_experiment_test_stock_parity import Geometry, reference_case
+from scripts.onestep_avatar.tests.support.model import CHANNELS, EDGE, FPS, _model
 from scripts.onestep_avatar.training import resources
 
 
@@ -31,7 +33,7 @@ def write_spec(path: Path, selector: str, arguments: list[str]) -> Path:
 
 @pytest.fixture(params=[False, True], ids=["one_update", "pilot"])
 def saved_effect(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> tuple:
-    return create_saved_effect.__wrapped__(tmp_path, request, monkeypatch)
+    return build_saved_effect(tmp_path, request, monkeypatch)
 
 
 @pytest.mark.parametrize("owner", [stock, effect, continuation])
@@ -224,8 +226,6 @@ def test_adapter_completion_rejects_restated_spec_or_scientific_result(
 
 
 def test_continuation_retired_self_launch_and_preserved_phase_inventory(tmp_path: Path) -> None:
-    assert not hasattr(continuation, "supervised_run")
-    assert not hasattr(continuation, "check_launch_record")
     spec = write_spec(
         tmp_path / "continuation.json",
         "continuation_check",

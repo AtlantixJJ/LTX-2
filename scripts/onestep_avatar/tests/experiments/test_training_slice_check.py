@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 from pathlib import Path
@@ -14,25 +13,21 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedType
 from safetensors.torch import save_file
 
-from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar import hashing
-from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.experiments import training_slice_check as slice_check
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, common
-from scripts.onestep_avatar.tests.test_causal_core import _model
-from scripts.onestep_avatar.tests.test_training_runtime import CPUAccelerator
-from scripts.onestep_avatar.training import checkpoints, config, resources, runtime
+from scripts.onestep_avatar.tests.support.corpus import _write_json
+from scripts.onestep_avatar.tests.support.corpus import (
+    original_artifacts as original_artifacts,  # noqa: PLC0414 -- explicit fixture re-export
+)
+from scripts.onestep_avatar.tests.support.model import _model
+from scripts.onestep_avatar.training import config, resources, runtime
 
 Context = tuple[SimpleNamespace, dict, torch.Tensor]
 OriginalArtifacts = tuple[dict, config.RunSettings, dict, SimpleNamespace, dict, dict]
 SavedPair = tuple[Path, Path, Path]
-
-
-def _write_json(path: Path, value: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2) + "\n")
 
 
 @pytest.fixture
@@ -77,7 +72,7 @@ def test_complete_parameter_inventory_selects_installed_accelerator_fsdp_clippin
         distributed_type=DistributedType.FSDP, unscale_gradients=lambda: None, _models=[model], is_fsdp2=False
     )
 
-    def local_fallback(*_args, **_kwargs) -> torch.Tensor:
+    def local_fallback(*_args: object, **_kwargs: object) -> torch.Tensor:
         pytest.fail("installed Accelerator bypassed the native model clipping path")
 
     monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", local_fallback)
@@ -108,139 +103,6 @@ def test_original_context_refuses_changed_producer_facts(original_context: Conte
             record["sha256"] = sha256(path)
     with pytest.raises(ValueError, match="original saved text"):
         slice_check._original_context(settings, saved)
-
-
-@pytest.fixture
-def original_artifacts(tmp_path: Path) -> OriginalArtifacts:
-    root = tmp_path / "original"
-    settings = config.parse_settings(
-        [
-            "--mode",
-            "bidirectional",
-            "--subset",
-            str(tmp_path / "membership.json"),
-            "--output",
-            str(root),
-            "--guide-mode",
-            "d0",
-            "--objective",
-            "white",
-            "--variant",
-            "dev",
-            "--span-latent-frames",
-            "7",
-            "--lora-rank",
-            "2",
-            "--chains-per-rank",
-            "2",
-            "--steps",
-            "1",
-            "--save-initial",
-            "--save-update-state",
-        ]
-    )
-    settings.world_size = 4
-    settings.base_identity = {
-        "model_key": "2.5",
-        "base_variant": "dev",
-        "base_transformer_file": "base.safetensors",
-        "base_transformer_fingerprint": "b" * 16,
-        "base_transformer_sha256": "b" * 64,
-    }
-    membership = {
-        "schema_version": 2,
-        "kind": subset.KIND,
-        "objective": "white",
-        "splits": {"train": ["actor"]},
-        "sources": [
-            {
-                "relative_dir": "actor/view",
-                "actor": "actor",
-                "split": "train",
-                "shape": [8, 7, 2, 2],
-                "n_latent_frames": 7,
-            }
-        ],
-    }
-    membership["sha256"] = subset.membership_hash(membership)
-    plan = config.select_frame_plan(settings, membership, SpatioTemporalScaleFactors(8, 32, 32))
-    corpus = tmp_path / "corpus"
-    capture = corpus / "actor/view" / dataset.capture_bundle_name("white")
-    capture.parent.mkdir(parents=True)
-    torch.save({"master": torch.ones(8, 7, 2, 2)}, capture)
-    store = SimpleNamespace(root=corpus, membership=membership)
-    accelerator_config = tmp_path / "fsdp.yaml"
-    accelerator_config.write_text("mixed_precision: bf16\n")
-    original = {"sha256": "d" * 64, "processes": 4, "accelerate_config": str(accelerator_config)}
-    profile = software.capture("training", "bidirectional")
-    budget_path = tmp_path / "budget.json"
-    _write_json(
-        budget_path,
-        {
-            "wall_seconds_per_phase": 1800,
-            "memory_limit_allocated_bytes": 48000000000,
-            "tolerance": slice_check.training_update_check.TOLERANCE,
-        },
-    )
-    budget = resources.read_budget(budget_path)
-    saved = {
-        "base_identity": copy.deepcopy(settings.base_identity),
-        "membership_sha256": membership["sha256"],
-        "frame_plan_sha256": plan["sha256"],
-        "software": profile,
-        "producer_source_sha256": profile["sources"]["scripts/onestep_avatar/training/engine.py"],
-        "queue_launch": {"original": "already validated by prepare"},
-        "runtime": {"original": "four ranks"},
-    }
-    _write_json(root / "config.json", saved)
-    _write_json(root / "frame_plan.json", plan)
-    model = adapters.attach(_model().bfloat16(), rank=2, alpha=settings.lora_alpha, target="attn", init_seed=11)
-    for step in (0, 1):
-        if step == 1:
-            with torch.no_grad():
-                for name, parameter in model.named_parameters():
-                    if ".lora_B." in name:
-                        parameter.fill_(0.0001)
-        metadata = {checkpoints.CONTRACT_KEY: json.dumps(checkpoints.make_contract(settings, membership, plan, step))}
-        path = checkpoints.save_lora(
-            model, CPUAccelerator(), root / "checkpoints", step, metadata, verify_noop=step == 0
-        )
-        marker = {
-            "schema_version": 2,
-            "step": step,
-            "path": str(path.resolve()),
-            "sha256": sha256(path),
-            "state": "complete",
-            "queue_job_sha256": original["sha256"],
-            **{key: saved[key] for key in ("producer_source_sha256", "software", "queue_launch", "runtime")},
-            "resource_budget": budget,
-            "resource_evidence": {},
-            "consumer_trace_evidence": {},
-            "training_record": {
-                "config_sha256": sha256(root / "config.json"),
-                "frame_plan_sha256": sha256(root / "frame_plan.json"),
-            },
-        }
-        _write_json(path.with_suffix(".complete.json"), marker)
-    visits = slice_check.training_update_check.first_update_visits(settings, plan["samples"], 4)
-    for rank in range(4):
-        selected = [visit for visit in visits if visit["rank"] == rank]
-        row = {
-            "rank": rank,
-            "step": 1,
-            "sigma0": selected[0]["sigma"],
-            "samples": [
-                {
-                    "source": visit["sample"]["source"],
-                    "ranges": visit["sample"]["ranges"],
-                    "noise_seed": visit["noise_seed"],
-                }
-                for visit in selected
-            ],
-            "call_counts": {"prime": 0, "denoise": 2, "backward": 2, "refresh": 0},
-        }
-        (root / f"metrics_rank{rank}.jsonl").write_text(json.dumps(row) + "\n")
-    return original, settings, saved, store, plan, budget
 
 
 def test_original_artifact_binding_keeps_all_checkpoint_and_visit_evidence(

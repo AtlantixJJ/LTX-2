@@ -17,8 +17,13 @@ from scripts.onestep_avatar.execution import journal as queue_journal
 from scripts.onestep_avatar.execution import process_registry, queue, runtime, supervision
 from scripts.onestep_avatar.execution import processes as queue_processes
 from scripts.onestep_avatar.execution import queue_launch as launch
+from scripts.onestep_avatar.execution.process_registry import ProcessRegistry
 from scripts.onestep_avatar.execution.queue_protocol import JOB_ENV, LAUNCH_PROTOCOL, TOKEN_ENV
-from scripts.onestep_avatar.tests.claims_fixture import GPUClaims
+from scripts.onestep_avatar.tests.support.fixtures_queue_launch import (
+    ended_owned_attempt,
+    register,
+)
+from scripts.onestep_avatar.tests.support.tokens import token
 from scripts.onestep_avatar.training import resources
 
 
@@ -33,7 +38,7 @@ def request_for(tmp_path: Path, *, owner: dict | None = None) -> tuple[Path, Pat
     ]
     path = launch.prepare_request(
         tmp_path / "launch",
-        token="b" * 32,
+        token=token(),
         job_sha256="a" * 64,
         owner_identity=queue_processes.process_identity(os.getpid()) if owner is None else owner,
         job_id="case",
@@ -58,7 +63,7 @@ def start_guard(
             "--poll-seconds",
             "0.01",
         ],
-        env={**os.environ, TOKEN_ENV: "b" * 32, JOB_ENV: "a" * 64, **(environment or {})},
+        env={**os.environ, TOKEN_ENV: token(), JOB_ENV: "a" * 64, **(environment or {})},
         stdout=log,
         stderr=subprocess.STDOUT,
         start_new_session=True,
@@ -76,126 +81,10 @@ def wait_bootstrap(path: Path, child: subprocess.Popen) -> dict:
     return json.loads((path.parent / "bootstrap.json").read_text())
 
 
-def register(path: Path, bootstrap: dict) -> dict:
-    request = launch.load_request(path)
-    row = {
-        "state": "running",
-        "sha256": request["job_sha256"],
-        "command": request["command"],
-        "launch_protocol": LAUNCH_PROTOCOL,
-        "launch_request": str(path.resolve()),
-        "launch_request_sha256": bootstrap["request_sha256"],
-        "child_pid": bootstrap["identity"]["pid"],
-        "child_identity": bootstrap["identity"],
-        "environment_changes": {TOKEN_ENV: request["token"], JOB_ENV: request["job_sha256"]},
-    }
-    state = {"schema_version": 1, "owner_pid": request["owner_identity"]["pid"], "jobs": {"case": row}}
-    Path(request["journal"]).write_text(json.dumps(state))
-    return state
-
-
 def stop(child: subprocess.Popen) -> None:
     if child.poll() is None:
         child.terminate()
     child.wait(timeout=5)
-
-
-def ended_owned_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
-    """A completed two-rank workload whose exact original subreaper has ended."""
-    owner = {"pid": 2147483601, "start_ticks": 10, "command": ["original-owner"], "terminal": False}
-    child = {
-        "pid": 2147483602,
-        "start_ticks": 11,
-        "command": [
-            sys.executable,
-            "-m",
-            "accelerate.commands.launch",
-            "--num_processes",
-            "2",
-            "-m",
-            "scripts.onestep_avatar.train",
-        ],
-        "terminal": False,
-    }
-    ranks = [
-        {"pid": 2147483603 + rank, "start_ticks": 12, "command": ["original-rank", str(rank)], "terminal": False}
-        for rank in range(2)
-    ]
-    request = launch.prepare_request(
-        tmp_path / "launch",
-        token="b" * 32,
-        job_sha256="a" * 64,
-        owner_identity=owner,
-        job_id="case",
-        journal=tmp_path / "journal.json",
-        command=child["command"],
-    )
-    bootstrap = {
-        "schema_version": 1,
-        "token": "b" * 32,
-        "job_sha256": "a" * 64,
-        "request_sha256": launch.digest(request),
-        "identity": {**child, "command": launch.guard_command(request)},
-    }
-    for name in ("bootstrap.json", "grant.json"):
-        (request.parent / name).write_text(json.dumps(bootstrap))
-    notifications = tmp_path / "phases.json"
-    changes = supervision.prepare_notifications(
-        notifications, token="b" * 32, job_sha256="a" * 64, world=2, phases=["load", "export:0"], budget_sha256="c" * 64
-    )
-    changes.update({TOKEN_ENV: "b" * 32, JOB_ENV: "a" * 64})
-    for rank, identity in enumerate(ranks):
-        monkeypatch.setattr(queue_processes, "process_identity", lambda _pid, identity=identity: identity)
-        for phase in ("load", "export:0"):
-            for event in ("begin", "end"):
-                supervision.notify_phase(
-                    phase, event, rank, budget_sha256="c" * 64, environment={**changes, "RANK": str(rank)}
-                )
-    state = register(request, bootstrap)
-    ledger = tmp_path / "processes.json"
-    row = state["jobs"]["case"]
-    row.update(
-        owner_pid=owner["pid"],
-        gpus=[0, 1],
-        process_ledger=str(ledger),
-        environment_changes=changes,
-        supervision_contract=str(notifications),
-        attempt_started_ticks=9,
-    )
-    row["attempts"] = [json.loads(json.dumps(row))]
-    (tmp_path / "journal.json").write_text(json.dumps(state))
-    owned = {
-        "state": "active",
-        "owner": owner,
-        "child_pid": child["pid"],
-        "gpus": [0, 1],
-        "job": "case",
-        "attempt_started_ticks": 9,
-        "baseline": [],
-        "containment": "linux_subreaper_v1",
-        "processes": {
-            str(identity["pid"]): {"identity": identity, "roles": [role], "commands": [identity["command"]]}
-            for identity, role in [(child, "child"), *[(rank, "descendant") for rank in ranks]]
-        },
-        "reported_rank_identities": [],
-        "observations": [
-            {"complete": True, "error": None, "identities": [child, *ranks], "schema_version": 1, "workers_live": True}
-        ],
-    }
-    ledger.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "attempts": {
-                    "b" * 32: owned,
-                    "unrelated-history": {"state": "closed", "preserved": "original unrelated bytes"},
-                },
-            }
-        )
-    )
-    monkeypatch.setattr(queue_processes, "process_identity", lambda _pid: None)
-    monkeypatch.setattr(process_registry, "gpu_memory", lambda **_kwargs: dict.fromkeys(range(8), 0))
-    return ledger, request, owned, ranks, notifications
 
 
 def test_ended_owned_recovery_preserves_original_evidence_and_states_scope(
@@ -211,7 +100,7 @@ def test_ended_owned_recovery_preserves_original_evidence_and_states_scope(
     assert len(result["notifications"]["event_sha256"]) == 8
     assert [item["identity"] for item in result["notifications"]["rank_identities"]] == ranks
     record = json.loads(ledger.read_bytes())
-    changed = record["attempts"]["b" * 32]
+    changed = record["attempts"][token()]
     assert {key: value for key, value in changed.items() if key not in ("state", "recovery")} == {
         key: value for key, value in owned.items() if key != "state"
     }
@@ -229,19 +118,19 @@ def test_interrupted_recovery_releases_devices_without_claiming_the_workload(
     notifications.write_bytes(b"")
     with pytest.raises(ValueError, match="Expecting value"):
         launch.recover_owned_attempt(ledger, request, timeout=2)
-    assert json.loads(ledger.read_bytes())["attempts"]["b" * 32]["state"] == "active"
+    assert json.loads(ledger.read_bytes())["attempts"][token()]["state"] == "active"
     result = launch.recover_owned_attempt(ledger, request, timeout=2, interrupted=True)
     assert result["basis"] == "bounded_interrupted_owner_recovery"
     assert result["workload_complete"] is False
     assert result["notifications"] is None
     assert result["registered_workers_absent"] is True
     assert result["containment_complete"] is False
-    changed = json.loads(ledger.read_bytes())["attempts"]["b" * 32]
+    changed = json.loads(ledger.read_bytes())["attempts"][token()]
     assert changed["state"] == "closed"
     assert {key: value for key, value in changed.items() if key not in ("state", "recovery")} == {
         key: value for key, value in owned.items() if key != "state"
     }
-    observed = process_registry.inspect_record(ledger, "b" * 32)
+    observed = process_registry.inspect_record(ledger, token())
     assert observed["basis"] == "recovered_interrupted_handles_ended"
     assert observed["workload_complete"] is False
     assert observed["workers_live"] is False
@@ -302,7 +191,7 @@ def test_ended_owned_recovery_refuses_uncertainty_without_ledger_mutation(  # no
     state_path = tmp_path / "journal.json"
     state = json.loads(state_path.read_bytes())
     record = json.loads(ledger.read_bytes())
-    changed = record["attempts"]["b" * 32]
+    changed = record["attempts"][token()]
     events = notifications.with_name(notifications.name + ".events")
     if failure == "missing_rank_end":
         (events / "rank0001.phase000001.end.json").unlink()
@@ -374,7 +263,7 @@ def test_ended_owned_recovery_rechecks_handles_after_direct_inventory(
     ledger, request, _owned, ranks, _notifications = ended_owned_attempt(tmp_path, monkeypatch)
     original_bytes = ledger.read_bytes()
 
-    def inventory(**kwargs) -> dict[int, int]:
+    def inventory(**kwargs: object) -> dict[int, int]:
         del kwargs
         monkeypatch.setattr(
             queue_processes, "process_identity", lambda pid: ranks[0] if pid == ranks[0]["pid"] else None
@@ -536,7 +425,7 @@ def test_approved_direct_recovery_preserves_science_and_lost_supervision_scope(
     assert result["continuous_supervision"] is False
     assert result["unknown_descendants_unproven"] is True
     assert result["original_exitcode"] is None
-    closed = json.loads(ledger.read_bytes())["attempts"]["b" * 32]
+    closed = json.loads(ledger.read_bytes())["attempts"][token()]
     assert closed["state"] == "closed"
     assert {key: value for key, value in closed.items() if key not in ("state", "recovery")} == {
         key: value for key, value in owned.items() if key != "state"
@@ -648,12 +537,12 @@ def test_approved_direct_recovery_refuses_uncertain_contracts_without_publicatio
     elif failure == "rank_child":
         child = owned["processes"][str(owned["child_pid"])]["identity"]
         rank = {**child, "pid": child["pid"] + 1}
-        record["attempts"]["b" * 32]["processes"][str(rank["pid"])] = {
+        record["attempts"][token()]["processes"][str(rank["pid"])] = {
             "identity": rank,
             "roles": ["descendant"],
             "commands": [rank["command"]],
         }
-        record["attempts"]["b" * 32]["observations"][0]["identities"].append(rank)
+        record["attempts"][token()]["observations"][0]["identities"].append(rank)
         for target in notifications.with_name(notifications.name + ".events").glob("*.json"):
             saved = json.loads(target.read_bytes())
             saved["identity"] = rank
@@ -665,7 +554,7 @@ def test_approved_direct_recovery_refuses_uncertain_contracts_without_publicatio
         monkeypatch.setattr(process_registry, "gpu_memory", lambda **_kwargs: {0: 1024})
     else:
 
-        def inventory(**_kwargs) -> dict:
+        def inventory(**_kwargs: object) -> dict:
             contract.write_bytes(contract.read_bytes() + b" ")
             return dict.fromkeys(range(8), 0)
 
@@ -696,7 +585,7 @@ def direct_registered_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     owned["processes"] = {str(owned["child_pid"]): child}
     owned["observations"][0]["identities"] = [child["identity"]]
     record = json.loads(ledger.read_bytes())
-    record["attempts"]["b" * 32] = owned
+    record["attempts"][token()] = owned
     ledger.write_text(json.dumps(record))
     launch_path = tmp_path / "direct-launch.json"
     launch_path.write_text(
@@ -705,25 +594,25 @@ def direct_registered_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
                 "command": command,
                 "physical_gpu": 0,
                 "visible_gpu": 0,
-                "environment_changes": {TOKEN_ENV: "b" * 32, JOB_ENV: "a" * 64, "CUDA_VISIBLE_DEVICES": "0"},
+                "environment_changes": {TOKEN_ENV: token(), JOB_ENV: "a" * 64, "CUDA_VISIBLE_DEVICES": "0"},
             }
         )
     )
     # Existing own attempt is one selected physical device.
     owned["gpus"] = [0]
-    record["attempts"]["b" * 32] = owned
+    record["attempts"][token()] = owned
     ledger.write_text(json.dumps(record))
     return ledger, launch_path, owned
 
 
-def registered_recovery(ledger: Path, launch_path: Path, owned: dict, **changes) -> dict:
+def registered_recovery(ledger: Path, launch_path: Path, owned: dict, **changes: object) -> dict:
     row_hash = changes.pop("expected_row_sha256") if "expected_row_sha256" in changes else launch._row_digest(owned)
     launch_hash = (
         changes.pop("expected_launch_sha256") if "expected_launch_sha256" in changes else launch.digest(launch_path)
     )
     return launch.recover_registered_attempt(
         ledger,
-        "b" * 32,
+        token(),
         expected_row_sha256=row_hash,
         launch_evidence=launch_path,
         expected_launch_sha256=launch_hash,
@@ -747,7 +636,7 @@ def test_registered_nontraining_recovery_preserves_original_row_and_limited_scop
     assert "workers_absent" not in result
     assert "scientific_acceptance" not in result
     record = json.loads(ledger.read_bytes())
-    recovered = record["attempts"]["b" * 32]
+    recovered = record["attempts"][token()]
     assert recovered == {**owned, "state": "closed", "recovery": result}
     assert record["attempts"]["unrelated-history"] == {"state": "closed", "preserved": "original unrelated bytes"}
     assert launch_path.read_bytes() == original_launch
@@ -855,7 +744,7 @@ def test_registered_nontraining_recovery_refuses_ambiguous_evidence(  # noqa: PL
     elif failure == "expired":
         changes["timeout"] = 1e-12
     record = json.loads(ledger.read_bytes())
-    record["attempts"]["b" * 32] = owned
+    record["attempts"][token()] = owned
     ledger.write_text(json.dumps(record))
     launch_path.write_text(json.dumps(saved_launch))
     if failure in ("launch_symlink", "ledger_symlink"):
@@ -881,13 +770,13 @@ def test_registered_recovery_rechecks_original_handles_and_bytes(
     ledger, launch_path, owned = direct_registered_attempt(tmp_path, monkeypatch)
     row_hash, launch_hash = launch._row_digest(owned), launch.digest(launch_path)
 
-    def inventory(**kwargs) -> dict[int, int]:
+    def inventory(**kwargs: object) -> dict[int, int]:
         del kwargs
         if mutation == "launch":
             launch_path.write_text("{}")
         elif mutation == "row":
             record = json.loads(ledger.read_bytes())
-            record["attempts"]["b" * 32]["job"] = "changed"
+            record["attempts"][token()]["job"] = "changed"
             ledger.write_text(json.dumps(record))
         else:
             identity = owned["processes"][str(owned["child_pid"])]["identity"]
@@ -901,7 +790,7 @@ def test_registered_recovery_rechecks_original_handles_and_bytes(
         registered_recovery(
             ledger, launch_path, owned, expected_row_sha256=row_hash, expected_launch_sha256=launch_hash
         )
-    row = json.loads(ledger.read_bytes())["attempts"]["b" * 32]
+    row = json.loads(ledger.read_bytes())["attempts"][token()]
     assert row["state"] == "active"
     assert "recovery" not in row
 
@@ -962,7 +851,7 @@ def test_grant_published_during_owner_inspection_keeps_all_approval_gates(
     path, executed = request_for(tmp_path)
     original_identity = queue_processes.process_identity
     injected, commands = [], []
-    monkeypatch.setenv(TOKEN_ENV, "b" * 32)
+    monkeypatch.setenv(TOKEN_ENV, token())
     monkeypatch.setenv(JOB_ENV, "a" * 64)
 
     def inspect(pid: int) -> dict | None:
@@ -1171,6 +1060,8 @@ from pathlib import Path
 from scripts.onestep_avatar.execution import queue, queue_launch as launch
 from scripts.onestep_avatar.execution.queue_protocol import TOKEN_ENV,JOB_ENV,LAUNCH_PROTOCOL
 root=Path(sys.argv[1])
+from uuid import uuid4
+attempt_token=uuid4().hex
 command=[
     sys.executable,'-c',
     "import os,json; from pathlib import Path; "
@@ -1178,15 +1069,15 @@ command=[
     +repr(str(root/'executed.json'))+
     ").write_text(json.dumps(process_identity(os.getpid())))"
 ]
-path=launch.prepare_request(root/'launch',token='b'*32,job_sha256='a'*64,owner_identity=queue.process_identity(os.getpid()),job_id='case',journal=root/'journal.json',command=command)
-child=subprocess.Popen([sys.executable,'-m','scripts.onestep_avatar.execution.queue_launch','--request',str(path),'--timeout','5'],env={**os.environ,TOKEN_ENV:'b'*32,JOB_ENV:'a'*64},start_new_session=True)
+path=launch.prepare_request(root/'launch',token=attempt_token,job_sha256='a'*64,owner_identity=queue.process_identity(os.getpid()),job_id='case',journal=root/'journal.json',command=command)
+child=subprocess.Popen([sys.executable,'-m','scripts.onestep_avatar.execution.queue_launch','--request',str(path),'--timeout','5'],env={**os.environ,TOKEN_ENV:attempt_token,JOB_ENV:'a'*64},start_new_session=True)
 deadline=time.monotonic()+5
 while not (path.parent/'bootstrap.json').exists():
  if time.monotonic()>deadline: raise RuntimeError('missing bootstrap')
  time.sleep(.01)
 bootstrap=json.loads((path.parent/'bootstrap.json').read_text())
 request=launch.load_request(path)
-row={'state':'running','sha256':request['job_sha256'],'command':command,'launch_protocol':LAUNCH_PROTOCOL,'launch_request':str(path.resolve()),'launch_request_sha256':bootstrap['request_sha256'],'child_pid':child.pid,'child_identity':bootstrap['identity'],'environment_changes':{TOKEN_ENV:'b'*32,JOB_ENV:'a'*64}}
+row={'state':'running','sha256':request['job_sha256'],'command':command,'launch_protocol':LAUNCH_PROTOCOL,'launch_request':str(path.resolve()),'launch_request_sha256':bootstrap['request_sha256'],'child_pid':child.pid,'child_identity':bootstrap['identity'],'environment_changes':{TOKEN_ENV:attempt_token,JOB_ENV:'a'*64}}
 (root/'journal.json').write_text(json.dumps({'schema_version':1,'owner_pid':os.getpid(),'jobs':{'case':row}}))
 launch.publish_grant(path)
 os._exit(0)
@@ -1267,7 +1158,7 @@ def test_real_dispatch_registers_before_grant_and_observes_approved_transition( 
     monkeypatch.setattr(
         queue_completion, "completion_receipt", lambda *_, **__: {"job_sha256": job["sha256"], "evidence": []}
     )
-    claims = GPUClaims(tmp_path / "claims")
+    claims = ProcessRegistry(tmp_path / "ledger.json", inventory=lambda: dict.fromkeys(range(8), 0))
     assert claims.acquire((4,), job="case")
     state_path = tmp_path / "state.json"
     original = launch.publish_grant

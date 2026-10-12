@@ -10,10 +10,12 @@ import torch
 
 import scripts.prune.core.session as sessions
 from ltx_core.model.transformer.model import X0Model
-from scripts.onestep_avatar.corpus import dataset
 from scripts.onestep_avatar.experiments import causality as evaluate
 from scripts.onestep_avatar.model import causal, common
-from scripts.onestep_avatar.tests.test_causal_core import CHANNELS, SCALE, _context, _model
+from scripts.onestep_avatar.tests.support.fixtures_experiment_test_causality_diagnostic import (
+    fixture_inputs,
+)
+from scripts.onestep_avatar.tests.support.model import CHANNELS, SCALE, _context, _model
 from scripts.prune.core.session import DTYPE
 
 
@@ -104,7 +106,7 @@ def test_matches_original_two_rollouts_and_actual_call_counts(frames: int, monke
     original_sample = causal.sample
     actual = []
 
-    def sample(*args, **kwargs) -> tuple[torch.Tensor, dict[str, int]]:
+    def sample(*args: object, **kwargs: object) -> tuple[torch.Tensor, dict[str, int]]:
         assert not torch.is_grad_enabled()
         tokens, counts = original_sample(*args, **kwargs)
         actual.append(grid.unpatchify_block(tokens[:, : 17 * grid.tokens_per_latent_frame], 17).float())
@@ -122,36 +124,6 @@ def test_matches_original_two_rollouts_and_actual_call_counts(frames: int, monke
     assert all(record["call_counts"]["denoise_calls"] == 8 for record in result["records"])
     assert all(record["call_counts"]["refresh_calls"] == 8 for record in result["records"])
     assert result["records"][0]["noise_sha256"] != result["records"][1]["noise_sha256"]
-
-
-def fixture_inputs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frames: int = 17
-) -> tuple[Path, Path, Path, torch.Tensor, torch.Tensor]:
-    view = tmp_path / "view"
-    view.mkdir()
-    dev, adapter = tmp_path / "dev.safetensors", tmp_path / "adapter.safetensors"
-    for path in (dev, adapter, view / dataset.capture_bundle_name("white"), view / dataset.guide_bundle_name("white")):
-        path.write_bytes(b"controlled scientific input")
-    capture, guide = torch.zeros(8, frames, 2, 2), torch.ones(8, frames, 2, 2)
-    monkeypatch.setattr(evaluate.backbone, "transformer_path", lambda *_args: dev)
-    monkeypatch.setattr(evaluate.backbone, "identity", lambda *_args: {"base_transformer_sha256": "f" * 64})
-    caps = SimpleNamespace(caps=SimpleNamespace(latent_channels=CHANNELS))
-    monkeypatch.setattr(evaluate.backbone, "resolve", lambda *_args: caps)
-    monkeypatch.setattr(
-        evaluate.evaluate,
-        "check_adapter",
-        lambda path, _requested: {"contract": {"fixture": "adapter"}, "adapter_sha256": evaluate.sha256(path)},
-    )
-    monkeypatch.setattr(evaluate.checkpoints, "recheck_adapter", lambda *_args: None)
-    monkeypatch.setattr(
-        evaluate.adapters, "inference_transformer", lambda session, *_args, **_kwargs: session.transformer()
-    )
-    monkeypatch.setattr(
-        dataset,
-        "load_training_master",
-        lambda path: (capture if path.name == dataset.capture_bundle_name("white") else guide, 30),
-    )
-    return dev, adapter, view, capture, guide
 
 
 def test_checked_orchestration_and_atomic_saved_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -172,7 +144,7 @@ def test_checked_orchestration_and_atomic_saved_fields(tmp_path: Path, monkeypat
         events.append("check")
         return {"contract": {"fixture": "adapter"}, "adapter_sha256": evaluate.sha256(adapter)}
 
-    def open_session(*_args, **_kwargs) -> SimpleNamespace:
+    def open_session(*_args: object, **_kwargs: object) -> SimpleNamespace:
         assert events == ["check"]
         events.append("open")
         # Keep the session's keyword spelling while replacing only model work.

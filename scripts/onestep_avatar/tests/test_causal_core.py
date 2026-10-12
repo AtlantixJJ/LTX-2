@@ -26,63 +26,28 @@ import torch
 
 from ltx_core.components.noisers import GaussianNoiser
 from ltx_core.model.transformer.modality import Modality
-from ltx_core.model.transformer.model import LTXModel, LTXModelType
-from ltx_core.types import LatentState, SpatioTemporalScaleFactors
+from ltx_core.model.transformer.model import LTXModel
+from ltx_core.types import LatentState
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.model import common
 from scripts.onestep_avatar.model import sampling as model_sampling
 from scripts.onestep_avatar.model.causal import BlockCache, CausalGeometry
 from scripts.onestep_avatar.model.common import ClipGrid
-
-SCALE = SpatioTemporalScaleFactors(time=8, height=32, width=32)
-CHANNELS = 8
-EDGE = 64  # a 2x2 latent grid -> 4 tokens per latent frame
-LATENT_FRAMES = 7
-FPS = 30.0
-SIGMA0 = 0.725
-DEVICE = torch.device("cpu")
-CONTEXT_TOKENS = 3
-CONTEXT_DIM = 16
-
-
-def _model(*, prompt_adaln: bool = False, weight_scale: float = 0.05) -> LTXModel:
-    """A 2-layer LTXModel with every parameter deterministically initialised.
-
-    ``LTXModel`` allocates several parameters with ``torch.empty``; left as they come, a CPU
-    test would compare two forwards through uninitialised memory and could pass or NaN at
-    random.
-    """
-    model = LTXModel(
-        model_type=LTXModelType.VideoOnly,
-        num_attention_heads=2,
-        attention_head_dim=4,
-        in_channels=CHANNELS,
-        out_channels=CHANNELS,
-        num_layers=2,
-        cross_attention_dim=8,  # == inner_dim: caption_projection maps the text dim into it
-        caption_projection=torch.nn.Linear(CONTEXT_DIM, 8),
-        cross_attention_adaln=prompt_adaln,
-        use_prompt_adaln_single=prompt_adaln,
-    )
-    generator = torch.Generator().manual_seed(0)
-    with torch.no_grad():
-        for parameter in model.parameters():
-            parameter.copy_(torch.randn(parameter.shape, generator=generator) * weight_scale)
-    return model.eval()
-
-
-def _geometry(context_latent_frames: int = 16) -> CausalGeometry:
-    return CausalGeometry(scale_factors=SCALE, block_latent_frames=2, context_latent_frames=context_latent_frames)
-
-
-def _grid(geometry: CausalGeometry, latent_frames: int = LATENT_FRAMES) -> ClipGrid:
-    return ClipGrid.build(
-        latent_frames, EDGE, EDGE, FPS, geometry, device=DEVICE, dtype=torch.float32, latent_channels=CHANNELS
-    )
-
-
-def _context() -> torch.Tensor:
-    return torch.randn(1, CONTEXT_TOKENS, CONTEXT_DIM, generator=torch.Generator().manual_seed(1))
+from scripts.onestep_avatar.tests.support.model import (
+    CHANNELS,
+    CONTEXT_DIM,
+    CONTEXT_TOKENS,
+    DEVICE,
+    EDGE,
+    FPS,
+    LATENT_FRAMES,
+    SCALE,
+    SIGMA0,
+    _context,
+    _geometry,
+    _grid,
+    _model,
+)
 
 
 def test_cached_rollout_matches_block_causal_full_sequence() -> None:
@@ -693,7 +658,7 @@ def test_prime_cache_forwards_exactly_once_whether_or_not_it_has_anything_to_pri
     calls = 0
     denoise = common.denoised_from_velocity_model(model)
 
-    def counting(modality):  # noqa: ANN001, ANN202
+    def counting(modality: object) -> object:
         nonlocal calls
         calls += 1
         return denoise(modality)
@@ -900,7 +865,7 @@ def test_two_step_schedule_costs_one_extra_forward_and_changes_the_output() -> N
             dtype=torch.float32,
         )
 
-    def _run(schedule):  # noqa: ANN001, ANN202
+    def _run(schedule: object) -> object:
         return causal_core.rollout(
             denoise_fn,
             grid,
@@ -947,7 +912,7 @@ def test_schedule_never_renoises_the_supplied_first_frame() -> None:
 
     seen: list[torch.Tensor] = []
 
-    def spy(modality):  # noqa: ANN001, ANN202
+    def spy(modality: object) -> object:
         seen.append(modality.latent[:, : grid.tokens_per_latent_frame].clone())
         return common.denoised_from_velocity_model(model)(modality)
 
@@ -1014,7 +979,7 @@ def test_kv_source_denoise_halves_the_forwards_and_changes_the_history() -> None
             dtype=torch.float32,
         )
 
-    def _run(kv_source: str):  # noqa: ANN202
+    def _run(kv_source: str) -> object:
         return causal_core.rollout(
             denoise_fn,
             grid,

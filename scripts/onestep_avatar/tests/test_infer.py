@@ -9,13 +9,14 @@ import torch
 from safetensors.torch import save_file
 
 from ltx_core.model.transformer.model import X0Model
-from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar import WORKSPACE_ROOT, evaluate, infer, media
-from scripts.onestep_avatar.corpus.precompute import file_fingerprint
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import causal
-from scripts.onestep_avatar.tests.test_causal_core import _geometry, _grid, _model
-from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
+from scripts.onestep_avatar.tests.support.contracts import A, B, _contract
+from scripts.onestep_avatar.tests.support.fixtures_infer import (
+    product_files as product_files,  # noqa: PLC0414 -- explicit pytest fixture re-export
+)
+from scripts.onestep_avatar.tests.support.model import _geometry, _grid, _model
 from scripts.onestep_avatar.training.checkpoints import CONTRACT_KEY
 from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
 
@@ -86,50 +87,6 @@ def test_supplied_image_producer_conditions_are_required() -> None:
         infer.check_inputs(guide, image, record, {**record, "input_role": "supplied_image", "vae_fingerprint": "other"})
     with pytest.raises(ValueError, match="supplied image"):
         infer.check_inputs(guide, image, record, record)
-
-
-@pytest.fixture
-def product_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
-    vae = tmp_path / "vae.safetensors"
-    vae.write_bytes(b"vae identity fixture")
-    common_record = {
-        "schema_version": 2,
-        "objective": "white",
-        "fps": 30,
-        "box_xyxy": [0, 0, 64, 64],
-        "edge": 64,
-        "encode_contract_version": 1,
-        "vae_fingerprint": file_fingerprint(vae),
-    }
-    guide, image = tmp_path / "guide.pt", tmp_path / "image.pt"
-    torch.save({**common_record, "master": torch.zeros(128, 7, 2, 2), "pixel_frames": 49}, guide)
-    torch.save(
-        {**common_record, "master": torch.zeros(128, 1, 2, 2), "pixel_frames": 1, "input_role": "supplied_image"}, image
-    )
-    specification = SimpleNamespace(
-        scale_factors=SpatioTemporalScaleFactors(8, 32, 32),
-        caps=SimpleNamespace(latent_channels=128),
-        sigmas=[0.725],
-        paths=SimpleNamespace(transformer=lambda: tmp_path / "base.safetensors", video_vae=lambda: vae),
-    )
-    monkeypatch.setattr(infer.backbone, "resolve", lambda *_args: specification)
-    monkeypatch.setattr(infer.backbone, "identity", lambda *_args, **_kwargs: {"base_transformer_sha256": "a" * 64})
-    args = [
-        "--mode",
-        "bidirectional",
-        "--guide",
-        str(guide),
-        "--first-image",
-        str(image),
-        "--output",
-        str(tmp_path / "out"),
-        "--variant",
-        "dev",
-        "--schedule",
-        "0.725",
-        "0",
-    ]
-    return args, guide, image
 
 
 def test_product_dry_run_creates_no_output(product_files: tuple, capsys: pytest.CaptureFixture[str]) -> None:

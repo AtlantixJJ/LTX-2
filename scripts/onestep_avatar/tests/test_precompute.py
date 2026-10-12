@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from scripts.onestep_avatar.corpus.precompute import (
     rank_slice,
     write_capture_mask_qa,
 )
+from scripts.onestep_avatar.tests.support.executor import InlineExecutor
 
 
 def test_master_record_stores_the_whole_clip_not_a_window() -> None:
@@ -283,7 +285,8 @@ def _write_capture_source(
 _GEOMETRY = CaptureGeometry(SpatioTemporalScaleFactors.default())
 
 
-def test_enumerate_capture_jobs_reuses_a_fresh_plan_cache(tmp_path: Path) -> None:
+def test_enumerate_capture_jobs_reuses_a_fresh_plan_cache(monkeypatch: object, tmp_path: Path) -> None:
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", InlineExecutor)
     """A restart must not re-open and frame-0-decode a source whose plan is already cached
     and still valid -- that reopening, across thousands of sources, is the ~1.5 h §1.3
     documents as looking like a hang with nothing logged and no bundle written."""
@@ -301,7 +304,8 @@ def test_enumerate_capture_jobs_reuses_a_fresh_plan_cache(tmp_path: Path) -> Non
     ]
 
 
-def test_enumerate_capture_jobs_replans_a_changed_source(tmp_path: Path) -> None:
+def test_enumerate_capture_jobs_replans_a_changed_source(monkeypatch: object, tmp_path: Path) -> None:
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", InlineExecutor)
     """A stale fingerprint (the source file changed) or a changed pad factor must invalidate
     the cache entry rather than silently reusing a plan for different pixels."""
     view = tmp_path / "view00"
@@ -320,7 +324,8 @@ def test_enumerate_capture_jobs_replans_a_changed_source(tmp_path: Path) -> None
     assert repadded[0].box_xyxy != jobs[0].box_xyxy
 
 
-def test_enumerate_capture_jobs_replans_a_bbox_change_with_rgb_untouched(tmp_path: Path) -> None:
+def test_enumerate_capture_jobs_replans_a_bbox_change_with_rgb_untouched(monkeypatch: object, tmp_path: Path) -> None:
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", InlineExecutor)
     """The box `plan_source` computes comes from bbox.npy, not rgb.mp4, so a corpus
     re-ingest that only corrects the bbox (RGB file untouched, same ``rgb_fingerprint``) must
     still miss the cache -- otherwise the cached box is served forever."""
@@ -468,3 +473,10 @@ def test_capture_geometry_rejects_window_manifest() -> None:
     old = _manifest(views=[0], sources=[], windows=[])
     old["geometry"] = {"window_frames": 25, "overlap_frames": 9}
     assert not is_capture_manifest_valid(old, geometry=_GEOMETRY, resolution=1024, pad_factor=1.2)
+
+
+@pytest.mark.subprocess
+def test_capture_plan_real_spawn_roundtrip(tmp_path: object) -> None:
+    source = _write_capture_source(tmp_path / "view00")
+    jobs = enumerate_capture_jobs([source], _GEOMETRY, 1.2, max_workers=1)
+    assert [(job.start, job.end) for job in jobs] == [(0, 25)]

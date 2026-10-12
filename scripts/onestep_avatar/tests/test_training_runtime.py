@@ -6,52 +6,24 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Never
 
 import pytest
 import torch
 from accelerate.utils import DistributedType
 from peft import LoraConfig, get_peft_model
-from safetensors.torch import load_file
 from torch.distributed.fsdp import MixedPrecision
 from torch.distributed.fsdp._runtime_utils import _cast_forward_inputs
 from torch.distributed.fsdp.wrap import CustomPolicy
 
 from ltx_core.model.transformer.modality import Modality
 from ltx_core.types import SpatioTemporalScaleFactors
-from scripts.onestep_avatar.corpus import dataset, precompute, subset
+from scripts.onestep_avatar.corpus import precompute
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.model import adapters, causal
-from scripts.onestep_avatar.tests.test_causal_core import _model
-from scripts.onestep_avatar.training import checkpoints, config, engine
-
-
-class CPUAccelerator:
-    num_processes = 1
-    process_index = 0
-    is_main_process = True
-    distributed_type = DistributedType.NO
-    device = torch.device("cpu")
-    mixed_precision = "no"
-
-    def prepare(self, model: torch.nn.Module, optimizer: torch.optim.Optimizer) -> tuple:
-        return model, optimizer
-
-    def backward(self, loss: torch.Tensor) -> None:
-        loss.backward()
-
-    def clip_grad_norm_(self, parameters: object, maximum: float) -> torch.Tensor:
-        return torch.nn.utils.clip_grad_norm_(parameters, maximum)
-
-    def wait_for_everyone(self) -> None:
-        pass
-
-    def get_state_dict(self, model: torch.nn.Module) -> dict[str, torch.Tensor]:
-        return model.state_dict()
-
-    def unwrap_model(self, model: torch.nn.Module, **kwargs) -> torch.nn.Module:
-        del kwargs
-        return model
+from scripts.onestep_avatar.model import adapters
+from scripts.onestep_avatar.tests.support.corpus import build_runtime_membership
+from scripts.onestep_avatar.tests.support.model import _model
+from scripts.onestep_avatar.tests.support.training import CPUAccelerator, run_bounded_update
+from scripts.onestep_avatar.training import config, engine
 
 
 @pytest.mark.parametrize("mode", ["bidirectional", "causal"])
@@ -117,282 +89,38 @@ def test_native_builder_preserves_typed_fsdp_modality_precision(
     assert torch.equal(observed.positions, video.positions)
 
 
-def run_bounded_update(  # noqa: PLR0912, PLR0915 -- one complete fixture lifecycle with all assertions and cleanup
-    mode: str,
-    preview_failure: bool,
-    queued: bool,
-    update_evidence: bool,
-    resource_check: str,
-    consumer_trace: bool,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> dict | None:
-    if queued:
-        from scripts.onestep_avatar.execution.queue_protocol import (  # noqa: PLC0415 -- defer loader or fixture imports until preflight and test hooks are installed
-            JOB_ENV,
-            TOKEN_ENV,
-        )
+UPDATE_CASES = [
+    ("bidirectional", False, False, False, "off", False),
+    ("bidirectional", True, False, True, "pass", True),
+    ("causal", False, False, False, "update_failure", True),
+    ("causal", True, False, True, "off", False),
+    ("bidirectional", False, False, True, "update_failure", False),
+    ("causal", False, False, False, "pass", False),
+    ("bidirectional", True, False, False, "off", True),
+    ("bidirectional", True, False, False, "update_failure", False),
+    ("bidirectional", False, True, False, "off", False),
+    ("causal", False, True, False, "off", False),
+]
 
-        monkeypatch.setenv(JOB_ENV, "a" * 64)
-        monkeypatch.setenv(TOKEN_ENV, "b" * 32)
-    view = tmp_path / "corpus" / "actor" / "view"
-    view.mkdir(parents=True)
-    path = view / dataset.capture_bundle_name("white")
-    generator = torch.Generator().manual_seed(17)
-    capture = torch.randn(8, 7, 2, 2, generator=generator)
-    bundle = {
-        "schema_version": 2,
-        "master": capture,
-        "fps": 30.0,
-        "objective": "white",
-        "source": "actor/view",
-        "vae_fingerprint": "runtime VAE identity",
-    }
-    torch.save(bundle, path)
-    membership = {
-        "schema_version": 2,
-        "kind": subset.KIND,
-        "corpus_root": str(tmp_path / "corpus"),
-        "objective": "white",
-        "splits": {"train": ["actor"]},
-        "sources": [
-            {
-                "relative_dir": "actor/view",
-                "actor": "actor",
-                "split": "train",
-                "n_latent_frames": 7,
-                "shape": [8, 7, 2, 2],
-                "fps": 30.0,
-                "capture_latent_sha256": sha256(path),
-                "capture_encode_record": {
-                    k: bundle[k] for k in ("schema_version", "fps", "objective", "source", "vae_fingerprint")
-                },
-            }
-        ],
-    }
-    membership["sha256"] = subset.membership_hash(membership)
-    list_path = tmp_path / "membership.json"
-    list_path.write_text(json.dumps(membership))
-    options = [
-        "--mode",
-        mode,
-        "--subset",
-        str(list_path),
-        "--output",
-        str(tmp_path / "run"),
-        "--variant",
-        "dev",
-        "--objective",
-        "white",
-        "--guide-mode",
-        "d0",
-        "--lora-rank",
-        "2",
-        "--steps",
-        "1",
-        "--save-initial",
-        "--no-wandb",
-        "--log-every",
-        "2",
+
+def test_update_cases_cover_all_level_pairs() -> None:
+    import itertools  # noqa: PLC0415 -- fixture-only imports follow the CPU/import blocker setup
+
+    selected = [tuple(row[i] for i in (0, 1, 3, 4, 5)) for row in UPDATE_CASES if not row[2]]
+    levels = [
+        ["bidirectional", "causal"],
+        [False, True],
+        [False, True],
+        ["off", "pass", "update_failure"],
+        [False, True],
     ]
-    if mode == "causal":
-        options += ["--blocks-per-sample", "2", "--context-latent-frames", "1"]
-    if update_evidence:
-        options += ["--chains-per-rank", "2", "--save-update-state"]
-    if resource_check != "off":
-        from scripts.onestep_avatar.training import (  # noqa: PLC0415 -- fixture-local import
-            resources,
-        )
-
-        budget_path = tmp_path / "resource_budget.json"
-        budget_path.write_text(json.dumps({"wall_seconds_per_phase": 1800, "memory_limit_allocated_bytes": 1000}))
-        options += ["--resource-budget", str(budget_path)]
-        native_phase = resources.Phase
-        peak = {"allocated": 100}
-
-        def controlled_phase(device: torch.device, phase: str, rank: int, budget: object) -> object:
-            # CUDA counters are controlled; model execution stays on CPU. This is publication evidence only.
-            del device
-            peak["allocated"] = 1001 if phase == "update:1" and resource_check == "update_failure" else 100
-            return native_phase(torch.device("cuda:0"), phase, rank, budget)
-
-        monkeypatch.setattr(resources, "Phase", controlled_phase)
-        monkeypatch.setattr(torch.cuda, "synchronize", lambda _device: None)
-        monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda _device: None)
-        monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda _device: peak["allocated"])
-        monkeypatch.setattr(torch.cuda, "max_memory_reserved", lambda _device: 2000)
-    if consumer_trace:
-        options += ["--consumer-trace"]
-    settings = config.parse_settings(options)
-    if preview_failure:
-        settings.preview_record = {"test": "enqueue failure"}
-
-        def failed_enqueue(*args) -> Never:
-            del args
-            raise RuntimeError("preview-only failure")
-
-        monkeypatch.setattr(engine, "enqueue_preview", failed_enqueue)
-    specification = SimpleNamespace(
-        scale_factors=SpatioTemporalScaleFactors(8, 32, 32),
-        caps=SimpleNamespace(latent_channels=8),
-        sigmas=[0.725],
-        paths=SimpleNamespace(
-            transformer=lambda: tmp_path / "unused_base.safetensors",
-            video_vae=lambda: tmp_path / "unused_vae.safetensors",
-        ),
-    )
-    specification.paths.transformer().write_bytes(b"controlled native-base identity")
-    monkeypatch.setattr(engine.backbone, "resolve", lambda *_args: specification)
-    monkeypatch.setattr(precompute, "file_fingerprint", lambda _path: "runtime VAE identity")
-    monkeypatch.setattr(
-        engine.backbone,
-        "identity",
-        lambda *_args, **_kwargs: {
-            "base_transformer_sha256": sha256(specification.paths.transformer()),
-            "base_transformer_file": "base.safetensors",
-            "base_variant": "dev",
-            "model_key": "2.5",
-        },
-    )
-    monkeypatch.setattr(engine, "Accelerator", CPUAccelerator)
-    monkeypatch.setattr(engine.prompt_cache, "get_or_build", lambda *_args: torch.zeros(1, 3, 16, dtype=torch.bfloat16))
-    calls = []
-
-    def build(*args) -> torch.nn.Module:
-        del args
-        model = _model(prompt_adaln=True).bfloat16()
-        model.requires_grad_(False)
-        torch.manual_seed(settings.init_seed)
-        wrapped = get_peft_model(
-            model,
-            LoraConfig(
-                r=2,
-                lora_alpha=2,
-                target_modules=adapters.LORA_TARGETS["attn"],
-                lora_dropout=0.0,
-                init_lora_weights=True,
-            ),
-        )
-        wrapped.get_base_model().set_gradient_checkpointing(True)
-        wrapped.register_forward_hook(
-            lambda _module, _args, kwargs, _result: calls.append(kwargs["video"]), with_kwargs=True
-        )
-        return wrapped
-
-    monkeypatch.setattr(engine, "build_transformer", build)
-    if queued:
-        # A token/hash fixture without actual dispatch evidence cannot certify a launch.
-        with pytest.raises(ValueError, match="original dispatch launch evidence"):
-            engine.run_settings(settings)
-        assert not settings.output.exists()
-        assert not calls
-        return
-    if mode == "bidirectional":
-        monkeypatch.setattr(
-            causal.BlockCache,
-            "allocate",
-            lambda *_args, **_kwargs: pytest.fail("bidirectional allocated a causal cache"),
-        )
-    if resource_check == "update_failure":
-        with pytest.raises(ValueError, match="allocated-memory limit"):
-            engine.run_settings(settings)
-        assert (settings.output / "checkpoints/lora_weights_step_00000.complete.json").is_file()
-        assert not (settings.output / "checkpoints/lora_weights_step_00001.complete.json").exists()
-        measurements, _hashes = resources.read_records(settings.output, 1)
-        assert measurements[-1]["state"] == "failed"
-        assert measurements[-1]["peak_allocated_bytes"] == 1001
-        return
-    assert engine.run_settings(settings) == 0
-    initial = settings.output / "checkpoints/lora_weights_step_00000.safetensors"
-    updated = settings.output / "checkpoints/lora_weights_step_00001.safetensors"
-    initial_tensors = load_file(initial)
-    checkpoints.assert_exported_lora_is_noop(initial_tensors)
-    assert any(torch.count_nonzero(value) > 0 for key, value in load_file(updated).items() if ".lora_B." in key)
-    for path in (initial, updated):
-        record = checkpoints.read_contract(path)
-        assert record["mode"] == mode
-        checkpoints.validate_adapter_tensors(path, record)
-        complete = json.loads(path.with_suffix(".complete.json").read_text())
-        assert complete["sha256"] == sha256(path)
-        assert complete["state"] == "complete"
-        assert complete["queue_job_sha256"] == ("a" * 64 if queued else None)
-        assert complete["producer_source_sha256"] == sha256(Path(engine.__file__))
-        assert complete["training_record"] == {
-            "config_sha256": sha256(settings.output / "config.json"),
-            "frame_plan_sha256": sha256(settings.output / "frame_plan.json"),
-        }
-        if consumer_trace:
-            from scripts.onestep_avatar.training.consumer_trace import (  # noqa: PLC0415 -- fixture-local import
-                validate,
-            )
-
-            evidence = complete["consumer_trace_evidence"]
-            assert len(evidence) == 1
-            trace_path, digest = next(iter(evidence.items()))
-            assert sha256(Path(trace_path)) == digest
-            trace_record = json.loads(Path(trace_path).read_text())
-            validate(trace_record)
-            assert len(trace_record["samples"]) == record["adapter"]["step"] * settings.chains_per_rank
-    logs = [json.loads(line) for line in (settings.output / "metrics_rank0.jsonl").read_text().splitlines()]
-    assert len(logs) == 1
-    assert "anchor" not in logs[0]
-    assert logs[0]["step"] == 1
-    accumulation = 2 if update_evidence else 1
-    assert len(calls) == accumulation * (1 if mode == "bidirectional" else 4)
-    expected_counts = (
-        {"prime": 0, "denoise": 1, "backward": 1, "refresh": 0}
-        if mode == "bidirectional"
-        else {"prime": 1, "denoise": 2, "backward": 2, "refresh": 1}
-    )
-    assert logs[0]["call_counts"] == {key: value * accumulation for key, value in expected_counts.items()}
-    saved_plan = json.loads((settings.output / "frame_plan.json").read_text())
-    assert saved_plan["sha256"] == subset.record_hash(saved_plan)
-    for key in ("mode", "membership_sha256", "frame_plan_sha256"):
-        assert key in json.loads((settings.output / "config.json").read_text())
-    if resource_check == "pass":
-        records, _journal_hashes = resources.read_records(settings.output, 1)
-        initial_records, initial_hashes = resources.read_records(settings.output, 1, step=0)
-        final_records, final_hashes = resources.read_records(settings.output, 1, step=1)
-        assert final_records == records
-        assert [record["phase"] for record in initial_records] == ["load", "export:0"]
-        assert initial_records == final_records[:2]
-        assert json.loads(initial.with_suffix(".complete.json").read_text())["resource_evidence"] == initial_hashes
-        assert json.loads(updated.with_suffix(".complete.json").read_text())["resource_evidence"] == final_hashes
-        resources.validate_records(
-            records, 1, ["load", "export:0", "update:1", "export:1"], resources.read_budget(budget_path)
-        )
-    if update_evidence:
-        from scripts.onestep_avatar.training import (  # noqa: PLC0415 -- fixture-local import
-            update_state,
-        )
-
-        state_path = settings.output / "update_states/step_00001.pt"
-        states = torch.load(state_path, weights_only=True)
-        assert set(states) == set(initial_tensors)
-        assert all(value["step"] == 1 for value in states.values())
-        assert all(value["exp_avg"].dtype == torch.float32 for value in states.values())
-        assert (
-            update_state.export_name("base_model.model.block.lora_A.default.weight")
-            == "diffusion_model.block.lora_A.weight"
-        )
-    return {
-        "settings": settings,
-        "options": options,
-        "initial": initial,
-        "updated": updated,
-        "initial_tensors": initial_tensors,
-        "logs": logs,
-        "state_path": state_path if update_evidence else None,
-        "budget_path": budget_path if resource_check != "off" else None,
-    }
+    for i, j in itertools.combinations(range(5), 2):
+        assert {(row[i], row[j]) for row in selected} == set(itertools.product(levels[i], levels[j]))
 
 
-@pytest.mark.parametrize("mode", ["bidirectional", "causal"])
-@pytest.mark.parametrize("preview_failure", [False, True])
-@pytest.mark.parametrize("queued", [False, True])
-@pytest.mark.parametrize("update_evidence", [False, True])
-@pytest.mark.parametrize("resource_check", ["off", "pass", "update_failure"])
-@pytest.mark.parametrize("consumer_trace", [False, True])
+@pytest.mark.parametrize(
+    ("mode", "preview_failure", "queued", "update_evidence", "resource_check", "consumer_trace"), UPDATE_CASES
+)
 def test_one_bounded_update_saves_real_zero_and_updated_lora(
     mode: str,
     preview_failure: bool,
@@ -415,41 +143,7 @@ def test_only_main_rank_archives_a_used_output_after_setup(
     """Through ``run_settings``, an explicit overwrite archives the prior run once, on the
     main rank only, after model setup and between barriers; another rank never touches the
     prior contents."""
-    view = tmp_path / "corpus" / "actor" / "view"
-    view.mkdir(parents=True)
-    path = view / dataset.capture_bundle_name("white")
-    bundle = {
-        "schema_version": 2,
-        "master": torch.randn(8, 7, 2, 2, generator=torch.Generator().manual_seed(3)),
-        "fps": 30.0,
-        "objective": "white",
-        "source": "actor/view",
-        "vae_fingerprint": "runtime VAE identity",
-    }
-    torch.save(bundle, path)
-    membership = {
-        "schema_version": 2,
-        "kind": subset.KIND,
-        "corpus_root": str(tmp_path / "corpus"),
-        "objective": "white",
-        "splits": {"train": ["actor"]},
-        "sources": [
-            {
-                "relative_dir": "actor/view",
-                "actor": "actor",
-                "split": "train",
-                "n_latent_frames": 7,
-                "shape": [8, 7, 2, 2],
-                "fps": 30.0,
-                "capture_latent_sha256": sha256(path),
-                "capture_encode_record": {
-                    k: bundle[k] for k in ("schema_version", "fps", "objective", "source", "vae_fingerprint")
-                },
-            }
-        ],
-    }
-    membership["sha256"] = subset.membership_hash(membership)
-    (tmp_path / "membership.json").write_text(json.dumps(membership))
+    _membership, _ = build_runtime_membership(tmp_path, seed=3)
     output = tmp_path / "run"
     output.mkdir()
     (output / "config.json").write_text("prior config")

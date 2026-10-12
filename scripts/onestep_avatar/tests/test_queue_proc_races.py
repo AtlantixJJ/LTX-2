@@ -6,6 +6,7 @@ import pytest
 
 from scripts.onestep_avatar.execution import processes as queue_processes
 from scripts.onestep_avatar.execution.queue_protocol import TOKEN_ENV
+from scripts.onestep_avatar.tests.support.tokens import token
 
 
 def stat_text(state: str = "S", tick: int = 200) -> str:
@@ -21,7 +22,7 @@ def test_disappearing_stat_with_esrch_is_reobserved_as_absent(
     entry.mkdir()
     original = Path.read_text
 
-    def gone(path: Path, *args, **kwargs) -> str:
+    def gone(path: Path, *args: object, **kwargs: object) -> str:
         if path == entry / "stat":
             raise ProcessLookupError("process disappeared during stat read")
         return original(path, *args, **kwargs)
@@ -30,7 +31,7 @@ def test_disappearing_stat_with_esrch_is_reobserved_as_absent(
     if scan == "session":
         assert queue_processes.live_session_processes(999, proc_root=tmp_path) == []
     else:
-        assert queue_processes.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path) == []
+        assert queue_processes.live_attempt_processes(token(), started_ticks=100, proc_root=tmp_path) == []
 
 
 @pytest.mark.parametrize("transition", ["terminal", "missing", "reused", "live"])
@@ -41,7 +42,7 @@ def test_environment_denial_requires_same_terminal_or_absent_handle(
     entry.mkdir()
     stat = entry / "stat"
     stat.write_text(stat_text())
-    (entry / "environ").write_bytes((TOKEN_ENV + "=" + "b" * 32).encode())
+    (entry / "environ").write_bytes((TOKEN_ENV + "=" + token()).encode())
     original = Path.read_bytes
 
     def denied(path: Path) -> bytes:
@@ -57,10 +58,10 @@ def test_environment_denial_requires_same_terminal_or_absent_handle(
 
     monkeypatch.setattr(Path, "read_bytes", denied)
     if transition in ("terminal", "missing"):
-        assert queue_processes.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path) == []
+        assert queue_processes.live_attempt_processes(token(), started_ticks=100, proc_root=tmp_path) == []
     else:
         with pytest.raises(PermissionError):
-            queue_processes.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path)
+            queue_processes.live_attempt_processes(token(), started_ticks=100, proc_root=tmp_path)
 
 
 def test_brief_live_denial_retries_then_identifies_owned_worker(
@@ -69,7 +70,7 @@ def test_brief_live_denial_retries_then_identifies_owned_worker(
     entry = tmp_path / "42"
     entry.mkdir()
     (entry / "stat").write_text(stat_text())
-    (entry / "environ").write_bytes((TOKEN_ENV + "=" + "b" * 32).encode())
+    (entry / "environ").write_bytes((TOKEN_ENV + "=" + token()).encode())
     original = Path.read_bytes
     attempts = []
 
@@ -81,5 +82,5 @@ def test_brief_live_denial_retries_then_identifies_owned_worker(
         return original(path)
 
     monkeypatch.setattr(Path, "read_bytes", briefly_denied)
-    assert queue_processes.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path) == [42]
+    assert queue_processes.live_attempt_processes(token(), started_ticks=100, proc_root=tmp_path) == [42]
     assert len(attempts) == 3

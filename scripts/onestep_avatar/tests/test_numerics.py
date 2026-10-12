@@ -13,8 +13,8 @@ import torch
 
 from scripts.onestep_avatar import LTX_ROOT
 from scripts.onestep_avatar.execution import jobs as queue_jobs
-from scripts.onestep_avatar.tests.test_applied_runtime import inventory
-from scripts.onestep_avatar.tests.test_training_launch_binding import original_job
+from scripts.onestep_avatar.tests.support.fixtures_applied_runtime import inventory
+from scripts.onestep_avatar.tests.support.fixtures_training_launch_binding import original_job
 from scripts.onestep_avatar.training import numerics, runtime
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import copy
 import json
 import shutil
@@ -12,6 +13,7 @@ import torch
 
 from scripts.onestep_avatar.corpus import dataset, subset
 from scripts.onestep_avatar.hashing import sha256
+from scripts.onestep_avatar.tests.support.executor import InlineExecutor
 
 
 def _build(record: dict, **options: object) -> dict:
@@ -208,7 +210,10 @@ def test_clip_store_d0_reads_no_guide_and_checks_changed_masters(current_members
         store.verify()
 
 
-def test_cli_publishes_new_list_without_changing_inputs(current_membership: dict, tmp_path: Path) -> None:
+def test_cli_publishes_new_list_without_changing_inputs(
+    monkeypatch: object, current_membership: dict, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", InlineExecutor)
     root = Path(current_membership["corpus_root"])
     inputs = {path: sha256(path) for path in root.rglob("*") if path.is_file()}
     groups = tmp_path / "groups.json"
@@ -227,6 +232,7 @@ def test_cli_publishes_new_list_without_changing_inputs(current_membership: dict
 def test_cli_changed_input_during_publication_leaves_no_list(
     current_membership: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", InlineExecutor)
     original = dataset.atomic_write
     root = Path(current_membership["corpus_root"])
     source = current_membership["sources"][0]
@@ -242,7 +248,8 @@ def test_cli_changed_input_during_publication_leaves_no_list(
     assert not output.exists()
 
 
-def test_cli_dangling_output_symlink_is_refused_before_survey(tmp_path: Path) -> None:
+def test_cli_dangling_output_symlink_is_refused_before_survey(monkeypatch: object, tmp_path: Path) -> None:
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", InlineExecutor)
     output = tmp_path / "membership.json"
     output.symlink_to(tmp_path / "missing")
     with pytest.raises(SystemExit, match="new file"):
@@ -252,6 +259,7 @@ def test_cli_dangling_output_symlink_is_refused_before_survey(tmp_path: Path) ->
 def test_cli_publication_race_preserves_other_writer(
     current_membership: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", InlineExecutor)
     original = dataset.atomic_write
     output = tmp_path / "membership.json"
 
@@ -273,6 +281,7 @@ def test_cli_publication_race_preserves_other_writer(
     assert not list(tmp_path.glob(".membership.tmp.*"))
 
 
+@pytest.mark.subprocess
 def test_membership_is_a_small_json_and_a_pure_csv(current_membership: dict, tmp_path: Path) -> None:
     root = Path(current_membership["corpus_root"])
     out = tmp_path / "lists"

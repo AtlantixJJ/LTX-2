@@ -6,11 +6,12 @@ import ast
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
 from scripts.onestep_avatar import LTX_ROOT, PACKAGE_ROOT
+from scripts.onestep_avatar.tests.support.children import run_dry_run_rows, run_help_rows
+from scripts.onestep_avatar.tests.support.dry_run_entry import SOURCE_0, SOURCE_1
 
 
 def test_production_imports_keep_experiments_out_of_ordinary_owners() -> None:
@@ -144,81 +145,50 @@ for name in ('scripts.onestep_avatar.experiments',
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("module", ["train", "evaluate", "infer", "decode_saved", "prepare_inputs", "execution.queue"])
-def test_blocked_child_ordinary_help_still_works(module: str) -> None:
-    arguments = [sys.executable, "-m", "scripts.onestep_avatar." + module, "--help"]
-    if module == "train":
-        arguments.extend(["--mode", "bidirectional"])
-    result = subprocess.run(
-        arguments, cwd=LTX_ROOT, env=blocked_environment(), capture_output=True, text=True, timeout=60, check=False
+@pytest.mark.subprocess
+def test_blocked_child_ordinary_help_still_works(subtests: object) -> None:
+    rows = run_help_rows(
+        [
+            "scripts.onestep_avatar.train",
+            "scripts.onestep_avatar.evaluate",
+            "scripts.onestep_avatar.infer",
+            "scripts.onestep_avatar.decode_saved",
+            "scripts.onestep_avatar.prepare_inputs",
+            "scripts.onestep_avatar.execution.queue",
+        ],
+        blocked_environment(),
     )
-    assert result.returncode == 0, result.stderr
-    assert "usage:" in result.stdout
+    for row in rows:
+        with subtests.test(module=row["id"]):
+            assert row["returncode"] == 0, row["stderr"]
+            assert "usage:" in row["stdout"]
 
 
-@pytest.mark.parametrize("mode", ["bidirectional", "causal"])
-def test_blocked_child_typed_dry_run_imports_no_experiments(mode: str, tmp_path: Path) -> None:
-    # This isolates CLI/import boundaries. The ordinary tiny-update matrix checks
-    # actual producer input preflight, updates, exports and preview enqueue.
-    source = """
-import sys
-from pathlib import Path
-from types import SimpleNamespace
-from scripts.onestep_avatar import train
-from scripts.onestep_avatar.training import engine
-engine.prepare_run = lambda *_args, **_kwargs: (
-    SimpleNamespace(membership={'sha256': 'a'*64}), {'sha256': 'b'*64, 'samples': []}, None, False)
-engine.build_transformer = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('loaded transformer'))
-output = Path(sys.argv[2])
-assert train.main(['--mode', sys.argv[1], '--subset', '/boundary-only', '--output', str(output), '--dry-run']) == 0
-assert not output.exists()
-assert not any(name.startswith('scripts.onestep_avatar.experiments') for name in sys.modules)
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", source, mode, str(tmp_path / "unwritten")],
-        cwd=LTX_ROOT,
-        env=blocked_environment(),
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
+@pytest.mark.subprocess
+def test_blocked_child_dry_run_rows(tmp_path: object, subtests: object) -> None:
+    cases = [
+        ("train", "bidirectional", SOURCE_0),
+        ("train", "causal", SOURCE_0),
+        ("evaluate", "bidirectional", SOURCE_1),
+        ("infer", "bidirectional", SOURCE_1),
+        ("evaluate", "causal", SOURCE_1),
+        ("infer", "causal", SOURCE_1),
+    ]
+    rows = run_dry_run_rows(
+        [
+            {
+                "id": owner + "_" + mode,
+                "source": source,
+                "argv": [
+                    "probe",
+                    *([mode] if owner == "train" else [owner, mode]),
+                    str(tmp_path / (owner + "_" + mode)),
+                ],
+            }
+            for owner, mode, source in cases
+        ],
+        blocked_environment(),
     )
-    assert result.returncode == 0, result.stderr
-
-
-@pytest.mark.parametrize("owner", ["evaluate", "infer"])
-@pytest.mark.parametrize("mode", ["bidirectional", "causal"])
-def test_blocked_child_support_dry_run_imports_no_experiments(owner: str, mode: str, tmp_path: Path) -> None:
-    # Input validation has real-data ordinary tests; this child isolates imports
-    # and the public CLI's no-write dry-run branch before any native session.
-    source = """
-import sys
-from pathlib import Path
-from scripts.onestep_avatar import evaluate, infer
-owner, mode, destination = sys.argv[1:]
-output = Path(destination)
-if owner == 'evaluate':
-    evaluate.prepare_evaluation = lambda _args: (
-        None, [None], [(None, None, {'mode': mode}, None)], {})
-    arguments = ['--mode', mode, '--subset', '/boundary-only', '--output', str(output),
-                 '--variant', 'dev', '--guide-mode', 'd0', '--schedule', '0.725', '0', '--dry-run']
-    status = evaluate.main(arguments)
-else:
-    infer.prepare_product = lambda _args: (None, None, None, None, {'mode': mode}, None)
-    arguments = ['--mode', mode, '--guide', '/boundary-guide', '--first-image', '/boundary-image',
-                 '--output', str(output), '--variant', 'dev', '--schedule', '0.725', '0', '--dry-run']
-    status = infer.main(arguments)
-assert status == 0
-assert not output.exists()
-assert not any(name.startswith('scripts.onestep_avatar.experiments') for name in sys.modules)
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", source, owner, mode, str(tmp_path / "unwritten")],
-        cwd=LTX_ROOT,
-        env=blocked_environment(),
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
+    for row in rows:
+        with subtests.test(case=row["id"]):
+            assert row["returncode"] == 0, row["stderr"]

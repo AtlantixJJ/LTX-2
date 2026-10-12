@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,10 +19,13 @@ from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.experiments import prune_baseline as study
 from scripts.onestep_avatar.experiments import spec_protocol
 from scripts.onestep_avatar.hashing import sha256
-from scripts.prune.core import provenance
+from scripts.onestep_avatar.tests.support.fixtures_experiment_test_prune_baseline import (
+    _BoundCaps,
+    _BoundSession,
+)
+from scripts.onestep_avatar.tests.support.prune import SCALE, _vae, _views
 from scripts.prune.data import prompt_cache
 from scripts.prune.evaluate import whole_clip_baseline as producer
-from scripts.prune.tests.test_whole_clip_baseline import SCALE, _Caps, _Session, _vae, _views
 
 
 def write_spec(path: Path, arguments: list[str]) -> Path:
@@ -33,31 +35,6 @@ def write_spec(path: Path, arguments: list[str]) -> Path:
 
 def outer(spec: Path, output: Path) -> list[str]:
     return ["--spec", str(spec), "--output", str(output)]
-
-
-class _BoundSession(_Session):
-    def __init__(self, vae: Path, transformer: Path) -> None:
-        super().__init__(vae)
-        self._transformer = transformer
-        self._vae = vae
-        self.model.caps = _BoundCaps()
-
-    def stamp(self, *, dtype: str) -> dict:
-        return {
-            "model_key": "2.5",
-            "model_version": [2, 5],
-            "transformer_path": str(self._transformer.resolve()),
-            "transformer_fingerprint": provenance.checkpoint_fingerprint(self._transformer),
-            "video_vae_path": str(self._vae.resolve()),
-            "scale_factors": list(SCALE),
-            "script": producer.SCRIPT,
-            "dtype": dtype,
-        }
-
-
-@dataclass(frozen=True)
-class _BoundCaps(_Caps):
-    num_layers: int = 2
 
 
 @pytest.fixture
@@ -290,29 +267,54 @@ def test_unknown_selector_refuses_without_importing_or_launching_route(
     assert not output.exists()
 
 
-def test_direct_dev_recipe_is_capture_only_and_exact(saved_pruning, tmp_path):
+def test_direct_dev_recipe_is_capture_only_and_exact(saved_pruning: tuple, tmp_path: Path) -> None:
     _, _, _, inputs = saved_pruning
-    view = inputs['capture'].parent
-    spec = write_spec(tmp_path / 'direct.json', [
-        '--view', str(view), '--variant', 'dev', '--dev-schedule', 'direct',
-        '--sigmas', '0.9489720463752747', '--raw-only', '--arms', 'd0', '--prompt-file', str(inputs['prompt'])])
-    args = study.read_spec(spec, tmp_path / 'direct_output')
+    view = inputs["capture"].parent
+    spec = write_spec(
+        tmp_path / "direct.json",
+        [
+            "--view",
+            str(view),
+            "--variant",
+            "dev",
+            "--dev-schedule",
+            "direct",
+            "--sigmas",
+            "0.9489720463752747",
+            "--raw-only",
+            "--arms",
+            "d0",
+            "--prompt-file",
+            str(inputs["prompt"]),
+        ],
+    )
+    args = study.read_spec(spec, tmp_path / "direct_output")
     paths = study.input_paths(args)
-    assert inputs['capture'].resolve() in paths
-    assert inputs['guide'].resolve() not in paths
+    assert inputs["capture"].resolve() in paths
+    assert inputs["guide"].resolve() not in paths
     assert producer.dev_schedule(args, args.sigmas[0]) == [args.sigmas[0], 0.0]
-    assert study.main([*outer(spec, tmp_path / 'dry_output'), '--dry-run']) == 0
-    assert not (tmp_path / 'dry_output').exists()
+    assert study.main([*outer(spec, tmp_path / "dry_output"), "--dry-run"]) == 0
+    assert not (tmp_path / "dry_output").exists()
 
 
-@pytest.mark.parametrize('extra', [['--sigmas', '1.0'], ['--arms', 'd0', 'd1'],
-                                  ['--transformer', '/tmp/modified.safetensors']])
-def test_direct_dev_recipe_refuses_outside_scope(extra):
-    arguments = ['--view', '/tmp/view', '--output', '/tmp/out', '--variant', 'dev',
-                 '--dev-schedule', 'direct', '--raw-only']
-    if '--arms' not in extra:
-        arguments += ['--arms', 'd0']
-    if '--sigmas' not in extra:
-        arguments += ['--sigmas', '0.9489720463752747']
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize(
+    "extra", [["--sigmas", "1.0"], ["--arms", "d0", "d1"], ["--transformer", "/tmp/modified.safetensors"]]
+)
+def test_direct_dev_recipe_refuses_outside_scope(extra: list[str]) -> None:
+    arguments = [
+        "--view",
+        "/tmp/view",
+        "--output",
+        "/tmp/out",
+        "--variant",
+        "dev",
+        "--dev-schedule",
+        "direct",
+        "--raw-only",
+    ]
+    if "--arms" not in extra:
+        arguments += ["--arms", "d0"]
+    if "--sigmas" not in extra:
+        arguments += ["--sigmas", "0.9489720463752747"]
+    with pytest.raises(ValueError):  # noqa: PT011 -- distinct invalid direct-dev options retain their refusal types
         study.scientific_args(arguments + extra)

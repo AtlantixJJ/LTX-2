@@ -17,10 +17,10 @@ from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.experiments import prune_reproduction as study
 from scripts.onestep_avatar.experiments import spec_protocol
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.tests.experiments.test_prune_baseline import _BoundCaps, _BoundSession
+from scripts.onestep_avatar.tests.support.fixtures_experiment_test_prune_baseline import _BoundCaps, _BoundSession
+from scripts.onestep_avatar.tests.support.prune import SCALE, _vae, _views
 from scripts.prune.data import prompt_cache
 from scripts.prune.evaluate import whole_clip_baseline as producer
-from scripts.prune.tests.test_whole_clip_baseline import SCALE, _vae, _views
 
 SIGMAS = ("0.725", "0.909375")
 CONTROLS = ("sigma_bf16", "global_sigma_bf16", "dense_mask", "historical_inputs", "bf16_reduction_off")
@@ -46,7 +46,10 @@ def saved_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNames
     prompt = tmp_path / "prompt.txt"
     prompt.write_text("fixed tiny baseline text")
     components = SimpleNamespace(
-        key="2.5", version=(2, 5), scale_factors=SCALE, caps=_BoundCaps(),
+        key="2.5",
+        version=(2, 5),
+        scale_factors=SCALE,
+        caps=_BoundCaps(),
         sigmas=[1.0, 0.909375, 0.725, 0.421875, 0.0],
         paths=SimpleNamespace(transformer=lambda: transformer, text_encoder=lambda: text, video_vae=lambda: vae),
     )
@@ -65,8 +68,18 @@ def saved_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNames
 
 
 def spec_for(inputs: SimpleNamespace, controls: tuple[str, ...] = CONTROLS, name: str = "spec.json") -> Path:
-    return write_spec(inputs.tmp / name, [*inputs.common, "--reference", str(inputs.saved["reference"]),
-                                          "--earlier", str(inputs.saved["earlier"]), "--controls", *controls])
+    return write_spec(
+        inputs.tmp / name,
+        [
+            *inputs.common,
+            "--reference",
+            str(inputs.saved["reference"]),
+            "--earlier",
+            str(inputs.saved["earlier"]),
+            "--controls",
+            *controls,
+        ],
+    )
 
 
 @pytest.fixture
@@ -129,8 +142,12 @@ def test_controls_record_their_actual_model_inputs_and_compare_every_arm(complet
     assert set(row) == {"reference", "earlier", study.FIRST}
     assert row["reference"]["exact"] is False
     assert row["reference"]["rms"] > 0
-    assert len(row["reference"]["per_latent_frame"]) == torch.load(
-        completed.output / results["outputs"]["sigma_bf16"]["0.725000"]["path"], weights_only=True).shape[2]
+    assert (
+        len(row["reference"]["per_latent_frame"])
+        == torch.load(completed.output / results["outputs"]["sigma_bf16"]["0.725000"]["path"], weights_only=True).shape[
+            2
+        ]
+    )
 
 
 def test_completion_rechecks_inputs_software_and_comparisons_without_a_model(completed: SimpleNamespace) -> None:
@@ -147,11 +164,19 @@ def test_completion_rechecks_inputs_software_and_comparisons_without_a_model(com
 
 
 def test_queue_routes_the_selector_and_checks_saved_completion(completed: SimpleNamespace) -> None:
-    job = queue_jobs.prepare_job({
-        "id": "controls", "kind": "experiment", "experiment": study.SELECTOR, "spec": str(completed.spec),
-        "spec_sha256": sha256(completed.spec), "arguments": outer(completed.spec, completed.output),
-        "output": str(completed.output), "completion": {"manifest": str(completed.output / "manifest.json")},
-    }, completed.spec.parent)
+    job = queue_jobs.prepare_job(
+        {
+            "id": "controls",
+            "kind": "experiment",
+            "experiment": study.SELECTOR,
+            "spec": str(completed.spec),
+            "spec_sha256": sha256(completed.spec),
+            "arguments": outer(completed.spec, completed.output),
+            "output": str(completed.output),
+            "completion": {"manifest": str(completed.output / "manifest.json")},
+        },
+        completed.spec.parent,
+    )
     command, environment = queue_jobs.job_command(job, (3,))
     assert command[2] == "scripts.onestep_avatar.experiments.prune_reproduction"
     assert command[-2:] == ["--gpu-id", "0"]
@@ -201,10 +226,19 @@ def test_scientific_arguments_require_saved_runs_and_distinct_known_controls(
 def test_d1_arm_is_refused(saved_inputs: SimpleNamespace) -> None:
     common = list(saved_inputs.common)
     index = common.index("--arms")
-    common[index + 1:index + 2] = ["d0", "d1"]
-    spec = write_spec(saved_inputs.tmp / "d1.json", [*common, "--reference", str(saved_inputs.saved["reference"]),
-                                                     "--earlier", str(saved_inputs.saved["earlier"]),
-                                                     "--controls", "dense_mask"])
+    common[index + 1 : index + 2] = ["d0", "d1"]
+    spec = write_spec(
+        saved_inputs.tmp / "d1.json",
+        [
+            *common,
+            "--reference",
+            str(saved_inputs.saved["reference"]),
+            "--earlier",
+            str(saved_inputs.saved["earlier"]),
+            "--controls",
+            "dense_mask",
+        ],
+    )
     with pytest.raises(ValueError, match="D0 arm only"):
         study.read_spec(spec, saved_inputs.tmp / "unused")
 
@@ -233,8 +267,11 @@ def test_saved_rollout_requires_its_manifest_hashes_sigmas_and_settings(
 
 @pytest.fixture
 def deterministic_policy() -> None:
-    before = (torch.are_deterministic_algorithms_enabled(), torch.is_deterministic_algorithms_warn_only_enabled(),
-              torch.backends.cudnn.deterministic)
+    before = (
+        torch.are_deterministic_algorithms_enabled(),
+        torch.is_deterministic_algorithms_warn_only_enabled(),
+        torch.backends.cudnn.deterministic,
+    )
     torch.use_deterministic_algorithms(True)
     torch.backends.cudnn.deterministic = True
     yield
@@ -245,8 +282,11 @@ def deterministic_policy() -> None:
 @pytest.mark.usefixtures("deterministic_policy")
 @pytest.mark.parametrize(
     ("arm", "field"),
-    [("deterministic_off", "deterministic_algorithms"), ("cudnn_deterministic_off", "cudnn_deterministic"),
-     ("bf16_reduction_off", "allow_bf16_reduced_precision_reduction")],
+    [
+        ("deterministic_off", "deterministic_algorithms"),
+        ("cudnn_deterministic_off", "cudnn_deterministic"),
+        ("bf16_reduction_off", "allow_bf16_reduced_precision_reduction"),
+    ],
 )
 def test_each_flag_control_changes_one_flag_and_restores_it(arm: str, field: str) -> None:
     start = study.flags()
@@ -305,9 +345,28 @@ def test_difference_reports_exact_rms_maximum_and_frames() -> None:
         study.difference(actual.float(), expected)
 
 
-def test_legacy_reproduction_does_not_inherit_direct_dev_support():
-    with pytest.raises(ValueError, match='distilled D0'):
-        study.scientific_args([
-            '--reference', '/tmp/reference', '--earlier', '/tmp/earlier', '--controls', 'dense_mask',
-            '--view', '/tmp/view', '--output', '/tmp/output', '--raw-only', '--arms', 'd0',
-            '--variant', 'dev', '--dev-schedule', 'direct', '--sigmas', '0.9489720463752747'])
+def test_legacy_reproduction_does_not_inherit_direct_dev_support() -> None:
+    with pytest.raises(ValueError, match="distilled D0"):
+        study.scientific_args(
+            [
+                "--reference",
+                "/tmp/reference",
+                "--earlier",
+                "/tmp/earlier",
+                "--controls",
+                "dense_mask",
+                "--view",
+                "/tmp/view",
+                "--output",
+                "/tmp/output",
+                "--raw-only",
+                "--arms",
+                "d0",
+                "--variant",
+                "dev",
+                "--dev-schedule",
+                "direct",
+                "--sigmas",
+                "0.9489720463752747",
+            ]
+        )

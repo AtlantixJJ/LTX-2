@@ -17,11 +17,12 @@ from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar import bench, evaluate, hashing, infer, media, prepare_inputs, previews
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.model import adapters
-from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B
-from scripts.onestep_avatar.tests.test_evaluation_completion import completed as native_completed
-from scripts.onestep_avatar.tests.test_infer import product_files as native_product_files
-from scripts.onestep_avatar.tests.test_prepare_preview import preview_case as prepared_preview_case
-from scripts.onestep_avatar.tests.test_previews import _completed, _fixed_inputs
+from scripts.onestep_avatar.tests.support.contracts import A, B
+from scripts.onestep_avatar.tests.support.fixtures_evaluation_completion import completed as native_completed
+from scripts.onestep_avatar.tests.support.fixtures_infer import product_files as native_product_files
+from scripts.onestep_avatar.tests.support.fixtures_prepare_preview import preview_case as prepared_preview_case
+from scripts.onestep_avatar.tests.support.fixtures_previews import _completed, _fixed_inputs
+from scripts.onestep_avatar.tests.support.tree import restore, snapshot
 from scripts.onestep_avatar.training import checkpoints, config, engine
 from scripts.prune.core import preflight
 from scripts.prune.core import session as sessions
@@ -34,7 +35,7 @@ preview_case = prepared_preview_case
 
 def _blocked_native(monkeypatch: pytest.MonkeyPatch) -> None:
 
-    def forbidden(*_args, **_kwargs) -> None:
+    def forbidden(*_args: object, **_kwargs: object) -> None:
         pytest.fail("saved completion opened a native model boundary")
 
     monkeypatch.setattr(preflight, "check", forbidden)
@@ -144,7 +145,7 @@ def preview_complete(completed: tuple, preview_case: tuple, monkeypatch: pytest.
     arguments = ["--preview-job", str(job_path), "--output", job["output"]]
     old_session = sessions.Session
 
-    def cpu_session(*a, **kw) -> object:
+    def cpu_session(*a: object, **kw: object) -> object:
         value = old_session(*a, **kw)
         value.decoder = lambda: nullcontext(None)
         return value
@@ -194,41 +195,47 @@ def test_preview_completion_binds_rendered_and_raw_evidence(preview_complete: tu
     assert hashing.sha256(marker) == before
 
 
-@pytest.mark.parametrize(
-    "defect", ["missing_media", "raw_shape", "raw_precision", "raw_c0", "frame_mapping", "decoder"]
-)
-def test_preview_completion_rejects_rehashed_tampering(preview_complete: tuple, defect: str) -> None:
-    arguments, root, job_path = preview_complete
-    job = json.loads(job_path.read_text())
-    record_path = Path(job["results"][0]["path"])
-    record = json.loads(record_path.read_text())
-    rendering_path = Path(job["renderings"][0]["path"])
-    rendering = json.loads(rendering_path.read_text())
-    if defect == "missing_media":
-        Path(rendering["outputs"]["poster"]["path"]).unlink()
-    elif defect.startswith("raw_"):
-        path = Path(record["output"]["path"])
-        value = torch.load(path, weights_only=True)
-        if defect == "raw_shape":
-            value = value[:, :, :-1]
-        elif defect == "raw_precision":
-            value = value.float()
-        else:
-            value[:, :, :1] += 1
-        torch.save(value, path)
-        record["output"].update(sha256=hashing.sha256(path), shape=list(value.shape))
-        record_path.write_text(json.dumps(record))
-        job["results"][0]["sha256"] = hashing.sha256(record_path)
-        rendering["common_settings"]["result_records"] = job["results"]
-    elif defect == "frame_mapping":
-        rendering["source_frames"][0] += 1
-    else:
-        rendering["common_settings"]["decoder_records"][0]["decode_key"] = "a" * 64
-    rendering_path.write_text(json.dumps(rendering))
-    job["renderings"][0]["sha256"] = hashing.sha256(rendering_path)
-    job_path.write_text(json.dumps(job))
-    with pytest.raises((ValueError, FileNotFoundError)):
-        previews.verify_completion(arguments, root)
+def test_preview_completion_rejects_rehashed_tampering(
+    subtests: object, tmp_path: object, preview_complete: tuple
+) -> None:
+    pristine = snapshot(tmp_path)
+    for case in ["missing_media", "raw_shape", "raw_precision", "raw_c0", "frame_mapping", "decoder"]:
+        with subtests.test(case=case):
+            restore(tmp_path, pristine)
+            defect = case
+            arguments, root, job_path = preview_complete
+            job = json.loads(job_path.read_text())
+            record_path = Path(job["results"][0]["path"])
+            record = json.loads(record_path.read_text())
+            rendering_path = Path(job["renderings"][0]["path"])
+            rendering = json.loads(rendering_path.read_text())
+            if defect == "missing_media":
+                Path(rendering["outputs"]["poster"]["path"]).unlink()
+            elif defect.startswith("raw_"):
+                path = Path(record["output"]["path"])
+                value = torch.load(path, weights_only=True)
+                if defect == "raw_shape":
+                    value = value[:, :, :-1]
+                elif defect == "raw_precision":
+                    value = value.float()
+                else:
+                    value[:, :, :1] += 1
+                torch.save(value, path)
+                record["output"].update(sha256=hashing.sha256(path), shape=list(value.shape))
+                record_path.write_text(json.dumps(record))
+                job["results"][0]["sha256"] = hashing.sha256(record_path)
+                rendering["common_settings"]["result_records"] = job["results"]
+            elif defect == "frame_mapping":
+                rendering["source_frames"][0] += 1
+            else:
+                rendering["common_settings"]["decoder_records"][0]["decode_key"] = "a" * 64
+            rendering_path.write_text(json.dumps(rendering))
+            job["renderings"][0]["sha256"] = hashing.sha256(rendering_path)
+            job_path.write_text(json.dumps(job))
+            with pytest.raises((ValueError, FileNotFoundError)):
+                previews.verify_completion(arguments, root)
+
+    restore(tmp_path, pristine)
 
 
 @pytest.fixture(params=["bidirectional", "causal"])
@@ -274,34 +281,44 @@ def test_product_completion_checks_actual_saved_inputs_model_free(product_comple
     }
 
 
-@pytest.mark.parametrize("defect", ["noise", "text", "precision", "nonfinite", "c0", "calls", "missing"])
-def test_product_completion_rejects_changed_evidence(product_complete: tuple, defect: str) -> None:
-    arguments, root = product_complete
-    inputs_path, result_path = root / "generation_inputs.pt", root / "result.json"
-    record = json.loads(result_path.read_text())
-    if defect in ("noise", "text", "precision", "nonfinite"):
-        inputs = torch.load(inputs_path, weights_only=True)
-        role = "text" if defect == "text" else "noise"
-        inputs[role] = (
-            inputs[role] + 1
-            if defect in ("noise", "text")
-            else (inputs[role].float() if defect == "precision" else torch.full_like(inputs[role], float("nan")))
-        )
-        torch.save(inputs, inputs_path)
-        record["generation_inputs"]["sha256"] = hashing.sha256(inputs_path)
-    elif defect == "c0":
-        path = root / "generated.pt"
-        value = torch.load(path, weights_only=True)
-        value[:, :, :1] += 1
-        torch.save(value, path)
-        record["output"]["sha256"] = hashing.sha256(path)
-    elif defect == "calls":
-        record["call_counts"]["model_calls"] += 1
-    else:
-        inputs_path.unlink()
-    result_path.write_text(json.dumps(record))
-    with pytest.raises((ValueError, FileNotFoundError)):
-        infer.verify_completion(arguments, root)
+def test_product_completion_rejects_changed_evidence(
+    subtests: object, tmp_path: object, product_complete: tuple
+) -> None:
+    pristine = snapshot(tmp_path)
+    for case in ["noise", "text", "precision", "nonfinite", "c0", "calls", "missing"]:
+        with subtests.test(case=case):
+            restore(tmp_path, pristine)
+            defect = case
+            arguments, root = product_complete
+            inputs_path, result_path = root / "generation_inputs.pt", root / "result.json"
+            record = json.loads(result_path.read_text())
+            if defect in ("noise", "text", "precision", "nonfinite"):
+                inputs = torch.load(inputs_path, weights_only=True)
+                role = "text" if defect == "text" else "noise"
+                inputs[role] = (
+                    inputs[role] + 1
+                    if defect in ("noise", "text")
+                    else (
+                        inputs[role].float() if defect == "precision" else torch.full_like(inputs[role], float("nan"))
+                    )
+                )
+                torch.save(inputs, inputs_path)
+                record["generation_inputs"]["sha256"] = hashing.sha256(inputs_path)
+            elif defect == "c0":
+                path = root / "generated.pt"
+                value = torch.load(path, weights_only=True)
+                value[:, :, :1] += 1
+                torch.save(value, path)
+                record["output"]["sha256"] = hashing.sha256(path)
+            elif defect == "calls":
+                record["call_counts"]["model_calls"] += 1
+            else:
+                inputs_path.unlink()
+            result_path.write_text(json.dumps(record))
+            with pytest.raises((ValueError, FileNotFoundError)):
+                infer.verify_completion(arguments, root)
+
+    restore(tmp_path, pristine)
 
 
 @pytest.fixture(params=["bidirectional", "causal"])
@@ -322,38 +339,44 @@ def test_benchmark_completion_checks_all_cases_model_free(benchmark_complete: tu
     assert len(bench.evidence_paths(arguments, root)) == 7
 
 
-@pytest.mark.parametrize(
-    "defect", ["reps", "warmup", "elapsed", "summary", "coverage", "calls", "memory", "output", "missing"]
-)
-def test_benchmark_completion_rejects_measurement_tampering(benchmark_complete: tuple, defect: str) -> None:
-    arguments, root = benchmark_complete
-    path = sorted(root.glob("case_*/variant_*/result.json"))[0]
-    record = json.loads(path.read_text())
-    timing, row = record["benchmark"], record["benchmark"]["repetitions"][0]
-    if defect == "reps":
-        timing["repetitions"].pop()
-    elif defect == "warmup":
-        timing["warmup"] = 0
-    elif defect == "elapsed":
-        row["elapsed_s"] = float("nan")
-    elif defect == "summary":
-        timing["elapsed_s"]["median"] += 1
-    elif defect == "coverage":
-        row["covered_rgb_frames"] += 1
-    elif defect == "calls":
-        row["call_counts"]["model_calls"] += 1
-    elif defect == "memory":
-        row["memory_baseline_bytes"] = {"allocated": 0, "reserved": 0}
-    elif defect == "output":
-        row["output_sha256"] = "a" * 64
-    else:
-        path.unlink()
-        with pytest.raises(FileNotFoundError):
-            bench.verify_completion(arguments, root)
-        return
-    path.write_text(json.dumps(record))
-    with pytest.raises(ValueError, match=r"(?i)benchmark|operation|evaluation|software"):
-        bench.verify_completion(arguments, root)
+def test_benchmark_completion_rejects_measurement_tampering(
+    subtests: object, tmp_path: object, benchmark_complete: tuple
+) -> None:
+    pristine = snapshot(tmp_path)
+    for case in ["reps", "warmup", "elapsed", "summary", "coverage", "calls", "memory", "output", "missing"]:
+        with subtests.test(case=case):
+            restore(tmp_path, pristine)
+            defect = case
+            arguments, root = benchmark_complete
+            path = sorted(root.glob("case_*/variant_*/result.json"))[0]
+            record = json.loads(path.read_text())
+            timing, row = record["benchmark"], record["benchmark"]["repetitions"][0]
+            if defect == "reps":
+                timing["repetitions"].pop()
+            elif defect == "warmup":
+                timing["warmup"] = 0
+            elif defect == "elapsed":
+                row["elapsed_s"] = float("nan")
+            elif defect == "summary":
+                timing["elapsed_s"]["median"] += 1
+            elif defect == "coverage":
+                row["covered_rgb_frames"] += 1
+            elif defect == "calls":
+                row["call_counts"]["model_calls"] += 1
+            elif defect == "memory":
+                row["memory_baseline_bytes"] = {"allocated": 0, "reserved": 0}
+            elif defect == "output":
+                row["output_sha256"] = "a" * 64
+            else:
+                path.unlink()
+                with pytest.raises(FileNotFoundError):
+                    bench.verify_completion(arguments, root)
+                return
+            path.write_text(json.dumps(record))
+            with pytest.raises(ValueError, match=r"(?i)benchmark|operation|evaluation|software"):
+                bench.verify_completion(arguments, root)
+
+    restore(tmp_path, pristine)
 
 
 @pytest.fixture
@@ -438,24 +461,32 @@ def test_operation_output_normalization_and_saved_completion(operation_complete:
     assert bench.evidence_paths(arguments, root) == [path]
 
 
-@pytest.mark.parametrize("defect", ["depth", "reps", "warmup", "times", "sum", "cache", "source"])
-def test_operation_completion_rejects_incomplete_or_changed_protocol(operation_complete: tuple, defect: str) -> None:
-    arguments, root, path = operation_complete
-    record = json.loads(path.read_text())
-    if defect == "depth":
-        record["measurements"].pop("2")
-    elif defect == "reps":
-        record["measurements"]["0"]["denoise_s"].pop()
-    elif defect == "warmup":
-        record["settings"]["warmup"] += 1
-    elif defect == "times":
-        record["measurements"]["0"]["refresh_s"][0] = float("inf")
-    elif defect == "sum":
-        record["causal_total_ctx0"]["per_chunk_s"] += 1
-    elif defect == "cache":
-        record["cache_details"]["0"]["capacity"] += 1
-    else:
-        record["producer_source_sha256"] = "a" * 64
-    path.write_text(json.dumps(record))
-    with pytest.raises(ValueError, match=r"(?i)benchmark|operation|evaluation|software"):
-        bench.verify_completion(arguments, root)
+def test_operation_completion_rejects_incomplete_or_changed_protocol(
+    subtests: object, tmp_path: object, operation_complete: tuple
+) -> None:
+    pristine = snapshot(tmp_path)
+    for case in ["depth", "reps", "warmup", "times", "sum", "cache", "source"]:
+        with subtests.test(case=case):
+            restore(tmp_path, pristine)
+            defect = case
+            arguments, root, path = operation_complete
+            record = json.loads(path.read_text())
+            if defect == "depth":
+                record["measurements"].pop("2")
+            elif defect == "reps":
+                record["measurements"]["0"]["denoise_s"].pop()
+            elif defect == "warmup":
+                record["settings"]["warmup"] += 1
+            elif defect == "times":
+                record["measurements"]["0"]["refresh_s"][0] = float("inf")
+            elif defect == "sum":
+                record["causal_total_ctx0"]["per_chunk_s"] += 1
+            elif defect == "cache":
+                record["cache_details"]["0"]["capacity"] += 1
+            else:
+                record["producer_source_sha256"] = "a" * 64
+            path.write_text(json.dumps(record))
+            with pytest.raises(ValueError, match=r"(?i)benchmark|operation|evaluation|software"):
+                bench.verify_completion(arguments, root)
+
+    restore(tmp_path, pristine)

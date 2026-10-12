@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from scripts.onestep_avatar.execution import process_registry, supervision
+from scripts.onestep_avatar.tests.support.tokens import token
 
 
 def free() -> dict[int, int]:
@@ -232,14 +233,21 @@ def test_recovered_closed_row_reports_its_limited_scope(tmp_path: Path) -> None:
     """A row closed by recovery never reads as complete saved containment."""
     path = tmp_path / "own_processes.json"
     recovery = {"containment_complete": False, "continuous_supervision": False}
-    path.write_text(json.dumps({"schema_version": 1, "attempts": {
-        "a" * 32: {"state": "closed"},
-        "b" * 32: {"state": "closed", "recovery": recovery},
-    }}))
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "attempts": {
+                    "a" * 32: {"state": "closed"},
+                    token(): {"state": "closed", "recovery": recovery},
+                },
+            }
+        )
+    )
     contained = process_registry.inspect_record(path, "a" * 32)
-    recovered = process_registry.inspect_record(path, "b" * 32)
+    recovered = process_registry.inspect_record(path, token())
     assert contained["basis"] == "saved_complete_empty_containment"
     assert recovered["basis"] == "recovered_registered_handles_ended"
     assert recovered["containment_complete"] is False
     assert recovered["continuous_supervision"] is False
-    assert process_registry.workers_live(path, "b" * 32) is False
+    assert process_registry.workers_live(path, token()) is False

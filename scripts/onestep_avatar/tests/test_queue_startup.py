@@ -23,10 +23,17 @@ from scripts.onestep_avatar.execution import journal as queue_journal
 from scripts.onestep_avatar.execution import process_registry, queue, supervision
 from scripts.onestep_avatar.execution import processes as queue_processes
 from scripts.onestep_avatar.hashing import sha256
+from scripts.onestep_avatar.tests.support.tokens import token
 from scripts.onestep_avatar.training import engine, startup
 
 
-def event(name: str, token: str = "b" * 32, job: str = "a" * 64, rank: int = 2) -> str:
+def event(name: str, token: str | None = None, job: str = "a" * 64, rank: int = 2) -> str:
+    if token is None:
+        from scripts.onestep_avatar.tests.support.tokens import (  # noqa: PLC0415 -- pytest fixture imports occur after CPU/blocker setup
+            token as current_token,
+        )
+
+        token = current_token()
     return (
         startup.PREFIX
         + json.dumps(
@@ -59,7 +66,7 @@ def failed_attempt(tmp_path: Path) -> tuple:
         "child_identity": None,
         "log": str(log),
         "log_sha256": sha256(log),
-        "environment_changes": {startup.TOKEN_ENV: "b" * 32, startup.JOB_ENV: job["sha256"]},
+        "environment_changes": {startup.TOKEN_ENV: token(), startup.JOB_ENV: job["sha256"]},
     }
     attempt["attempt_started_ticks"] = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf("SC_CLK_TCK"))
     state_path = tmp_path / "state.json"
@@ -191,7 +198,7 @@ def test_archive_publication_failure_restores_output_and_preserves_journal(
     original = state_path.read_bytes()
     hashes = {p.name: sha256(p) for p in output.iterdir()}
 
-    def unavailable(*_args, **_kwargs) -> Never:
+    def unavailable(*_args: object, **_kwargs: object) -> Never:
         raise OSError("state disk failed")
 
     monkeypatch.setattr(dataset, "atomic_write", unavailable)
@@ -207,7 +214,7 @@ def test_archive_publication_failure_restores_output_and_preserves_journal(
 def test_typed_runtime_reports_only_oom_before_any_training(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], after_updates: bool, kind: str
 ) -> None:
-    monkeypatch.setenv(startup.TOKEN_ENV, "b" * 32)
+    monkeypatch.setenv(startup.TOKEN_ENV, token())
     monkeypatch.setenv(startup.JOB_ENV, "a" * 64)
     monkeypatch.setenv("RANK", "2")
 
@@ -225,7 +232,7 @@ def test_typed_runtime_reports_only_oom_before_any_training(
         if after_updates
         else ["startup_contended" if kind == "oom" else "startup_failed"]
     )
-    assert all(r["rank"] == 2 and r["job_sha256"] == "a" * 64 and r["token"] == "b" * 32 for r in records)
+    assert all(r["rank"] == 2 and r["job_sha256"] == "a" * 64 and r["token"] == token() for r in records)
 
 
 def test_nonqueued_startup_failure_has_no_protocol(
@@ -273,7 +280,7 @@ def test_loop_retries_at_most_three_times_with_new_claims_and_preserved_attempts
     )
     launches = []
 
-    def launch(command: list[str], **kwargs) -> SimpleNamespace:
+    def launch(command: list[str], **kwargs: object) -> SimpleNamespace:
         del command
         assert kwargs["start_new_session"]
         assert kwargs["env"]["CUDA_VISIBLE_DEVICES"] == "0,1,2,3"
@@ -459,7 +466,7 @@ def test_once_records_retry_pending_without_a_second_launch(tmp_path: Path, monk
     monkeypatch.setattr(queue_jobs, "prepare_jobs", lambda *_: [job])
     seen = []
 
-    def dispatch(*_args) -> bool:
+    def dispatch(*_args: object) -> bool:
         seen.append(1)
         assert queue_attempt.retry_startup_failure(job, [job], state_path)
         return True
@@ -475,7 +482,7 @@ def test_once_records_retry_pending_without_a_second_launch(tmp_path: Path, monk
 def test_typed_port_contention_is_distinct_from_other_os_errors(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], after_updates: bool, number: int
 ) -> Never:
-    monkeypatch.setenv(startup.TOKEN_ENV, "b" * 32)
+    monkeypatch.setenv(startup.TOKEN_ENV, token())
     monkeypatch.setenv(startup.JOB_ENV, "a" * 64)
     monkeypatch.setenv("RANK", "0")
     with pytest.raises(OSError, match="fixture error"), startup.StartupEvents() as reporter:  # noqa: PT012 -- assert rollback and lifecycle reporting across the whole transaction
@@ -514,11 +521,11 @@ def test_attempt_worker_scan_requires_exact_token_and_skips_older_handles(tmp_pa
         if environment is not None:
             (p / "environ").write_bytes(environment)
 
-    marker = (startup.TOKEN_ENV + "=" + "b" * 32).encode()
+    marker = (startup.TOKEN_ENV + "=" + token()).encode()
     create(42, 200, marker + b"\0OTHER=x\0")
     create(43, 200, marker + b"x\0")
     create(44, 50, None)  # Older process may have an inaccessible environment.
-    assert queue_processes.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path) == [42]
+    assert queue_processes.live_attempt_processes(token(), started_ticks=100, proc_root=tmp_path) == [42]
 
 
 def test_attempt_worker_scan_refuses_unreadable_or_reused_handles(
@@ -528,7 +535,7 @@ def test_attempt_worker_scan_refuses_unreadable_or_reused_handles(
     p.mkdir()
     stat = p / "stat"
     stat.write_text("42 (worker) " + " ".join(["S", "0", "0", "999", *(["0"] * 15), "200"]))
-    (p / "environ").write_bytes((startup.TOKEN_ENV + "=" + "b" * 32).encode())
+    (p / "environ").write_bytes((startup.TOKEN_ENV + "=" + token()).encode())
     original = Path.read_bytes
 
     def unreadable(path: Path) -> bytes:
@@ -538,7 +545,7 @@ def test_attempt_worker_scan_refuses_unreadable_or_reused_handles(
 
     monkeypatch.setattr(Path, "read_bytes", unreadable)
     with pytest.raises(PermissionError):
-        queue_processes.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path)
+        queue_processes.live_attempt_processes(token(), started_ticks=100, proc_root=tmp_path)
 
     def reused(path: Path) -> bytes:
         result = original(path)
@@ -548,4 +555,4 @@ def test_attempt_worker_scan_refuses_unreadable_or_reused_handles(
 
     monkeypatch.setattr(Path, "read_bytes", reused)
     with pytest.raises(ValueError, match="handle changed"):
-        queue_processes.live_attempt_processes("b" * 32, started_ticks=100, proc_root=tmp_path)
+        queue_processes.live_attempt_processes(token(), started_ticks=100, proc_root=tmp_path)

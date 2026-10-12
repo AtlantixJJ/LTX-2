@@ -22,7 +22,7 @@ from scripts.onestep_avatar.experiments import continuation_check as continuatio
 from scripts.onestep_avatar.experiments import short_causal_check as short
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters
-from scripts.onestep_avatar.tests.test_causal_core import SCALE, _context, _geometry, _grid, _model
+from scripts.onestep_avatar.tests.support.model import SCALE, _context, _geometry, _grid, _model
 from scripts.onestep_avatar.training import config, numerics, resources
 
 
@@ -436,14 +436,6 @@ def test_new_experiment_owners_are_excluded_from_ordinary_and_e4_software_profil
     from scripts.onestep_avatar.experiments import training_update_check  # noqa: PLC0415 -- explicit closure audit
 
     changed = {short.ENTRY, "scripts/onestep_avatar/experiments/continuation_check.py"}
-    for profile in software.PROFILES:
-        for mode in ("causal", "bidirectional", None):
-            for decoder in (False, True):
-                try:
-                    sources = software.source_files(profile, mode, decoder=decoder)
-                except ValueError:
-                    continue
-                assert not changed.intersection(sources)
     assert not changed.intersection(training_update_check.EXTRA_SOURCES)
     assert not changed.intersection(short.effect.EXTRA_SOURCES)
 

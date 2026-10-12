@@ -9,7 +9,7 @@ import torch
 from peft import get_peft_model_state_dict
 
 from scripts.onestep_avatar.model import adapters
-from scripts.onestep_avatar.tests.test_causal_core import _model
+from scripts.onestep_avatar.tests.support.model import _model
 from scripts.onestep_avatar.training import checkpoints
 
 

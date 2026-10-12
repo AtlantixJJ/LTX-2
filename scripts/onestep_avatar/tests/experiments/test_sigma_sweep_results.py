@@ -15,15 +15,18 @@ from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.execution import queue
 from scripts.onestep_avatar.experiments import sigma_sweep
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.tests.test_evaluation_completion import (
-    completed,  # noqa: F401 -- shared CPU model fixture
-    controlled_scientific_receipt,
+from scripts.onestep_avatar.tests.support.fixtures_evaluation_completion import (
+    completed as completed,  # noqa: PLC0414 -- explicit pytest fixture re-export
 )
+from scripts.onestep_avatar.tests.support.fixtures_evaluation_completion import controlled_scientific_receipt
+from scripts.onestep_avatar.tests.support.tree import restore, snapshot
 from scripts.prune.core import model_registry
+
+pytestmark = pytest.mark.slow
 
 
 @pytest.fixture
-def completed_sweep(completed: tuple, monkeypatch: pytest.MonkeyPatch) -> tuple:  # noqa: F811 -- imported pytest fixture
+def completed_sweep(completed: tuple, monkeypatch: pytest.MonkeyPatch) -> tuple:
     _, _, settings, membership, calls = completed
     specification = evaluate.backbone.resolve("2.5", "distilled")
     specification.sigmas = [0.421875, 0.725, 0.909375, 1.0]
@@ -136,30 +139,39 @@ def test_actual_causal_results_resolve_without_models_or_writes(completed_sweep:
     assert torch.equal(tensors["sigma1.000000_d0"], tensors["sigma1.000000_d1"])
 
 
-@pytest.mark.parametrize("defect", ["seed", "arm", "noise", "record", "masters"])
-def test_changed_requested_or_saved_conditions_fail_before_decoder(completed_sweep: tuple, defect: str) -> None:
-    spec, path, output, calls = completed_sweep
-    cell = spec["cells"][-1]
-    job = cell["evaluation_job"]
-    if defect in ("seed", "arm"):
-        flag = "--seed" if defect == "seed" else "--guide-mode"
-        job["arguments"][job["arguments"].index(flag) + 1] = "43" if defect == "seed" else "d0"
-    elif defect == "masters":
-        spec["guide"]["sha256"] = "0" * 64
-    elif defect == "noise":
-        target = Path(job["output"]) / "case_0000/noise.pt"
-        torch.save(torch.load(target, weights_only=True) + 1, target)
-    else:
-        target = Path(job["completion"]["records"][0])
-        record = json.loads(target.read_text())
-        record["seed"] = 43
-        target.write_text(json.dumps(record))
-    path.write_text(json.dumps(spec))
-    before = len(calls)
-    with pytest.raises(ValueError, match=r"sweep|queue evaluation"):
-        sigma_sweep.prepare(path, output)
-    assert len(calls) == before
-    assert not output.exists()
+def test_changed_requested_or_saved_conditions_fail_before_decoder(
+    subtests: object, tmp_path: object, completed_sweep: tuple
+) -> None:
+    pristine = snapshot(tmp_path)
+    for case in ["seed", "arm", "noise", "record", "masters"]:
+        with subtests.test(case=case):
+            restore(tmp_path, pristine)
+            defect = case
+            original_spec, path, output, calls = completed_sweep
+            spec = json.loads(json.dumps(original_spec))
+            cell = spec["cells"][-1]
+            job = cell["evaluation_job"]
+            if defect in ("seed", "arm"):
+                flag = "--seed" if defect == "seed" else "--guide-mode"
+                job["arguments"][job["arguments"].index(flag) + 1] = "43" if defect == "seed" else "d0"
+            elif defect == "masters":
+                spec["guide"]["sha256"] = "0" * 64
+            elif defect == "noise":
+                target = Path(job["output"]) / "case_0000/noise.pt"
+                torch.save(torch.load(target, weights_only=True) + 1, target)
+            else:
+                target = Path(job["completion"]["records"][0])
+                record = json.loads(target.read_text())
+                record["seed"] = 43
+                target.write_text(json.dumps(record))
+            path.write_text(json.dumps(spec))
+            before = len(calls)
+            with pytest.raises(ValueError, match=r"sweep|queue evaluation"):
+                sigma_sweep.prepare(path, output)
+            assert len(calls) == before
+            assert not output.exists()
+
+    restore(tmp_path, pristine)
 
 
 def test_result_bound_decode_and_receipt_reverify_all_generation_evidence(

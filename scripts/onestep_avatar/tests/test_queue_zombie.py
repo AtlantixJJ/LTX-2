@@ -14,8 +14,8 @@ import pytest
 
 from scripts.onestep_avatar.execution import journal as queue_journal
 from scripts.onestep_avatar.execution import processes as queue_processes
+from scripts.onestep_avatar.execution.process_registry import ProcessRegistry
 from scripts.onestep_avatar.execution.queue_protocol import TOKEN_ENV
-from scripts.onestep_avatar.tests.claims_fixture import GPUClaims
 
 T = TypeVar("T")
 
@@ -48,7 +48,7 @@ if sys.argv[2]=='yes':
 (root/'ready').write_text('ready')
 while not (root/'release').exists(): time.sleep(.01)
 """
-    claims = GPUClaims(tmp_path / "claims")
+    claims = ProcessRegistry(tmp_path / "ledger.json", inventory=lambda: dict.fromkeys(range(8), 0))
     assert claims.acquire((4,), job="zombie")
     child = subprocess.Popen(
         [sys.executable, "-c", code, str(tmp_path), "yes" if worker_survives else "no"],
@@ -106,10 +106,10 @@ while not (root/'release').exists(): time.sleep(.01)
             ):
                 pytest.fail("recovered a surviving worker")
             assert state_path.read_bytes() == original
-            with pytest.raises(ValueError, match="live child"):
+            with pytest.raises(ValueError, match="own processes remain live"):
                 claims.release()
             assert claims.owned == {4}
-            assert (tmp_path / "claims/4").is_file()
+            assert json.loads((tmp_path / "ledger.json").read_text())["attempts"][claims.token]["state"] == "active"
             current = queue_processes.process_identity(worker["pid"])
             assert current["start_ticks"] == worker["start_ticks"]
             os.kill(worker["pid"], signal.SIGTERM)
@@ -120,7 +120,7 @@ while not (root/'release').exists(): time.sleep(.01)
         assert queue_processes.inspect_child(row) == "terminal"
         claims.release()
         assert not claims.owned
-        assert not (tmp_path / "claims/4").exists()
+        assert json.loads((tmp_path / "ledger.json").read_text())["attempts"][claims.token]["state"] == "closed"
         assert child.wait(timeout=5) == 0
     finally:
         if worker is None and worker_file.exists():

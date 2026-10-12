@@ -219,8 +219,8 @@ at them.
   keep supported settings and pending requirements distinguishable. Never invent a
   flag or a loadable config file; `train.py` is CLI-driven.
 - **Verification matches the change.** For docs-only changes: check links, cited symbols, and that
-  each recipe matches `train.parse_args`. For behavior changes: the focused and full test runs
-  below, plus native saved-input/export checks when changing shared whole-clip inputs.
+  each recipe matches `train.parse_args`. For behavior changes: T0 per edit, T1 per area, T2 once at the end,
+  and T3 for import or dispatch changes in the run guide, plus native saved-input/export checks when changing shared whole-clip inputs.
   Passing cache-parity tests never establishes a missing first-frame condition.
 
 ## The invariants that are not obvious from one file
@@ -252,6 +252,8 @@ at them.
 ## Before calling a change done
 
 - docs-only work checks links, source symbols, mode logic, worked design checks and inspected diagrams;
-- behavior changes pass the suites and Ruff in the [run guide](configs/README.md#10-check-the-code);
+- behavior changes pass T0/T1 selected checks, one final T2 (avatar + prune + touched-file Ruff),
+  and T3 blocked boundary checks for import/dispatch edits in the [run guide](configs/README.md#10-check-the-code);
+- save the T2 log summary in the handoff; docs-only follow-ups do not repeat T2;
 - touched modules' mirrored docs or small-file headers reflect the change;
 - shared whole-clip input or export changes follow [`../prune/CLAUDE.md`](../prune/CLAUDE.md).

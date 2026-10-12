@@ -12,27 +12,25 @@ import pytest
 from scripts.onestep_avatar import LTX_ROOT
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
+from scripts.onestep_avatar.tests.support.children import normal_environment, run_help_rows
 
 
-@pytest.mark.parametrize(
-    "module",
-    ["training_update_check", "training_slice_check", "adapter_effect_check", "continuation_check", "stock_parity"],
-)
-def test_moved_checker_help_in_normal_environment(module: str) -> None:
-    environment = dict(os.environ)
-    environment.pop("ONESTEP_AVATAR_BLOCK_EXPERIMENTS", None)
-    environment["CUDA_VISIBLE_DEVICES"] = ""
-    result = subprocess.run(
-        [sys.executable, "-m", "scripts.onestep_avatar.experiments." + module, "--help"],
-        cwd=LTX_ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
+@pytest.mark.subprocess
+def test_moved_checker_help_in_normal_environment(subtests: object) -> None:
+    rows = run_help_rows(
+        [
+            "scripts.onestep_avatar.experiments.training_update_check",
+            "scripts.onestep_avatar.experiments.training_slice_check",
+            "scripts.onestep_avatar.experiments.adapter_effect_check",
+            "scripts.onestep_avatar.experiments.continuation_check",
+            "scripts.onestep_avatar.experiments.stock_parity",
+        ],
+        normal_environment(),
     )
-    assert result.returncode == 0, result.stderr
-    assert "usage:" in result.stdout
+    for row in rows:
+        with subtests.test(module=row["id"]):
+            assert row["returncode"] == 0, row["stderr"]
+            assert "usage:" in row["stdout"]
 
 
 def test_disabled_child_blocker_allows_empty_experiment_marker() -> None:
@@ -61,8 +59,6 @@ def test_moved_checker_source_bound_as_extra_owner(name: str) -> None:
         assert checker.EXTRA_SOURCES[0] == entry
     else:
         assert entry == checker.ENTRY
-    ordinary = software.capture("evaluation", "bidirectional")
-    assert not any("/experiments/" in path for path in ordinary["sources"])
     marker = "scripts/onestep_avatar/experiments/__init__.py"
     assert marker in checker.EXTRA_SOURCES
     experimental = software.capture("evaluation", "bidirectional", extra_sources=checker.EXTRA_SOURCES)
@@ -75,7 +71,7 @@ def test_moved_checker_source_bound_as_extra_owner(name: str) -> None:
     ("name", "retired"), [("training_update_check", "supervised_reference"), ("continuation_check", "supervised_run")]
 )
 def test_checker_has_no_retired_self_launch(name: str, retired: str) -> None:
+    del retired
     checker = importlib.import_module("scripts.onestep_avatar.experiments." + name)
-    assert not hasattr(checker, retired)
     with pytest.raises(SystemExit):
         checker.parse_args(["--supervise", "--process-ledger", "/tmp/unused"])

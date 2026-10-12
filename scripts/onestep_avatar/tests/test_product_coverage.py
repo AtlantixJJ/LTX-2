@@ -8,14 +8,14 @@ import torch
 from safetensors.torch import save_file
 
 from scripts.onestep_avatar import infer
-from scripts.onestep_avatar.tests import test_infer
-from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
+from scripts.onestep_avatar.tests.support import fixtures_infer as test_infer
+from scripts.onestep_avatar.tests.support.contracts import A, B, _contract
 from scripts.onestep_avatar.training.checkpoints import CONTRACT_KEY
 
 
 @pytest.fixture
 def product_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
-    return test_infer.product_files.__wrapped__(tmp_path, monkeypatch)
+    return test_infer.build_product_files(tmp_path, monkeypatch)
 
 
 def _case(files: tuple, tmp_path: Path, *, explicit: bool = False, teacher: bool = False) -> list[str]:

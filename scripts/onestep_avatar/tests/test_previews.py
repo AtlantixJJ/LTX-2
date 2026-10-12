@@ -9,67 +9,17 @@ from typing import Never
 
 import pytest
 import torch
-from safetensors.torch import save_file
 
 from scripts.onestep_avatar import evaluate, hashing, media, previews
 from scripts.onestep_avatar.corpus import dataset, precompute
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
-from scripts.onestep_avatar.training import config, engine
-from scripts.onestep_avatar.training.checkpoints import CONTRACT_KEY
+from scripts.onestep_avatar.tests.support.fixtures_previews import (
+    _completed,
+    _fixed_inputs,
+)
+from scripts.onestep_avatar.training import engine
 from scripts.prune.core import session as native_session
-
-
-def _fixed_inputs(tmp_path: Path) -> tuple:
-    files = {}
-    for role in ("subset", "capture", "guide", "first_image", "text", "noise"):
-        path = tmp_path / role
-        path.write_text(role)
-        files[role] = {"path": str(path), "sha256": sha256(path), "tensor_sha256": sha256(path)}
-    record = {
-        "schema_version": 2,
-        "kind": "onestep_avatar.preview_inputs",
-        "mode": "bidirectional",
-        "schedule": [0.725, 0],
-        "input_files": files,
-        "evaluation_arguments": [
-            "--mode",
-            "bidirectional",
-            "--subset",
-            files["subset"]["path"],
-            "--noise-file",
-            files["noise"]["path"],
-            "--schedule",
-            "0.725",
-            "0",
-        ],
-    }
-    path = tmp_path / "preview.json"
-    path.write_text(json.dumps(record))
-    settings = config.RunSettings(
-        "bidirectional", Path(files["subset"]["path"]), tmp_path / "run", config.BidirectionalSettings()
-    )
-    return path, settings
-
-
-def _completed(tmp_path: Path) -> Path:
-    checkpoint = tmp_path / "checkpoint.safetensors"
-    contract = _contract()
-    contract["adapter"]["step"] = 100
-    save_file({A: torch.ones(2, 4), B: torch.zeros(4, 2)}, checkpoint, metadata={CONTRACT_KEY: json.dumps(contract)})
-    checkpoint.with_suffix(".complete.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 2,
-                "path": str(checkpoint),
-                "sha256": sha256(checkpoint),
-                "state": "complete",
-                "step": 100,
-            }
-        )
-    )
-    return checkpoint
 
 
 def test_fixed_inputs_checked_without_output_or_models(tmp_path: Path) -> None:
@@ -126,7 +76,7 @@ def test_generation_failure_records_reason_and_keeps_checkpoint(
     marker_digest = sha256(checkpoint.with_suffix(".complete.json"))
     job_path = engine.enqueue_preview(checkpoint, fixed, settings.output)
 
-    def fail_execution(args: Namespace, **kwargs) -> Never:
+    def fail_execution(args: Namespace, **kwargs: object) -> Never:
         assert kwargs["preview_tensor_validator"] is previews.verify_preview_tensors
         assert args.checkpoint == [checkpoint]
         assert args.preview_fixed == fixed
@@ -162,7 +112,7 @@ def test_generation_corrupt_input_records_failure_before_execution(
     job_path = engine.enqueue_preview(checkpoint, fixed, settings.output)
     Path(fixed["input_files"]["noise"]["path"]).write_bytes(b"changed input")
 
-    def forbidden(args: Namespace, **_kwargs) -> None:
+    def forbidden(args: Namespace, **_kwargs: object) -> None:
         del args
         pytest.fail("changed pinned files must fail before generation")
 
@@ -185,7 +135,7 @@ def test_generation_records_raw_evidence_and_retry_preserves_prior_attempt(
     job_path = engine.enqueue_preview(checkpoint, fixed, settings.output)
     attempts = []
 
-    def save_raw(args: Namespace, **_kwargs) -> int:
+    def save_raw(args: Namespace, **_kwargs: object) -> int:
         attempts.append(args.output)
         record = {
             "mode": fixed["mode"],
@@ -436,7 +386,7 @@ def test_generation_with_reference_bundle_renders_and_completes(  # noqa: PLR091
     job_path = engine.enqueue_preview(checkpoint, fixed, settings.output)
     original_hash = sha256(checkpoint)
 
-    def save_raw(args: Namespace, **_kwargs) -> None:
+    def save_raw(args: Namespace, **_kwargs: object) -> None:
         record = {
             "mode": "bidirectional",
             "frames": 2,

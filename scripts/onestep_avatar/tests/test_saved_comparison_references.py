@@ -12,6 +12,7 @@ from scripts.onestep_avatar import comparisons, hashing, media
 from scripts.onestep_avatar.execution import software
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model.common import VideoLatentPatchifier
+from scripts.onestep_avatar.tests.support.tree import restore, snapshot
 
 
 def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dict, list[int]]:
@@ -163,9 +164,13 @@ def test_d0_rgb_gt_precedes_outputs_without_a_guide_panel(
     assert comparisons.verify_saved_comparison_completion(spec, tmp_path / "d0_out")
 
 
-@pytest.mark.parametrize(
-    "changed",
-    [
+def test_reference_or_output_mismatch_refuses_before_decoder(  # noqa: PLR0912, PLR0915 -- one complete verifier matrix with isolated subtests
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, subtests: object
+) -> None:
+    spec, comparison, _calls = fixture(tmp_path, monkeypatch)
+    saved_comparison = json.dumps(comparison)
+    pristine = snapshot(tmp_path)
+    for changed in [
         "fps",
         "mapping",
         "seed",
@@ -181,57 +186,59 @@ def test_d0_rgb_gt_precedes_outputs_without_a_guide_panel(
         "second_factor",
         "result_missing",
         "role",
-    ],
-)
-def test_reference_or_output_mismatch_refuses_before_decoder(  # noqa: PLR0912 -- one-field negative cases
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str
-) -> None:
-    spec, comparison, _calls = fixture(tmp_path, monkeypatch)
-    refs_path = tmp_path / "refs/references.json"
-    refs = json.loads(refs_path.read_text())
-    producer = refs["producer"]
-    if changed == "fps":
-        producer["fps"] = 24
-    if changed == "mapping":
-        producer["source_frames"] = list(range(1, 10))
-        for panel in refs["panels"]:
-            panel["source_frames"] = producer["source_frames"]
-    if changed == "seed":
-        producer["decode_seed"] = 43
-    if changed == "vae":
-        producer["vae_sha256"] = "0" * 64
-    if changed == "settings":
-        producer["decoder_settings"]["dtype"] = "float32"
-    if changed == "missing_pixel":
-        (tmp_path / "refs/guide.pt").unlink()
-        assert not comparisons.saved_comparison_inputs_ready(spec)
-    refs_path.write_text(json.dumps(refs))
-    result_path = tmp_path / "recompute.json"
-    record = json.loads(result_path.read_text())
-    if changed == "output_source":
-        record["source"] = "other/view"
-    if changed == "output_master":
-        record["input_file_hashes"]["capture"] = "0" * 64
-    if changed == "output_guide":
-        record["input_file_hashes"]["render"] = "0" * 64
-    if changed == "output_membership":
-        record["membership_sha256"] = "0" * 64
-    if changed == "output_shape":
-        record["output"]["shape"][2] = 3
-    if changed == "output_c0":
-        record["c0_sha256"] = "0" * 64
-    if changed == "second_factor":
-        record["noise_sha256"] = "0" * 64
-    result_path.write_text(json.dumps(record))
-    if changed == "result_missing":
-        del comparison["panels"][-1]["result"]
-    if changed == "role":
-        comparison["panels"][0]["role"] = "pretend_capture"
-    spec.write_text(json.dumps({"model": "2.5", "comparisons": [comparison]}))
-    monkeypatch.setattr(media, "open_decoder_session", lambda *_a, **_k: pytest.fail("bad references opened VAE"))
-    with pytest.raises((ValueError, FileNotFoundError)):
-        comparisons.render_saved_comparisons(spec, tmp_path / "out", gpu_id=0)
-    assert not (tmp_path / "out").exists()
+    ]:
+        with subtests.test(changed=changed):
+            restore(tmp_path, pristine)
+            comparison = json.loads(saved_comparison)
+            refs_path = tmp_path / "refs/references.json"
+            refs = json.loads(refs_path.read_text())
+            producer = refs["producer"]
+            if changed == "fps":
+                producer["fps"] = 24
+            if changed == "mapping":
+                producer["source_frames"] = list(range(1, 10))
+                for panel in refs["panels"]:
+                    panel["source_frames"] = producer["source_frames"]
+            if changed == "seed":
+                producer["decode_seed"] = 43
+            if changed == "vae":
+                producer["vae_sha256"] = "0" * 64
+            if changed == "settings":
+                producer["decoder_settings"]["dtype"] = "float32"
+            if changed == "missing_pixel":
+                (tmp_path / "refs/guide.pt").unlink()
+                assert not comparisons.saved_comparison_inputs_ready(spec)
+            refs_path.write_text(json.dumps(refs))
+            result_path = tmp_path / "recompute.json"
+            record = json.loads(result_path.read_text())
+            if changed == "output_source":
+                record["source"] = "other/view"
+            if changed == "output_master":
+                record["input_file_hashes"]["capture"] = "0" * 64
+            if changed == "output_guide":
+                record["input_file_hashes"]["render"] = "0" * 64
+            if changed == "output_membership":
+                record["membership_sha256"] = "0" * 64
+            if changed == "output_shape":
+                record["output"]["shape"][2] = 3
+            if changed == "output_c0":
+                record["c0_sha256"] = "0" * 64
+            if changed == "second_factor":
+                record["noise_sha256"] = "0" * 64
+            result_path.write_text(json.dumps(record))
+            if changed == "result_missing":
+                del comparison["panels"][-1]["result"]
+            if changed == "role":
+                comparison["panels"][0]["role"] = "pretend_capture"
+            spec.write_text(json.dumps({"model": "2.5", "comparisons": [comparison]}))
+            monkeypatch.setattr(
+                media, "open_decoder_session", lambda *_a, **_k: pytest.fail("bad references opened VAE")
+            )
+            with pytest.raises((ValueError, FileNotFoundError)):
+                comparisons.render_saved_comparisons(spec, tmp_path / "out", gpu_id=0)
+            assert not (tmp_path / "out").exists()
+
+    restore(tmp_path, pristine)
 
 
 def test_changed_original_result_prevents_manifest_publication(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -248,24 +255,30 @@ def test_changed_original_result_prevents_manifest_publication(tmp_path: Path, m
     assert not (tmp_path / "out/render_manifest.json").exists()
 
 
-@pytest.mark.parametrize("changed", ["reference", "result", "pixels"])
 def test_completion_rejects_changed_reference_and_result_inputs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str
+    subtests: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     spec, _comparison, _calls = fixture(tmp_path, monkeypatch)
     comparisons.render_saved_comparisons(spec, tmp_path / "out", gpu_id=0)
-    if changed == "reference":
-        path = tmp_path / "refs/references.json"
-        row = json.loads(path.read_text())
-        row["extra"] = "changed bytes"
-        path.write_text(json.dumps(row))
-    if changed == "result":
-        path = tmp_path / "cache.json"
-        row = json.loads(path.read_text())
-        row["extra"] = "changed bytes"
-        path.write_text(json.dumps(row))
-    if changed == "pixels":
-        torch.save(torch.ones(9, 3, 64, 64), tmp_path / "refs/recorded.pt")
-    monkeypatch.setattr(media, "open_decoder_session", lambda *_a, **_k: pytest.fail("completion opened VAE"))
-    with pytest.raises(ValueError, match=r"input inventory differs|pixel file changed"):
-        comparisons.verify_saved_comparison_completion(spec, tmp_path / "out")
+    pristine = snapshot(tmp_path)
+    for case in ["reference", "result", "pixels"]:
+        with subtests.test(case=case):
+            restore(tmp_path, pristine)
+            changed = case
+            if changed == "reference":
+                path = tmp_path / "refs/references.json"
+                row = json.loads(path.read_text())
+                row["extra"] = "changed bytes"
+                path.write_text(json.dumps(row))
+            if changed == "result":
+                path = tmp_path / "cache.json"
+                row = json.loads(path.read_text())
+                row["extra"] = "changed bytes"
+                path.write_text(json.dumps(row))
+            if changed == "pixels":
+                torch.save(torch.ones(9, 3, 64, 64), tmp_path / "refs/recorded.pt")
+            monkeypatch.setattr(media, "open_decoder_session", lambda *_a, **_k: pytest.fail("completion opened VAE"))
+            with pytest.raises(ValueError, match=r"input inventory differs|pixel file changed"):
+                comparisons.verify_saved_comparison_completion(spec, tmp_path / "out")
+
+    restore(tmp_path, pristine)

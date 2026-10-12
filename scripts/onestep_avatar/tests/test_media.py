@@ -2,7 +2,7 @@
 
 import json
 from collections.abc import Iterator
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Never, Self
@@ -15,7 +15,9 @@ import torch
 from scripts.onestep_avatar import media
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.media import Panel, as_fchw, decode_key, render_from_record, render_panels
-from scripts.onestep_avatar.model import backbone
+from scripts.onestep_avatar.tests.support.corpus import (
+    reference_cli_inputs as reference_cli_inputs,  # noqa: PLC0414 -- explicit fixture re-export
+)
 from scripts.prune.core import preflight, session
 from scripts.prune.data import prompt_cache
 from scripts.prune.evaluate import decode as native_decode
@@ -368,84 +370,6 @@ def test_saved_decoder_session_preserves_preflight_failure(monkeypatch: pytest.M
     monkeypatch.setattr(session, "Session", lambda *_a, **_k: pytest.fail("constructed unchecked session"))
     with pytest.raises(SystemExit, match="unavailable"):
         media.open_decoder_session("2.5", 4, script="saved acceptance")
-
-
-@pytest.fixture
-def reference_cli_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
-    """Real checked-master/producer flow; only pixel readers and VAE are controlled."""
-
-    from scripts.onestep_avatar.corpus import dataset, precompute, subset  # noqa: PLC0415 -- same lazy caller scope
-
-    view = tmp_path / "actor/view"
-    view.mkdir(parents=True)
-    for name in ("rgb.mp4", "bbox.npy", dataset.CAPTURE_MASK_NAME):
-        (view / name).write_bytes(name.encode())
-    vae = tmp_path / "vae.safetensors"
-    vae.write_bytes(b"controlled VAE")
-    encoding = {
-        "source": "actor/view",
-        "objective": "white",
-        "fps": 30,
-        "vae_fingerprint": precompute.file_fingerprint(vae),
-        "edge": 32,
-        "box_xyxy": [0, 0, 32, 32],
-        "pixel_frames": 9,
-        "encode_contract_version": 1,
-    }
-    capture = view / dataset.capture_bundle_name("white")
-    torch.save({"schema_version": 2, "master": torch.zeros(128, 2, 1, 1), **encoding}, capture)
-    source = {
-        "relative_dir": "actor/view",
-        "actor": "actor",
-        "split": "train",
-        "shape": [128, 2, 1, 1],
-        "fps": 30,
-        "n_latent_frames": 2,
-        "capture_encode_record": encoding,
-        "capture_latent_sha256": sha256(capture),
-        "rgb_sha256": sha256(view / "rgb.mp4"),
-        "guide_sha256": None,
-    }
-    membership = {
-        "schema_version": 2,
-        "kind": subset.KIND,
-        "objective": "white",
-        "corpus_root": str(tmp_path),
-        "sources": [source],
-        "splits": {"train": ["actor"]},
-    }
-    crop_manifest = tmp_path / dataset.CAPTURE_MANIFEST_NAME
-    crop_manifest.write_text(json.dumps({"pad_factor": 1.2, "edge": 32, "windows": [
-        {"bundle": "actor/view/ltx_vae_latent_white.pt", "box_xyxy": [0, 0, 32, 32]}]}))
-    membership["capture_manifest"] = {"sha256": sha256(crop_manifest)}
-    membership["sha256"] = subset.membership_hash(membership)
-    path = tmp_path / "membership.json"
-    path.write_text(json.dumps(membership))
-    model = SimpleNamespace(paths=SimpleNamespace(video_vae=lambda: vae))
-    session = SimpleNamespace(model=model, decoder=lambda: nullcontext(None))
-    pixels = torch.zeros(9, 3, 32, 32)
-    monkeypatch.setattr(backbone, "resolve", lambda *_a: model)
-    monkeypatch.setattr(media, "recorded_capture_rgb", lambda *_a: pixels)
-    monkeypatch.setattr(media, "recorded_guide_rgb", lambda *_a: pytest.fail("capture-only D0 read guide RGB"))
-    monkeypatch.setattr(media, "decode", lambda *_a: pixels)
-    monkeypatch.setattr(media, "open_decoder_session", lambda *_a, **_kw: session)
-    output = tmp_path / "references"
-    arguments = [
-        "--prepare-training-references",
-        "--subset",
-        str(path),
-        "--source",
-        "actor/view",
-        "--encoded-frames",
-        "2",
-        "--guide-mode",
-        "d0",
-        "--gpu-id",
-        "4",
-        "--output",
-        str(output),
-    ]
-    return arguments, source, session, view, path, output
 
 
 @pytest.mark.parametrize("changed", ["manifest", "encoding"])

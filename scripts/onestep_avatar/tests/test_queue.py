@@ -23,8 +23,7 @@ from scripts.onestep_avatar.execution import processes as queue_processes
 from scripts.onestep_avatar.execution import queue, supervision
 from scripts.onestep_avatar.execution.process_registry import ProcessRegistry
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.tests.claims_fixture import GPUClaims
-from scripts.onestep_avatar.tests.test_previews import _completed
+from scripts.onestep_avatar.tests.support.fixtures_previews import _completed
 from scripts.prune.core import model_registry
 
 
@@ -384,7 +383,7 @@ def test_child_requires_verified_outputs_and_releases_reaped_claims(
 ) -> None:
 
     output = tmp_path / "result"
-    claims = GPUClaims(tmp_path / "claims")
+    claims = ProcessRegistry(tmp_path / "ledger.json", inventory=lambda: dict.fromkeys(range(8), 0))
     assert claims.acquire((5,), job="case")
     job = {
         "id": "case",
@@ -420,7 +419,7 @@ def test_child_requires_verified_outputs_and_releases_reaped_claims(
     if publish:
         assert queue_completion.verify_receipt(job, row["receipt"])
     assert not claims.owned
-    assert not (tmp_path / "claims/5").exists()
+    assert json.loads((tmp_path / "ledger.json").read_text())["attempts"][claims.token]["state"] == "closed"
 
 
 def test_refused_child_preserves_existing_running_journal(tmp_path: Path) -> None:
@@ -435,7 +434,7 @@ def test_refused_child_preserves_existing_running_journal(tmp_path: Path) -> Non
     with queue_journal.queue_state(path, [job]) as state:
         state["jobs"]["case"].update(state="running", child_pid=12345)
     original = path.read_bytes()
-    claims = GPUClaims(tmp_path / "claims")
+    claims = ProcessRegistry(tmp_path / "ledger.json", inventory=lambda: dict.fromkeys(range(8), 0))
     assert claims.acquire((5,), job="case")
     with pytest.raises(ValueError, match="pending saved job"):
         queue_attempt.run_child(job, claims, tmp_path / "child.log", state_path=path, jobs=[job])
@@ -444,7 +443,19 @@ def test_refused_child_preserves_existing_running_journal(tmp_path: Path) -> Non
 
 
 def test_interrupted_owner_preserves_claim_for_live_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    claims = GPUClaims(tmp_path / "claims")
+    from scripts.onestep_avatar.execution import process_registry  # noqa: PLC0415 -- controlled synthetic child handle
+
+    original_identity = process_registry._identity
+    monkeypatch.setattr(
+        process_registry,
+        "_identity",
+        lambda pid: (
+            {"pid": pid, "start_ticks": 1, "command": ["synthetic child"], "terminal": False}
+            if pid == 99999
+            else original_identity(pid)
+        ),
+    )
+    claims = ProcessRegistry(tmp_path / "ledger.json", inventory=lambda: dict.fromkeys(range(8), 0))
     assert claims.acquire((5,), job="case")
     job = {
         "kind": "evaluate",
@@ -457,7 +468,7 @@ def test_interrupted_owner_preserves_claim_for_live_child(tmp_path: Path, monkey
     with pytest.raises(KeyboardInterrupt):
         queue_attempt.run_child(job, claims, tmp_path / "child.log")
     assert claims.owned == {5}
-    assert json.loads((tmp_path / "claims/5").read_text())["child_pid"] == 99999
+    assert json.loads((tmp_path / "ledger.json").read_text())["attempts"][claims.token]["child_pid"] == 99999
 
 
 def test_queue_dry_run_is_read_only_and_reports_planned_commands(
@@ -755,7 +766,7 @@ def test_persistent_child_cannot_start_with_pending_or_changed_dependency(
         if changed_receipt:
             state["jobs"]["source"].update(state="complete", receipt={**prior_receipt, "changed": True})
     original = path.read_bytes()
-    claims = GPUClaims(tmp_path / "claims")
+    claims = ProcessRegistry(tmp_path / "ledger.json", inventory=lambda: dict.fromkeys(range(8), 0))
     assert claims.acquire((5,), job="case")
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("blocked child started"))
     with pytest.raises(ValueError, match="dependencies are not verified"):

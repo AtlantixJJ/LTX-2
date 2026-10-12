@@ -9,7 +9,7 @@ from scripts.onestep_avatar.execution import completion as queue_completion
 from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.experiments import sigma_sweep
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.tests.experiments.test_sigma_sweep import sweep_queue_job
+from scripts.onestep_avatar.tests.support.fixtures_experiment_test_sigma_sweep import sweep_queue_job
 
 # Reuse the real saved-media fixture without shadowing an imported fixture name.
 pytest_plugins = ("scripts.onestep_avatar.tests.experiments.test_sigma_sweep",)

@@ -13,7 +13,10 @@ from scripts.onestep_avatar.execution import completion as queue_completion
 from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.experiments import sigma_sweep
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.tests.test_evaluation_completion import controlled_scientific_receipt
+from scripts.onestep_avatar.tests.support.fixtures_evaluation_completion import controlled_scientific_receipt
+from scripts.onestep_avatar.tests.support.fixtures_experiment_test_sigma_sweep import (
+    sweep_queue_job,
+)
 from scripts.onestep_avatar.training import resources
 from scripts.prune.core import model_registry as registry
 
@@ -65,23 +68,6 @@ def saved_sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple:
     monkeypatch.setattr(media, "open_decoder_session", session)
     monkeypatch.setattr(media, "decode", decode)
     return spec, path, tmp_path / "output", calls
-
-
-def sweep_queue_job(path: Path, output: Path) -> dict:
-    """Prepare the real queue command through its public parser and identity owner."""
-    job = {
-        "id": "matched",
-        "kind": "experiment",
-        "experiment": "sigma_sweep",
-        "spec": str(path),
-        "spec_sha256": sha256(path),
-        "arguments": ["--spec", str(path), "--output", str(output)],
-        "output": str(output),
-        "completion": {"manifest": str(output / "manifest.json")},
-    }
-    jobs = path.parent / "queue_jobs.json"
-    jobs.write_text(json.dumps({"schema_version": 1, "jobs": [job]}))
-    return queue_jobs.prepare_jobs(jobs)[0]
 
 
 def test_queue_sweep_command_and_complete_receipt_use_real_owner(

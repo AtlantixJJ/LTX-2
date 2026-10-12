@@ -13,7 +13,7 @@ from ltx_core.model.transformer.modality import Modality
 from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar.model import bidirectional, common, sampling
 from scripts.onestep_avatar.model import causal as causal_core
-from scripts.onestep_avatar.tests.test_causal_core import _model
+from scripts.onestep_avatar.tests.support.model import _model
 from scripts.onestep_avatar.training import config
 
 
@@ -57,7 +57,7 @@ def test_same_inputs_match_original_prediction_loss_and_gradient(
         accumulation=3,
     )
 
-    def forbidden(*args, **kwargs) -> Never:
+    def forbidden(*args: object, **kwargs: object) -> Never:
         del args, kwargs
         raise AssertionError("bidirectional mode called a causal helper")
 

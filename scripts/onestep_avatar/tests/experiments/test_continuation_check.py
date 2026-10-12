@@ -13,25 +13,19 @@ from scripts.onestep_avatar import evaluate, hashing, previews
 from scripts.onestep_avatar.experiments import causality
 from scripts.onestep_avatar.experiments import continuation_check as check
 from scripts.onestep_avatar.model import causal, common
-from scripts.onestep_avatar.tests.test_causal_core import CHANNELS, DEVICE, EDGE, FPS, SCALE, _context, _model
+from scripts.onestep_avatar.tests.support.fixtures_experiment_test_continuation_check import (
+    inputs,
+)
+from scripts.onestep_avatar.tests.support.model import _model
 from scripts.onestep_avatar.training.config import CausalSettings
-
-
-def inputs() -> tuple:
-    geometry = causal.CausalGeometry(SCALE, 2, 8)
-    grid = common.ClipGrid.build(
-        17, EDGE, EDGE, FPS, geometry, device=DEVICE, dtype=torch.float32, latent_channels=CHANNELS
-    )
-    generator = torch.Generator().manual_seed(72)
-    shape = (1, grid.latent_frames * grid.tokens_per_latent_frame, CHANNELS)
-    capture, guide, noise = (torch.randn(shape, generator=generator) for _ in range(3))
-    return grid, geometry, capture, guide, noise, _context()
 
 
 @pytest.mark.parametrize("paired", [False, True])
 @pytest.mark.parametrize("changed_context", [False, True])
 def test_causality_wrapper_preserves_fixed_input_validation(
-    monkeypatch: pytest.MonkeyPatch, paired: bool, changed_context: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    paired: bool,
+    changed_context: bool,
 ) -> None:
     """Both public dispatch paths retain the tensor guard before controlled execution."""
     context = torch.arange(8, dtype=torch.float32).reshape(1, 2, 4)
@@ -42,8 +36,10 @@ def test_causality_wrapper_preserves_fixed_input_validation(
     execution = []
 
     def guarded_operation(
-        selected: SimpleNamespace, *,
-        preview_tensor_validator: Callable[[dict, dict], None] | None = None, **_hooks: object,
+        selected: SimpleNamespace,
+        *,
+        preview_tensor_validator: Callable[[dict, dict], None] | None = None,
+        **_hooks: object,
     ) -> int:
         if not callable(preview_tensor_validator):
             raise ValueError("fixed preview requires its explicit preview tensor validator")

@@ -10,7 +10,7 @@ import torch
 
 from scripts.onestep_avatar import bench, evaluate
 from scripts.onestep_avatar.model import common
-from scripts.onestep_avatar.tests.test_causal_core import _geometry, _grid, _model
+from scripts.onestep_avatar.tests.support.model import _geometry, _grid, _model
 from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
 
 

@@ -12,9 +12,9 @@ from scripts.onestep_avatar.execution import completion as queue_completion
 from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters
-from scripts.onestep_avatar.tests.test_applied_runtime import inventory
-from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B, _contract
-from scripts.onestep_avatar.tests.test_evaluation_completion import controlled_scientific_receipt
+from scripts.onestep_avatar.tests.support.contracts import A, B, _contract
+from scripts.onestep_avatar.tests.support.fixtures_applied_runtime import inventory
+from scripts.onestep_avatar.tests.support.fixtures_evaluation_completion import controlled_scientific_receipt
 from scripts.onestep_avatar.training import checkpoints, config, engine, resources
 
 

@@ -144,3 +144,16 @@ def test_dependency_group_inventory_changes_are_bound(
     software.validate(record)
     with pytest.raises(ValueError, match="changed since preflight"):
         software.check_current(record)
+
+
+@pytest.mark.parametrize("profile", software.PROFILES)
+@pytest.mark.parametrize("mode", ["causal", "bidirectional", None])
+@pytest.mark.parametrize("decoder", [False, True])
+def test_ordinary_profiles_exclude_all_experiment_and_report_owners(
+    profile: str, mode: str | None, decoder: bool
+) -> None:
+    try:
+        declared = software.source_files(profile, mode, decoder=decoder)
+    except ValueError:
+        return  # Unsupported profile/mode combinations have separate refusal checks.
+    assert all("/experiments/" not in name and not name.startswith("expr/") for name in declared)

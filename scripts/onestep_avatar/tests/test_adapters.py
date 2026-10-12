@@ -15,8 +15,8 @@ from ltx_trainer import model_loader
 from scripts.onestep_avatar import evaluate, infer
 from scripts.onestep_avatar.hashing import sha256
 from scripts.onestep_avatar.model import adapters, common
-from scripts.onestep_avatar.tests.test_causal_core import _geometry, _grid, _model
-from scripts.onestep_avatar.tests.test_checkpoint_contract import _contract
+from scripts.onestep_avatar.tests.support.contracts import _contract
+from scripts.onestep_avatar.tests.support.model import _geometry, _grid, _model
 from scripts.onestep_avatar.training.checkpoints import CONTRACT_KEY
 from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
 
@@ -61,7 +61,7 @@ def test_unmerged_inference_matches_training_reference(
         adapters.load_weights(reference, path)
     calls = []
 
-    def load(**kwargs) -> torch.nn.Module:
+    def load(**kwargs: object) -> torch.nn.Module:
         calls.append(kwargs)
         base = _model().to(dtype=torch.bfloat16)
         base.load_state_dict(state)
@@ -155,7 +155,7 @@ def test_ordinary_mode_samplers_match_the_loaded_training_function(
 ) -> None:
     reference, state, path, contract = saved
 
-    def load(**kwargs) -> torch.nn.Module:
+    def load(**kwargs: object) -> torch.nn.Module:
         del kwargs
         base = _model().to(dtype=torch.bfloat16)
         base.load_state_dict(state)
@@ -268,7 +268,7 @@ def test_adapter_changed_during_backbone_loading_refused_before_matrix_use(
     _, state, path, contract = saved
     identity = sha256(path)
 
-    def mutate_while_loading(**_kwargs) -> torch.nn.Module:
+    def mutate_while_loading(**_kwargs: object) -> torch.nn.Module:
         weights = load_file(str(path))
         next(iter(weights.values())).add_(0.125)
         save_file(weights, path, metadata={CONTRACT_KEY: json.dumps(contract)})
@@ -337,7 +337,7 @@ def test_ordinary_recheck_precedes_text_native_handles_and_writes(
 
     handles = []
 
-    def native_preflight(*_args, **_kwargs) -> None:
+    def native_preflight(*_args: object, **_kwargs: object) -> None:
         handles.append("native_preflight")
         raise RuntimeError("unchanged adapter reached native preflight")
 

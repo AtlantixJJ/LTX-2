@@ -11,116 +11,13 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar import evaluate, media, prepare_inputs
-from scripts.onestep_avatar.corpus import dataset, precompute, subset
 from scripts.onestep_avatar.hashing import sha256
-from scripts.onestep_avatar.tests.test_checkpoint_contract import A, B
+from scripts.onestep_avatar.tests.support.contracts import A, B
+from scripts.onestep_avatar.tests.support.corpus import (
+    causal_coverage as causal_coverage,  # noqa: PLC0414 -- explicit fixture re-export
+)
 from scripts.onestep_avatar.training import checkpoints, config, engine
-
-
-@pytest.fixture
-def causal_coverage(current_membership: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
-    """Use real checked D1 masters/contracts; no native model or VAE work is allowed."""
-    membership = current_membership
-    for source in membership["sources"]:
-        source["n_latent_frames"] = 18
-        source["shape"] = [2, 18, 2, 2]
-        view = tmp_path / source["relative_dir"]
-        capture_path = view / dataset.capture_bundle_name("white")
-        capture = torch.load(capture_path, weights_only=True)
-        capture["master"] = torch.arange(144).reshape(2, 18, 2, 2).to(torch.bfloat16)
-        capture["pixel_frames"] = 137
-        torch.save(capture, capture_path)
-        source["capture_latent_sha256"] = sha256(capture_path)
-        source["capture_encode_record"] = {key: value for key, value in capture.items() if key != "master"}
-        render = view / dataset.render_name("white")
-        render.write_bytes(b"controlled guide RGB " + source["actor"].encode())
-        source["guide_sha256"] = sha256(render)
-        guide = {**capture, "master": capture["master"] + 1, "input_fingerprint": sha256(render)}
-        guide_path = view / dataset.guide_bundle_name("white")
-        torch.save(guide, guide_path)
-        sidecar = view / dataset.render_metadata_name("white")
-        sidecar.write_text(json.dumps({"compositing_version": dataset.GUIDE_COMPOSITING_VERSION, "objective": "white"}))
-        source.update(
-            guide_latent_sha256=sha256(guide_path),
-            guide_sidecar_sha256=sha256(sidecar),
-            guide_encode_record={key: value for key, value in guide.items() if key != "master"},
-        )
-    membership["requires_guide_latent"] = True
-    membership["sha256"] = subset.membership_hash(membership)
-    membership_path = tmp_path / "membership.json"
-    membership_path.write_text(json.dumps(membership))
-    specification = SimpleNamespace(
-        scale_factors=SpatioTemporalScaleFactors(8, 32, 32),
-        caps=SimpleNamespace(latent_channels=2, num_layers=2),
-        sigmas=[0.725],
-        paths=SimpleNamespace(
-            transformer=lambda: tmp_path / "base.safetensors", video_vae=lambda: tmp_path / "vae.safetensors"
-        ),
-    )
-    monkeypatch.setattr(evaluate.backbone, "resolve", lambda *_args: specification)
-    monkeypatch.setattr(
-        evaluate.backbone,
-        "identity",
-        lambda *_args, **_kwargs: {"base_transformer_sha256": "a" * 64, "base_transformer_file": "base.safetensors"},
-    )
-    monkeypatch.setattr(precompute, "file_fingerprint", lambda _path: "saved VAE identity")
-    from scripts.prune.core import preflight, session  # noqa: PLC0415 -- pre-weight guard
-
-    monkeypatch.setattr(preflight, "check", lambda *_args, **_kwargs: pytest.fail("preflight opened native work"))
-    monkeypatch.setattr(session, "Session", lambda *_args, **_kwargs: pytest.fail("preflight opened model session"))
-    paths, contracts = {}, {}
-    for label, span in (("e4", None), ("pilot", 7)):
-        settings = config.RunSettings(
-            "causal",
-            membership_path,
-            tmp_path / label,
-            config.CausalSettings(span_latent_frames=span),
-            variant="dev",
-            objective="white",
-            lora_rank=2,
-            lora_alpha=2,
-            steps=1 if label == "e4" else 60,
-        )
-        settings.base_identity = {"base_transformer_file": "base.safetensors", "base_transformer_sha256": "a" * 64}
-        plan = config.build_frame_plan(settings, membership, specification.scale_factors)
-        contract = checkpoints.make_contract(settings, membership, plan, settings.steps)
-        contract["adapter"]["tensor_shapes"] = {A: [2, 4], B: [4, 2]}
-        path = tmp_path / f"{label}.safetensors"
-        save_file(
-            {A: torch.ones(2, 4), B: torch.zeros(4, 2)}, path, metadata={checkpoints.CONTRACT_KEY: json.dumps(contract)}
-        )
-        paths[label], contracts[label] = path, contract
-    noise = tmp_path / "noise.pt"
-    torch.save(torch.zeros(1, 28, 2, dtype=torch.bfloat16), noise)
-    arguments = [
-        "--mode",
-        "causal",
-        "--subset",
-        str(membership_path),
-        "--output",
-        str(tmp_path / "unused"),
-        "--source",
-        membership["sources"][0]["relative_dir"],
-        "--variant",
-        "dev",
-        "--guide-mode",
-        "d1",
-        "--schedule",
-        "0.725",
-        "0",
-        "--noise-file",
-        str(noise),
-    ]
-    return {
-        "arguments": arguments,
-        "paths": paths,
-        "contracts": contracts,
-        "noise": noise,
-        "membership": membership,
-        "specification": specification,
-    }
 
 
 @pytest.mark.parametrize(

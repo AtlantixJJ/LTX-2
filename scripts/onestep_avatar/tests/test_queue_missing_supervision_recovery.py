@@ -10,7 +10,8 @@ from scripts.onestep_avatar.execution import jobs as queue_jobs
 from scripts.onestep_avatar.execution import journal as queue_journal
 from scripts.onestep_avatar.execution import processes as queue_processes
 from scripts.onestep_avatar.execution import queue, queue_launch
-from scripts.onestep_avatar.tests.test_queue_launch import ended_owned_attempt
+from scripts.onestep_avatar.tests.support.fixtures_queue_launch import ended_owned_attempt
+from scripts.onestep_avatar.tests.support.tokens import token
 from scripts.onestep_avatar.training import resources
 
 
@@ -46,7 +47,7 @@ def test_missing_supervisor_fails_before_deadline_without_scientific_acceptance(
     prior = before["jobs"]["case"]["attempts"][-1]
     originals = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file() and path != journal}
 
-    def forbidden(*_args, **_kwargs) -> None:
+    def forbidden(*_args: object, **_kwargs: object) -> None:
         pytest.fail("missing original supervision must not enter scientific success verification")
 
     monkeypatch.setattr(queue_completion, "verify_completion", lambda _job: True)
@@ -68,7 +69,7 @@ def test_missing_supervisor_fails_before_deadline_without_scientific_acceptance(
         assert "returncode" not in row or row["returncode"] is None
         assert row["attempts"][-1]["interruption_recovery"] == row["interruption_recovery"]
     assert json.loads(journal.read_bytes())["jobs"]["case"]["state"] == "failed"
-    assert json.loads(ledger.read_bytes())["attempts"]["b" * 32]["recovery"] == closure
+    assert json.loads(ledger.read_bytes())["attempts"][token()]["recovery"] == closure
     assert all(path.read_bytes() == data for path, data in originals.items())
 
 
@@ -119,7 +120,7 @@ def test_missing_supervisor_recovery_refuses_ambiguity_without_mutation(  # noqa
     state, record = json.loads(journal.read_bytes()), json.loads(ledger.read_bytes())
     monkeypatch.setattr(queue_completion, "verify_completion", lambda _job: True)
     row = state["jobs"]["case"]
-    owned = record["attempts"]["b" * 32]
+    owned = record["attempts"][token()]
     if failure == "missing_closure":
         owned.pop("recovery")
     elif failure == "active_ledger":
@@ -172,7 +173,7 @@ def test_missing_supervisor_recovery_refuses_ambiguity_without_mutation(  # noqa
             row["supervision_result_sha256"] = "d" * 64
         monkeypatch.setattr(queue_completion, "verify_completion", lambda _job: True)
 
-        def corrupt(*_args, **_kwargs) -> None:
+        def corrupt(*_args: object, **_kwargs: object) -> None:
             raise ValueError("present supervisor evidence remains invalid")
 
         monkeypatch.setattr(queue_completion, "verify_attempt_evidence", corrupt)

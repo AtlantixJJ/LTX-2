@@ -14,6 +14,7 @@ from scripts.onestep_avatar.execution import completion as queue_completion
 from scripts.onestep_avatar.execution import journal as queue_journal
 from scripts.onestep_avatar.execution import processes as queue_processes
 from scripts.onestep_avatar.execution import queue_launch
+from scripts.onestep_avatar.tests.support.tree import restore, snapshot
 
 OWNER = """import os,sys,subprocess
 from pathlib import Path
@@ -28,8 +29,8 @@ if phase=='interrupted_registration':
     from scripts.onestep_avatar.execution.process_registry import ProcessRegistry
     claims=ProcessRegistry(root/'ledger.json',inventory=lambda:dict.fromkeys(range(8),0))
 else:
-    from scripts.onestep_avatar.tests.claims_fixture import GPUClaims
-    claims=GPUClaims(root/'claims')
+    from scripts.onestep_avatar.tests.support.legacy_claims import LegacyClaims
+    claims=LegacyClaims(root/'ledger.json')
 assert claims.acquire((4,),job='case')
 original_popen=subprocess.Popen
 original_wait=queue_launch.wait_registration
@@ -52,6 +53,9 @@ try:
 except KeyboardInterrupt:
     os._exit(17)
 """
+
+
+pytestmark = pytest.mark.subprocess
 
 
 def interrupted_owner(root: Path, phase: str) -> tuple[dict, dict]:
@@ -128,14 +132,17 @@ def test_explicit_recovery_of_actual_unapproved_launch_preserves_outputs_and_att
         assert result["attempts"][-1]["launch_recovery"] == result["launch_recovery"]
     assert (output / "old.bin").read_bytes() == b"old evidence"
     assert len(result["attempts"]) == 1
-    assert (tmp_path / "claims/4").is_file()  # Recovery never releases reservations.
+    assert any(
+        row["state"] == "active" for row in json.loads((tmp_path / "ledger.json").read_text())["attempts"].values()
+    )  # Recovery preserves the ledger.
     assert not (tmp_path / "model_executed").exists()
     assert not (Path(row["launch_request"]).parent / "grant.json").exists()
 
 
-@pytest.mark.parametrize(
-    "changed",
-    [
+def test_inconsistent_unapproved_launch_refuses_without_mutation(subtests: object, tmp_path: Path) -> None:
+    job, state = interrupted_owner(tmp_path, "before_fork")
+    pristine = snapshot(tmp_path)
+    for case in [
         "protocol",
         "request",
         "grant",
@@ -147,40 +154,43 @@ def test_explicit_recovery_of_actual_unapproved_launch_preserves_outputs_and_att
         "grant_symlink",
         "bootstrap_symlink",
         "attempt_pid",
-    ],
-)
-def test_inconsistent_unapproved_launch_refuses_without_mutation(tmp_path: Path, changed: str) -> None:
-    job, state = interrupted_owner(tmp_path, "before_fork")
-    row = state["jobs"]["case"]
-    request = Path(row["launch_request"])
-    if changed == "protocol":
-        row["launch_protocol"] = "old"
-    if changed == "request":
-        request.write_text("{}")
-    if changed == "grant":
-        (request.parent / "grant.json").write_text("{}")
-    if changed == "attempt":
-        row["attempts"] = []
-    if changed == "environment":
-        row["environment_changes"] = {}
-    if changed == "ticks":
-        row["attempt_started_ticks"] = False
-    if changed == "job":
-        row["command"] = ["other"]
-    if changed == "journal":
-        state["owner_pid"] = 123456789
-    if changed == "grant_symlink":
-        (request.parent / "grant.json").symlink_to(tmp_path / "missing")
-    if changed == "bootstrap_symlink":
-        (request.parent / "bootstrap.json").symlink_to(tmp_path / "missing")
-    if changed == "attempt_pid":
-        row["attempts"][-1]["child_pid"] = 123456789
-    (tmp_path / "state.json").write_text(json.dumps(state))
-    original = (tmp_path / "state.json").read_bytes()
-    with pytest.raises(ValueError), queue_journal.queue_state(tmp_path / "state.json", [job], recover=True):  # noqa: PT011 -- mutation controls check refusal type and preserved bytes across different validators
-        pytest.fail("recovered changed evidence")
-    assert (tmp_path / "state.json").read_bytes() == original
-    assert not (tmp_path / "model_executed").exists()
+    ]:
+        with subtests.test(case=case):
+            restore(tmp_path, pristine)
+            changed = case
+            state = json.loads((tmp_path / "state.json").read_text())
+            row = state["jobs"]["case"]
+            request = Path(row["launch_request"])
+            if changed == "protocol":
+                row["launch_protocol"] = "old"
+            if changed == "request":
+                request.write_text("{}")
+            if changed == "grant":
+                (request.parent / "grant.json").write_text("{}")
+            if changed == "attempt":
+                row["attempts"] = []
+            if changed == "environment":
+                row["environment_changes"] = {}
+            if changed == "ticks":
+                row["attempt_started_ticks"] = False
+            if changed == "job":
+                row["command"] = ["other"]
+            if changed == "journal":
+                state["owner_pid"] = 123456789
+            if changed == "grant_symlink":
+                (request.parent / "grant.json").symlink_to(tmp_path / "missing")
+            if changed == "bootstrap_symlink":
+                (request.parent / "bootstrap.json").symlink_to(tmp_path / "missing")
+            if changed == "attempt_pid":
+                row["attempts"][-1]["child_pid"] = 123456789
+            (tmp_path / "state.json").write_text(json.dumps(state))
+            original = (tmp_path / "state.json").read_bytes()
+            with pytest.raises(ValueError), queue_journal.queue_state(tmp_path / "state.json", [job], recover=True):  # noqa: PT011 -- mutation controls check refusal type and preserved bytes across different validators
+                pytest.fail("recovered changed evidence")
+            assert (tmp_path / "state.json").read_bytes() == original
+            assert not (tmp_path / "model_executed").exists()
+
+    restore(tmp_path, pristine)
 
 
 def test_live_unapproved_guard_refuses_recovery_until_its_recorded_handle_exits(tmp_path: Path) -> None:
@@ -196,7 +206,9 @@ def test_live_unapproved_guard_refuses_recovery_until_its_recorded_handle_exits(
         ):
             pytest.fail("adopted live guard")
         assert (tmp_path / "state.json").read_bytes() == original
-        assert (tmp_path / "claims/4").exists()
+        assert any(
+            row["state"] == "active" for row in json.loads((tmp_path / "ledger.json").read_text())["attempts"].values()
+        )
         assert not (request.parent / "grant.json").exists()
     finally:
         current = queue_processes.process_identity(identity["pid"])
@@ -228,7 +240,9 @@ def test_unapproved_launch_refuses_surviving_token_worker_in_another_session(tmp
         ):
             pytest.fail("recovered live worker")
         assert (tmp_path / "state.json").read_bytes() == original
-        assert (tmp_path / "claims/4").is_file()
+        assert any(
+            row["state"] == "active" for row in json.loads((tmp_path / "ledger.json").read_text())["attempts"].values()
+        )
     finally:
         current = queue_processes.process_identity(worker.pid)
         assert current["start_ticks"] == identity["start_ticks"]
@@ -238,28 +252,36 @@ def test_unapproved_launch_refuses_surviving_token_worker_in_another_session(tmp
         assert recovered["jobs"]["case"]["state"] == "failed"
 
 
-@pytest.mark.parametrize("observation", ["permission", "owner_live", "owner_reused"])
 def test_unknown_or_live_original_owner_preserves_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, observation: str
+    subtests: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     job, state = interrupted_owner(tmp_path, "before_fork")
-    row = state["jobs"]["case"]
-    request = queue_launch.load_request(Path(row["launch_request"]))
-    original = (tmp_path / "state.json").read_bytes()
-    saved = request["owner_identity"]
-    actual = queue_processes.process_identity
+    pristine = snapshot(tmp_path)
+    for case in ["permission", "owner_live", "owner_reused"]:
+        with subtests.test(case=case):
+            restore(tmp_path, pristine)
+            observation = case
+            row = state["jobs"]["case"]
+            request = queue_launch.load_request(Path(row["launch_request"]))
+            original = (tmp_path / "state.json").read_bytes()
+            saved = request["owner_identity"]
+            actual = queue_processes.process_identity
 
-    def observe(pid: int) -> dict | None:
-        if pid != saved["pid"]:
-            return actual(pid)
-        if observation == "permission":
-            raise PermissionError("controlled owner observation denial")
-        return {**saved, "start_ticks": saved["start_ticks"] + (observation == "owner_reused")}
+            def observe(
+                pid: int, saved: dict = saved, actual: object = actual, observation: str = observation
+            ) -> dict | None:
+                if pid != saved["pid"]:
+                    return actual(pid)
+                if observation == "permission":
+                    raise PermissionError("controlled owner observation denial")
+                return {**saved, "start_ticks": saved["start_ticks"] + (observation == "owner_reused")}
 
-    monkeypatch.setattr(queue_processes, "process_identity", observe)
-    with (
-        pytest.raises(PermissionError if observation == "permission" else ValueError),
-        queue_journal.queue_state(tmp_path / "state.json", [job], recover=True),
-    ):
-        pytest.fail("adopted unknown/live owner")
-    assert (tmp_path / "state.json").read_bytes() == original
+            monkeypatch.setattr(queue_processes, "process_identity", observe)
+            with (
+                pytest.raises(PermissionError if observation == "permission" else ValueError),
+                queue_journal.queue_state(tmp_path / "state.json", [job], recover=True),
+            ):
+                pytest.fail("adopted unknown/live owner")
+            assert (tmp_path / "state.json").read_bytes() == original
+
+    restore(tmp_path, pristine)

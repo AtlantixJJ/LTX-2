@@ -10,33 +10,13 @@ import pytest
 
 from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar.corpus import subset
+from scripts.onestep_avatar.tests.support.corpus import (
+    _membership as _membership,  # noqa: PLC0414 -- explicit fixture re-export
+)
 from scripts.onestep_avatar.training import config
 
 SCALE = SpatioTemporalScaleFactors(8, 32, 32)
 BASE = ["--subset", "/unused/videos.json", "--output", "/unused/output"]
-
-
-def _membership() -> dict:
-    membership = {
-        "schema_version": 2,
-        "kind": subset.KIND,
-        "objective": "white",
-        "corpus_root": "/unused",
-        "splits": {"train": ["actor"]},
-        "sources": [
-            {
-                "relative_dir": "actor/view",
-                "actor": "actor",
-                "split": "train",
-                "n_latent_frames": 17,
-                "shape": [128, 17, 2, 2],
-                "fps": 30,
-            }
-        ],
-        "excluded": {},
-    }
-    membership["sha256"] = subset.membership_hash(membership)
-    return membership
 
 
 def test_mode_is_required() -> None:

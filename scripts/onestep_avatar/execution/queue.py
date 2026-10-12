@@ -135,6 +135,7 @@ def dispatch_ready(
     *,
     gpu_pool: tuple[int, ...] = GPU_POOL,
     foreground: bool = False,
+    startup_retries: bool = True,
 ) -> bool:
     """Refresh device availability and run at most one eligible reserved child."""
     ready = evidence.ready_jobs(jobs, state)
@@ -191,7 +192,7 @@ def dispatch_ready(
                 job, claims, log, state_path=state_path, jobs=jobs, dependency_receipts=receipts, **options
             )
         except execution_clock.QueueChildError:
-            if not attempt_runner.retry_startup_failure(job, jobs, state_path):
+            if not startup_retries or not attempt_runner.retry_startup_failure(job, jobs, state_path):
                 raise
             return True
         return True
@@ -207,6 +208,7 @@ def execute_jobs(  # noqa: PLR0912 -- append-only dispatch and failure gates
     poll_seconds: float = 30,
     gpu_pool: tuple[int, ...] = GPU_POOL,
     foreground: bool = False,
+    startup_retries: bool = True,
 ) -> int:
     """Reread append-only work, verify dependencies, and wait without reserving devices."""
     if not math.isfinite(poll_seconds) or not 0 < poll_seconds <= 60:
@@ -245,6 +247,8 @@ def execute_jobs(  # noqa: PLR0912 -- append-only dispatch and failure gates
         dispatch_options = {} if gpu_pool == GPU_POOL else {"gpu_pool": gpu_pool}
         if foreground:
             dispatch_options["foreground"] = True
+        if not startup_retries:
+            dispatch_options["startup_retries"] = False
         if dispatch_ready(jobs, state, state_path, claims_dir, **dispatch_options):
             if once:
                 updated = state_store.read_queue_state(state_path, jobs)
@@ -298,6 +302,7 @@ def _parse_args(argv: list[str] | None) -> tuple[argparse.Namespace, argparse.Ar
         action="store_true",
         help="execute with live child output and Ctrl+C cleanup; defaults to --loop",
     )
+    parser.add_argument("--no-startup-retries", action="store_true", help="stop on the first child failure, including startup OOM")
     parser.add_argument("--recover", action="store_true", help="inspect terminated children and verify saved outputs")
     parser.add_argument("--process-ledger", type=Path, help="one shared JSON record of package-owned processes")
     execution = parser.add_mutually_exclusive_group()
@@ -352,6 +357,8 @@ def main(argv: list[str] | None = None) -> int:
                         flush=True,
                     )
                 options = {"foreground": True} if args.foreground else {}
+                if args.no_startup_retries:
+                    options["startup_retries"] = False
                 return execute_jobs(
                     args.jobs,
                     args.state,
