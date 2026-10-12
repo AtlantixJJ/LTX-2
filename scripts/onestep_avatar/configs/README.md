@@ -742,6 +742,23 @@ the result: [design](../doc/experiments/prune_reproduction.md).
 
 ### Other studies
 
+The guide study has two CPU-only commands, not queue selectors:
+
+```bash
+"$PY" -m scripts.onestep_avatar.experiments.prepare_guide_study plan \
+  --root <FRESH_STUDY_ROOT> --prompts <APPROVED_PROMPTS.json> --owners 2 --dry-run
+OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 "$PY" -m scripts.onestep_avatar.experiments.guide_study_metrics \
+  measure --root <STUDY_ROOT> --dry-run
+OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 "$PY" -m scripts.onestep_avatar.experiments.guide_study_metrics \
+  controls --root <STUDY_ROOT> --dry-run
+```
+
+Remove `--dry-run` to publish. Run emitted model and render jobs through the queue.
+Use `--allow-partial` only for smoke evidence; it cannot establish full completion.
+Causal measurements reconstruct ranges through the public planner and check saved calls.
+See [preparation](../doc/experiments/prepare_guide_study.md) and
+[saved metrics](../doc/experiments/guide_study_metrics.md).
+
 - `fusion_parity` — fused bf16 versus unmerged fp32 adapter output on one
   causal block. Spec: `{"schema_version": 1, "protocol": "fusion_parity", "run":
   "/abs/run", "view": "/abs/view", "step": 1}`.

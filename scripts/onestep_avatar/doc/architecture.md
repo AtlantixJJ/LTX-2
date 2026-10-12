@@ -85,7 +85,8 @@ experiments/         training_update_check, training_slice_check,
                      stats, saved_probe_metrics, spec_protocol,
                      prune_baseline, prune_reproduction, prepare_continuation,
                      continuation_identity_check, conditioning_check,
-                     capacity_review, reference_inputs, past_influence_check
+                     capacity_review, reference_inputs, past_influence_check,
+                     prepare_guide_study, guide_study_metrics
 configs/             fsdp.yaml, fsdp_forward_prefetch.yaml, README.md recipes
 doc/                 mirrored module designs and cross-module contracts
 tests/               ordinary tests; tests/experiments/ for experiment tests
@@ -318,6 +319,10 @@ never read the table. Adding a queued study means editing this literal table
 and its tests. There is no registration API, discovery or plugin loading.
 
 Some experiment owners are not in the table, or have extra operations:
+
+- `prepare_guide_study` and `guide_study_metrics` are CPU only, not queue selectors.
+  The preparer owns the S1–S3 study inventory. The reader owns saved measurements
+  and canonical planner reconstruction. Ordinary producers remain unchanged.
 
 - `prepare_continuation` runs on CPU only and is not a queue selector. It
   prepares content-pinned E3 noise and ordinary baseline jobs. It seals the

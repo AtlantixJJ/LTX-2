@@ -121,6 +121,8 @@ start queue work.
 | `experiments/prune_reproduction.py` | [experiments/prune_reproduction.md](experiments/prune_reproduction.md) | 419 |
 | `experiments/prepare_continuation.py` | [experiments/prepare_continuation.md](experiments/prepare_continuation.md) | 521 |
 | `experiments/reference_inputs.py` | [experiments/reference_inputs.md](experiments/reference_inputs.md) | 149 |
+| `experiments/prepare_guide_study.py` | [experiments/prepare_guide_study.md](experiments/prepare_guide_study.md) | 455 |
+| `experiments/guide_study_metrics.py` | [experiments/guide_study_metrics.md](experiments/guide_study_metrics.md) | 279 |
 | `experiments/saved_probe_metrics.py` | [experiments/saved_probe_metrics.md](experiments/saved_probe_metrics.md) | 141 |
 | `experiments/short_causal_check.py` | [experiments/short_causal_check.md](experiments/short_causal_check.md) | 573 |
 | `experiments/sigma_sweep.py` | [experiments/sigma_sweep.md](experiments/sigma_sweep.md) | 329 |
@@ -181,6 +183,8 @@ Each link goes to the Usage section of the module document.
 | `execution.queue_launch` | Close a ledger row after an owner ended | you, CPU | `ltx` |
 | `experiments.<selector>` | One scientific comparison | human CLI or queue `experiment` | `ltx` |
 | `experiments.prepare_continuation` | Plan and seal E3 inputs | you, CPU | `ltx` |
+| `experiments.prepare_guide_study` | Prepare S1–S3 inputs and jobs | you, CPU | `ltx` |
+| `experiments.guide_study_metrics` | Measure saved S1–S3 evidence | you, CPU | `ltx` |
 | `experiments.saved_probe_metrics` | Measure saved probe encodings | you, CPU | `ltx` |
 
 Usage sections:

@@ -5,6 +5,31 @@ the evidence that would close it. A source change or a passing CPU test does not
 close a gap. Only accepted native evidence closes it. The
 [acceptance gates](verification.md#acceptance-gates) define that evidence.
 
+## Saved causal block ranges for guide-study measurements
+
+**Required.** The approved guide-study revision uses the public canonical planner
+with saved frame counts and mode settings. Check coverage and measured calls.
+Label reconstructed ranges clearly; they do not prove saved executed boundaries.
+Readers must not build a second block planner.
+
+**Current.** `evaluate.sample_case` computes `geometry.plan` for causal sampling.
+It saves the frame count, mode settings, schedule and call counts, but no block ranges.
+`evaluate.save_case` adds output identity and completion state without these ranges.
+
+**Evidence.** The 2026-10-12 rerun has a CPU small-model saved-record check at
+`expr/onestep_avatar/ar_sigma_rollouts_rerun_20261012/provenance/blocking_gap.json`
+in the workspace. The saved causal record has three denoise and three refresh
+calls, but no block-range field. This checks the record contract, not native quality.
+
+**Impact.** The producer still does not save executed ranges. On 2026-10-12, the
+user approved using the public canonical planner in this study's metrics reader.
+The reader checks saved frame counts, coverage and calls. It labels ranges as
+reconstructed. Shared producers and the running training remain unchanged.
+
+**Closure evidence.** Authorize a shared-producer change and resolve affected software
+pins first. Save the ranges used by sampling, then test saved seam and first-block
+measurements against those ranges. Fresh native smoke receipts must pass afterward.
+
 ## Cached history and causal recomputation
 
 **Required.** Do not treat the cached refresh as only an optimization of
