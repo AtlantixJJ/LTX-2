@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -76,3 +77,36 @@ def test_wrong_vae_refuses_before_weight_hash_or_archive(
         engine.prepare_run(settings)
     assert sentinel.read_bytes() == b"original run"
     assert not list(settings.output.parent.glob("output.archived*"))
+
+
+def test_encoding_vae_accepts_existing_alias_with_unchanged_metadata(tmp_path: Path) -> None:
+    vae = tmp_path / "vae.safetensors"
+    vae.write_bytes(b"VAE weights")
+    alias = tmp_path / "old_vae.safetensors"
+    alias.symlink_to(vae)
+    stat = vae.stat()
+    expected = f"{vae}:size={stat.st_size}:mtime_ns={stat.st_mtime_ns}"
+    recorded = f"{alias}:size={stat.st_size}:mtime_ns={stat.st_mtime_ns}"
+    assert engine._encoding_vae_matches(recorded, expected)
+    assert not engine._encoding_vae_matches(recorded.replace(f"mtime_ns={stat.st_mtime_ns}", "mtime_ns=0"), expected)
+    assert not engine._encoding_vae_matches(recorded.replace(f"size={stat.st_size}", "size=0"), expected)
+    alias.unlink()
+    assert not engine._encoding_vae_matches(recorded, expected)
+
+
+def test_encoding_vae_rejects_different_file_with_equal_size_and_time(tmp_path: Path) -> None:
+    vae = tmp_path / "vae.safetensors"
+    other = tmp_path / "different.safetensors"
+    vae.write_bytes(b"VAE weights")
+    other.write_bytes(b"bad weights")
+    stat = vae.stat()
+    os.utime(other, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert other.stat().st_size == stat.st_size
+    expected = f"{vae}:size={stat.st_size}:mtime_ns={stat.st_mtime_ns}"
+    recorded = f"{other}:size={stat.st_size}:mtime_ns={stat.st_mtime_ns}"
+    assert not engine._encoding_vae_matches(recorded, expected)
+
+
+@pytest.mark.parametrize("recorded", [None, "", "malformed", "relative:size=1:mtime_ns=2"])
+def test_encoding_vae_rejects_absent_or_malformed_identity(recorded: object) -> None:
+    assert not engine._encoding_vae_matches(recorded, "/vae:size=1:mtime_ns=2")

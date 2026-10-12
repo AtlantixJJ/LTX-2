@@ -7,6 +7,7 @@
 3. [Verification](VALIDATION.md): CPU checks and native acceptance gates.
 4. [Known gaps](known_gaps.md): current support and evidence limits.
 5. [Run guide](usage.md): direct commands and the queued baseline route.
+6. [Report and wording guide](reporting.md): question structure, technical language, media and saved-report verification.
 
 The [literature and method agenda](METHODS.md) supplies research context.
 It does not replace implementation contracts or current native evidence.
@@ -33,8 +34,10 @@ Prune's direct entrypoints do not expose `--dry-run`; the avatar experiment and 
 Use simplified technical English, about 80% to ASD-STE100:
 
 - Keep one topic per sentence and at most six sentences per paragraph.
-- Aim for 20 words per instruction and 25 words per description.
+- Keep instructions to 20 words and descriptions to 25 words, where practical.
 - Use active voice, present tense and one term per concept.
+- Use the imperative for instructions. Keep the articles `a`, `an` and `the`.
+- Do not stack more than three nouns.
 - Define terms before use. Put ordered steps in lists.
 - Preserve exact code names, paths, numbers and equations.
 - Use “must” for a rule and “can” for an option.
@@ -46,11 +49,21 @@ For visual outputs, explain data, panel positions, labels, coverage and readabil
 Update the module design or header when objective, data flow, organization or invariants change.
 Docs describe current behavior. Historical runs and conclusions stay in saved experiment records.
 
+## Report contract
+
+Use the [report and wording guide](reporting.md) for reports, figure captions and video labels.
+It follows the workspace report rules and the avatar documentation and media contracts.
+Organize by question, define Terms, give the Short answer first, and vary one factor per experimental comparison.
+Use PNG/PDF/data JSON figures and synchronized RGB/VAE comparison evidence.
+Report generators read saved artifacts only. Keep prose in narrative config and layout in the generator.
+Rebuild, validate and inspect the report, including narrow layouts, after changes.
+
 ## Current source owners
 
 | Source | Design | Physical lines |
 |---|---|---:|
 | `checks/__init__.py` | package marker | 1 |
+| `checks/mobilewan_native.py` | [design](checks/mobilewan_native.md) | 118 |
 | `checks/export_parity.py` | [design](checks/export_parity.md) | 147 |
 | `core/__init__.py` | package marker | 1 |
 | `core/artifacts.py` | [design](core/artifacts.md) (small-module supplement) | 40 |
@@ -61,15 +74,22 @@ Docs describe current behavior. Historical runs and conclusions stay in saved ex
 | `core/provenance.py` | [design](core/provenance.md) | 119 |
 | `core/session.py` | [design](core/session.md) | 117 |
 | `data/__init__.py` | package marker | 1 |
+| `data/head_score_dataset.py` | [design](data/head_score_dataset.md) | 139 |
 | `data/prompt_cache.py` | [design](data/prompt_cache.md) | 111 |
-| `data/whole_clip.py` | [design](data/whole_clip.md) | 280 |
+| `data/whole_clip.py` | [design](data/whole_clip.md) | 346 |
 | `evaluate/__init__.py` | package marker | 1 |
 | `evaluate/bench_whole_clip_d0.py` | [design](evaluate/bench_whole_clip_d0.md) | 140 |
 | `evaluate/decode.py` | [design](evaluate/decode.md) (small-module supplement) | 23 |
 | `evaluate/metrics.py` | [design](evaluate/metrics.md) | 103 |
-| `evaluate/whole_clip_baseline.py` | [design](evaluate/whole_clip_baseline.md) | 570 |
+| `evaluate/whole_clip_baseline.py` | [design](evaluate/whole_clip_baseline.md) | 707 |
 | `evaluate/whole_clip_d0.py` | [design](evaluate/whole_clip_d0.md) | 245 |
 | `score/__init__.py` | package marker | 1 |
+| `score/mobilewan_records.py` | [design](score/mobilewan_records.md) | 134 |
+| `score/mobilewan_aggregate.py` | [design](score/mobilewan_aggregate.md) | 241 |
+| `score/mobilewan_dataset.py` | [design](score/mobilewan_dataset.md) | 212 |
+| `evaluate/mobilewan_media.py` | [design](evaluate/mobilewan_media.md) | 218 |
+| `evaluate/mobilewan_removal.py` | [design](evaluate/mobilewan_removal.md) | 215 |
+| `score/mobilewan_heads.py` | [design](score/mobilewan_heads.md) | 127 |
 | `score/estimators.py` | [design](score/estimators.md) (small-module supplement) | 48 |
 | `score/export_depth.py` | [design](score/export_depth.md) | 431 |
 | `score/export_pruned.py` | [design](score/export_pruned.md) | 205 |

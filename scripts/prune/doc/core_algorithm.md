@@ -108,3 +108,12 @@ Rounded input nodes hold tensors, rectangular nodes hold operations, and output 
 Use green for tensors, blue for operations and purple for outputs.
 This follows the [avatar legend](../../onestep_avatar/doc/core_algorithm.md#7-end-to-end-data-flow).
 Diagrams explain data flow. Saved hashes and numerical checks establish evidence.
+
+## MobileWan squared projected energy
+
+The optional `mobilewan_heads` helper uses executed gated head vectors and head-local projection Gram matrices.
+It computes mean squared projected vector norm over declared generated tokens.
+Average raw energies over sigmas and equal-weight views before dividing by the cohort block mean.
+Actor-cluster bootstrap draws retain all views and sigmas, and recompute normalization in each replicate.
+Global allocation uses ascending pooled train scores, original block/head ties and one retained head per block.
+This helper supplies no native execution evidence yet.

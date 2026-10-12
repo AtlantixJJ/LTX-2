@@ -46,23 +46,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--objective", choices=dataset.OBJECTIVES, default="white")
     parser.add_argument(
-        "--sigmas", type=float, nargs="+", default=list(DEFAULT_SIGMAS),
+        "--sigmas",
+        type=float,
+        nargs="+",
+        default=list(DEFAULT_SIGMAS),
         help="Distilled schedule levels; defaults to 0.909375, 0.725, 0.421875.",
     )
     parser.add_argument("--context-latent-frames", type=int, default=causal_core.CONTEXT_LATENT_FRAMES)
     parser.add_argument(
-        "--variant", choices=("distilled", "dev"), default="distilled",
+        "--variant",
+        choices=("distilled", "dev"),
+        default="distilled",
         help="dev loads the base transformer and enters the stock --steps schedule at each sigma.",
     )
     parser.add_argument("--transformer", type=Path, default=None, help="Explicit transformer checkpoint path.")
     parser.add_argument("--steps", type=int, default=None, help="dev only: N of the stock N-step schedule.")
     parser.add_argument(
-        "--dev-denoising-steps", type=int, default=None,
+        "--dev-denoising-steps",
+        type=int,
+        default=None,
         help="dev truncated only: actual calls selected at evenly spaced indices from the fixed stock tail.",
     )
     parser.add_argument(
-        "--dev-schedule", choices=("truncated", "rescaled"), default="truncated",
-        help="dev only: enter the stock N-step curve at the start sigma, or scale the whole curve to start there.",
+        "--dev-schedule",
+        choices=("truncated", "rescaled", "direct"),
+        default="truncated",
+        help="dev only: stock tail, rescaled curve, or explicit direct [sigma, 0] call.",
     )
     parser.add_argument("--cfg", type=float, default=1.0, help="CFG scale; 1 disables the negative-prompt pass.")
     parser.add_argument("--stg", type=float, default=0.0, help="STG scale; 0 disables the perturbed pass.")
@@ -72,7 +81,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--raw-only", action="store_true", help="Save raw latents and manifest without VAE decoding.")
     parser.add_argument("--seeds", type=int, nargs="+", default=None, help="Several rollout seeds in one load.")
     parser.add_argument(
-        "--arms", nargs="+", choices=("d0", "d1"), default=["d0", "d1"],
+        "--arms",
+        nargs="+",
+        choices=("d0", "d1"),
+        default=["d0", "d1"],
         help="d0 noises the capture, d1 the guide; c0 and the target are the capture in both.",
     )
     parser.add_argument("--output", type=Path, required=True)
@@ -82,7 +94,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if sorted(args.arms) != ["d0", "d1"] and not args.raw_only:
         parser.error("a single --arms value needs --raw-only (the decoded panel video is capture | D0 | D1)")
     if args.variant == "dev":
-        if args.steps is None or args.steps < 1:
+        if args.dev_schedule == "direct":
+            if args.steps is not None and args.steps < 1:
+                parser.error("--steps must be positive when supplied")
+            if not args.sigmas or len(set(args.sigmas)) != len(args.sigmas):
+                parser.error("direct dev needs distinct positive sigmas")
+            for sigma in args.sigmas:
+                try:
+                    model_sampling.validate_schedule([sigma, 0.0])
+                except ValueError as error:
+                    parser.error(str(error))
+        if args.dev_schedule != "direct" and (args.steps is None or args.steps < 1):
             parser.error("--variant dev needs --steps N")
         if args.dev_denoising_steps is not None:
             if args.dev_schedule != "truncated":
@@ -92,6 +114,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     model_sampling.thinned_truncated_schedule(sigma, args.steps, args.dev_denoising_steps)
                 except ValueError as error:
                     parser.error(str(error))
+    elif args.dev_schedule == "direct":
+        parser.error("--dev-schedule direct is dev only")
     elif args.steps is not None:
         parser.error("--steps is dev only; the distilled model uses [sigma, 0]")
     elif args.dev_denoising_steps is not None:
@@ -102,6 +126,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def suffix(args: argparse.Namespace) -> str:
     """The latent/MP4 file-name suffix that names the schedule family."""
     if args.variant == "dev":
+        if args.dev_schedule == "direct":
+            return "dev_direct"
         calls = "" if args.dev_denoising_steps is None else f"_k{args.dev_denoising_steps}"
         return f"dev_n{args.steps}{calls}_cfg{args.cfg:g}_stg{args.stg:g}"
     return "one_step"
@@ -122,14 +148,18 @@ def whole_clip_block(latent_frame_counts: list[int]) -> int:
     return count - 1
 
 
-def load_masters(view: Path, objective: str) -> tuple[torch.Tensor, torch.Tensor, float]:
-    """Capture ``z_y`` and guide ``z_g`` masters with one shared shape and fps."""
+def load_masters(
+    view: Path, objective: str, *, require_guide: bool = True
+) -> tuple[torch.Tensor, torch.Tensor | None, float]:
+    """Load capture and an optional guide; D0-only never opens guide files."""
     capture = view / dataset.capture_bundle_name(objective)
     guide = view / dataset.guide_bundle_name(objective)
-    for path in (capture, guide):
+    for path in (capture, guide) if require_guide else (capture,):
         if not path.is_file():
             raise SystemExit(f"missing master latent: {path}")
     z_y, fps = load_training_master(capture)
+    if not require_guide:
+        return z_y, None, fps
     z_g, guide_fps = load_training_master(guide)
     if z_g.shape != z_y.shape or guide_fps != fps:
         raise SystemExit(f"capture/guide shape or fps mismatch: {view}")
@@ -160,19 +190,28 @@ def checked_sigmas(values: list[float], schedule: list[float]) -> tuple[float, .
 
 def dev_schedule(args: argparse.Namespace, sigma: float) -> list[float]:
     """The stock dev schedule entered at ``sigma``; validated again by the model owner."""
+    if args.dev_schedule == "direct":
+        return list(model_sampling.validate_schedule([sigma, 0.0]))
     if args.dev_denoising_steps is not None:
         return list(model_sampling.thinned_truncated_schedule(sigma, args.steps, args.dev_denoising_steps))
     make = model_sampling.truncated_schedule if args.dev_schedule == "truncated" else model_sampling.rescaled_schedule
     return list(make(sigma, args.steps))
 
 
-def clip_grid(z_y: torch.Tensor, fps: float, geometry: causal_core.CausalGeometry, *, device: torch.device,
-              latent_channels: int) -> common.ClipGrid:
+def clip_grid(
+    z_y: torch.Tensor, fps: float, geometry: causal_core.CausalGeometry, *, device: torch.device, latent_channels: int
+) -> common.ClipGrid:
     """The capture's token grid -- positions, keyframe marks and tools."""
     _, latent_frames, height, width = z_y.shape
     return common.ClipGrid.build(
-        latent_frames, height * geometry.scale_factors.height, width * geometry.scale_factors.width, fps,
-        geometry, device=device, dtype=DTYPE, latent_channels=latent_channels,
+        latent_frames,
+        height * geometry.scale_factors.height,
+        width * geometry.scale_factors.width,
+        fps,
+        geometry,
+        device=device,
+        dtype=DTYPE,
+        latent_channels=latent_channels,
     )
 
 
@@ -181,7 +220,7 @@ class WholeClip:
     """One view's fixed rollout inputs: masters, grid, one-block plan and saved noise slices."""
 
     z_y: torch.Tensor
-    z_g: torch.Tensor
+    z_g: torch.Tensor | None
     grid: common.ClipGrid
     geometry: causal_core.CausalGeometry
     plan: list[tuple[int, int]]
@@ -189,16 +228,38 @@ class WholeClip:
     device: torch.device
 
 
-def rollout(denoise_fn, clip: WholeClip, context: torch.Tensor, sigma: float, *,  # noqa: ANN001
-            arm: str, seed: int, schedule: list[float] | None) -> torch.Tensor:
+def rollout(
+    denoise_fn,
+    clip: WholeClip,
+    context: torch.Tensor,
+    sigma: float,
+    *,  # noqa: ANN001
+    arm: str,
+    seed: int,
+    schedule: list[float] | None,
+) -> torch.Tensor:
     """One whole-clip block through the model owner's rollout; the arm changes only the noised source."""
+    if arm not in ("d0", "d1") or (arm == "d1" and clip.z_g is None):
+        raise ValueError("D1 requires a guide master; D0 requires only capture")
     grid = clip.grid
     capture = grid.patchify(clip.z_y.unsqueeze(0).to(device=clip.device, dtype=DTYPE))
     source = capture if arm == "d0" else grid.patchify(clip.z_g.unsqueeze(0).to(device=clip.device, dtype=DTYPE))
     tokens, _ = causal_core.rollout(
-        denoise_fn, grid, clip.geometry, None, source, context, sigma, seed=seed, blocks=clip.plan,
-        teacher_forcing=False, teacher_tokens=None, schedule=schedule, kv_source="refresh",
-        first_frame_condition=capture[:, : grid.tokens_per_latent_frame], block_epsilons=clip.epsilons,
+        denoise_fn,
+        grid,
+        clip.geometry,
+        None,
+        source,
+        context,
+        sigma,
+        seed=seed,
+        blocks=clip.plan,
+        teacher_forcing=False,
+        teacher_tokens=None,
+        schedule=schedule,
+        kv_source="refresh",
+        first_frame_condition=capture[:, : grid.tokens_per_latent_frame],
+        block_epsilons=clip.epsilons,
         history_mode="recompute",
     )
     covered = clip.plan[-1][1]
@@ -237,45 +298,78 @@ def _saved_tensor(root: Path, name: str, digest: str, shape: tuple[int, ...]) ->
 
 
 def _inspect_completion(args: argparse.Namespace, root: Path) -> list[Path]:  # noqa: PLR0912, PLR0915
-    """Verify saved raw distilled coverage and conditioning without model or decoder loading."""
+    """Verify saved direct dev or distilled outputs without model or decoder loading."""
     if root.is_symlink() or (root / "manifest.json").is_symlink():
         raise ValueError("baseline root or manifest is a symlink")
     manifest = json.loads((root / "manifest.json").read_text())
     if (
-        not args.raw_only or args.objective != "white" or args.variant != "distilled"
+        not args.raw_only
+        or args.objective != "white"
+        or (args.variant != "distilled" and not (args.variant == "dev" and args.dev_schedule == "direct"))
         or (args.cfg, args.stg, args.rescale) != (1.0, 0.0, 0.0)
         or args.negative_prompt is not None
-        or not args.sigmas or len(set(args.sigmas)) != len(args.sigmas)
+        or not args.sigmas
+        or len(set(args.sigmas)) != len(args.sigmas)
         or any(not 0.0 < sigma <= 1.0 for sigma in args.sigmas)
         or args.arms not in (["d0"], ["d0", "d1"])
     ):
-        raise ValueError("saved completion supports raw white distilled unguided D0, optional D1")
+        raise ValueError("saved completion supports raw white distilled or direct dev unguided D0, optional D1")
     seeds = [args.seed] if args.seeds is None else list(args.seeds)
     if len(set(seeds)) != len(seeds) or len({view.resolve() for view in args.view}) != len(args.view):
         raise ValueError("duplicate baseline view or seed")
     fixed = {
-        "kind": "d1_paired_source_probe", "checkpoint": None, "objective": args.objective,
-        "sigmas": list(args.sigmas), "seed": args.seed, "seeds": seeds, "whole_clip": True,
-        "trajectory_only": False, "teacher_forcing": False, "history_policy": "none_single_block",
-        "history_mode": "recompute", "model_variant": args.variant, "steps": None,
-        "denoising_steps_requested": None, "schedule_policy": "distilled_grid",
-        "attention": "full_bidirectional", "latent_dtype": str(DTYPE), "max_blocks": None,
-        "raw_only": True, "arms": list(args.arms), "adapter_condition_problems": [], "off_condition": False,
-        "noise": {"scheme": "one global epsilon tensor per view, sliced by latent-frame block",
-                  "shared_across_arms_sigmas_and_block_geometries": True},
-        "guidance": {"cfg": 1.0, "stg": 0.0, "stg_blocks": [], "rescale": 0.0,
-                     "negative_prompt": None, "negative_prompt_sha256": None, "passes_per_step": 1,
-                     "execution": "sequential passes"},
+        "kind": "d1_paired_source_probe",
+        "checkpoint": None,
+        "objective": args.objective,
+        "sigmas": list(args.sigmas),
+        "seed": args.seed,
+        "seeds": seeds,
+        "whole_clip": True,
+        "trajectory_only": False,
+        "teacher_forcing": False,
+        "history_policy": "none_single_block",
+        "history_mode": "recompute",
+        "model_variant": args.variant,
+        "steps": args.steps,
+        "denoising_steps_requested": None,
+        "schedule_policy": ("direct_ltx2_scheduler" if args.variant == "dev" else "distilled_grid"),
+        "attention": "full_bidirectional",
+        "latent_dtype": str(DTYPE),
+        "max_blocks": None,
+        "raw_only": True,
+        "arms": list(args.arms),
+        "adapter_condition_problems": [],
+        "off_condition": False,
+        "noise": {
+            "scheme": "one global epsilon tensor per view, sliced by latent-frame block",
+            "shared_across_arms_sigmas_and_block_geometries": True,
+        },
+        "guidance": {
+            "cfg": 1.0,
+            "stg": 0.0,
+            "stg_blocks": [],
+            "rescale": 0.0,
+            "negative_prompt": None,
+            "negative_prompt_sha256": None,
+            "passes_per_step": 1,
+            "execution": "sequential passes",
+        },
     }
     if any(manifest.get(key) != value for key, value in fixed.items()):
         raise ValueError("baseline scientific settings differ")
     prompt = resolve_prompt(args)
     text = manifest["text_context"]
-    if (text["prompt"] != prompt or text["prompt_sha256"] != hashlib.sha256(prompt.encode()).hexdigest()
-            or text["is_default_prompt"] != (prompt == DEFAULT_PROMPT)
-            or text["dtype"] != str(DTYPE) or len(text["shape"]) != 3 or text["shape"][0] != 1
-            or any(type(size) is not int or size < 1 for size in text["shape"])
-            or not isinstance(text["sha256"], str) or len(text["sha256"]) != 64):
+    if (
+        text["prompt"] != prompt
+        or text["prompt_sha256"] != hashlib.sha256(prompt.encode()).hexdigest()
+        or text["is_default_prompt"] != (prompt == DEFAULT_PROMPT)
+        or text["dtype"] != str(DTYPE)
+        or len(text["shape"]) != 3
+        or text["shape"][0] != 1
+        or any(type(size) is not int or size < 1 for size in text["shape"])
+        or not isinstance(text["sha256"], str)
+        or len(text["sha256"]) != 64
+    ):
         raise ValueError("baseline prompt or text context identity differs")
     if manifest["model"].get("model_key") != args.model or manifest["model"].get("script") != SCRIPT:
         raise ValueError("baseline model or producer identity differs")
@@ -290,16 +384,24 @@ def _inspect_completion(args: argparse.Namespace, root: Path) -> list[Path]:  # 
         view = Path(artifact["view"])
         seed, sigma = artifact["seed"], row["sigma"]
         key = (str(view.resolve()), seed, sigma)
-        if (key in seen or view not in [item.resolve() for item in args.view]
-                or seed not in seeds or sigma not in args.sigmas):
+        if (
+            key in seen
+            or view not in [item.resolve() for item in args.view]
+            or seed not in seeds
+            or sigma not in args.sigmas
+        ):
             raise ValueError("baseline view, seed or sigma coverage differs")
         seen.add(key)
-        if (Path(row["view"]).resolve() != view or row["schedule"] != [sigma, 0.0]
-                or row["trajectory"] != "one_step" or row["output"] is not None
-                or row["blocks"] != artifact["blocks"]
-                or row["panels"] != ["ground_truth"] + [
-                    {"d0": "gt_latent_rollout", "d1": "rgb_render_latent_rollout"}[arm] for arm in args.arms
-                ]):
+        if (
+            Path(row["view"]).resolve() != view
+            or row["schedule"] != [sigma, 0.0]
+            or row["trajectory"] != suffix(args)
+            or row["output"] is not None
+            or row["blocks"] != artifact["blocks"]
+            or row["panels"]
+            != ["ground_truth"]
+            + [{"d0": "gt_latent_rollout", "d1": "rgb_render_latent_rollout"}[arm] for arm in args.arms]
+        ):
             raise ValueError("baseline row schedule, panels or output differs")
         record_key = (str(view), seed)
         if record_key in records:
@@ -307,23 +409,34 @@ def _inspect_completion(args: argparse.Namespace, root: Path) -> list[Path]:  # 
                 raise ValueError("baseline rows do not share identical input/noise records")
             continue
         records[record_key] = artifact
-        capture, guide, fps = load_masters(view, args.objective)
-        if not torch.isfinite(capture).all() or not torch.isfinite(guide).all():
+        capture, guide, fps = load_masters(view, args.objective, require_guide="d1" in args.arms)
+        if not torch.isfinite(capture).all() or (guide is not None and not torch.isfinite(guide).all()):
             raise ValueError("baseline source masters are nonfinite")
         if artifact["fps"] != fps:
             raise ValueError("baseline source fps differs")
-        for role, bundle in (("capture", dataset.capture_bundle_name(args.objective)),
-                             ("guide", dataset.guide_bundle_name(args.objective))):
+        for role, bundle in (
+            ("capture", dataset.capture_bundle_name(args.objective)),
+            ("guide", dataset.guide_bundle_name(args.objective)),
+        ):
+            if role == "guide" and "d1" not in args.arms and artifact.get("guide") is None:
+                if artifact.get("guide_sha256") is not None:
+                    raise ValueError("guide hash without a guide source")
+                continue
             source = view / bundle
             if Path(artifact[role]) != source or provenance.file_sha256(source) != artifact[role + "_sha256"]:
                 raise ValueError("baseline source path or hash differs")
         frames = capture.shape[1]
         geometry = causal_core.deployed_geometry(
             SpatioTemporalScaleFactors(*manifest["geometry"]["scale_factors"]),
-            block_latent_frames=whole_clip_block([frames]), context_latent_frames=args.context_latent_frames,
+            block_latent_frames=whole_clip_block([frames]),
+            context_latent_frames=args.context_latent_frames,
         )
-        if (manifest["geometry"] != geometry.as_dict() or artifact["blocks"] != [[0, frames]]
-                or row["blocks"] != [[0, frames]] or manifest["capabilities"]["latent_channels"] != capture.shape[0]):
+        if (
+            manifest["geometry"] != geometry.as_dict()
+            or artifact["blocks"] != [[0, frames]]
+            or row["blocks"] != [[0, frames]]
+            or manifest["capabilities"]["latent_channels"] != capture.shape[0]
+        ):
             raise ValueError("baseline whole-clip geometry differs")
         grid = clip_grid(capture, fps, geometry, device=torch.device("cpu"), latent_channels=capture.shape[0])
         tokens = grid.patchify(capture.unsqueeze(0))
@@ -332,11 +445,15 @@ def _inspect_completion(args: argparse.Namespace, root: Path) -> list[Path]:  # 
         latents = artifact["latents"]
         timings = artifact["rollout_timing"]
         pairs = {(sigma, arm) for sigma in args.sigmas for arm in args.arms}
-        if (len(latents) != len(pairs) or {(item["sigma"], item["arm"]) for item in latents} != pairs
-                or len({item["path"] for item in latents}) != len(pairs)
-                or artifact["epsilon"] in {item["path"] for item in latents}
-                or len(timings) != len(pairs) or {(item["sigma"], item["arm"]) for item in timings} != pairs
-                or any(item["schedule"] != [item["sigma"], 0.0] or item["forward_passes"] != 1 for item in timings)):
+        if (
+            len(latents) != len(pairs)
+            or {(item["sigma"], item["arm"]) for item in latents} != pairs
+            or len({item["path"] for item in latents}) != len(pairs)
+            or artifact["epsilon"] in {item["path"] for item in latents}
+            or len(timings) != len(pairs)
+            or {(item["sigma"], item["arm"]) for item in timings} != pairs
+            or any(item["schedule"] != [item["sigma"], 0.0] or item["forward_passes"] != 1 for item in timings)
+        ):
             raise ValueError("baseline latent or forward coverage differs")
         for item in latents:
             latent = _saved_tensor(root, item["path"], item["sha256"], (1, *capture.shape))
@@ -360,8 +477,17 @@ def verify_completion(args: argparse.Namespace, root: Path) -> bool:
     try:
         _inspect_completion(args, root)
         return True
-    except (OSError, ValueError, KeyError, TypeError, RuntimeError, AttributeError, EOFError,
-            pickle.UnpicklingError, SystemExit):
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        RuntimeError,
+        AttributeError,
+        EOFError,
+        pickle.UnpicklingError,
+        SystemExit,
+    ):
         return False
 
 
@@ -377,7 +503,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
         raise SystemExit("--seeds with more than one seed needs --raw-only")
     if args.output.exists() and any(args.output.iterdir()):
         raise SystemExit(f"output directory must be fresh and empty: {args.output}")
-    masters = [(view, *load_masters(view, args.objective)) for view in args.view]
+    masters = [(view, *load_masters(view, args.objective, require_guide="d1" in args.arms)) for view in args.view]
     block_latent_frames = whole_clip_block([z_y.shape[1] for _, z_y, _, _ in masters])
     prompt = resolve_prompt(args)
     transformer_path = args.transformer
@@ -499,9 +625,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                 "seed": seed,
                 "fps": fps,
                 "capture": str((view / dataset.capture_bundle_name(args.objective)).resolve()),
-                "guide": str((view / dataset.guide_bundle_name(args.objective)).resolve()),
+                "guide": str((view / dataset.guide_bundle_name(args.objective)).resolve()) if z_g is not None else None,
                 "capture_sha256": provenance.file_sha256(view / dataset.capture_bundle_name(args.objective)),
-                "guide_sha256": provenance.file_sha256(view / dataset.guide_bundle_name(args.objective)),
+                "guide_sha256": provenance.file_sha256(view / dataset.guide_bundle_name(args.objective))
+                if z_g is not None
+                else None,
                 "epsilon": noise_path.name,
                 "epsilon_sha256": provenance.file_sha256(noise_path),
                 "blocks": [list(block) for block in plan],
@@ -518,23 +646,29 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
                     latent = rollout(denoise_fn, clip, session.context, sigma, arm=arm, seed=seed, schedule=schedule)
                     if session.device.type == "cuda":
                         torch.cuda.synchronize(session.device)
-                    view_record.setdefault("rollout_timing", []).append({
-                        "sigma": sigma,
-                        "arm": arm,
-                        "wall_seconds": time.perf_counter() - started,
-                        "schedule": schedule if schedule is not None else [sigma, 0.0],
-                        "forward_passes": (len(schedule) - 1 if schedule else 1) * passes_per_step,
-                        "peak_cuda_memory_bytes": torch.cuda.max_memory_allocated(session.device)
-                        if session.device.type == "cuda"
-                        else None,
-                    })
+                    view_record.setdefault("rollout_timing", []).append(
+                        {
+                            "sigma": sigma,
+                            "arm": arm,
+                            "wall_seconds": time.perf_counter() - started,
+                            "schedule": schedule if schedule is not None else [sigma, 0.0],
+                            "forward_passes": (len(schedule) - 1 if schedule else 1) * passes_per_step,
+                            "peak_cuda_memory_bytes": torch.cuda.max_memory_allocated(session.device)
+                            if session.device.type == "cuda"
+                            else None,
+                        }
+                    )
                     arms[sigma][arm] = latent.cpu()
                     latent_path = args.output / f"{stem}_sigma_{sigma:.6f}_{suffix(args)}_{arm}.pt"
                     torch.save(arms[sigma][arm], latent_path)
-                    view_record.setdefault("latents", []).append({
-                        "sigma": sigma, "arm": arm, "path": latent_path.name,
-                        "sha256": provenance.file_sha256(latent_path),
-                    })
+                    view_record.setdefault("latents", []).append(
+                        {
+                            "sigma": sigma,
+                            "arm": arm,
+                            "path": latent_path.name,
+                            "sha256": provenance.file_sha256(latent_path),
+                        }
+                    )
             results.append((view, z_y, fps, plan, arms, view_record))
             print(f"Rolled out {view}", flush=True)
     with nullcontext(None) if args.raw_only else session.decoder() as decoder:
@@ -545,21 +679,24 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
             for sigma in arms:
                 output = None
                 if decoder is not None:
-                    panels = [target_pixels] + [decode_pixels(session, arms[sigma][arm], decoder, args.seed)
-                                                for arm in args.arms]
+                    panels = [target_pixels] + [
+                        decode_pixels(session, arms[sigma][arm], decoder, args.seed) for arm in args.arms
+                    ]
                     output = args.output / f"{view.parent.parent.name}_{view.name}_sigma_{sigma:.6f}_{suffix(args)}.mp4"
                     t3_video(*panels, output, fps=fps)
-                manifest["videos"].append({
-                    "view": str(view),
-                    "sigma": sigma,
-                    "trajectory": suffix(args),
-                    "schedule": next(t["schedule"] for t in view_record["rollout_timing"] if t["sigma"] == sigma),
-                    "output": str(output) if output is not None else None,
-                    "panels": ["ground_truth"]
-                    + [{"d0": "gt_latent_rollout", "d1": "rgb_render_latent_rollout"}[arm] for arm in args.arms],
-                    "blocks": [list(block) for block in plan],
-                    "artifacts": view_record,
-                })
+                manifest["videos"].append(
+                    {
+                        "view": str(view),
+                        "sigma": sigma,
+                        "trajectory": suffix(args),
+                        "schedule": next(t["schedule"] for t in view_record["rollout_timing"] if t["sigma"] == sigma),
+                        "output": str(output) if output is not None else None,
+                        "panels": ["ground_truth"]
+                        + [{"d0": "gt_latent_rollout", "d1": "rgb_render_latent_rollout"}[arm] for arm in args.arms],
+                        "blocks": [list(block) for block in plan],
+                        "artifacts": view_record,
+                    }
+                )
                 if output is not None:
                     print(output, flush=True)
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

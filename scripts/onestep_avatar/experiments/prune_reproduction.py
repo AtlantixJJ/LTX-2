@@ -56,6 +56,8 @@ def scientific_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--controls", nargs="+", choices=sorted(INPUT_CHANGES), required=True)
     extra, rest = parser.parse_known_args(argv)
     args = baseline.scientific_args(rest)
+    if args.variant != "distilled":
+        raise ValueError("prune_reproduction requires distilled D0")
     if args.arms != ["d0"] or len(set(extra.controls)) != len(extra.controls):
         raise ValueError("prune_reproduction requires the D0 arm only and distinct controls")
     args.reference, args.earlier, args.controls = extra.reference, extra.earlier, list(extra.controls)

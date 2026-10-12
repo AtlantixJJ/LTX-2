@@ -743,3 +743,10 @@ uv run ruff check scripts/onestep_avatar scripts/prune
 
 The second command proves that ordinary code runs with experiment imports
 blocked. CPU checks do not establish native numerical results or video quality.
+
+### Direct dev pruning baseline
+
+The `prune_baseline` selector also accepts unmodified dev D0 with `--dev-schedule direct`.
+Use `--raw-only --arms d0`, context eight, and exact positive sigmas no greater than 0.95.
+Do not supply a transformer override. The queue pins capture, context and all model components.
+Guide inputs are required only for the distilled D1 recipe.

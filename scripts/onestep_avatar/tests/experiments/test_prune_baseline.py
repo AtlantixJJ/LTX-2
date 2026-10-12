@@ -288,3 +288,31 @@ def test_unknown_selector_refuses_without_importing_or_launching_route(
     with pytest.raises(ValueError, match="selector is unknown"):
         queue_jobs.prepare_job(raw, tmp_path)
     assert not output.exists()
+
+
+def test_direct_dev_recipe_is_capture_only_and_exact(saved_pruning, tmp_path):
+    _, _, _, inputs = saved_pruning
+    view = inputs['capture'].parent
+    spec = write_spec(tmp_path / 'direct.json', [
+        '--view', str(view), '--variant', 'dev', '--dev-schedule', 'direct',
+        '--sigmas', '0.9489720463752747', '--raw-only', '--arms', 'd0', '--prompt-file', str(inputs['prompt'])])
+    args = study.read_spec(spec, tmp_path / 'direct_output')
+    paths = study.input_paths(args)
+    assert inputs['capture'].resolve() in paths
+    assert inputs['guide'].resolve() not in paths
+    assert producer.dev_schedule(args, args.sigmas[0]) == [args.sigmas[0], 0.0]
+    assert study.main([*outer(spec, tmp_path / 'dry_output'), '--dry-run']) == 0
+    assert not (tmp_path / 'dry_output').exists()
+
+
+@pytest.mark.parametrize('extra', [['--sigmas', '1.0'], ['--arms', 'd0', 'd1'],
+                                  ['--transformer', '/tmp/modified.safetensors']])
+def test_direct_dev_recipe_refuses_outside_scope(extra):
+    arguments = ['--view', '/tmp/view', '--output', '/tmp/out', '--variant', 'dev',
+                 '--dev-schedule', 'direct', '--raw-only']
+    if '--arms' not in extra:
+        arguments += ['--arms', 'd0']
+    if '--sigmas' not in extra:
+        arguments += ['--sigmas', '0.9489720463752747']
+    with pytest.raises(ValueError):
+        study.scientific_args(arguments + extra)

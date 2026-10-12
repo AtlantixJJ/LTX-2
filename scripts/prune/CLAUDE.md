@@ -50,6 +50,25 @@ or invariants. Describe current behavior only. Keep history in saved records.
 The source inventory must match existing files and physical line counts.
 Do not add an avatar queue requirement to an unrelated standalone prune CLI.
 
+## Report and wording contract
+
+Read the [report and wording guide](doc/reporting.md) before writing reports, captions or comparison labels.
+It applies the workspace report structure and the `onestep_avatar` wording and media rules.
+Use simplified technical English, about 80% ASD-STE100, with one defined term per concept.
+Keep instructions to 20 words, descriptions to 25 words and paragraphs to six sentences, where practical.
+Keep articles, use active voice and avoid stacks of more than three nouns.
+
+Organize reports by question. Open with the problem, Terms, shared setup and numbered findings.
+Use plain question headings of 15 words or fewer. Each comparison changes one factor.
+Give its Short answer first, then setup, variants, coverage, results, figures and synchronized media.
+Use no experiment-summary tables. Save scientific figures as PNG, PDF and plotted-data JSON.
+Prove matched source, context and noise. Define metrics and uncertainty, including their limits.
+Put comparison roles and changed values on videos; keep common settings in captions.
+
+Model work and decoding stay in this package. Report code under `expr/` reads saved artifacts only.
+Keep prose in narrative config and layout in the report generator. Rebuild and validate every report change.
+Inspect wide and narrow rendered layouts. Check labels, synchronization and aspect ratios.
+
 ## Verification
 
 Run focused CPU tests and Ruff. Changes to native input construction or scoring
@@ -62,3 +81,15 @@ The CPU gate runs the exact suite with `CUDA_VISIBLE_DEVICES=`. Collection
 marks only tests already labeled `gpu` skipped when CUDA is unavailable or
 hidden. With real CUDA those tests still run. Metadata and tiny-model CPU
 fixtures retain their own checks; a marker does not disable their imports.
+
+## MobileWan helpers
+
+`data.head_score_dataset` verifies complete capture membership without guides.
+`score.mobilewan_heads` computes squared projected energy, actor-cluster statistics and global nested masks.
+Pool raw energy before normalization. Use only train membership for removal allocation.
+`score.mobilewan_dataset` runs resident native dev scoring with resumable observations.
+`score.mobilewan_aggregate` freezes train-only masks before held-out scoring and validates final statistics.
+`evaluate.mobilewan_removal` saves matched native held-out predictions and latent errors.
+`evaluate.mobilewan_media` decodes those saved predictions and creates synchronized comparisons.
+Full dataset execution and reviewed results are separate gates; helper tests do not prove them.
+The producer supports explicit direct dev and capture-only D0. Its restricted agent queue wrapper supports unmodified direct dev D0 at sigma <=0.95.

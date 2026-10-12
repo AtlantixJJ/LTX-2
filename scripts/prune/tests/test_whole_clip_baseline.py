@@ -383,3 +383,65 @@ def test_malformed_completion_returns_false_without_loading_models(saved_raw_bas
     args, root, _ = saved_raw_baseline
     (root / "manifest.json").write_text(json.dumps(payload))
     assert not producer.verify_completion(args, root)
+
+
+def test_direct_dev_is_explicit_and_retains_exact_sigma():
+    sigma = 0.9489720463752747
+    args = producer.parse_args(
+        ["--view", "v", "--output", "o", "--variant", "dev", "--dev-schedule", "direct", "--sigmas", str(sigma)]
+    )
+    assert producer.dev_schedule(args, sigma) == [sigma, 0.0]
+    assert producer.suffix(args) == "dev_direct"
+    with pytest.raises(SystemExit):
+        producer.parse_args(["--view", "v", "--output", "o", "--dev-schedule", "direct"])
+    with pytest.raises(SystemExit):
+        producer.parse_args(
+            [
+                "--view",
+                "v",
+                "--output",
+                "o",
+                "--variant",
+                "dev",
+                "--dev-schedule",
+                "direct",
+                "--dev-denoising-steps",
+                "1",
+            ]
+        )
+
+
+def test_capture_only_direct_dev_producer_and_completion(tmp_path, monkeypatch):
+    view = _views(tmp_path / "corpus")[0]
+    (view / dataset.guide_bundle_name("white")).unlink()
+    vae = _vae(tmp_path)
+    monkeypatch.setattr(producer, "open_session", lambda *_a, **_k: _Session(vae))
+    root = tmp_path / "direct_dev"
+    argv = [
+        "--view",
+        str(view),
+        "--output",
+        str(root),
+        "--variant",
+        "dev",
+        "--transformer",
+        str(vae),
+        "--dev-schedule",
+        "direct",
+        "--sigmas",
+        "0.9489720463752747",
+        "--raw-only",
+        "--arms",
+        "d0",
+        "--prompt",
+        "",
+    ]
+    assert producer.main(argv) == 0
+    manifest = whole_clip.load_manifest(root)
+    row = manifest["videos"][0]
+    assert row["schedule"] == [0.9489720463752747, 0.0]
+    assert row["artifacts"]["guide"] is None
+    assert row["artifacts"]["guide_sha256"] is None
+    assert row["artifacts"]["rollout_timing"][0]["forward_passes"] == 1
+    monkeypatch.setattr(producer, "open_session", lambda *_a, **_k: pytest.fail("verification loaded model"))
+    assert producer.verify_completion(producer.parse_args(argv), root)

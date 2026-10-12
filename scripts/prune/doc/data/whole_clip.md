@@ -80,3 +80,15 @@ Use export parity for no-prune controls because paired quality analysis requires
 `tests/test_actor_holdout.py` checks actor identities and aliases.
 Depth-export tests check candidate-family dispatch.
 A real baseline forward verifies the reconstructed model input after numerical changes.
+
+## Capture-only scoring inputs
+
+`prepare_score_inputs` saves input evidence without producing predictions or a baseline rollout.
+It verifies audited capture bytes, RGB and clip metadata pins, full shape, fps and the encoding record.
+It uses the public corpus reader and the common seeded epsilon helper.
+It saves epsilon once and publishes a capture-only input manifest atomically.
+A completed input manifest reuses its pinned epsilon. Orphan files without a manifest fail for diagnosis.
+
+Every sigma still passes through `build_input`, which remains the sole reconstruction calculation.
+The input manifest declares `whole_clip_d0_inputs_v1`; it does not claim saved rollout completion.
+The tiny dataset-worker tests verify exact saved-noise reuse and first-frame conditioning across sigmas.

@@ -33,7 +33,9 @@ Callers own their exact schedules and view selection.
 - Avatar consumers can import shared prune registry, session, prompt and media utilities.
 - Candidate verification imports score/export validators lazily from `data.whole_clip`.
   Hooks themselves use the saved-input contract. Keep this deferred edge to avoid an import cycle.
-- Report code reads saved artifacts. It does not recreate missing model results.
+- Report code under `expr/` reads saved artifacts for sections, captions, plots and validation.
+  It cannot load models, decode latents, start queue jobs or recreate missing scientific results.
+  Follow the [report and wording contract](reporting.md).
 
 The avatar queue owns its `prune_baseline` experiment wrapper.
 That wrapper calls the prune producer directly and saves its original manifest under `baseline/`.
@@ -86,3 +88,18 @@ A changed export architecture fails candidate verification.
 Passing those checks still requires a numerical export-parity run.
 
 The [module index](README.md) describes every current production owner.
+
+## MobileWan dataset statistics
+
+`data.head_score_dataset` owns complete membership audit and deterministic held-out case selection.
+`score.mobilewan_heads` owns squared projected energy, actor-cluster statistics and nested global allocation.
+These owners do not load the transformer or publish a completed experiment.
+The dataset runner must use shared native inputs and model lifetime, and freeze train masks before held-out inspection.
+
+`score.mobilewan_records` owns atomic view records and strict resume identities.
+The rollout producer supports explicit direct dev and capture-only D0 through its existing shared rollout.
+The restricted queue wrapper accepts unmodified direct dev D0 at sigma <=0.95.
+
+`score.mobilewan_aggregate` owns complete coverage checks, train-only mask freezing and final cohort statistics.
+It reads saved worker records and never opens a GPU model.
+Final statistics retain original head indices and exact pooled/per-sigma conditions.

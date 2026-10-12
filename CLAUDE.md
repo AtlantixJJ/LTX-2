@@ -16,6 +16,7 @@ There is also a top-level `scripts/` directory of standalone analysis/research s
 Two directories under `scripts/` are real packages with their own rules, and each has a `CLAUDE.md` to read **before** editing inside it:
 
 * **`scripts/prune/`** -- training-free head/FFN pruning calibrated and evaluated with whole-clip bidirectional D0 forwards. See `scripts/prune/CLAUDE.md` for saved-input and native export-parity requirements.
+  Its [report and wording guide](scripts/prune/doc/reporting.md) applies the workspace report rules and avatar language/media contracts.
 * **`scripts/onestep_avatar/`** -- the one-step LTX-2.5 avatar renderer: corpus tooling *and* model training in one package. Read `scripts/onestep_avatar/CLAUDE.md` and its `doc/` folder. It uses **two conda envs**: `argavatar` for `corpus/build_guidance.py` alone and `ltx` for everything else. Production files over 100 physical lines require mirrored designs at `doc/<relative-source-path>.md`; smaller files explain their logic in the header. Entry-script docs carry a Usage section, and all docs follow ~80% ASD-STE100 wording (rules in `scripts/onestep_avatar/doc/README.md`). Update the design or header with changes to objective, data flow, organization or invariants. These changes live in this submodule's worktree. A commit changes submodule history; update the workspace's recorded commit pin only when explicitly authorized.
 
 The avatar package separates `corpus/`, `model/`, `training/`, `execution/` and

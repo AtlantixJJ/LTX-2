@@ -278,3 +278,69 @@ def build_input(root: Path, manifest: dict, *, view: str, sigma: float,
         sigma_dtype=torch.float32,
     )
     return grid, modality, c0, row
+
+
+def prepare_score_inputs(root: Path, source_record: dict, *, current: session.Session,
+                         sigmas: list[float], seed: int = 42) -> dict:
+    """Save capture-only D0 input evidence, without producing rollout predictions.
+
+    Noising and conditioning remain in build_input. A completed input manifest
+    always reuses its pinned epsilon. Orphaned input files require diagnosis.
+    """
+    import os  # noqa: PLC0415
+
+    capture_path = Path(source_record['capture'])
+    for field, path in (('rgb_sha256', capture_path.parent / 'rgb.mp4'),
+                        ('clip_metadata_sha256', capture_path.parent.parent.parent / 'meta.json')):
+        if field in source_record and provenance.file_sha256(path) != source_record[field]:
+            raise ValueError(f'{field}: source differs from audited membership')
+    if provenance.file_sha256(capture_path) != source_record['capture_latent_sha256']:
+        raise ValueError('capture differs from audited membership')
+    bundle = torch.load(capture_path, map_location='cpu', weights_only=True)
+    capture, fps = load_training_master(capture_path, bundle=bundle)
+    if (list(capture.shape) != source_record['shape'] or fps != source_record['fps']
+            or capture.dtype != session.DTYPE or not torch.isfinite(capture).all()
+            or any(bundle.get(k) != v for k, v in source_record['capture_encode_record'].items())):
+        raise ValueError('capture encoding differs from audited membership')
+    if (root / 'manifest.json').exists():
+        saved = load_manifest(root)
+        if (saved['sigmas'] != sigmas or saved['seed'] != seed
+                or saved['videos'][0]['artifacts']['capture_sha256'] != source_record['capture_latent_sha256']):
+            raise ValueError('saved scoring input settings differ')
+        load_epsilon(root, saved['videos'][0])
+        return saved
+    if root.exists() and any(root.iterdir()):
+        raise ValueError('orphan scoring inputs without manifest; preserve for diagnosis')
+    frames, height, width = capture.shape[1:]
+    geometry = causal_core.deployed_geometry(current.model.scale_factors, block_latent_frames=frames-1,
+                                             context_latent_frames=8)
+    grid = common.ClipGrid.build(frames, height*current.model.scale_factors.height,
+                                width*current.model.scale_factors.width, fps, geometry,
+                                device=current.device, dtype=session.DTYPE,
+                                latent_channels=current.model.caps.latent_channels)
+    tokens = grid.patchify(capture.unsqueeze(0).to(current.device))
+    epsilon = common.epsilon_block(tokens, seed).cpu()
+    root.mkdir(parents=True, exist_ok=True)
+    noise_path = root / 'epsilon.pt'
+    torch.save(epsilon, noise_path)
+    stamp = current.stamp(dtype=str(session.DTYPE))
+    stamp['video_vae_fingerprint'] = provenance.checkpoint_fingerprint(current.model.paths.video_vae())
+    stamp['checkpoint'] = None
+    context = current.context.detach().cpu().contiguous()
+    artifact = {'capture': str(capture_path), 'capture_sha256': source_record['capture_latent_sha256'],
+                'epsilon': noise_path.name, 'epsilon_sha256': provenance.file_sha256(noise_path),
+                'fps': fps, 'blocks': [[0, frames]]}
+    manifest = {'kind': 'whole_clip_d0_inputs_v1', 'whole_clip': True, 'trajectory_only': False,
+                'attention': 'full_bidirectional', 'objective': 'white', 'latent_dtype': str(session.DTYPE),
+                'guidance': {'cfg': 1, 'stg': 0, 'rescale': 0, 'passes_per_step': 1,
+                             'negative_prompt': None, 'stg_blocks': []},
+                'checkpoint': None, 'seed': seed, 'sigmas': sigmas, 'geometry': geometry.as_dict(),
+                'model': stamp, 'text_context': {'prompt': '', 'prompt_sha256': hashlib.sha256(b'').hexdigest(),
+                    'sha256': hashlib.sha256(context.view(torch.uint8).numpy().tobytes()).hexdigest()},
+                'videos': [{'view': source_record['resolved_dir'], 'sigma': sigma, 'schedule': [sigma, 0.0],
+                            'artifacts': artifact} for sigma in sigmas]}
+    validate_manifest(manifest)
+    temp = root / f'manifest.{os.getpid()}.tmp'
+    temp.write_text(json.dumps(manifest, allow_nan=False, indent=2) + '\n')
+    temp.replace(root / 'manifest.json')
+    return manifest

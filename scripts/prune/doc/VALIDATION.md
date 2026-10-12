@@ -18,6 +18,15 @@ For documentation changes, check source coverage, required headings, local links
 Render and inspect changed Mermaid diagrams.
 Documentation verification does not require expensive GPU work.
 
+## Report verification
+
+Apply the [report and wording contract](reporting.md).
+Check question structure, defined terms, figure data, matched identities and scientific coverage.
+Inspect synchronized media and wide/narrow layouts. Preserve aspect ratios and readable labels.
+Rebuild from saved artifacts with model, VAE and queue loaders blocked.
+A missing required input must produce a named error and zero model or decoder jobs.
+The report validator runs after each change. Its result does not replace the native gates below.
+
 ## G1: native baseline reproduction
 
 Reconstruct the exact capture, VAE, fps, geometry, context bytes, seed and saved epsilon.
@@ -111,3 +120,15 @@ Saved-baseline tests exercise a tiny real transformer and model-free completion 
 Those CPU results establish focused correctness.
 Native BF16 baseline, export, quality and timing evidence are independent acceptance gates.
 Do not label a candidate accepted while a required gate remains unrun.
+
+## MobileWan helper checks
+
+The focused CPU controls compare exact projected energy with independent direct projection.
+They verify channel cancellation, both full token spans, equal-view pooling and actor-cluster intervals.
+They also verify exact official-grid preservation and nested global allocation with stable ties.
+The source audit rejects changed membership pins and records all row failures.
+Native dev direct-call parity, hook transparency, full dataset scoring and held-out media remain unverified.
+
+Direct dev CPU producer checks verify one call, exact sigma, missing-guide independence and saved completion.
+Per-view score tests reject missing blocks, heads, sigmas, nonfinite energy and changed noise identities.
+Native queue acceptance and full-span dev parity remain separate gates.

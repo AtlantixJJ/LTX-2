@@ -303,3 +303,11 @@ def test_difference_reports_exact_rms_maximum_and_frames() -> None:
     assert study.difference(expected, expected.clone())["exact"] is True
     with pytest.raises(ValueError, match="shape or dtype"):
         study.difference(actual.float(), expected)
+
+
+def test_legacy_reproduction_does_not_inherit_direct_dev_support():
+    with pytest.raises(ValueError, match='distilled D0'):
+        study.scientific_args([
+            '--reference', '/tmp/reference', '--earlier', '/tmp/earlier', '--controls', 'dense_mask',
+            '--view', '/tmp/view', '--output', '/tmp/output', '--raw-only', '--arms', 'd0',
+            '--variant', 'dev', '--dev-schedule', 'direct', '--sigmas', '0.9489720463752747'])

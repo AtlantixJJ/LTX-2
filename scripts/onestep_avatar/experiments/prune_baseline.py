@@ -39,12 +39,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def scientific_args(argv: list[str]) -> argparse.Namespace:
     args = producer.parse_args(argv)
+    direct_dev = args.variant == "dev" and args.dev_schedule == "direct"
     if (
         len(args.view) != 1
         or args.seeds is not None
         or not args.raw_only
         or args.objective != "white"
-        or args.variant != "distilled"
+        or (args.variant != "distilled" and not direct_dev)
+        or (direct_dev and (args.arms != ["d0"] or args.transformer is not None
+                           or any(sigma > 0.95 for sigma in args.sigmas)))
         or args.model != "2.5"
         or (args.cfg, args.stg, args.rescale) != (1.0, 0.0, 0.0)
         or args.negative_prompt is not None
@@ -54,7 +57,7 @@ def scientific_args(argv: list[str]) -> argparse.Namespace:
         or len(set(args.sigmas)) != len(args.sigmas)
         or any(not math.isfinite(sigma) or not 0.0 < sigma <= 1.0 for sigma in args.sigmas)
     ):
-        raise ValueError("prune_baseline requires one view/seed, raw white distilled unguided D0, optional D1")
+        raise ValueError("prune_baseline requires raw white unguided distilled D0/D1 or unmodified direct dev D0 <=0.95")
     return args
 
 
@@ -76,17 +79,23 @@ def runtime_profile(spec: Path) -> dict:
 def input_paths(args: argparse.Namespace) -> list[Path]:
     """Resolve metadata and fixed file inputs without opening a native model session."""
     model = backbone.resolve(args.model, args.variant, args.transformer)
-    producer.checked_sigmas(args.sigmas, model.sigmas)
+    if args.variant == "distilled":
+        producer.checked_sigmas(args.sigmas, model.sigmas)
+    else:
+        for sigma in args.sigmas:
+            if producer.dev_schedule(args, sigma) != [sigma, 0.0]:
+                raise ValueError("queued dev baseline requires exact direct schedules")
     view = args.view[0]
     paths = [
         args.spec,
         view / dataset.capture_bundle_name(args.objective),
-        view / dataset.guide_bundle_name(args.objective),
         Path(model.paths.transformer()),
         Path(model.paths.text_encoder()),
         Path(model.paths.video_vae()),
         prompt_cache.cache_path(args.model, producer.resolve_prompt(args)),
     ]
+    if "d1" in args.arms:
+        paths.append(view / dataset.guide_bundle_name(args.objective))
     if args.prompt_file is not None:
         paths.append(args.prompt_file)
     return sorted({path.resolve() for path in paths})

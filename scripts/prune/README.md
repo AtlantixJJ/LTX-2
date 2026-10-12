@@ -9,6 +9,7 @@ Read the [design index](doc/README.md), [architecture](doc/ARCHITECTURE.md),
 [algorithm](doc/core_algorithm.md), [verification](doc/VALIDATION.md)
 and [known gaps](doc/known_gaps.md) for implementation contracts.
 The [method review](doc/METHODS.md) supplies research context and proposed comparisons.
+The [report and wording guide](doc/reporting.md) applies the avatar language and media rules to pruning reports.
 
 ## Workflow
 
@@ -70,3 +71,7 @@ ruff check --select F,I scripts/prune
 ```
 
 The [verification guide](doc/VALIDATION.md#cpu-gate) explains test coverage and native gates.
+
+MobileWan numerical helpers and a capture-only membership audit are available.
+See [audit usage](doc/usage.md#mobilewan-capture-audit).
+Native dev dataset execution and the final removal study remain in development.

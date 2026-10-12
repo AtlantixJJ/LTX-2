@@ -30,8 +30,8 @@ This is the agent path. A person can also run the same module directly, or start
                "--context-latent-frames", "8", "--prompt", "", "--seed", "42", "--raw-only", "--arms", "d0"]}
 ```
 
-The spec allows exactly one view and one seed, raw output, `white` distilled
-weights, no guidance and context eight. `--arms d0 d1` adds the D1 arm. The
+The spec allows exactly one view and one seed, raw output, `white` distilled weights or explicit direct dev D0, no guidance and context eight.
+Direct dev requires `--dev-schedule direct`, no transformer override, D0 only, and all sigmas at most 0.95. `--arms d0 d1` adds the D1 arm. The
 other arguments are the producer's (see
 [`scripts/prune/doc/evaluate/whole_clip_baseline.md`](../../../prune/doc/evaluate/whole_clip_baseline.md)).
 
@@ -52,11 +52,11 @@ exist.
 
 1. `spec_protocol` reads a `schema_version: 1` scientific spec and supplies the
    queue-owned output and device arguments. This route allows one absolute
-   view, one seed and raw-only `white` distilled unguided one-step D0,
-   optionally with D1. The shared spec protocol still refuses repeated options,
+   view, one seed and raw-only `white` unguided one-step D0.
+   Distilled can also produce D1. Direct dev uses the unmodified dev checkpoint. The shared spec protocol still refuses repeated options,
    including a repeated `--view`.
 2. Before native work, resolve the public backbone and registry component
-   paths. Pin the full SHA-256 of the capture, the guide, the transformer, the
+   paths. Pin the full SHA-256 of the capture, the optional D1 guide, the transformer, the
    text encoder, the VAE, the existing prompt context cache, the optional prompt
    file and the scientific spec. Record the current evaluation/causal software
    manifest, with the reviewed producer dependencies as explicit extra sources.
@@ -117,3 +117,11 @@ receipt check. Direct callers keep the default `verified=False`.
 - Prune's `tests/test_whole_clip_baseline.py` checks the saved-only refusals of
   coverage, tensor, hash, `c0` and containment, with its tiny CPU producer
   fixture.
+
+## Direct dev input checks
+
+Direct dev validates exact `[sigma,0]` calls through the producer.
+It does not apply the distilled grid check to dev sigmas.
+Capture-only D0 excludes guides from input pins and never opens a guide file.
+The existing distilled grid and optional D1 recipe retain their checks.
+CPU tests cover off-grid dev values, input pins and rejection of D1, checkpoint overrides and sigma above 0.95.

@@ -1,9 +1,10 @@
 # Pruning LLMs and video generators: literature, evidence and LTX-2 test plan
 
-Literature checked 1 October 2026, with avatar/causal-training references added
-4 October 2026. This review covers representative weight,
-channel, head and block pruning methods, including video-diffusion work through
-2026. Primary papers and author project pages support the claims. Results belong
+DiT pruning literature checked 11 October 2026, including September 2026 work.
+The earlier LLM and avatar/causal-training reviews remain dated 1–4 October 2026.
+This review covers weight, channel, head, block and expert pruning, plus related
+low-rank and dynamic-computation methods. Primary papers and author project
+pages support the claims. Results belong
 to their stated models and protocols; they do not form a common leaderboard or
 establish that their gains transfer to LTX-2.5.
 
@@ -191,41 +192,604 @@ PPL. [Source: SliceGPT, Table 1](https://arxiv.org/html/2401.15024v2).
 at matched quality. Nominal sparsity alone does not control calibration,
 compensation, parameter count or kernel support.
 
-## 4. Diffusion pruning: the bridge from LLMs to video
+## 4. DiT pruning: categories, priorities and mathematical methods
 
-Importance can vary with noise level and sampling objective. Multi-step sampling
-can accumulate errors; our one-step task removes that recurrence but still needs
-calibration at its actual sigmas. Causal next-token loss is not a substitute for
-whole-clip bidirectional video prediction.
+Importance varies with noise level, conditioning and sampling objective.
+Multi-step sampling can accumulate errors. Our one-step task removes that
+recurrence, but still needs calibration at its actual sigmas.
 
-### 4.1. Diff-Pruning: timestep-aware Taylor importance
+### 4.1. Categorized and ranked reading list
 
-Diff-Pruning aggregates informative diffusion-loss gradients, excludes unhelpful
-timestep contributions, and structurally prunes with recovery. It reports about
-50% FLOP reduction at 10–20% of original training cost. This supports
-timestep-aware selection and budgeted recovery, not a training-free guarantee or
-an LTX latency claim. [Diff-Pruning, NeurIPS 2023](https://papers.neurips.cc/paper_files/paper/2023/hash/35c1d69d23bb5dd6b9abcd68be005d5c-Abstract-Conference.html).
+**Rank means our priority for investigation on LTX-2.5 D0, not published superiority.**
+This is an editorial ranking. We first consider compatibility with static dense
+head/FFN/block export, then relevance to video and multimodal dependencies,
+then selection/recovery cost and the evidence available. No numeric composite
+score is claimed. A low rank can mean an incompatible execution contract rather
+than a weak paper. Sections 4.2–4.16 explain the algorithms; §5 retains the
+video results and their measurement scopes.
 
-### 4.2. EcoDiff: learn masks against final generation
+Categories are **static width**, **static depth**, **stage-dependent width/depth**,
+**weight sparsity**, **low rank**, **expert pruning**, and **token computation**.
+“Training-free” permits calibration and algebraic weight updates; mask learning
+and recovery training are listed separately. Dates identify the conference or
+first preprint, not an inferred acceptance. The list is representative, not exhaustive.
 
-EcoDiff learns differentiable structural masks against the end-to-end generation
-result, with timestep gradient checkpointing to manage memory. Its current title
-is **Learnable Sparsity for Vision Generative Models**; the earlier title was
-**Effortless Efficiency**. The authors report 20% parameter pruning on SDXL and
-FLUX using 100 samples and about 10 A100 GPU-hours. No retraining after pruning
-still involves mask optimization. This is image evidence, not video quality or
-speed. [EcoDiff, ICLR 2026, author project](https://yangzhang-v5.github.io/EcoDiff/).
+| Rank | Work and date | Category / removal unit | Selection and recovery | Evidence / reason for priority |
+|---:|---|---|---|---|
+| 1 | [OBS-Diff, ICLR 2026](https://openreview.net/forum?id=eYdPMpW5os) | Static width; also weight and N:M sparsity | Timestep-weighted curvature; OBS compensation; no gradient recovery | SD3/SD3.5/FLUX; explicit heads, neurons and multimodal rank fusion. |
+| 2 | [MobileWan, Jul 2026 preprint](https://arxiv.org/abs/2607.06173) | Static width / heads | Projected contribution or learned gates; joint gate/weight recovery | Wan2.2-5B video; closest head-scoring comparison, with recurrence isolated. |
+| 3 | [TinyFusion, CVPR 2025](https://openaccess.thecvf.com/content/CVPR2025/html/Fang_TinyFusion_Diffusion_Transformers_Learned_Shallow_CVPR_2025_paper.html) | Static depth / blocks | Learn local masks with LoRA recoverability estimates; fine-tune | Image DiT/SiT; addresses why low immediate deletion error can select poorly. |
+| 4 | [PPCL, CVPR 2026](https://openaccess.thecvf.com/content/CVPR2026/papers/Ma_Pluggable_Pruning_with_Contiguous_Layer_Distillation_for_Diffusion_Transformers_CVPR_2026_paper.pdf) | Static depth plus branch replacement | Linear probes, contiguous-interval distillation; optional full recovery | FLUX/SD3.5/Qwen-Image; preserves interval endpoints and multimodal structure. |
+| 5 | [PARE, May 2026 preprint](https://arxiv.org/abs/2605.27336) | Static width plus dynamic depth | Temporal-head protection, diverse FFN selection; progressive distillation | Wan2.1-14B; use its width arm first, assess routing separately. |
+| 6 | [SVDtrunc, Sep 2026 / ECCV 2026 author release](https://vislearn.github.io/SVDtrunc/) | Low rank / projection matrices | Compression probes, nonuniform ranks; flow and module distillation | FLUX; important alternative when head/block deletion damages content. |
+| 7 | [Neodragon, ICLR 2026](https://arxiv.org/abs/2511.06055) | Static depth / MMDiT blocks | Importance and visual impact; fine-tune then distill | Pyramidal-Flow video; useful isolated depth/recovery ablation in §5.3. |
+| 8 | [FastLightGen, CVPR 2026](https://arxiv.org/abs/2603.01685) | Static depth / blocks | Deletion impact, stochastic skips, size/step co-distillation | Modern video DiTs; separate size selection from step and CFG savings. |
+| 9 | [EcoDiff, ICLR 2026](https://yangzhang-v5.github.io/EcoDiff/) | Static width / heads and neurons | End-to-end hard-concrete mask learning; optional recovery | FLUX/SDXL; one-step adaptation avoids sampler unrolling. |
+| 10 | [HierarchicalPrune, AAAI 2026](https://arxiv.org/abs/2508.04663) | Static depth and subcomponents | Position-aware removal; freeze early weights; sensitivity-guided distillation | Large MMDiTs; a recovery baseline, not a universal late-block deletion rule. |
+| 11 | [MosaicDiff, ICCV 2025](https://openaccess.thecvf.com/content/ICCV2025/papers/Guo_MosaicDiff_Training-free_Structural_Pruning_for_Diffusion_Model_Acceleration_Reflecting_Pretraining_ICCV_2025_paper.pdf) | Stage-dependent width / heads and neurons | SNR-specific calibration, grouped OBS; stitch subnetworks | DiT/SDXL; directly relevant curvature method, multi-stage execution differs. |
+| 12 | [Diff-ES, Mar 2026 preprint](https://arxiv.org/abs/2603.05105) | Stage-dependent width/depth | Evolutionary sparsity schedules; cached compensation weights | DiT/SDXL; improves allocation/search beyond MosaicDiff's heuristic stages. |
+| 13 | [FastFLUX, AAAI 2026](https://arxiv.org/abs/2506.10035) | Residual-branch replacement | Least-squares linear surrogate; neighboring-block LoRA recovery | FLUX; tests replacement rather than pure removal. |
+| 14 | [DiT-Pruning, Jul 2026 preprint](https://arxiv.org/abs/2607.00927) | Individual-weight sparsity | Squared-weight activation score; distribution-aware comparison groups | DiT/PixArt/FLUX; recent DiT-specific score, requires sparse execution. |
+| 15 | [DyDiT++, Apr 2025 extended preprint](https://arxiv.org/abs/2504.06803) | Dynamic width and token computation | Timestep routers, spatial FFN bypass; flow/PEFT extensions | DiT/SiT/Latte/FLUX; includes video, with a dynamic execution contract. |
+| 16 | [DyDiT, ICLR 2025](https://proceedings.iclr.cc/paper_files/paper/2025/hash/a44a70acd5d0abc1a252ada9719dd06d-Abstract-Conference.html) | Dynamic width and token computation | Head/channel routers and token FFN masks; FLOPs-constrained training | Image DiT; foundational adaptive-capacity baseline for the later extension. |
+| 17 | [E-DiT, Feb 2026 preprint](https://arxiv.org/abs/2602.13993) | Dynamic depth/FFN width plus caching | Content/timestep routers; quality and capacity losses | Image/3D DiTs; runtime slicing is useful, caching cannot help a lone D0 call. |
+| 18 | [DIET, Sep 2026 preprint](https://arxiv.org/abs/2609.37829) | Expert pruning / whole MoE experts | Cached deletion/re-routing signatures; coverage and budget search; no recovery | LingBot-Video; newest video parameter-pruning evidence, dense LTX has no expert bank. |
+| 19 | [TAPE, May 2026 preprint](https://arxiv.org/abs/2605.17837) | Token computation | Temporally smooth importance, reselect tokens, schedule budgets; no training | Video DiTs; useful coherence control, does not remove model parameters. |
 
-**LTX hypothesis:** one-step final-latent mask optimization avoids unrolling a
-long sampler, but its discrete export still needs independent validation.
+The older **Diff-Pruning** is the gradient-based bridge below. F³-Pruning,
+ICMD, V.I.P. and MobileVD remain in §5 because their backbones or recovery
+questions differ from modern dense DiT pruning. Efficient-vDiT and QuantSparse
+are attention/precision comparisons, rather than static parameter deletion.
 
-### 4.3. TinyFusion: optimize recoverability of shallow DiTs
+### 4.2. Shared notation and an exact local reconstruction calculation
 
-TinyFusion learns depth masks with updates that estimate future recoverability,
-then fine-tunes the shallow model. It reports a 14-layer student from DiT-XL/2,
-2× speedup and ImageNet FID 2.86, at less than 7% of pretraining cost. The best
-immediate-error mask need not be the best recoverable mask. This is an image-DiT
-result, not full-clip LTX video evidence. [TinyFusion, CVPR 2025](https://openaccess.thecvf.com/content/CVPR2025/papers/Fang_TinyFusion_Diffusion_Transformers_Learned_Shallow_CVPR_2025_paper.pdf).
+Use column-vector tokens. Let $X\in\mathbb{R}^{d\times n}$ contain $n$
+calibration inputs, $W\in\mathbb{R}^{p\times d}$ be a projection, and $Y=WX$.
+$R$ denotes removed input columns; $K$ denotes retained columns.
+$\theta$ is the frozen teacher; $\phi$ is a recovered student.
+$m_G\in\{0,1\}$ is a structural keep gate.
+For a complete block $B_\ell$, bypass means
+
+$$
+h_{\ell+1}=h_\ell+m_\ell\bigl(B_\ell(h_\ell)-h_\ell\bigr).
+$$
+
+The FFN form is $W_{\rm down}\,a$, where
+$a=\psi(W_{\rm up}h+b_{\rm up})$.
+Deleting neuron $j$ couples an up-projection row/bias and a down-projection column.
+Deleting a head couples its output columns and the permitted Q/K/V/gate slices.
+LTX's cross-head Q/K normalization still imposes the restrictions in §6.2.
+
+Here is a **shared derivation**, not a claim that every paper implements the
+same group optimizer. Set $H=XX^\top+\lambda I$ with $\lambda>0$.
+For one output row, represented by column vector $w$, use the quadratic objective
+
+$$
+\min_{\delta w}\frac12\delta w^\top H\delta w
+\quad\text{subject to}\quad \delta w_R=-w_R.
+$$
+
+Let $E_R$ select removed coordinates, so $w_R=E_R^\top w$.
+The Lagrange equations give
+$\delta w=-H^{-1}E_R\nu$ and
+$\nu=((H^{-1})_{RR})^{-1}w_R$.
+Thus
+
+$$
+\delta w^*=-H^{-1}E_R\bigl((H^{-1})_{RR}\bigr)^{-1}w_R,
+\qquad
+I(R)=\frac12w_R^\top\bigl((H^{-1})_{RR}\bigr)^{-1}w_R.
+$$
+
+Across output rows, the compensation and predicted cost are
+
+$$
+\Delta W=-W_{:,R}\bigl((H^{-1})_{RR}\bigr)^{-1}(H^{-1})_{R,:},
+\qquad
+I(R)=\frac12\operatorname{tr}\!\left[
+W_{:,R}\bigl((H^{-1})_{RR}\bigr)^{-1}W_{:,R}^\top\right].
+$$
+
+**Invert first, then select the block.** $(H^{-1})_{RR}$ generally differs
+from $(H_{RR})^{-1}$. The former lets retained columns compensate for deletion.
+Scalar removal gives $I(j)=\|W_{:,j}\|_2^2/[2(H^{-1})_{jj}]$.
+Joint group costs need not equal sums of scalar costs.
+
+For a worked check, let $H=\left[\begin{smallmatrix}1&0.5\\0.5&1\end{smallmatrix}\right]$
+and $w=(2,1)^\top$. Removing coordinate 1 gives
+$\delta w=(-2,1)^\top$, a retained weight of 2, and cost 1.5.
+Frozen deletion gives $\delta w=(-2,0)^\top$ and cost 2.
+This shows what compensation buys under this local objective.
+It does not establish full-transformer or decoded-video fidelity.
+
+Paper equations below use this orientation where possible. Factors of two
+depend on the reconstruction-loss convention and do not change a local ranking.
+Specific noise weights, mask distributions and execution policies remain distinct.
+
+### 4.3. Diff-Pruning: timestep-aware Taylor importance
+
+Diff-Pruning structurally prunes using diffusion-loss gradients, filters
+uninformative timesteps, then recovers the model. Its reported roughly 50%
+FLOP reduction uses 10–20% of original training cost.
+[Diff-Pruning, NeurIPS 2023](https://papers.neurips.cc/paper_files/paper/2023/hash/35c1d69d23bb5dd6b9abcd68be005d5c-Abstract-Conference.html).
+
+To explain its gradient principle in common notation, deletion gives
+$\Delta\theta_G=-\theta_G$. First-order Taylor expansion yields
+
+$$
+\mathcal L(\theta+\Delta\theta)-\mathcal L(\theta)
+\approx-\sum_{i\in G}\theta_i\frac{\partial\mathcal L}{\partial\theta_i}.
+$$
+
+This is the underlying approximation, not a replacement for the paper's
+timestep filter and aggregation. For our gate adaptation, use
+$\left|\partial\mathcal L/\partial m_G\right|_{m_G=1}$ with a stated diffusion
+or flow target. It measures downstream sensitivity rather than local output energy.
+Squared error to an identical frozen teacher has zero first derivative at
+the dense solution. It therefore cannot provide this deletion ranking.
+
+### 4.4. OBS-Diff: noise-weighted curvature and coupled multimodal heads
+
+OBS-Diff solves weighted local reconstruction with algebraic compensation.
+Its $t=1,\ldots,T$ is the **inference iteration index**: small $t$ means
+early denoising, not low noise. For $T>1$, its exact weighting is
+
+$$
+\alpha_t=\alpha_{\min}+
+\frac{\alpha_{\max}-\alpha_{\min}}{\ln T}\ln(T-t+1),
+\qquad
+H_\ell=2\sum_{t=1}^{T}\alpha_t\mathbb E[X_{\ell,t}X_{\ell,t}^\top].
+$$
+
+It uses scalar OBS for weights/FFN neurons. For heads it aggregates
+within-head saliencies using a head Hessian block, rather than solving every
+candidate with §4.2's joint-group optimum. For shared multimodal heads it fuses
+the two modality rankings:
+
+$$
+S_j^{\rm RRF}=\frac1{k+\operatorname{rank}_A(j)}+
+\frac1{k+\operatorname{rank}_B(j)}.
+$$
+
+Module packages collect several Hessians per calibration trajectory.
+Packages are processed sequentially, so later packages see earlier pruning.
+No gradient recovery is required, but retained weights change.
+[OBS-Diff, §§4.1–4.3](https://arxiv.org/abs/2510.06751).
+
+**LTX adaptation:** collect curvature on saved D0 inputs at the exact sigmas.
+For one step, use a positive constant weight; the $\ln T$ formula is undefined
+at $T=1$. LTX's separate cross-modal attention branches do not automatically
+share the same heads as image MMDiT. Apply rank fusion only to actually coupled
+removal groups. Full-width normalization remains an export constraint.
+
+### 4.5. MosaicDiff: different compact widths for different noise stages
+
+MosaicDiff divides the trajectory, calibrates a width-pruned network for each
+stage, then stitches those networks during sampling. It combines a closed-form
+estimate of latent-MSE change with SNR:
+
+$$
+\operatorname{SNR}(t)=\frac{\bar\alpha_t}{1-\bar\alpha_t},\qquad
+q(t)=\mathbb E[\operatorname{Grad}(t)]+\lambda\ln\operatorname{SNR}(t),
+\qquad \tau=M\max_t q(t).
+$$
+
+The threshold defines three stages. Higher average stage scores receive less
+pruning; specific sparsities are assigned from the paper's empirical schedule,
+rather than solved by a global optimum. Each stage collects activations from
+its own noised calibration data, including unconditional inputs when CFG is used.
+It removes whole attention-head/MLP column groups and compensates retained
+weights with the joint OBS calculation in §4.2. Here
+$\bar\alpha_t=\prod_{s=1}^t(1-\beta_s)$ uses the diffusion noise schedule $\beta_s$.
+[MosaicDiff, ICCV 2025, §§3.2–3.4](https://openaccess.thecvf.com/content/ICCV2025/papers/Guo_MosaicDiff_Training-free_Structural_Pruning_for_Diffusion_Model_Acceleration_Reflecting_Pretraining_ICCV_2025_paper.pdf).
+
+**LTX adaptation:** stage-specific curvature motivates comparing per-sigma
+rankings before pooling. Three saved one-step sigmas are three independent
+conditions, not three consecutive sampler stages. A static exported mask must
+satisfy all of them; routing among stage models defines a separate arm.
+
+### 4.6. Diff-ES: search the allocation and reuse compensated weights
+
+Diff-ES replaces manually chosen stage sparsities with evolutionary search.
+Let $L_i$ be a discrete sparsity level for stage $i$, $f(L)$ its generated-image
+fitness, and $G(L)$ its global sparsity. Its formulation is
+
+$$
+\hat L=\arg\max_L f(L)\quad\text{subject to}\quad G(L)\ge L_{\rm target}.
+$$
+
+Its level-switch mutation uses
+
+$$
+L_i\leftarrow L_i+\Delta,\qquad L_j\leftarrow L_j-\Delta,
+\qquad \sum_i L_i=B.
+$$
+
+Candidates use lightweight TOPIQ, CLIP-IQA or SSIM fitness, depending on
+the model. Stage-specific OBS pruning orders and compensated projection weights
+are computed once. Search and inference retrieve the needed projections into
+one shared backbone. This reduces full-model duplication; the projection
+repository still has storage and transfer costs. The framework also accepts
+other pruning backends, including depth pruning.
+[Diff-ES, Mar 2026 preprint, §§3.1–3.3](https://arxiv.org/abs/2603.05105).
+
+**LTX adaptation:** search allocation across layers/branches under measured
+latency and quality constraints. Preserving a sum of sparsity levels preserves
+compute only when stage costs and durations match. Use actual operation/time
+costs for unequal layers, and keep all candidate selection off blind test actors.
+
+### 4.7. EcoDiff: optimize complete-generation error with hard-concrete gates
+
+EcoDiff's current title is **Learnable Sparsity for Vision Generative Models**.
+Let $\mathcal F_\theta(z_T,y)$ be the complete sampler. Its objective is
+
+$$
+\min_m\mathbb E\left[
+\|\mathcal F_\theta(z_T,y)-\mathcal F_{\theta,m}(z_T,y)\|_2\right]
++\beta\|m\|_0.
+$$
+
+For logit $\lambda_j$, sample $u_j\sim U(0,1)$ and define the hard-concrete gate
+
+$$
+s_j=\operatorname{sigmoid}\!\left(
+\frac{\log u_j-\log(1-u_j)+\lambda_j}{a}\right),\qquad
+\tilde m_j=\operatorname{clip}_{[0,1]}\bigl(s_j(\zeta-\gamma)+\gamma\bigr),
+$$
+
+where $a>0$ is temperature and $\gamma<0<1<\zeta$ are stretch endpoints.
+The expected nonzero-gate penalty is
+
+$$
+\mathcal L_0=\sum_j\operatorname{sigmoid}
+\left(\lambda_j-a\log\frac{-\gamma}{\zeta}\right).
+$$
+
+Timestep checkpointing recomputes activations for backward propagation.
+Optimization learns masks; thresholding creates the discrete network.
+The authors report 20% parameter pruning on SDXL/FLUX in about 10 A100 GPU-hours.
+“No retraining after pruning” still includes mask optimization.
+[EcoDiff, ICLR 2026, §§5.1–5.3](https://arxiv.org/html/2412.02852v2).
+
+**LTX adaptation:** replace the unrolled sampler with the exact one-step map
+and exclude the clean frame from the loss. Frozen-weight gate learning and
+joint weight recovery must remain separate comparisons.
+
+### 4.8. TinyFusion: select blocks for their recoverability
+
+TinyFusion targets the post-recovery objective
+
+$$
+\min_m\min_{\Delta\Phi}\mathbb E_x\mathcal L(x,\Phi+\Delta\Phi,m).
+$$
+
+It divides depth into local groups of $M$ layers and retains $N$ per group.
+This is an **N-of-M layer selection**, not hardware N:M weight sparsity.
+For each group, enumerate its $\binom MN$ legal masks in matrix $\hat m$.
+Candidate probabilities $p_i$ and independent noise $g_i\sim\operatorname{Gumbel}(0,1)$
+generate a Gumbel-softmax sample:
+
+$$
+\pi_i=\frac{\exp((\log p_i+g_i)/\tau)}
+{\sum_j\exp((\log p_j+g_j)/\tau)},\qquad
+y=\operatorname{onehot}(\arg\max_i\pi_i),\qquad m=y^\top\hat m.
+$$
+
+A straight-through estimator uses the soft sample for backward propagation.
+Local distributions factorize, $p(m)=\prod_k p(m_k)$.
+LoRA updates $\Delta W=BA$ are co-optimized to estimate recoverability cheaply.
+The highest-probability structures are retained, then the shallow model is
+fine-tuned. DiT-XL/2 produces a 14-layer student with reported 2× speedup and
+ImageNet FID 2.86 at less than 7% of pretraining cost.
+[TinyFusion, CVPR 2025, §§3.1–3.2](https://openaccess.thecvf.com/content/CVPR2025/papers/Fang_TinyFusion_Diffusion_Transformers_Learned_Shallow_CVPR_2025_paper.pdf).
+
+**LTX adaptation:** compare fixed-budget recovered masks with fixed-budget
+deletion-error masks. Learnability does not validate our present deletion set.
+Keep recovery data and iterations matched before attributing improvement to selection.
+
+### 4.9. PPCL: replace a redundant interval with a distilled block
+
+**Pluggable Pruning with Contiguous Layer Distillation** trains residual linear
+probes $h+W_i h$ against teacher blocks $T_i$. With teacher inputs $H$, the
+least-squares initialization is
+
+$$
+W_i^*=(T_i(H)-H)H^\top(HH^\top)^{-1}.
+$$
+
+It replaces candidate layers with probes during simulation. Let $C(u,k)$ be
+CKA similarity between the teacher at $u$ and the surrogate at $k$.
+The interval boundary follows
+
+$$
+\Delta(u,k)=-(C(u,k)-C(u,k-1)),\qquad
+v=\min\{k-1:\Delta(u,k)>\Delta(u,k-1)\}.
+$$
+
+For $[u,v]$, initialize student block $S_u$ from $T_u$ and train it on
+**teacher inputs**, with normalized endpoint loss
+
+$$
+\mathcal L_{[u,v]}=
+\|\operatorname{Norm}(S_u(h^T_{u-1}))-
+\operatorname{Norm}(h^T_v)\|_2^2.
+$$
+
+Independent interval training avoids feeding one interval's training errors into
+the next. Its width stage replaces selected text-stream components and FFNs
+with linear projectors; it is not ordinary neuron slicing. Optional global
+fine-tuning follows assembly.
+[PPCL, CVPR 2026, §§3.2–3.4](https://openaccess.thecvf.com/content/CVPR2026/papers/Ma_Pluggable_Pruning_with_Contiguous_Layer_Distillation_for_Diffusion_Transformers_CVPR_2026_paper.pdf).
+
+**LTX adaptation:** distill a short sequence into one native multimodal block.
+Teacher-input success needs an assembled-model check. Normalized features can
+match direction while missing amplitude; include unnormalized final predictions.
+
+### 4.10. HierarchicalPrune: position-aware removal and protected recovery
+
+HierarchicalPrune measures quality change $\Delta P(i,c)$ when block $i$ or
+component $c$ is removed. Its published position-weighted score is
+
+$$
+\operatorname{Score}(i,c)=-|\Delta P(i,c)|\,W_{\rm pos}(i),
+\qquad W_{\rm pos}(i)=\exp\!\left(\frac{i-|B|}{|B|}\right).
+$$
+
+It preserves early semantic blocks, freezes protected retained parameters, and
+distills final velocity plus intermediate features. For aggressive compression,
+SGDistill scales **parameter updates**, not only feature-loss weights, inversely
+with sensitivity. In common notation, for unfrozen components,
+
+$$
+\mathcal L=\mathcal L_{\rm feat}+\mathcal L_{\rm KD},\qquad
+\Delta\theta_{i,c}\propto-
+\frac{\eta}{|\Delta P(i,c)|}\nabla_{\theta_{i,c}}\mathcal L.
+$$
+
+The zero-sensitivity case needs a defined safeguard in any implementation.
+Its reported large memory reductions also include W4A16 quantization.
+[HierarchicalPrune, AAAI 2026, §2](https://arxiv.org/abs/2508.04663).
+
+**LTX adaptation:** test freezing sensitive retained blocks at a fixed mask and
+training budget. Position is a model-specific prior. A later block can still
+be essential for motion or identity, and the score's sign/sort convention must
+be checked before reproducing selection.
+
+### 4.11. FastFLUX: fit cheap residual branches and recover their neighbors
+
+FastFLUX replaces $h+f_i(h)$ with $h+A_i h+b_i$, preserving the shortcut.
+For calibration columns $H$ and residual targets $F_i$, its stated fitting
+objective is
+
+$$
+\min_{A_i,b_i}\|F_i-A_iH-b_i\mathbf1^\top\|_F^2.
+$$
+
+With $\bar H=[H;\mathbf1^\top]$, the ordinary least-squares solution is
+
+$$
+[A_i\ b_i]=F_i\bar H^\top(\bar H\bar H^\top)^{\dagger}.
+$$
+
+This is our derivation from the stated objective. The paper's displayed Eq. (1)
+contains the fitted $g(X)$ inside its target and is not a clean closed-form
+solution as written; do not copy it literally. Sandwich training fits the
+replacement and LoRA adapters in neighboring retained blocks to match a
+teacher three-block segment.
+[FastFLUX, AAAI 2026 / preprint, §§3.1–3.2](https://arxiv.org/html/2506.10035v1).
+
+**LTX adaptation:** branch replacement is a changed architecture with learned
+weights. It needs its own reference and cannot claim parity with binary deletion.
+
+### 4.12. DiT-Pruning: a DiT-specific sparse-weight score
+
+The July 2026 **Post-Training Pruning for Diffusion Transformers** paper uses
+a squared transformation of weights, **STW**:
+
+$$
+I_{ij}=|W_{ij}|^2\|X_j\|_2.
+$$
+
+Here $X_j$ is input channel $j$ over calibration tokens, using row-token notation
+for this equation. This differs from Wanda's $|W_{ij}|\|X_j\|_2$ and from
+squared Wanda, $|W_{ij}|^2\|X_j\|_2^2$.
+Its clustering-aware granularity uses
+
+$$
+\bar I_i=\frac1{d_{\rm in}}\sum_j I_{ij},\qquad
+G_{\rm out}=\frac{\operatorname{Var}_i(\bar I_i)}
+{(\operatorname{Mean}_i\bar I_i)^2}.
+$$
+
+Low heterogeneity uses layer-wide ranking; high heterogeneity uses output-channel
+comparison groups. The mask still removes **individual weights**:
+$\tilde W=W\odot M$. “Per-channel” describes the ranking scope, not whole-channel
+deletion. The authors report only 0.001 CLIP-score loss at 50% FLUX.1-dev
+sparsity on MJHQ at 512×512.
+[DiT-Pruning, Jul 2026 preprint v3, Eqs. (7)–(10)](https://arxiv.org/html/2607.00927v3).
+
+**LTX assessment:** STW is an empirical score, not an exact Hessian derivation.
+Squaring changes weight/activation trade-offs; a uniform scale change alone
+cannot change within-layer ranking. A summed STW head/channel score would be
+a new grouped adaptation. Dense matrices with zeros do not demonstrate speedup.
+
+### 4.13. SVDtrunc: compress projections while retaining every block
+
+The September 2026 **Importance-Aware Low-Rank Distillation** work probes one
+block at a time using matched prompts/seeds and ranks sensitivity by CMMD.
+It approximates each selected projection $W\in\mathbb R^{n\times m}$ as
+
+$$
+W\approx U_r\Sigma_rV_r^\top=BA,\qquad
+B=U_r\sqrt{\Sigma_r},\quad A=\sqrt{\Sigma_r}V_r^\top.
+$$
+
+Storage changes from $nm$ to $r(n+m)$. For target reduction $c$, choose
+
+$$
+r=\left\lfloor\frac{(1-c)nm}{n+m}\right\rfloor.
+$$
+
+All projections in a block share a compression ratio. Less sensitive blocks
+receive more compression through a linear schedule
+$c_i=c_{\max}-\alpha\operatorname{order}(i)$ under the global parameter budget.
+Recovery combines flow-target loss, teacher velocity loss and per-block feature
+distillation. The work reports near-full FLUX performance at 68% retained parameters.
+[SVDtrunc, Sep 2026, §§3.1–3.3](https://arxiv.org/html/2609.04646v1).
+
+**LTX adaptation:** retain nonlinear blocks but factor their projections.
+For a square $4096^2$ matrix, $r=1024$ halves weight elements; it also creates
+two GEMMs and an intermediate. Measure actual latency. CMMD tolerates content
+changes that our capture-conditioned identity/pose contract may reject; retain
+paired fidelity and motion checks alongside distribution scores.
+
+### 4.14. Dynamic capacity: DyDiT, DyDiT++ and E-DiT
+
+DyDiT learns timestep-dependent head/channel masks and spatial FFN token masks.
+In common residual notation, token $i$ uses
+
+$$
+h'_i=h_i+m^{\rm token}_i\operatorname{FFN}_{m^{\rm width}(t)}(h_i).
+$$
+
+Its budget loss controls mean FLOPs rather than static parameter count:
+
+$$
+\mathcal L=\mathcal L_{\rm diffusion}+w
+\left(\frac1B\sum_b\frac{F_{\rm dynamic}(t_b)}{F_{\rm static}}-\lambda\right)^2.
+$$
+
+Routers train with Gumbel-sigmoid/straight-through gradients. Width choices can
+be precomputed for a known timestep schedule; spatial choices remain input-dependent.
+[DyDiT, ICLR 2025](https://proceedings.iclr.cc/paper_files/paper/2025/file/a44a70acd5d0abc1a252ada9719dd06d-Paper-Conference.pdf).
+DyDiT++ extends the framework to flow matching, Latte video and FLUX, and
+adds timestep-dependent LoRA. Its token mechanism bypasses FFN computation,
+so it should not be described as deleting the attention sequence wholesale.
+[DyDiT++, extended paper, §§3–7](https://arxiv.org/abs/2504.06803).
+
+E-DiT conditions each router on content and timestep. With block probability
+$p_\ell$ and width distribution $q_\ell$, inference chooses
+
+$$
+g_\ell=\mathbf1[p_\ell\ge0.5],\qquad
+s_\ell\in\{1/4,1/2,3/4,1\},\qquad
+h_{\ell+1}=h_\ell+g_\ell(B_{\ell,s_\ell}(h_\ell)-h_\ell).
+$$
+
+It slices retained FFN rows/columns at inference. Gate and width losses are
+$(\bar p-\rho_g)^2$ and $(\bar r-\rho_w)^2$, added to flow loss.
+Borderline active blocks may instead reuse a cached residual from a prior step.
+[E-DiT, Feb 2026 preprint, §§3.2–3.3](https://arxiv.org/html/2602.13993v1).
+
+**LTX assessment:** dynamic computation can keep the full weight bank resident.
+A fixed one-step sigma can freeze timestep-only choices; content-dependent
+routing remains dynamic. Token bypass and residual caching change the execution
+contract and cannot enter our first static full-attention comparison.
+
+### 4.15. Modern video width pruning: PARE and MobileWan
+
+PARE classifies attention heads by their intra-frame attention ratio
+
+$$
+r_h=\frac1{|\mathcal Q|}\sum_{q\in\mathcal Q}
+\frac{\sum_{k\in\mathcal S(q)}A^{(h)}_{qk}}{\sum_k A^{(h)}_{qk}},
+\qquad
+\tilde s_h=\begin{cases}\alpha_{\rm temp}s_h,&r_h<0.3,\\s_h,&\text{otherwise},\end{cases}
+$$
+
+where $\mathcal S(q)$ contains keys in the query's latent frame.
+Its $s_h$ pools $\|W_{O,h}\|_F\|a_h\|_F$ with high-noise timestep weights
+$w(t)=\log(1+t/T)$. The temporal multiplier exceeds one.
+FFN neuron scores are
+
+$$
+s_j=\|W_{{\rm up},j,:}\|_2\|W_{{\rm down},:,j}\|_2.
+$$
+
+Greedy selection skips neurons whose concatenated up/down weight signatures
+have excessive cosine similarity to retained ones, then relaxes the threshold
+until the aligned width budget is filled. Width distillation precedes dynamic
+block-router training.
+[PARE, May 2026 preprint, §3.2](https://arxiv.org/html/2605.27336v1).
+
+MobileWan instead measures projected output energy and normalizes within blocks:
+
+$$
+s_{b,h}=\mathbb E\|W^{\rm out}_{b,h}a_{b,h}\|_2^2,\qquad
+\tilde s_{b,h}=\frac{s_{b,h}}{H_b^{-1}\sum_j s_{b,j}}.
+$$
+
+Its learned alternative jointly optimizes gates and weights:
+
+$$
+g_{b,h}=\operatorname{sigmoid}(\alpha_{b,h}/\eta),\qquad
+\mathcal L=\mathcal L_{\rm FM}+\lambda\sum_{b,h}g_{b,h}.
+$$
+
+It anneals temperature, hardens gates, then recovers the fixed architecture.
+During gate learning, $\sigma\sim\operatorname{LogitNormal}(1.5,1)$;
+final recovery returns to $\operatorname{LogitNormal}(0,1)$.
+[MobileWan, Jul 2026 preprint, §3.1](https://arxiv.org/html/2607.06173v1).
+
+**LTX assessment:** projected energy includes within-head covariance; PARE's
+factored norm product does not. For $y=\sum_h c_h$, joint local deletion error is
+
+$$
+\mathbb E\left\|\sum_{h\in R}c_h\right\|_2^2
+=\sum_{h\in R}\mathbb E\|c_h\|_2^2+
+2\sum_{h<j;\,h,j\in R}\mathbb E\langle c_h,c_j\rangle.
+$$
+
+Neither scalar ranking captures all cross-head interactions or downstream
+damage. Compare these scores at the same mask budget before adding temporal
+protection, recovery or a changed noise distribution.
+
+### 4.16. Latest scope boundaries: DIET expert pruning and TAPE token bypass
+
+DIET measures the response of removing each MoE expert **after re-routing**:
+
+$$
+\Delta_{\ell,e}(x)=y_{\mathcal E\setminus\{e\}}(x)-y_{\mathcal E}(x),
+\qquad
+s_{\ell,e}=\operatorname{Concat}_c
+\left[\frac1{|\mathcal T_c|}\sum_{i\in\mathcal T_c}\Delta_{\ell,e}(x_{c,i})\right].
+$$
+
+It caches all expert outputs/router states once and replays layer-local deletions.
+For retained expert set $K_\ell$ of size $k_\ell$, its diversity loss is
+
+$$
+K_\ell^*=\arg\min_{|K_\ell|=k_\ell}
+\sum_{e\notin K_\ell}\min_{f\in K_\ell}
+\left(1-\frac{\langle s_{\ell,e},s_{\ell,f}\rangle}
+{\|s_{\ell,e}\|_2\|s_{\ell,f}\|_2}\right).
+$$
+
+Local combinatorial search selects experts; regression guides budgets across
+layers. On LingBot-Video 30B-A3B, 50% expert removal gives 57→30 GB checkpoints
+and reported VBench Total 0.7941→0.8115 on 284 cases without fine-tuning.
+All-expert calibration is costly: roughly 16× normal expert computation and
+375 GB cached states in its reported setup. Frozen-state replay is not an exact
+full-network prediction after multiple deletions.
+[DIET, Sep 2026 preprint, §§3–4](https://arxiv.org/html/2609.37829v1).
+
+**LTX assessment:** dense LTX has no MoE expert bank. Its deletion-response
+and diversity ideas motivate controls, but routing-aware expert pruning cannot
+be relabeled as ordinary dense FFN pruning.
+
+TAPE stabilizes token selection across adjacent frames with
+
+$$
+\tilde s_i^{n}=\alpha s_i^{n}+(1-\alpha)s_i^{n-1},\qquad \alpha=0.5.
+$$
+
+It reselects important tokens in chosen layers and uses timestep-dependent
+budgets, skipping computation for low-ranked tokens while retaining the full
+output lattice for reconstruction. No learned weights or parameter deletion
+are required.
+[TAPE, May 2026 preprint, §§4.1–4.3](https://arxiv.org/html/2605.17837v2).
+This is related video-computation work. It changes token execution and does
+not supply a smaller static LTX checkpoint.
 
 ## 5. Video-model methods and performance
 
@@ -384,6 +948,10 @@ step-count and structural-compression gains separately measured.
 
 ### 6.1. Activation screening
 
+All scores below refer to one fixed checkpoint and one fixed block/branch.
+An activation is the value consumed by that branch's output projection, not
+an attention probability or the original block input.
+
 Our current FFN channel score uses post-activation RMS and output-column norm:
 
 $$
@@ -395,6 +963,26 @@ A head of width $d_h$ uses the factored proxy
 $$
 I_h=\sqrt{\frac{\mathbb{E}[\|a_h\|_2^2]}{d_h}}\,\|W_h\|_F.
 $$
+
+**Symbols in the screening equations**
+
+| Symbol | Type | Definition and shape |
+|---|---|---|
+| $j$ | Scalar (integer index) | Index of an FFN intermediate channel. Each channel is one scalar per token. |
+| $a_j$ | Scalar | Post-activation FFN value in channel $j$, immediately before the FFN output projection. It varies with the input clip, sigma and token. |
+| $w_j$ | Vector | Column $j$ of the FFN output-projection matrix. It is a vector with one entry per FFN output channel. Thus $a_jw_j$ is this channel's local output contribution. |
+| $I_j$ | Scalar | FFN screening score: activation RMS multiplied by the Euclidean norm of its output column. |
+| $h$ | Scalar (integer index) | Index of an attention head within one attention branch. |
+| $d_h$ | Scalar (integer count) | Number of channels in head $h$, before the attention output projection. It is not the full model width or the number of tokens. |
+| $a_h$ | Vector | Vector of shape $d_h$ consumed by the attention output projection for head $h$ at one token. It already includes the native head gate when enabled. |
+| $W_h$ | Matrix | Output-projection column slice belonging to head $h$, with shape $D_{\rm out}\times d_h$. It maps head channels to attention output channels. It is the same slice called $W_{O,h}$ in §6.1.1. |
+| $D_{\rm out}$ | Scalar (integer count) | Number of channels in the attention output, after the output projection. Heads in the same branch share this width. |
+| $I_h$ | Scalar | Factored head-screening proxy: RMS across head channels and calibration observations, multiplied by the Frobenius norm of $W_h$. |
+| $E_h$ | Scalar | Root mean squared vector norm of the projected head output on the explicitly selected tokens; unlike $C_h$, it does not divide energy by output width. |
+| $\mathbb E[\cdot]$ | Operator | Mean over the specified calibration observations. The production proxy first averages sampled tokens within each clip/sigma pair, then gives each pair equal weight. |
+| $\lVert v\rVert_2$ | Scalar | Euclidean vector norm: $\sqrt{\sum_r v_r^2}$. The index $r$ enumerates vector coordinates. |
+| $\lVert W\rVert_F$ | Scalar | Frobenius matrix norm: $\sqrt{\sum_{r,s}W_{rs}^2}$. Here $r,s$ enumerate rows and columns of the matrix. |
+| RMS | Operator | Root mean square: square values, average them over the stated axes, then take the square root. It is not the mean absolute value. |
 
 Sampled tokens cover every generated latent frame; the clean first frame is
 excluded. Squared statistics are averaged with equal weight per calibration
@@ -409,11 +997,159 @@ $$
 E_h=\sqrt{\mathbb{E}[\|W_h a_h\|_2^2]}.
 $$
 
+$W_ha_h$ is a vector with $D_{\rm out}$ entries. $E_h$ is the root mean of its
+squared vector norm over the selected tokens. The helper uses the explicit
+token indices passed to it for one forward. It sums output-channel squares
+inside the norm; unlike the explorer's $C_h$, it does not divide by
+$D_{\rm out}$. With the same observations, $E_h=\sqrt{D_{\rm out}}C_h$.
+
 It retains within-head covariance and resembles MobileWan's projected-contribution
 screen. It still ignores cross-head cancellation and downstream deletion damage.
 The default calibration CLI does not select masks using this helper.
 See [estimators](score/estimators.md), [hooks](score/hooks.md) and
 [native calibration](score/whole_clip_d0_scores.md).
+
+#### 6.1.1. Whole-clip head contribution for the attention explorer
+
+The explorer's head-ranking definition is **whole-clip projected output RMS**.
+For one fixed clip, block, attention pathway, sigma and conditioning branch,
+let $\mathcal Q$ contain all query tokens and $\mathcal K$ all key tokens.
+The mask specifies which query/key pairs are permitted. For head $h$, define
+
+$$
+A_h(q,k)=\operatorname{softmax}_{k\in\mathcal K}
+\left(\frac{Q_h(q)^\top K_h(k)}{\sqrt{d_h}}+M(q,k)\right),
+\qquad
+z_h(q)=g_h(q)\sum_{k\in\mathcal K}A_h(q,k)V_h(k),
+\qquad
+c_h(q)=W_{O,h}z_h(q).
+$$
+
+**Indices, token sets and dimensions**
+
+| Symbol | Type | Definition |
+|---|---|---|
+| $\sigma$ | Scalar | Exact noise level for this independent forward: zero is clean and one is pure noise under the saved linear noising rule. The current explorer records 0.4, 0.7 and 0.9 separately, using the same saved noise. |
+| $h$, $H$ | Scalars (integers) | Head index and total head count in the selected attention pathway. Indices run from $0$ to $H-1$. |
+| $q$ | Scalar (integer index) | Query-token index, from zero through $N_Q-1$. |
+| $\mathcal Q$ | Set | All query-token indices in the selected clip/pathway. These queries produce the attention output being measured. |
+| $N_Q=\lvert\mathcal Q\rvert$ | Scalar (integer count) | Number of query tokens. |
+| $k$ | Scalar (integer index) | Key-token index, from zero through $N_K-1$. |
+| $\mathcal K$ | Set | All key-token indices. These tokens supply the information attended to. |
+| $N_K=\lvert\mathcal K\rvert$ | Scalar (integer count) | Number of key tokens; it can differ from $N_Q$ in cross-attention. |
+| $d_h$ | Scalar (integer count) | Head width. In this LTX capture, each head's query, key and value vectors have this width. |
+| $D_{\rm out}$ | Scalar (integer count) | Width of the attention output vector after projection; this is the divisor used to convert projected energy into per-channel RMS. |
+| $r$ | Scalar (integer index) | Output-channel index, running from $1$ to $D_{\rm out}$ in the component-wise score formula below. It is separate from the FFN channel index $j$ in §6.1. |
+
+For video-to-video attention in the current saved DNA clip,
+$N_Q=N_K=18\times32\times32=18{,}432$, $H=32$, $d_h=128$ and $D_{\rm out}=4096$.
+The 18 frames here are latent frames, derived from 137 RGB frames. In
+video-to-text attention, $N_Q=18{,}432$ and $N_K=1024$ tokenizer slots,
+including padding. These dimensions are read from the selected pathway;
+they are not constants for all clips or attention types.
+
+**Vectors, matrices and gates**
+
+| Symbol | Type | Definition and shape |
+|---|---|---|
+| $Q_h(q)$ | Vector | Query vector of shape $d_h$ for query token $q$, after any executed query normalization and positional encoding. Capital $Q_h$ is a tensor; calligraphic $\mathcal Q$ is a token-index set. |
+| $K_h(k)$ | Vector | Key vector of shape $d_h$ for key token $k$, after any executed key normalization and positional encoding. It is distinct from the index set $\mathcal K$. |
+| $V_h(k)$ | Vector | Projected value vector of shape $d_h$ at key token $k$. It carries the information that attention weights combine. |
+| $M(q,k)$ | Scalar | Additive attention mask: zero for a permitted pair and $-\infty$ for a blocked pair. It is zero everywhere for unmasked attention. |
+| $A_h(q,k)$ | Scalar | Scalar attention probability for this query/key pair. Each permitted query row sums to one over keys. The full head map has shape $N_Q\times N_K$. |
+| $\operatorname{softmax}_{k\in\mathcal K}$ | Operator | Exponentiate the scaled, masked query/key scores and normalize their sum over keys for each fixed query and head. |
+| $\ell_h(q)$ | Scalar | Scalar gate logit produced by the existing model for head $h$ at query token $q$. It depends on the query input. |
+| $g_h(q)$ | Scalar | Executed scalar head gate. It equals $2\operatorname{sigmoid}(\ell_h(q))$ for LTX gated attention and one if gating is disabled. It is not a learned pruning mask introduced by this diagnostic. |
+| $\operatorname{sigmoid}(u)$ | Scalar | Logistic function $1/(1+\exp(-u))$. The argument $u$ is a real scalar. |
+| $z_h(q)$ | Vector | Gated attention result of shape $d_h$, immediately before output projection: a gate times the attention-weighted sum of values. This is $a_h$ from §6.1 evaluated at query $q$; do not apply the gate twice. |
+| $W_O$ | Matrix | Full output-projection weight, with shape $D_{\rm out}\times(Hd_h)$ for equal-width heads. It maps concatenated head activations to the attention output. |
+| $W_{O,h}$ | Matrix | Slice of $d_h$ columns from $W_O$ for head $h$, with shape $D_{\rm out}\times d_h$. |
+| $c_h(q)$ | Vector | Projected contribution vector of shape $D_{\rm out}$ for head $h$ and query $q$. Its entries can be positive or negative. |
+| $b_O$ | Vector | Shared output-projection bias vector of shape $D_{\rm out}$. It cannot be uniquely assigned to individual heads. |
+| $y(q)$ | Vector | Combined attention output vector of shape $D_{\rm out}$: $b_O+\sum_hc_h(q)$, before later block operations. |
+| Superscript $\top$ | Operator | Vector or matrix transpose. Thus $Q_h(q)^\top K_h(k)$ is a scalar dot product. |
+
+The shared output bias is excluded from head scores. This definition stops
+before the block's residual modulation and any later model layers.
+
+The whole-clip energy and displayed contribution score are
+
+$$
+s_h=\frac{1}{|\mathcal Q|}\sum_{q\in\mathcal Q}\|c_h(q)\|_2^2,
+\qquad
+C_h=\sqrt{\frac{s_h}{D_{\rm out}}}
+=\sqrt{\frac{1}{|\mathcal Q|D_{\rm out}}
+\sum_{q\in\mathcal Q}\sum_{r=1}^{D_{\rm out}}c_h(q)_r^2}.
+$$
+
+**Energy, contribution and averaging**
+
+| Symbol | Type | Definition |
+|---|---|---|
+| $c_h(q)_r$ | Scalar | Output-channel $r$ of the projected contribution vector for head $h$ at query $q$. |
+| $\lVert c_h(q)\rVert_2^2$ | Scalar | Sum of squared contribution values over all output channels for one query. This is projected energy, not a sum of attention probabilities. |
+| $s_h$ | Scalar | Mean projected energy over all $N_Q$ queries for this one clip/block/pathway/sigma/branch. It sums channel squares but averages query tokens. |
+| $C_h$ | Scalar | Whole-clip contribution shown by the explorer: RMS over both query tokens and output channels. It has activation units; $s_h$ has squared activation units. |
+| $\lvert\mathcal Q\rvert$ | Scalar (integer count) | Number of query tokens. Dividing by it prevents clip length alone from multiplying the energy score. |
+| $s_h/D_{\rm out}$ | Scalar | Mean squared projected contribution per output channel and query. Taking its square root gives $C_h$. |
+
+**Worked arithmetic example.** Let one head have two query tokens and two output
+channels, with $c_h(0)=(3,4)$ and $c_h(1)=(0,0)$. Then $N_Q=2$,
+$D_{\rm out}=2$, $s_h=(25+0)/2=12.5$ and $C_h=\sqrt{12.5/2}=2.5$.
+The vector-norm score is $E_h=\sqrt{12.5}\approx3.536$ on those same tokens.
+Even if the selected query has zero projected contribution, the whole-clip
+score and rank stay the same; its attention probabilities still sum to one.
+
+Rank heads by descending $C_h$,
+with head index as the stable tie breaker. The score uses every query token;
+changing the displayed query must not change this ranking. Compute separate
+scores for each block, pathway, sigma and branch. Do not pool the three sigma
+levels or rank heads from different output spaces together.
+
+This is the full-query version of §4.15's MobileWan projected-energy screen,
+with the LTX head gate included. For fixed $D_{\rm out}$, $s_h$, $C_h$ and §6.1's
+$E_h=\sqrt{s_h}$ give the same ordering on the same tokens. MobileWan's
+within-block mean normalization also preserves that order. It does not make
+scores a percentage of explained output energy. PARE's factored norm proxy
+does not retain the same within-head covariance. Its temporal protection is
+a separate pruning choice and is not added to this contribution definition.
+
+The measurement scope differs from MobileWan's pruning procedure. Its heuristic
+score averages over a sample set and diffusion timesteps, then normalizes by
+the block's mean head energy to rank self-attention heads globally across
+blocks. The explorer measures one recorded clip at each exact sigma, ranks
+within one block/pathway, and applies the definition to all six pathways.
+It does not use that global allocation or perform pruning/recovery training.
+For a fixed query count and output width, taking RMS instead of total projected
+energy changes units but preserves head order. LTX's existing input-dependent
+head gate is part of its native activation; it is distinct from MobileWan's
+separately learned scalar pruning gate (§4.15).
+
+Do not sum heatmap brightness to obtain contribution. Each head's attention
+weights sum to one for each query; summing over the whole clip gives the same
+$|\mathcal Q|$ for every head. The explorer also scales each displayed panel
+by its own maximum. Its Q/K-only dumps cannot compute $C_h$: capture the
+executed gated head outputs and their output-projection weights, or accumulate
+equivalent exact projected statistics during a new forward. The ranking
+definition above does not imply that existing Q/K artifacts contain scores.
+The explorer's separate `score` command now accumulates these full-query
+statistics from the native gated input to each attention output projection.
+It writes scalar sidecars with input/noise/context/checkpoint provenance and
+keeps Q/K arrays intact. See the
+[explorer guide](../../../../scripts/ltx_diag/attention_explorer/README.md#whole-clip-contribution)
+for the command and capture checks.
+
+The explorer includes all queries in its recorded clip. Pruning calibration
+in §6.1 instead samples tokens and excludes the conditioned clean first frame;
+record that different token set when comparing scores. For multiple calibration
+clips or sigmas, average $s_h$ with an explicit weighting rule before taking
+the square root, rather than averaging per-clip RMS values.
+
+Whole-clip contribution measures local output magnitude. Cross-head inner
+products still affect joint deletion error (§4.15), and downstream layers can
+amplify or suppress a local change. A large score is not proof that a head
+improves the final video. Centering the outputs for FLAP-style mean compensation
+(§7) defines another score and must be evaluated separately.
 
 ### 6.2. Export and current evidence
 
@@ -455,6 +1191,7 @@ The [October 4 roadmap](../../../plans/2026-10-04-prune-finetune-causal-avatar.m
 prioritizes recoverable compact depth, an aligned-FFN backup and explicit motion
 conditioning before cached avatar integration. It separates preserving D0 from
 learning the deployment task, whose future capture frames are unavailable.
+
 
 ## 7. Methods we plan to test
 

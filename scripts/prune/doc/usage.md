@@ -243,3 +243,101 @@ Run the tests with the `ltx` interpreter.
 Direct CLIs run in the foreground. Interrupt your own command to stop it.
 Keep partial outputs for diagnosis and use a new directory for another producer attempt.
 For managed jobs, use the avatar queue's documented owned-process stop path.
+
+## MobileWan capture audit
+
+Run the complete source audit on CPU before model scoring:
+
+```bash
+CUDA_VISIBLE_DEVICES='' python -m scripts.prune.data.head_score_dataset \
+  --membership ../expr/onestep_avatar/runs/d0_bidirectional_sigma0.9/membership_all.json \
+  --output ../expr/refiner_prune/2.5/mobilewan_head_scores_dev8_20261011
+```
+
+The audit verifies all supplied rows and chooses three held-out actors deterministically.
+It writes source, coverage and failure records. It does not launch inference.
+See [audit design](data/head_score_dataset.md) and [numerical helper](score/mobilewan_heads.md).
+The native dataset runner and removal evaluator are not yet implemented.
+
+The baseline producer also supports direct dev schedules with `--variant dev --dev-schedule direct`.
+Use `--raw-only --arms d0` to load capture without a guide.
+See [direct dev design](evaluate/whole_clip_baseline.md#explicit-direct-dev-and-capture-only-d0).
+The restricted agent queue wrapper supports unmodified direct dev D0 at sigma <=0.95.
+
+## MobileWan native check
+
+After the queued dev baseline completes, check its stock primitive, score hook and all-one parity:
+
+```bash
+OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 python -m scripts.prune.checks.mobilewan_native \
+  --baseline ../expr/refiner_prune/2.5/mobilewan_head_scores_dev8_20261011/validation/native_18/baseline \
+  --gpu-id 4 \
+  --output ../expr/refiner_prune/2.5/mobilewan_head_scores_dev8_20261011/validation/native_check_18.json
+```
+
+Repeat for the 28-frame latent baseline on a free GPU.
+The checker executes three independent native calls per sigma, using the same saved inputs.
+See [checker design](checks/mobilewan_native.md).
+
+## MobileWan dataset worker
+
+After both native checks pass, run one resident standalone prune worker per free GPU.
+Use non-overlapping deterministic shards of the complete train membership:
+
+```bash
+OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 python -m scripts.prune.score.mobilewan_dataset \
+  --study ../expr/refiner_prune/2.5/mobilewan_head_scores_dev8_20261011/configs/study.json \
+  --split train --shard 0 --shards 3 --gpu-id 4 --wall-seconds 86400
+```
+
+For persistent work, use `setsid`, an external timeout and a per-worker log.
+Set distinct shard indices. Recheck free GPUs and live process identities before any restart.
+Use `--max-views 1` for the first native worker smoke check.
+The worker saves each sigma independently and reuses complete matching observations on resume.
+Held-out workers require frozen train-only masks.
+See [worker design](score/mobilewan_dataset.md).
+
+## MobileWan aggregation
+
+After all train views complete, freeze their pooled train-only masks:
+
+```bash
+OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 CUDA_VISIBLE_DEVICES='' python -m scripts.prune.score.mobilewan_aggregate \
+  --study ../expr/refiner_prune/2.5/mobilewan_head_scores_dev8_20261011/configs/study.json --freeze-train
+```
+
+After held-out scoring completes, omit `--freeze-train` to publish final statistics.
+Use `--verify` to recompute the saved final result and validate its confidence intervals from all raw records.
+Missing membership observations fail before final publication.
+See [aggregate design](score/mobilewan_aggregate.md).
+
+## MobileWan removal evaluation
+
+After complete train scoring and mask freezing, evaluate all three preselected held-out cases:
+
+```bash
+OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 python -m scripts.prune.evaluate.mobilewan_removal \
+  --study ../expr/refiner_prune/2.5/mobilewan_head_scores_dev8_20261011/configs/study.json \
+  --gpu-id 4
+```
+
+The evaluator saves full GT and prediction tensors, matched identities and generated-frame MSE.
+It validates all-one equality before each sigma's removal calls.
+Complete saved sigmas resume with tensor and metric verification.
+It does not decode or generate the final report.
+See [evaluation design](evaluate/mobilewan_removal.md).
+
+## MobileWan comparison media
+
+After complete removal evaluation, decode saved evidence and render all 24 synchronized comparisons:
+
+```bash
+OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 python -m scripts.prune.evaluate.mobilewan_media \
+  --study ../expr/refiner_prune/2.5/mobilewan_head_scores_dev8_20261011/configs/study.json \
+  --gpu-id 4
+```
+
+Each video has six panels in two rows by three columns, with the matched recorded white-matte capture.
+Full source and individual decoded videos remain available.
+Report code reads these saved artifacts and must not run this model-facing stage.
+See [media design](evaluate/mobilewan_media.md).

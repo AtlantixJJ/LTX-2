@@ -67,3 +67,15 @@ Compare saved epsilon tensors directly.
 A smaller file does not establish reduced latency or VRAM.
 One actor or geometry does not establish general quality or throughput.
 The [verification guide](VALIDATION.md) defines the required independent gates.
+
+## MobileWan implementation status
+
+Squared projected-energy, cohort statistics and global allocation now have focused CPU controls.
+The complete capture-only audit CLI checks pinned membership and source content.
+The resident dataset runner and native dev queue integration are implemented.
+Complete dataset execution, removal evaluation and final reporting remain pending.
+These helpers do not establish native scoring or removal quality.
+
+The producer now supports explicit direct dev schedules and capture-only D0.
+The restricted agent baseline wrapper now accepts unmodified direct dev D0 at sigma <=0.95.
+Per-view score records now reject incomplete observations and changed resume identities.

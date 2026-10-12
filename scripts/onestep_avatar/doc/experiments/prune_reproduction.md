@@ -45,7 +45,7 @@ This is the agent path. A person can also run the same module directly, or start
 
 | Scientific argument | Meaning |
 |---|---|
-| the [`prune_baseline`](prune_baseline.md#usage) arguments | The same restrictions, D0 arm only. |
+| the [`prune_baseline`](prune_baseline.md#usage) arguments | The distilled restrictions, D0 arm only. Direct dev support in the baseline selector does not apply here. |
 | `--reference <DIR>` | Required. The saved pruning reference run. |
 | `--earlier <DIR>` | Required. An earlier current-producer run on the same case. |
 | `--controls NAME ...` | Required. Distinct control names from the [table](#organization-logic). |

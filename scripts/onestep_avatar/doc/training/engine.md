@@ -74,6 +74,14 @@ identity rule. A missing or mismatched identity fails before transformer
 hashing, model setup or output archiving. D0 checks the capture only. D1 checks
 both. Equal shapes and parent compatibility do not replace this check.
 
+Saved VAE fingerprints can name an older symbolic-link path to the same file.
+The training check accepts that alias only when both absolute paths resolve to
+the same existing file and the saved size and modification time match exactly.
+It preserves the original encoding record and its content pins. A changed file,
+missing alias, different VAE or malformed fingerprint still fails preflight.
+For example, `/old/vae` and `/new/vae` can match when both resolve to `/weights/vae`.
+Equal size and time alone never establish that match.
+
 `run_settings` is the only training entry point. `train.py` refuses a command
 without `--mode` before any environment change or write
 (`tests/test_training_helpers.py`). The queue also requires `--mode` in training
@@ -451,6 +459,8 @@ owner reads the checked files and does not change videos or groups.
 
 - Compare gradients and updates on small deterministic models.
 - Check cache writes during repeated checkpointed calls.
+- Check VAE path aliases with real files, including stale metadata and a
+  different file with the same size and modification time.
 - Run one small distributed update for each mode.
 - For visualization, test the completed-checkpoint selection and the fixed
   preview-input hashes. Test failed, pending and complete job records. A

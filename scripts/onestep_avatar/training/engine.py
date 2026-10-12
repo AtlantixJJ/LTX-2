@@ -326,6 +326,24 @@ def enqueue_preview(checkpoint: Path, record: dict, output: Path) -> Path:
     return destination
 
 
+def _encoding_vae_matches(recorded: object, expected: str) -> bool:
+    """Accept historical path aliases only with unchanged producer file metadata."""
+    if recorded == expected:
+        return True
+    if not isinstance(recorded, str):
+        return False
+    saved_path, saved_separator, saved_stat = recorded.rpartition(":size=")
+    current_path, current_separator, current_stat = expected.rpartition(":size=")
+    if not saved_separator or not current_separator or saved_stat != current_stat:
+        return False
+    if not Path(saved_path).is_absolute() or not Path(current_path).is_absolute():
+        return False
+    try:
+        return Path(saved_path).resolve(strict=True) == Path(current_path).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def prepare_run(  # noqa: PLR0912 -- fail all input/parent conditions before runtime setup
     settings: RunSettings,
     *, require_fresh_output: bool = True,
@@ -353,7 +371,9 @@ def prepare_run(  # noqa: PLR0912 -- fail all input/parent conditions before run
     vae_fingerprint = file_fingerprint(Path(specification.paths.video_vae()))
     for source_id, source in store.sources.items():
         for role in (("capture", "guide") if settings.guide_mode == "d1" else ("capture",)):
-            if source.get(f"{role}_encode_record", {}).get("vae_fingerprint") != vae_fingerprint:
+            if not _encoding_vae_matches(
+                source.get(f"{role}_encode_record", {}).get("vae_fingerprint"), vae_fingerprint
+            ):
                 raise ValueError(f"{source_id}: {role} encoding VAE differs from the selected base VAE")
     levels = training_sigmas(settings)
     if settings.variant == "distilled" and any(

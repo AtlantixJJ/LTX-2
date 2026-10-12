@@ -155,3 +155,35 @@ real transformer. That run checks the saved file names, manifest fields that
 sigmas, and the `c0` frame of every saved latent. Native reproduction of a saved
 baseline (same view, sigmas, prompt, seed and model) runs through the avatar
 `prune_baseline` queue experiment.
+
+## Explicit direct dev and capture-only D0
+
+The producer accepts `--variant dev --dev-schedule direct` for one exact `[sigma,0]` call.
+It uses the same shared rollout, float32 schedule and clean capture condition.
+It does not regenerate or rescale a scheduler grid in direct mode.
+The default dev policy remains `truncated`, and requires `--steps`.
+Direct mode can record `--steps` as reference provenance, but it still executes one call.
+`--dev-denoising-steps` is incompatible with direct mode.
+Distilled execution retains its original grid checks.
+
+With `--raw-only --arms d0`, the producer opens only the capture master.
+Its guide path and guide hash are null. D1 still requires matching capture and guide masters.
+The model-free completion reader accepts direct dev and distilled raw outputs.
+It checks every saved schedule, forward count, tensor hash, shape, finite value and clean frame.
+Older D0 records with recorded guide identities retain their source-hash checks.
+
+The agent queue wrapper accepts the distilled recipe and unmodified direct dev D0 at sigma <=0.95.
+Use that launch owner for native baseline work.
+A direct human command is:
+
+```bash
+conda activate ltx
+python -m scripts.prune.evaluate.whole_clip_baseline \
+  --model 2.5 --variant dev --dev-schedule direct \
+  --view /abs/corpus/Part_1/0008_01/views/view00_cam51 \
+  --sigmas 0.9489720463752747 --prompt "" --seed 42 --gpu-id 4 \
+  --raw-only --arms d0 --output ../expr/refiner_prune/2.5/direct_dev_example
+```
+
+The CPU producer tests remove the guide, execute a tiny real model and inspect the saved direct dev record.
+Native full-span parity and hook transparency remain unrun.
