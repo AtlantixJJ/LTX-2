@@ -442,6 +442,24 @@ with the supplied image, guide and output.
 
 ## 9. Experiments
 
+### Checkpoint visualization through the existing comparison workflow
+
+```bash
+"$PY" -m scripts.onestep_avatar.comparisons --prepare-checkpoint-visualization \
+  --training-run <FINISHED_RUN> --membership <ORIGINAL_MEMBERSHIP.json> \
+  --train-source <TRAIN_VIEW> --held-out-source <HELD_OUT_VIEW> \
+  --output <FRESH_VISUALIZATION> --sigma-min 0.38 --sigma-max 0.9 --dry-run
+```
+
+Remove `--dry-run` to write the fixed inputs, jobs and specifications.
+Add `--gpu-id <FREE_GPU>` to prepare GT references through the existing `media` CLI.
+Add `--execute --gpu-pool <POOL>` to run the existing queue in the same session.
+For unattended work, use `setsid` and the thread limits from section 1.
+Each person gets four videos: two four-checkpoint groups at one and four steps.
+Every video contains RGB GT, base, and four adapters. See
+[the comparison command](../doc/comparisons.md#prepare-checkpoint-videos) and
+[the media layout](../doc/media.md#checkpoint-visualization).
+
 Each experiment is a queue `experiment` job with a pinned spec (section 2).
 Check a spec on CPU without loading a model:
 

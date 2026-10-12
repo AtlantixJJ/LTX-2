@@ -140,6 +140,29 @@ def test_saved_rgb_references_render_without_another_reference_decode(
     assert calls == [42, 42]
 
 
+@pytest.mark.parametrize("include_decoded", [False, True])
+def test_d0_rgb_gt_precedes_outputs_without_a_guide_panel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, include_decoded: bool
+) -> None:
+    spec, comparison, calls = fixture(tmp_path, monkeypatch)
+    comparison["guide_mode"] = "d0"
+    count = 2 if include_decoded else 1
+    comparison["panels"] = comparison["panels"][:count] + comparison["panels"][3:]
+    for history in ("cache", "recompute"):
+        path = tmp_path / f"{history}.json"
+        record = json.loads(path.read_text())
+        record["guide_mode"] = record["conditions"]["task"]["guide_mode"] = "d0"
+        path.write_text(json.dumps(record))
+    spec.write_text(json.dumps({"model": "2.5", "comparisons": [comparison]}))
+    result = comparisons.render_saved_comparisons(spec, tmp_path / "d0_out", gpu_id=0)
+    row = result["comparisons"][0]
+    roles = [panel["role"] for panel in row["rendering"]["panels"]]
+    assert roles[:count] == ["recorded", "decoded"][:count]
+    assert "guide" not in roles
+    assert calls == [42, 42]
+    assert comparisons.verify_saved_comparison_completion(spec, tmp_path / "d0_out")
+
+
 @pytest.mark.parametrize(
     "changed",
     [

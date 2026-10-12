@@ -466,6 +466,27 @@ flowchart LR
 The metadata plan is checked before the model loads. Both formats use the same
 RGB tensors.
 
+### Checkpoint visualization
+
+The [checkpoint workflow](comparisons.md#prepare-checkpoint-videos) reuses this
+renderer. Each video shows GT RGB, base, and four saved adapters in that order.
+The full layout places GT, base and the first adapter on the top row.
+It places the other three adapters on the bottom row. All six cells have the
+same height and aspect-preserving padding. Titles state each checkpoint update.
+The video title identifies the person, data group and denoising step count.
+Both schedules show the same recorded frames at the same playback rate.
+
+The seven default checkpoints form two groups with update 400 in both.
+One-step and four-step denoising each render the two groups, making four videos
+per person. The official-tail selection and exact schedules belong to the
+comparison specification. Reports show video links, not extracted RGB frames.
+Compact videos retain the same panels and frame mapping in a readable layout.
+
+Reference preparation also accepts the version-two membership crop stored in
+`capture_encode_record`. Before RGB replay, it verifies this crop against the
+original capture manifest and supplies a copy with the top-level crop field.
+No membership, crop, encoding or producer pin changes.
+
 ### Text inside the video
 
 Use only text that helps the viewer understand this comparison. The video needs

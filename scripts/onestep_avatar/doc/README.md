@@ -82,7 +82,7 @@ start queue work.
 |---|---|---:|
 | `__init__.py` | source header | 13 |
 | `bench.py` | [bench.md](bench.md) | 577 |
-| `comparisons.py` | [comparisons.md](comparisons.md) | 501 |
+| `comparisons.py` | [comparisons.md](comparisons.md) | 674 |
 | `corpus/build_guidance.py` | [corpus/build_guidance.md](corpus/build_guidance.md) | 778 |
 | `corpus/dataset.py` | [corpus/dataset.md](corpus/dataset.md) | 397 |
 | `corpus/geometry.py` | [corpus/geometry.md](corpus/geometry.md) | 111 |
@@ -132,7 +132,7 @@ start queue work.
 | `experiments/training_update_check.py` | [experiments/training_update_check.md](experiments/training_update_check.md) | 703 |
 | `hashing.py` | source header | 34 |
 | `infer.py` | [infer.md](infer.md) | 696 |
-| `media.py` | [media.md](media.md) | 714 |
+| `media.py` | [media.md](media.md) | 725 |
 | `metrics.py` | [metrics.md](metrics.md) | 151 |
 | `model/adapters.py` | [model/adapters.md](model/adapters.md) | 145 |
 | `model/backbone.py` | source header | 68 |

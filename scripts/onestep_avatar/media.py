@@ -420,6 +420,17 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915 -- ordered refe
     if args.source not in store.sources:
         raise ValueError("reference source is not in the checked video list")
     source = store.sources[args.source]
+    manifest_path = store.root / dataset.CAPTURE_MANIFEST_NAME
+    if sha256(manifest_path) != store.membership["capture_manifest"]["sha256"]:
+        raise ValueError("reference crop manifest differs from membership")
+    crop = dataset.CaptureManifest.load(store.root)
+    box = list(crop.box_for(store.root / args.source))
+    encoding = source["capture_encode_record"]
+    if encoding.get("box_xyxy") != box or encoding.get("edge") != crop.edge:
+        raise ValueError("reference crop differs from capture encoding")
+    if "box_xyxy" in source and source["box_xyxy"] != box:
+        raise ValueError("reference top-level crop differs from capture encoding")
+    source = {**source, "box_xyxy": box}
     if not 1 <= args.encoded_frames <= source["n_latent_frames"]:
         raise ValueError("reference frame count must fit the checked master")
     require_guide = args.guide_mode == "d1"
@@ -432,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915 -- ordered refe
         raise ValueError("preview decoder VAE differs from the capture encoding")
     # Bind inputs through publication; never accept references from changed bytes.
     view = store.root / args.source
-    paths = [args.subset, vae, view / dataset.capture_bundle_name(store.objective), view / "rgb.mp4",
+    paths = [args.subset, manifest_path, vae, view / dataset.capture_bundle_name(store.objective), view / "rgb.mp4",
              view / "bbox.npy"]
     if store.objective == "white":
         paths.append(view / dataset.CAPTURE_MASK_NAME)

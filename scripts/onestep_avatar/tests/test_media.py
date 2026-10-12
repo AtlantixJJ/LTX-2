@@ -414,6 +414,10 @@ def reference_cli_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tup
         "sources": [source],
         "splits": {"train": ["actor"]},
     }
+    crop_manifest = tmp_path / dataset.CAPTURE_MANIFEST_NAME
+    crop_manifest.write_text(json.dumps({"pad_factor": 1.2, "edge": 32, "windows": [
+        {"bundle": "actor/view/ltx_vae_latent_white.pt", "box_xyxy": [0, 0, 32, 32]}]}))
+    membership["capture_manifest"] = {"sha256": sha256(crop_manifest)}
     membership["sha256"] = subset.membership_hash(membership)
     path = tmp_path / "membership.json"
     path.write_text(json.dumps(membership))
@@ -442,6 +446,26 @@ def reference_cli_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tup
         str(output),
     ]
     return arguments, source, session, view, path, output
+
+
+@pytest.mark.parametrize("changed", ["manifest", "encoding"])
+def test_reference_cli_rejects_changed_crop_before_decoding(
+    reference_cli_inputs: tuple, monkeypatch: pytest.MonkeyPatch, changed: str
+) -> None:
+    from scripts.onestep_avatar.corpus import dataset, subset  # noqa: PLC0415 -- fixture records
+
+    arguments, _source, _session, view, path, output = reference_cli_inputs
+    if changed == "manifest":
+        (view.parents[1] / dataset.CAPTURE_MANIFEST_NAME).write_text("changed crop manifest")
+    else:
+        membership = json.loads(path.read_text())
+        membership["sources"][0]["capture_encode_record"]["box_xyxy"] = [1, 1, 33, 33]
+        membership["sha256"] = subset.membership_hash(membership)
+        path.write_text(json.dumps(membership))
+    monkeypatch.setattr(media, "open_decoder_session", lambda *_a, **_k: pytest.fail("changed crop opened VAE"))
+    with pytest.raises(ValueError, match="crop"):
+        media.main(arguments)
+    assert not output.exists()
 
 
 def test_reference_cli_capture_only_roundtrip(reference_cli_inputs: tuple, monkeypatch: pytest.MonkeyPatch) -> None:

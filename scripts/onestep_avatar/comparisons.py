@@ -85,7 +85,7 @@ def _saved_panel_input(item: dict, root: Path, span: int, fps: float) -> tuple[t
 
 
 
-def _saved_comparison_inputs(  # noqa: PLR0912 -- all saved RGB/result gates precede decoder work
+def _saved_comparison_inputs(  # noqa: PLR0912, PLR0915 -- all saved RGB/result gates precede decoder work
     comparison: dict, root: Path, model: str, seed: int
 ) -> list[tuple[torch.Tensor, dict]]:
     """Read latent-only panels or exactly matched, already-prepared RGB references."""
@@ -114,11 +114,18 @@ def _saved_comparison_inputs(  # noqa: PLR0912 -- all saved RGB/result gates pre
             or producer.get("decoder_settings") != media.native_decoder_settings()
             or producer.get("vae_sha256") != sha256(Path(model_registry.resolve(model).paths.video_vae()))):
         raise ValueError("saved reference source mapping, timebase or decoder settings differ")
-    if (len(panels) < 4 or [item.get("reference_role") for item in panels[:3]] != ["recorded", "decoded", "guide"]
-            or any("reference_role" in item for item in panels[3:])):
-        raise ValueError("saved reference panels require recorded, decoded, guide before outputs")
+    guide_mode = comparison.get("guide_mode", "d1")
+    reference_roles = [item.get("reference_role") for item in panels if "reference_role" in item]
+    allowed_roles = ([["recorded", "decoded", "guide"]] if guide_mode == "d1"
+                     else [["recorded"], ["recorded", "decoded"]])
+    count = len(reference_roles)
+    if (guide_mode not in ("d0", "d1") or reference_roles not in allowed_roles or len(panels) <= count
+            or [item.get("reference_role") for item in panels[:count]] != reference_roles):
+        raise ValueError("saved reference panels must precede outputs and match the D0/D1 roles")
     inputs, records = [], []
-    for item, panel, row in zip(panels[:3], references, manifest["panels"], strict=True):
+    reference_by_role = {panel.role: (panel, row) for panel, row in zip(references, manifest["panels"], strict=True)}
+    for item in panels[:count]:
+        panel, row = reference_by_role[item["reference_role"]]
         pixels = panel.pixels
         if (item.get("role") != panel.role or "latent" in item or pixels is None
                 or pixels.ndim != 4 or pixels.shape[:2] != (frames, 3)
@@ -128,7 +135,7 @@ def _saved_comparison_inputs(  # noqa: PLR0912 -- all saved RGB/result gates pre
         inputs.append((pixels, {"path": row["path"], "sha256": row["sha256"], "shape": list(pixels.shape),
                                "kind": "rgb_reference", "reference_bundle": {"path": str(path),
                                                                                 "sha256": manifest_hash}}))
-    for item in panels[3:]:
+    for item in panels[count:]:
         latent, evidence = _saved_panel_input(item, root, span, fps)
         if "result" not in item:
             raise ValueError("saved reference output requires its executed result record")
@@ -142,7 +149,7 @@ def _saved_comparison_inputs(  # noqa: PLR0912 -- all saved RGB/result gates pre
                 or record.get("input_file_hashes", {}).get("render") != producer.get("guide_rgb_sha256")
                 or record.get("membership_sha256") != producer.get("membership_sha256")
                 or record.get("conditions", {}).get("task", {}).get("objective") != producer.get("objective")
-                or record.get("guide_mode") != "d1"
+                or record.get("guide_mode") != guide_mode
                 or Path(record.get("output", {}).get("path", "")).resolve() != Path(evidence["path"])
                 or record.get("output", {}).get("sha256") != evidence["sha256"]
                 or record.get("output", {}).get("shape") != list(latent.shape)
@@ -150,7 +157,7 @@ def _saved_comparison_inputs(  # noqa: PLR0912 -- all saved RGB/result gates pre
                 != record.get("c0_sha256")):
             raise ValueError("saved output result differs from its RGB references or encoding")
         if any(pixels.shape[-2:] != (latent.shape[-2] * scale.height, latent.shape[-1] * scale.width)
-               for pixels, _ in inputs[:3]):
+               for pixels, _ in inputs[:count]):
             raise ValueError("saved reference RGB dimensions differ from output encoding")
         evidence["result"] = {"path": str(result_path), "sha256": result_hash}
         inputs.append((latent, evidence))
@@ -489,8 +496,174 @@ def verify_saved_comparison_completion(  # noqa: PLR0912 -- exact rendering evid
     return True
 
 
+def checkpoint_schedules(sigma_min: float, sigma_max: float) -> dict:
+    """Select exact, evenly spaced entries of the bounded official dev tail."""
+    from ltx_core.components.schedulers import LTX2Scheduler  # noqa: PLC0415 -- CPU schedule only
+
+    if not 0 < sigma_min < sigma_max <= 1:
+        raise ValueError("noise bounds must satisfy 0 < minimum < maximum <= 1")
+    official = LTX2Scheduler().execute(steps=30).tolist()
+    eligible = [index for index, value in enumerate(official) if sigma_min <= value <= sigma_max]
+    if len(eligible) < 4:
+        raise ValueError("bounded official tail needs at least four positive levels")
+    selected = [eligible[round(index * (len(eligible) - 1) / 3)] for index in range(4)]
+    return {"official_steps": 30, "eligible_indices": eligible, "selected_indices": selected,
+            "one_step": [official[selected[0]], 0.0],
+            "four_step": [official[index] for index in selected] + [0.0]}
+
+
+def checkpoint_groups(steps: list[int]) -> list[list[int]]:
+    """Show seven ordered saved updates in two four-adapter groups."""
+    if len(steps) != 7 or steps != sorted(set(steps)) or any(step < 0 for step in steps):
+        raise ValueError("select exactly seven unique increasing checkpoint updates")
+    return [steps[:4], steps[3:]]
+
+
+def prepare_checkpoint_visualization(argv: list[str]) -> int:  # noqa: PLR0912, PLR0915 -- ordered preparation and publication
+    """Prepare matched study data, then delegate execution to existing owners."""
+    import copy  # noqa: PLC0415
+    import shlex  # noqa: PLC0415 -- print executable commands safely
+    import subprocess  # noqa: PLC0415 -- documented direct reference preparation
+
+    from scripts.onestep_avatar import WORKSPACE_ROOT  # noqa: PLC0415
+    from scripts.onestep_avatar.corpus import subset  # noqa: PLC0415
+    from scripts.onestep_avatar.model import common  # noqa: PLC0415
+    from scripts.onestep_avatar.training.config import build_frame_plan, parse_settings  # noqa: PLC0415
+    from scripts.prune.core import model_registry  # noqa: PLC0415
+
+    parser = argparse.ArgumentParser(description="Prepare synchronized dev D0 checkpoint videos")
+    parser.add_argument("--prepare-checkpoint-visualization", action="store_true", required=True)
+    parser.add_argument("--training-run", type=Path, required=True)
+    parser.add_argument("--membership", type=Path, required=True)
+    parser.add_argument("--train-source", required=True)
+    parser.add_argument("--held-out-source", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--checkpoints", nargs="+", type=int, default=[0, 1, 200, 400, 600, 800, 1000])
+    parser.add_argument("--sigma-min", type=float, default=0.38)
+    parser.add_argument("--sigma-max", type=float, default=0.9)
+    parser.add_argument("--gpu-id", type=int)
+    parser.add_argument("--gpu-pool", default="0,1,2,3,4,5,6,7")
+    parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+    run, output = args.training_run.resolve(), args.output.resolve()
+    config = json.loads((run / "config.json").read_text())
+    if (config["mode"], config["variant"], config["guide_mode"]) != ("bidirectional", "dev", "d0"):
+        raise ValueError("checkpoint visualization requires a bidirectional dev D0 training run")
+    original = subset.load_membership(args.membership)
+    if original["sha256"] != config["membership_sha256"]:
+        raise ValueError("membership differs from the selected training run")
+    selected = []
+    for split, source_id in (("train", args.train_source), ("held_out", args.held_out_source)):
+        source = next((item for item in original["sources"] if item["relative_dir"] == source_id), None)
+        if source is None or source["split"] != split:
+            raise ValueError(f"{source_id}: source must belong to the original {split} group")
+        selected.append(copy.deepcopy(source))
+    schedules, groups = checkpoint_schedules(args.sigma_min, args.sigma_max), checkpoint_groups(args.checkpoints)
+    for step in args.checkpoints:
+        checkpoint = run / "checkpoints" / f"lora_weights_step_{step:05d}.safetensors"
+        if not checkpoint.is_file() or not checkpoint.with_suffix(".complete.json").is_file():
+            raise ValueError(f"checkpoint or completion marker missing: {checkpoint}")
+    if args.dry_run:
+        print(json.dumps({"sources": [s["relative_dir"] for s in selected], "groups": groups,  # noqa: T201
+                          "schedules": schedules, "videos": 8}, indent=2))
+        return 0
+    if output.exists():
+        raise ValueError("visualization output must be new; resume its existing jobs through execution.queue")
+    output.mkdir(parents=True)
+    membership = {**copy.deepcopy(original), "sources": selected,
+                  "splits": {s["split"]: [s["actor"]] for s in selected}}
+    membership["sha256"] = subset.membership_hash(membership)
+    subset.write_membership(output / "membership.json", membership)
+    span, seed, model = config["mode_settings"]["span_latent_frames"], config["seed"], config["model"]
+    reference_commands, jobs, videos = [], [], []
+    for source in selected:
+        actor, split = source["actor"], source["split"]
+        label = f"{split}_actor{actor}"
+        store = dataset.ClipStore(membership)
+        capture = store.load(source["relative_dir"]).z_y[:, :span].unsqueeze(0).to(torch.bfloat16)
+        noise = common.epsilon_block(VideoLatentPatchifier(patch_size=1).patchify(capture), seed)
+        noise_path = output / f"{label}_noise.pt"
+        torch.save(noise, noise_path)
+        settings = parse_settings(["--mode", "bidirectional", "--subset", str(output / "membership.json"),
+                                   "--output", str(output / "unused"), "--guide-mode", "d0", "--variant", "dev",
+                                   "--objective", config["objective"], "--split", split,
+                                   "--span-latent-frames", str(span)])
+        plan_path = output / f"{label}_frame_plan.json"
+        plan = build_frame_plan(settings, membership, model_registry.resolve(model).scale_factors)
+        plan_path.write_text(json.dumps(plan))
+        refs = output / "references" / label
+        reference_commands.append([sys.executable, "-m", "scripts.onestep_avatar.media",
+                                   "--prepare-training-references",
+                                   "--subset", str(output / "membership.json"), "--source", source["relative_dir"],
+                                   "--encoded-frames", str(span), "--guide-mode", "d0", "--model", model,
+                                   "--seed", str(seed), "--output", str(refs)])
+        for schedule_name in ("one_step", "four_step"):
+            job_ids, panels = {}, {}
+            for step in (None, *args.checkpoints):
+                state = "base" if step is None else f"step{step:05d}"
+                name = f"{label}_{schedule_name}_{state}"
+                destination = output / "evaluation" / name
+                arguments = ["--mode", "bidirectional", "--subset", str(output / "membership.json"),
+                             "--frame-plan", str(plan_path), "--split", split, "--source", source["relative_dir"],
+                             "--model", model, "--variant", "dev", "--guide-mode", "d0",
+                             "--schedule", *map(str, schedules[schedule_name]), "--span-latent-frames", str(span),
+                             "--seed", str(seed), "--noise-file", str(noise_path), "--output", str(destination)]
+                if step is not None:
+                    checkpoint = run / "checkpoints" / f"lora_weights_step_{step:05d}.safetensors"
+                    arguments += ["--checkpoint", str(checkpoint),
+                                  "--research-override"]
+                result = destination / "case_0000/variant_000/result.json"
+                jobs.append({"id": name, "kind": "evaluate", "arguments": arguments, "output": str(destination),
+                             "numerical_policy": "deterministic", "completion": {"records": [str(result)]}})
+                job_ids[step] = name
+                panels[step] = {"title": "Base" if step is None else f"Checkpoint {step}", "role": state,
+                                "latent": str(result.with_name("generated.pt")), "result": str(result)}
+            for group_index, group in enumerate(groups, 1):
+                name = f"{label}_{schedule_name}_group{group_index}"
+                question = f"{split.replace('_', '-')} person {actor}: {schedule_name.replace('_', ' ')}"
+                comparison = {"name": name, "question": question,
+                              "span": span, "fps": source["fps"], "layout": "comparison", "panel_size": [384, 384],
+                              "poster_frame": min(24, (span - 1) * 8), "guide_mode": "d0", "changed_factor": "adapter",
+                              "reference_bundle": str(refs / "references.json"),
+                              "panels": [{"title": "GT (capture RGB)", "role": "recorded",
+                                          "reference_role": "recorded"},
+                                         panels[None], *[panels[step] for step in group]]}
+                spec_path = output / f"{name}.json"
+                spec_path.write_text(json.dumps({"model": model, "comparisons": [comparison]}, indent=2))
+                destination = output / "media" / name
+                jobs.append({"id": name, "kind": "render",
+                             "dependencies": [job_ids[None], *[job_ids[s] for s in group]],
+                             "arguments": ["--render-saved-comparisons", str(spec_path), "--output", str(destination),
+                                           "--seed", str(seed)], "output": str(destination),
+                             "completion": {"manifest": str(destination / "render_manifest.json")}})
+                videos.append({"actor": actor, "split": split, "schedule": schedule_name, "checkpoints": group,
+                               "spec": str(spec_path), "video": str(destination / f"{name}.mp4"),
+                               "compact_video": str(destination / f"{name}_compact.mp4")})
+    (output / "jobs.json").write_text(json.dumps({"schema_version": 1, "jobs": jobs}, indent=2))
+    record = {"schedules": schedules, "groups": groups, "sources": selected, "videos": videos,
+              "seed": seed, "encoded_frames": span, "objective": config["objective"],
+              "reference_commands": reference_commands}
+    (output / "visualization.json").write_text(json.dumps(record, indent=2))
+    for command in reference_commands:
+        if args.gpu_id is not None:
+            subprocess.run([*command, "--gpu-id", str(args.gpu_id)], check=True)
+        else:
+            print(shlex.join([*command, "--gpu-id", "<FREE_GPU>"]))  # noqa: T201 -- CLI command
+    queue_args = ["--jobs", str(output / "jobs.json"), "--execute", "--loop", "--gpu-pool", args.gpu_pool,
+                  "--process-ledger", str(WORKSPACE_ROOT / "expr/onestep_avatar/processes.json")]
+    print(shlex.join([sys.executable, "-m", "scripts.onestep_avatar.execution.queue", *queue_args]))  # noqa: T201
+    if args.execute:
+        from scripts.onestep_avatar.execution import queue  # noqa: PLC0415 -- existing execution owner
+
+        return queue.main(queue_args)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
+    if "--prepare-checkpoint-visualization" in arguments:
+        return prepare_checkpoint_visualization(arguments)
     args = parse_saved_comparison_args(arguments, require_gpu=True)
     render_saved_comparisons(args.render_saved_comparisons, args.output, gpu_id=args.gpu_id, seed=args.seed)
     return 0

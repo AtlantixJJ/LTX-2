@@ -59,6 +59,51 @@ Outputs in `<OUT>`: for each comparison `<name>`, the full video and poster,
 `<name>_compact.mp4` and `<name>_compact_poster.png`, and
 `render_manifest.json`.
 
+### Prepare checkpoint videos
+
+Use this same module to prepare the checkpoint comparison on CPU:
+
+```bash
+conda activate ltx
+cd LTX-2
+python -m scripts.onestep_avatar.comparisons --prepare-checkpoint-visualization \
+  --training-run /abs/run_csv --membership /abs/membership_all.json \
+  --train-source Part_1/0008_01/views/view00_cam51 \
+  --held-out-source Part_1/0152_01/views/view00_cam51 \
+  --output /abs/visualization --sigma-min 0.38 --sigma-max 0.9
+```
+
+The command writes a checked two-view membership, frame plans, fixed noise,
+evaluation jobs, comparison specifications and `visualization.json`.
+It prints the reference-preparation commands and the existing queue command.
+`--gpu-id <FREE_GPU>` also prepares both reference bundles through the existing
+`media` CLI on that free device. `--execute` then runs the existing queue;
+`--gpu-pool 6` restricts its devices. The command adds no launcher or trainer.
+Use `--dry-run` to inspect schedules, sources and groups without any writes.
+The output must be new. Resume the written job list through `execution.queue`.
+
+The command supports a finished bidirectional dev D0 run. It preserves the
+recorded background objective and the selected views' original data groups.
+`--checkpoints` defaults to `0 1 200 400 600 800 1000`.
+The two four-adapter groups are `0,1,200,400` and `400,600,800,1000`.
+Update 400 repeats so both videos have a shared checkpoint.
+Each schedule renders both groups, making four videos per person.
+
+The official grid is `LTX2Scheduler().execute(steps=30)` without a latent
+argument. Keep positive levels between `--sigma-min` and `--sigma-max`.
+Select four nearest integer indices at equal intervals over that tail.
+For 0.38–0.9, tail indices are `0,5,9,14`, original indices `13,18,22,27`.
+The exact schedule is `[0.8977352380752563,0.8153185844421387,0.7016562223434448,0.3875408172607422,0]`.
+One-step denoising uses the same first level and zero endpoint.
+Adapter evaluations record the explicit changed-schedule research override.
+Both schedules use one saved noise tensor and the same clean first image.
+Each model state gets a separate evaluation process to respect the memory bound.
+
+Every video contains recorded RGB GT, the base model and four adapters.
+The full layout has two rows and three columns. Compact media uses the same
+frames and pixels with readable titles at a 480-pixel viewing width.
+Reports link these videos without showing extracted frames.
+
 ## Data flow
 
 ```mermaid
@@ -112,6 +157,11 @@ A comparison can set `reference_bundle` to a checked `references.json` from
 The command does not decode these pixels again. This form is for D1. The
 generated output panels come after the three references, with short titles
 that keep their recorded roles.
+
+D0 comparisons set `guide_mode: "d0"` and select `recorded` alone, or
+`recorded, decoded`. These roles mean RGB GT and its VAE reconstruction.
+The bundle retains its explicit absent-guide record; no guide panel is shown.
+Each D0 result must match the checked capture, membership, crop and frame map.
 
 Each generated panel names its saved `result` JSON and `latent`. The check
 compares these result fields with the reference producer: output path, hash
