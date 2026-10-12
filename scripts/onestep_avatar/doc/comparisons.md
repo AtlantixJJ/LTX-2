@@ -84,6 +84,16 @@ The output must be new. Resume the written job list through `execution.queue`.
 
 The command supports a finished bidirectional dev D0 run. It preserves the
 recorded background objective and the selected views' original data groups.
+It uses every encoded frame in each selected capture master. The training
+segment length does not limit visualization coverage. Sources can have different lengths.
+`visualization.json` records each source's encoded and RGB coverage separately.
+RGB coverage is `(encoded_frames-1)*8+1`; unencoded raw tails are not synthesized.
+The default guidance comes from `detect_params` on the actual dev transformer.
+For the registered LTX-2.5 dev file, CFG is 3, STG is 1 on block 28,
+and rescale is 0.7. The negative prompt is the pipeline default.
+Video-only evaluation has no audio modality guidance. Step skipping is zero.
+The shared evaluator executes guidance passes sequentially to bound memory.
+One and four denoising steps therefore measure 3 and 12 underlying forwards.
 `--checkpoints` defaults to `0 1 200 400 600 800 1000`.
 The two four-adapter groups are `0,1,200,400` and `400,600,800,1000`.
 Update 400 repeats so both videos have a shared checkpoint.
@@ -96,6 +106,7 @@ For 0.38–0.9, tail indices are `0,5,9,14`, original indices `13,18,22,27`.
 The exact schedule is `[0.8977352380752563,0.8153185844421387,0.7016562223434448,0.3875408172607422,0]`.
 One-step denoising uses the same first level and zero endpoint.
 Adapter evaluations record the explicit changed-schedule research override.
+The override also records the longer segment and the changed guidance conditions.
 Both schedules use one saved noise tensor and the same clean first image.
 Each model state gets a separate evaluation process to respect the memory bound.
 

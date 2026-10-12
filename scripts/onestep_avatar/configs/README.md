@@ -456,6 +456,11 @@ Add `--gpu-id <FREE_GPU>` to prepare GT references through the existing `media` 
 Add `--execute --gpu-pool <POOL>` to run the existing queue in the same session.
 For unattended work, use `setsid` and the thread limits from section 1.
 Each person gets four videos: two four-checkpoint groups at one and four steps.
+Each video covers the person's complete saved encoding, regardless of training segment length.
+The command records exact RGB coverage; raw frames absent from that encoding remain excluded.
+It selects CFG, STG and rescale through `detect_params` on the dev checkpoint.
+The registered 2.5 defaults are CFG 3, STG 1 on block 28, and rescale 0.7.
+One and four steps measure 3 and 12 forwards with these sequential guidance passes.
 Every video contains RGB GT, base, and four adapters. See
 [the comparison command](../doc/comparisons.md#prepare-checkpoint-videos) and
 [the media layout](../doc/media.md#checkpoint-visualization).

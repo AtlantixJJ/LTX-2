@@ -82,7 +82,7 @@ start queue work.
 |---|---|---:|
 | `__init__.py` | source header | 13 |
 | `bench.py` | [bench.md](bench.md) | 577 |
-| `comparisons.py` | [comparisons.md](comparisons.md) | 674 |
+| `comparisons.py` | [comparisons.md](comparisons.md) | 692 |
 | `corpus/build_guidance.py` | [corpus/build_guidance.md](corpus/build_guidance.md) | 778 |
 | `corpus/dataset.py` | [corpus/dataset.md](corpus/dataset.md) | 397 |
 | `corpus/geometry.py` | [corpus/geometry.md](corpus/geometry.md) | 111 |

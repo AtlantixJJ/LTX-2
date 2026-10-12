@@ -475,6 +475,10 @@ It places the other three adapters on the bottom row. All six cells have the
 same height and aspect-preserving padding. Titles state each checkpoint update.
 The video title identifies the person, data group and denoising step count.
 Both schedules show the same recorded frames at the same playback rate.
+Checkpoint preparation selects the complete saved capture encoding for each person.
+Its exact source coverage appears in the specification and reference bundle.
+Raw footage beyond that encoding is not repeated or synthesized.
+The comparison owner selects the installed dev pipeline's default guidance.
 
 The seven default checkpoints form two groups with update 400 in both.
 One-step and four-step denoising each render the two groups, making four videos

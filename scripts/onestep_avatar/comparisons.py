@@ -525,9 +525,10 @@ def prepare_checkpoint_visualization(argv: list[str]) -> int:  # noqa: PLR0912, 
     import shlex  # noqa: PLC0415 -- print executable commands safely
     import subprocess  # noqa: PLC0415 -- documented direct reference preparation
 
+    from ltx_pipelines.utils.constants import detect_params  # noqa: PLC0415
     from scripts.onestep_avatar import WORKSPACE_ROOT  # noqa: PLC0415
     from scripts.onestep_avatar.corpus import subset  # noqa: PLC0415
-    from scripts.onestep_avatar.model import common  # noqa: PLC0415
+    from scripts.onestep_avatar.model import backbone, common  # noqa: PLC0415
     from scripts.onestep_avatar.training.config import build_frame_plan, parse_settings  # noqa: PLC0415
     from scripts.prune.core import model_registry  # noqa: PLC0415
 
@@ -560,13 +561,22 @@ def prepare_checkpoint_visualization(argv: list[str]) -> int:  # noqa: PLR0912, 
             raise ValueError(f"{source_id}: source must belong to the original {split} group")
         selected.append(copy.deepcopy(source))
     schedules, groups = checkpoint_schedules(args.sigma_min, args.sigma_max), checkpoint_groups(args.checkpoints)
+    dev_path = backbone.transformer_path(config.get("model", "2.5"), "dev")
+    guidance = detect_params(str(dev_path)).video_guider_params
+    guidance_record = {"cfg": guidance.cfg_scale, "stg": guidance.stg_scale,
+                       "stg_blocks": guidance.stg_blocks, "rescale": guidance.rescale_scale,
+                       "skip_step": guidance.skip_step, "source": str(dev_path)}
+    if guidance.skip_step != 0:
+        raise ValueError("checkpoint evaluation requires guidance without skipped steps")
     for step in args.checkpoints:
         checkpoint = run / "checkpoints" / f"lora_weights_step_{step:05d}.safetensors"
         if not checkpoint.is_file() or not checkpoint.with_suffix(".complete.json").is_file():
             raise ValueError(f"checkpoint or completion marker missing: {checkpoint}")
     if args.dry_run:
         print(json.dumps({"sources": [s["relative_dir"] for s in selected], "groups": groups,  # noqa: T201
-                          "schedules": schedules, "videos": 8}, indent=2))
+                          "schedules": schedules, "guidance": guidance_record,
+                          "encoded_frames_by_source": {s["relative_dir"]: s["n_latent_frames"] for s in selected},
+                          "videos": 8}, indent=2))
         return 0
     if output.exists():
         raise ValueError("visualization output must be new; resume its existing jobs through execution.queue")
@@ -575,9 +585,10 @@ def prepare_checkpoint_visualization(argv: list[str]) -> int:  # noqa: PLR0912, 
                   "splits": {s["split"]: [s["actor"]] for s in selected}}
     membership["sha256"] = subset.membership_hash(membership)
     subset.write_membership(output / "membership.json", membership)
-    span, seed, model = config["mode_settings"]["span_latent_frames"], config["seed"], config["model"]
+    seed, model = config["seed"], config["model"]
     reference_commands, jobs, videos = [], [], []
     for source in selected:
+        span = source["n_latent_frames"]
         actor, split = source["actor"], source["split"]
         label = f"{split}_actor{actor}"
         store = dataset.ClipStore(membership)
@@ -609,6 +620,10 @@ def prepare_checkpoint_visualization(argv: list[str]) -> int:  # noqa: PLR0912, 
                              "--model", model, "--variant", "dev", "--guide-mode", "d0",
                              "--schedule", *map(str, schedules[schedule_name]), "--span-latent-frames", str(span),
                              "--seed", str(seed), "--noise-file", str(noise_path), "--output", str(destination)]
+                arguments += ["--cfg", str(guidance.cfg_scale), "--stg", str(guidance.stg_scale),
+                              "--rescale", str(guidance.rescale_scale)]
+                if guidance.stg_blocks:
+                    arguments += ["--stg-blocks", *map(str, guidance.stg_blocks)]
                 if step is not None:
                     checkpoint = run / "checkpoints" / f"lora_weights_step_{step:05d}.safetensors"
                     arguments += ["--checkpoint", str(checkpoint),
@@ -638,11 +653,14 @@ def prepare_checkpoint_visualization(argv: list[str]) -> int:  # noqa: PLR0912, 
                                            "--seed", str(seed)], "output": str(destination),
                              "completion": {"manifest": str(destination / "render_manifest.json")}})
                 videos.append({"actor": actor, "split": split, "schedule": schedule_name, "checkpoints": group,
+                               "encoded_frames": span, "pixel_frames": (span - 1) * 8 + 1, "fps": source["fps"],
                                "spec": str(spec_path), "video": str(destination / f"{name}.mp4"),
                                "compact_video": str(destination / f"{name}_compact.mp4")})
     (output / "jobs.json").write_text(json.dumps({"schema_version": 1, "jobs": jobs}, indent=2))
     record = {"schedules": schedules, "groups": groups, "sources": selected, "videos": videos,
-              "seed": seed, "encoded_frames": span, "objective": config["objective"],
+              "seed": seed, "coverage": "complete_saved_encoding", "guidance": guidance_record,
+              "training_encoded_frames": config["mode_settings"]["span_latent_frames"],
+              "objective": config["objective"],
               "reference_commands": reference_commands}
     (output / "visualization.json").write_text(json.dumps(record, indent=2))
     for command in reference_commands:
