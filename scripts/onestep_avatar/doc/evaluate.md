@@ -216,6 +216,10 @@ and before it creates the output directory:
 4. Compare each capture and guide `vae_fingerprint` with the fingerprint of
    the base's actual VAE file. Matching shapes do not replace the VAE identity.
    A research override does not skip this check.
+   Historical absolute path aliases are accepted only when both paths resolve
+   to the same existing VAE and the saved size and modification time match.
+   Missing aliases, different files and changed metadata fail before weights
+   load. Original encoding and checkpoint records remain unchanged.
 
 A declared frame limit starts at frame zero. Causal execution drops only an
 incomplete final block, and it records the actual range.

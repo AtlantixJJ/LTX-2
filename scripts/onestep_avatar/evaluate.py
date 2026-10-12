@@ -25,6 +25,24 @@ from scripts.onestep_avatar.training import checkpoints
 from scripts.onestep_avatar.training.config import BidirectionalSettings, CausalSettings
 
 
+def _encoding_vae_matches(recorded: object, expected: str) -> bool:
+    """Check the recorded file through historical aliases without changing pins."""
+    if recorded == expected:
+        return True
+    if not isinstance(recorded, str):
+        return False
+    saved_path, saved_separator, saved_stat = recorded.rpartition(":size=")
+    current_path, current_separator, current_stat = expected.rpartition(":size=")
+    if not saved_separator or not current_separator or saved_stat != current_stat:
+        return False
+    if not Path(saved_path).is_absolute() or not Path(current_path).is_absolute():
+        return False
+    try:
+        return Path(saved_path).resolve(strict=True) == Path(current_path).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def check_adapter(path: Path | None, requested: dict, *, override: bool = False, product: bool = False) -> dict:
     """Read metadata and actual matrices before a transformer is opened."""
     if path is None:
@@ -346,7 +364,9 @@ def prepare_evaluation(args: argparse.Namespace, *, require_fresh_output: bool =
     vae_fingerprint = file_fingerprint(Path(specification.paths.video_vae()))
     for source in ids:
         for role in ("capture", "guide") if args.guide_mode == "d1" else ("capture",):
-            if store.sources[source].get(f"{role}_encode_record", {}).get("vae_fingerprint") != vae_fingerprint:
+            if not _encoding_vae_matches(
+                store.sources[source].get(f"{role}_encode_record", {}).get("vae_fingerprint"), vae_fingerprint
+            ):
                 raise ValueError(f"{source}: {role} encoding VAE differs from the selected base VAE")
     base = backbone.identity(specification.paths.transformer(), args.variant, args.model, full_hash=True)
     variants = ([None] if not args.checkpoint or args.include_base else []) + args.checkpoint

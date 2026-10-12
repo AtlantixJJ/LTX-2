@@ -92,7 +92,7 @@ start queue work.
 | `corpus/qa.py` | source header | 29 |
 | `corpus/subset.py` | [corpus/subset.md](corpus/subset.md) | 400 |
 | `decode_saved.py` | [decode_saved.md](decode_saved.md) | 192 |
-| `evaluate.py` | [evaluate.md](evaluate.md) | 740 |
+| `evaluate.py` | [evaluate.md](evaluate.md) | 760 |
 | `execution/clock.py` | source header | 72 |
 | `execution/processes.py` | [execution/processes.md](execution/processes.md) | 206 |
 | `execution/completion.py` | [execution/completion.md](execution/completion.md) | 500 |
@@ -132,7 +132,7 @@ start queue work.
 | `experiments/training_update_check.py` | [experiments/training_update_check.md](experiments/training_update_check.md) | 703 |
 | `hashing.py` | source header | 34 |
 | `infer.py` | [infer.md](infer.md) | 696 |
-| `media.py` | [media.md](media.md) | 725 |
+| `media.py` | [media.md](media.md) | 743 |
 | `metrics.py` | [metrics.md](metrics.md) | 151 |
 | `model/adapters.py` | [model/adapters.md](model/adapters.md) | 145 |
 | `model/backbone.py` | source header | 68 |

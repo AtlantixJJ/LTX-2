@@ -487,6 +487,12 @@ Reference preparation also accepts the version-two membership crop stored in
 original capture manifest and supplies a copy with the top-level crop field.
 No membership, crop, encoding or producer pin changes.
 
+The decoder accepts a historical absolute VAE path alias only when both paths
+resolve to the same existing file and the saved size and modification time
+still match. Both CLI preflight and reference preparation apply this check.
+A moved, missing, replaced or modified VAE remains an error. Original encoding
+records keep their saved path; this check does not rewrite them.
+
 ### Text inside the video
 
 Use only text that helps the viewer understand this comparison. The video needs

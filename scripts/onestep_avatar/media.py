@@ -259,6 +259,24 @@ class Panel:
     still: bool = False
 
 
+def _decoder_vae_matches(vae: Path, recorded: object) -> bool:
+    """Accept an existing producer alias only with unchanged file metadata."""
+    from scripts.onestep_avatar.corpus import precompute  # noqa: PLC0415 -- producer fingerprint owner
+
+    expected = precompute.file_fingerprint(vae)
+    if expected == recorded:
+        return True
+    if not isinstance(recorded, str):
+        return False
+    saved, separator, metadata = recorded.rpartition(":size=")
+    if not separator or not Path(saved).is_absolute() or metadata != expected.rpartition(":size=")[2]:
+        return False
+    try:
+        return Path(saved).resolve(strict=True) == vae.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def prepare_training_references(
     session: Any,  # noqa: ANN401 -- native session handle
     decoder: Any,  # noqa: ANN401 -- native decoder handle
@@ -271,14 +289,14 @@ def prepare_training_references(
     require_guide: bool = True,
 ) -> tuple[list[Panel], dict]:
     """Prepare the fixed RGB reference roles without transformer inference."""
-    from scripts.onestep_avatar.corpus import dataset, precompute  # noqa: PLC0415 -- checked producers
+    from scripts.onestep_avatar.corpus import dataset  # noqa: PLC0415 -- checked producers
 
     path = corpus_root / source["relative_dir"] / dataset.capture_bundle_name(objective)
     digest = sha256(path)
     if digest != source["capture_latent_sha256"]:
         raise ValueError("preview capture encoding content changed")
     vae = Path(session.model.paths.video_vae())
-    if precompute.file_fingerprint(vae) != source["capture_encode_record"].get("vae_fingerprint"):
+    if not _decoder_vae_matches(vae, source["capture_encode_record"].get("vae_fingerprint")):
         raise ValueError("preview decoder VAE differs from the capture encoding")
     recorded = recorded_capture_rgb(source, corpus_root, objective, encoded_frames)
     guide_hash = source.get("guide_sha256")
@@ -397,7 +415,7 @@ def load_training_references(path: Path) -> tuple[list[Panel], dict]:
 
 def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915 -- ordered reference preflight, decode and publication
     """Prepare checked fixed preview references with a decoder-only session."""
-    from scripts.onestep_avatar.corpus import dataset, precompute, subset  # noqa: PLC0415 -- checked input owners
+    from scripts.onestep_avatar.corpus import dataset, subset  # noqa: PLC0415 -- checked input owners
     from scripts.onestep_avatar.model import backbone  # noqa: PLC0415 -- model registry only
 
     parser = argparse.ArgumentParser(description="Prepare fixed training reference pixels without generation")
@@ -439,7 +457,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915 -- ordered refe
     store.load(args.source, require_guide=require_guide or bool(source.get("guide_sha256")))
     specification = backbone.resolve(args.model, "dev")
     vae = Path(specification.paths.video_vae())
-    if precompute.file_fingerprint(vae) != source["capture_encode_record"].get("vae_fingerprint"):
+    if not _decoder_vae_matches(vae, source["capture_encode_record"].get("vae_fingerprint")):
         raise ValueError("preview decoder VAE differs from the capture encoding")
     # Bind inputs through publication; never accept references from changed bytes.
     view = store.root / args.source

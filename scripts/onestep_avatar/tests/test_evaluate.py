@@ -373,6 +373,23 @@ def test_output_file_refused_without_changes(checked_settings: tuple, monkeypatc
     assert settings.output.read_bytes() == b"preserved output"
 
 
+@pytest.mark.parametrize("change", [None, "modified", "different", "missing"])
+def test_encoding_vae_alias_requires_same_file_and_metadata(tmp_path: Path, change: str | None) -> None:
+    vae = tmp_path / "vae.safetensors"
+    vae.write_bytes(b"original VAE")
+    alias = tmp_path / "alias.safetensors"
+    alias.symlink_to(vae)
+    recorded = precompute.file_fingerprint(vae).replace(str(vae), str(alias), 1)
+    if change == "modified":
+        vae.write_bytes(b"changed VAE with another size")
+    elif change == "different":
+        alias.unlink()
+        alias.write_bytes(b"original VAE")
+    elif change == "missing":
+        alias.unlink()
+    assert evaluate._encoding_vae_matches(recorded, precompute.file_fingerprint(vae)) is (change is None)
+
+
 def test_wrong_encoding_vae_rejected_before_weights(checked_settings: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
 
     settings, _ = checked_settings

@@ -468,6 +468,50 @@ def test_reference_cli_rejects_changed_crop_before_decoding(
     assert not output.exists()
 
 
+def test_reference_cli_accepts_existing_decoder_path_alias(reference_cli_inputs: tuple) -> None:
+    arguments, _source, session, _view, _path, output = reference_cli_inputs
+    vae = Path(session.model.paths.video_vae())
+    alias = vae.with_name("historic-vae-alias.safetensors")
+    alias.symlink_to(vae)
+    session.model.paths.video_vae = lambda: alias
+    assert media.main(arguments) == 0
+    assert (output / "references.json").is_file()
+
+
+def test_decoder_accepts_historical_saved_path_alias(tmp_path: Path) -> None:
+    from scripts.onestep_avatar.corpus import precompute  # noqa: PLC0415 -- saved fingerprint
+
+    vae = tmp_path / "vae.safetensors"
+    vae.write_bytes(b"original VAE")
+    alias = tmp_path / "historical-alias.safetensors"
+    alias.symlink_to(vae)
+    recorded = precompute.file_fingerprint(vae).replace(str(vae), str(alias), 1)
+    assert media._decoder_vae_matches(vae, recorded)
+
+
+@pytest.mark.parametrize("change", ["modified", "different", "missing", "relative", "malformed"])
+def test_decoder_path_alias_rejects_changed_identity(tmp_path: Path, change: str) -> None:
+    from scripts.onestep_avatar.corpus import precompute  # noqa: PLC0415 -- saved fingerprint
+
+    vae = tmp_path / "vae.safetensors"
+    vae.write_bytes(b"original VAE")
+    alias = tmp_path / "alias.safetensors"
+    alias.symlink_to(vae)
+    recorded = precompute.file_fingerprint(vae).replace(str(vae), str(alias), 1)
+    if change == "modified":
+        vae.write_bytes(b"modified VAE with a different size")
+    elif change == "different":
+        alias.unlink()
+        alias.write_bytes(b"original VAE")
+    elif change == "missing":
+        alias.unlink()
+    elif change == "relative":
+        recorded = recorded.replace(str(tmp_path) + "/", "")
+    else:
+        recorded = "invalid fingerprint"
+    assert not media._decoder_vae_matches(vae, recorded)
+
+
 def test_reference_cli_capture_only_roundtrip(reference_cli_inputs: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
 
     del monkeypatch
