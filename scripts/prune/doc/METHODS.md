@@ -1,7 +1,9 @@
 # Pruning LLMs and video generators: literature, evidence and LTX-2 test plan
 
 DiT pruning literature checked 11 October 2026, including September 2026 work.
-The earlier LLM and avatar/causal-training reviews remain dated 1–4 October 2026.
+FFN gate, grouping and recovery references checked 12 October 2026 (§§2.7–2.9).
+The earlier LLM comparisons and avatar/causal-training reviews remain dated
+1–4 October 2026.
 This review covers weight, channel, head, block and expert pruning, plus related
 low-rank and dynamic-computation methods. Primary papers and author project
 pages support the claims. Results belong
@@ -93,6 +95,9 @@ authors report recovery using 50K examples in approximately three hours.
 Recovered performance must be separated from immediate deletion damage.
 [LLM-Pruner, NeurIPS 2023](https://arxiv.org/abs/2305.11627).
 
+Its dependency group contains parameters that must be removed together.
+This does not establish a semantic group of many FFN neurons sharing one gate.
+
 **LTX adaptation:** gate executable groups rather than assuming the LLM dependency
 graph transfers unchanged. Channel deletion couples producing and consuming
 projections; attention also imposes normalization and positional constraints.
@@ -137,6 +142,158 @@ under one controlled pipeline. [ShortGPT, original preprint, Table 1](https://ar
 **LTX hypothesis:** executing fewer intact blocks may save more useful work than
 small width reductions. Block influence is a screening statistic; actual deletion
 damage and decoded motion determine acceptability.
+
+### 2.7. Learning individual FFN gates under an architecture budget
+
+An **FFN channel** is one intermediate neuron, including its producing row and
+consuming column. One gate per channel can produce an aligned final width.
+The alignment constraint controls the number retained; it need not tie their gates.
+The following methods give direct precedent for learning these choices.
+
+**Louizos et al.: the gate foundation.** Hard-concrete gates permit exact zeros
+while providing gradients for their distribution parameters. Their differentiable
+expected $L_0$ penalty encourages removal. The framework supports learning
+structures, but an expected sparsity penalty alone does not guarantee a specified
+binary width in every forward. §4.7 gives the gate and penalty equations.
+[Learning Sparse Neural Networks through $L_0$ Regularization, ICLR 2018](https://arxiv.org/abs/1712.01312).
+
+**CoFi: individual channels with multiple mask scales.** CoFi learns
+hard-concrete masks for FFN intermediate dimensions, attention heads, hidden
+dimensions and whole attention/FFN modules. Lagrangian sparsity control and
+prediction/layer distillation guide optimization. Its FFN intermediate mask has
+one variable per neuron. Several mask scales can control a weight, but this
+does not require several neurons to share one intermediate gate.
+This is direct evidence that per-channel gates are a workable design.
+[CoFi, Structured Pruning Learns Compact and Accurate Models, ACL 2022, §3](https://aclanthology.org/2022.acl-long.107.pdf).
+
+**Compresso: masks and LoRA learned together.** Compresso freezes pretrained
+weights and jointly optimizes structural masks and LoRA adapters. Its masks
+include individual FFN intermediate dimensions, attention heads and shared
+residual dimensions. It uses augmented $L_0$ optimization to target model size.
+Its collaborative prompting and instruction data are LLM-specific components;
+the transferable mechanism is constrained mask learning with bounded recovery.
+It is a closer reference for our joint gate/adapter proposal than post-pruning
+LoRA alone.
+[Compresso, 2023 preprint, §3.3](https://arxiv.org/html/2310.05015v1).
+
+**Sheared LLaMA: choose channels while targeting a model shape.** It learns
+hard-concrete masks for layers, heads, hidden dimensions and FFN intermediate
+dimensions, with constraints on a specified target architecture. It jointly
+updates model weights and masks, then continues pretraining. The relevant lesson
+is that individual channel choices and prescribed final widths are compatible.
+Its weight training and data budget differ from a frozen-backbone LTX pilot.
+[Sheared LLaMA, ICLR 2024, §2.1](https://arxiv.org/html/2310.06694v1).
+
+**GRASPrune: learn the discrete budgeted selection.** GRASPrune learns scalar
+scores for FFN channels and attention KV head groups while freezing the backbone.
+Each forward uses a binary budgeted mask; a straight-through estimator supplies
+gate gradients. After selection, it calibrates retained-unit scales and folds
+them into compact weights. This directly supports learning choices under the
+deployment budget. Its score-ordered greedy projection is not an exact knapsack
+solver. Its GQA head costs and KV-cache claims do not transfer to our D0 call.
+[GRASPrune, ACL 2026, §3](https://aclanthology.org/2026.acl-long.491.pdf).
+
+**Diffusion connection.** Among the methods reviewed here, EcoDiff (§4.7) is the closest diffusion
+reference for learned head and neuron gates using generation reconstruction and
+sparsity. The methods above strengthen its FFN precedent and add explicit shape
+constraints and gate/adapter recovery. Their LLM results do not establish video
+quality or LTX speed.
+
+### 2.8. How neurons are grouped, ordered or protected
+
+“Group” can mean linked parameters, neurons with similar function, a contiguous
+execution tile, or a nested width prefix. These are different design choices.
+A functional group can guide calibration without sharing one removal gate.
+
+**FANG: preserve specialized contributions during selection.** FANG clusters
+semantic token contexts, constructs a cluster–neuron sensitivity matrix and
+assigns neurons to functional groups. It prunes neurons **within** each group
+using context-weighted importance. It also protects a shared group that serves
+multiple contexts and allocates sparsity by block complexity. It does not delete
+each functional group through one binary switch. Its sensitivity construction
+uses the pretraining loss; it is not a forward-only grouping method.
+[FANG, AAAI 2026](https://ojs.aaai.org/index.php/AAAI/article/view/40021),
+[method details](https://arxiv.org/html/2512.23014v1).
+
+**LTX hypothesis:** region-weighted calibration and loss may protect human
+contributions hidden by global averages. Semantic token clusters in an LLM are
+not established person regions in a video DiT. Test that adaptation separately;
+placing all human-related neurons behind one removable gate could concentrate
+damage. A human-focused map alone does not establish necessity or a safe group.
+
+**MoEfication: balanced groups from weights or co-activation.** MoEfication
+partitions FFN neurons into equal-sized experts using balanced weight clustering
+or a co-activation graph split, then routes inputs among those experts. It gives
+concrete grouping algorithms. Its goal is dynamic expert execution, rather than
+one permanently narrower FFN. Its co-activation construction uses ReLU-based
+models; an LTX GELU adaptation must define activity and similarity explicitly.
+[MoEfication, Findings of ACL 2022, §3.2](https://aclanthology.org/2022.findings-acl.71.pdf).
+
+**WIDE: contiguous groups chosen for GPU execution.** WIDE learns token-dependent
+selection of attention-head and FFN-channel groups. Its contiguous FFN group
+sizes follow matrix-multiply tiling choices. Router training and optional LoRA
+recovery work with specialized kernels that reorder masks and skip computation.
+It is direct precedent for one gate controlling several channels, with a hardware
+rationale. Its dynamic routing and kernel speedups do not establish a benefit
+from fixed groups in an ordinary compact dense LTX checkpoint.
+[WIDE, 30 July 2026 preprint, §§3.1–3.3](https://arxiv.org/html/2607.28418v1).
+
+**DynaBERT: importance ordering and nested prefixes.** DynaBERT ranks and reorders
+heads and FFN neurons, then distills subnetworks that retain prefixes at selected
+widths. Important neurons participate in more subnetworks. This provides an
+ordering strategy when several nested widths must share one model; it does not
+establish semantic groups. A single fixed LTX width does not need prefix nesting.
+[DynaBERT, NeurIPS 2020, §3.1](https://arxiv.org/html/2004.04037v1).
+
+**LTX grouping choices.** Compare importance ordering, balanced weight or
+co-activation grouping, and contiguous hardware groups at the same retained
+widths. Include seeded random groups to test whether grouping information helps.
+Keep functional weighting separate from gate sharing. §7.5.2 defines the proposed
+FFN comparison and its export constraints.
+
+### 2.9. Additional width selection and recovery references
+
+**Minitron.** It ranks neurons and other structural dimensions using calibration
+activations, trims the corresponding weights, and recovers with distillation.
+Architecture search and recovery are separate stages. This supports an
+activation-selected compact-width comparator; it does not require learned gates
+or fixed semantic groups.
+[Compact Language Models via Pruning and Knowledge Distillation, July 2024](https://arxiv.org/html/2407.14679v1),
+[LLM Pruning and Distillation in Practice: The Minitron Approach, August 2024](https://research.nvidia.com/publication/2024-08_llm-pruning-and-distillation-practice-minitron-approach).
+
+**LoRAPrune.** It estimates importance from LoRA weights and gradients, rather
+than pretrained-weight gradients, and iteratively removes channels and heads.
+It supports adapter-based selection and recovery with a frozen base. It is a
+different selection mechanism from jointly learning a binary gate per channel.
+[LoRAPrune, Findings of ACL 2024](https://aclanthology.org/2024.findings-acl.178/).
+
+**LoRAShear.** It builds dependency graphs over LoRA modules, progressively
+removes structures, transfers knowledge and performs recovery training.
+Its dependency groups identify valid removals, rather than demonstrating
+semantic groups of many FFN channels with shared gates.
+[LoRAShear, 2023 preprint](https://arxiv.org/abs/2310.18356).
+
+**Bonsai.** Bonsai uses forward-only perturbative evaluation to select structured
+removals. It is a useful alternative if complete-clip backward propagation is
+too expensive. Forward-only selection still has a selection cost and does not
+establish that recovery is unnecessary.
+[Everybody Prune Now: Structured Pruning of LLMs with only Forward Passes, 2024 preprint](https://arxiv.org/abs/2402.05406).
+
+**Block Pruning for Faster Transformers.** This method extends movement pruning
+to blocks inside weight matrices and can learn removal of larger components.
+A matrix block does not generally include every producing and consuming weight
+of an FFN hidden channel. Learned weight-block sparsity is therefore a separate
+execution design from channel groups exported as smaller dense matrices.
+[Block Pruning for Faster Transformers, EMNLP 2021](https://aclanthology.org/2021.emnlp-main.829/).
+
+**Scope of existing baselines.** Wanda and SparseGPT (§§2.1–2.2), and DiT-Pruning
+(§4.12), primarily supply weight or patterned-sparsity methods. SliceGPT (§2.5)
+removes rotated representation dimensions. They offer useful criteria and
+reconstruction controls, but less direct precedent for gates on original FFN
+intermediate channels. LLM Surgeon, FLAP and §§4.3–4.6 contribute structured
+selection, allocation and compensation. PARE (§4.15) selects individual neurons
+with diversity and aligned widths; dynamic width methods (§4.14) have a different
+deployment contract. Keep these distinctions when naming an LTX adaptation.
 
 ## 3. LLM performance comparisons
 
@@ -421,6 +578,8 @@ costs for unequal layers, and keep all candidate selection off blind test actors
 ### 4.7. EcoDiff: optimize complete-generation error with hard-concrete gates
 
 EcoDiff's current title is **Learnable Sparsity for Vision Generative Models**.
+Its structural gates cover attention heads and FFN neurons; they are direct
+diffusion precedent for learning individual channel decisions.
 Let $\mathcal F_\theta(z_T,y)$ be the complete sampler. Its objective is
 
 $$
@@ -711,6 +870,9 @@ have excessive cosine similarity to retained ones, then relaxes the threshold
 until the aligned width budget is filled. Width distillation precedes dynamic
 block-router training.
 [PARE, May 2026 preprint, §3.2](https://arxiv.org/html/2605.27336v1).
+
+An aligned retained width does not imply fixed channel groups sharing gates.
+PARE selects neurons individually using scores and diversity.
 
 MobileWan instead measures projected output energy and normalizes within blocks:
 
@@ -1202,6 +1364,24 @@ from study-specific implementations. Gradient, reconstruction/rotation and recov
 training methods remain unmeasured; results from a training-free screen do not
 establish their performance.
 
+For the current human-region question, the recommended next experiment is
+**static sparse head gates with bounded LoRA recovery** (§7.5.1).
+This is a proposed experiment, not an implemented learner or accepted candidate.
+The [2,000-view partial report](../../../../expr/refiner_prune/2.5/mobilewan_head_scores_dev8_20261011/partial/milestone_2000/REPORT.md)
+shows stable descriptive energy ranks, but measures no removal quality.
+The resident MobileWan scorer covers every generated query at stride one.
+More energy observations alone cannot establish that a head can be removed.
+
+For a separate FFN study, start with **individual binary channel gates and
+constrained final widths** (§7.5.2). Keep attention unchanged in that study.
+The new literature supports this design; it does not provide an LTX result.
+The linked head experiment plan remains head-only.
+
+The earlier method screen uses **distilled** weights and 19 latent frames.
+The current head study uses **dev** weights and complete 18- or 28-frame clips.
+Its earlier quality and timing results motivate controls; they are not measured
+outcomes for the current dev task.
+
 The [archived 1 October experiment plan](../../../../plans/history/2026-10-08-superseded/2026-10-01-prune-method-comparison.md)
 executes a bounded training-free comparison of rankings, compensation,
 allocation and static block removal using isolated calibration, validation and
@@ -1218,11 +1398,12 @@ execution. Start FFN-only, then heads-only, then combined. Profile GEMMs,
 attention, head selection, copies, allocations and complete forward time.
 Loading/noising/VAE remain outside forward timing; end-to-end cost is separate.
 
-Test aligned width groups. The present 16,384-channel FFN retains 14,746 channels
+Test aligned retained widths. The present 16,384-channel FFN retains 14,746 channels
 at the current 10% request. Retaining 14,848 instead removes 1,536 (9.375%) and
 preserves a multiple of 128. Alignment is a **hardware hypothesis**, not a proven
 optimum: scan nearby widths and head counts on the actual GPU. Every ranking
-method must use the same feasible groups and realized budgets.
+method must use the same feasible widths and realized budgets. Individual channel
+gates can meet this constraint without sharing gates in predefined groups.
 
 Preserve full Q/K normalization when it defines the intended mask. Changed
 normalization defines a changed-model arm. Do not loosen parity tolerance to
@@ -1334,16 +1515,352 @@ point and cannot supply meaningful first-order importance there. Compare
 per-sigma gradients, calibration cost and peak memory. Full LLM Surgeon curvature
 is deferred in favor of cheaper local reconstruction.
 
-**EcoDiff / MobileWan-inspired learned gates.** Optimize fixed-budget head/channel
-masks against one-step final-latent agreement, harden them, then test the exported
+**EcoDiff / MobileWan-inspired learned gates.** Optimize head/channel
+gates against one-step final-latent agreement and sparsity, harden them at matched
+final budgets, then test the exported
 discrete network. Compare equal-sigma with high-noise-biased sampling, while
 validating all sigmas. Separate frozen-weight mask learning from joint gate/weight
-training. Soft training gates are not an inference speed result.
+training. GRASPrune supports a separate hard-forward budgeted variant.
+CoFi and Sheared LLaMA support individual channels with shape constraints;
+Compresso supports joint masks and adapters (§2.7).
+Soft training gates are not an inference speed result.
+
+#### 7.5.1. Recommended next experiment: sparse head gates with bounded recovery
+
+**Status: proposed; not run yet.** The package has functional mask hooks,
+native input reconstruction, export and matched evaluation. It has no production
+entrypoint for this learning experiment.
+
+The [self-contained experiment plan](../../../../plans/2026-10-12-learned-head-pruning-experiment.md)
+defines exact gate/loss/adapter defaults, source changes, controls and report figures.
+
+**Question.** Can learned head choices preserve people better than energy choices
+at the same executable budget and recovery cost?
+
+Local contribution, downstream damage and recoverability are different quantities.
+Attention to a human region is a reason to inspect a head, not proof of necessity.
+The explorer scales each attention panel by its own maximum (§6.1.1).
+Small values, the native gate or output projection can suppress a visible map.
+Check the same block, pathway, query set, clip and sigma before comparing scores.
+The explorer includes clean-frame queries; this pruning study excludes them.
+
+**Selection variables.** Add one scalar pruning decision per original video
+self-attention head: 48 blocks × 32 heads, or 1,536 decisions.
+Apply it after the native input-dependent gate and before `to_out[0]`.
+Keep the native gate, full Q/K normalization and original RoPE identities.
+Keep all text cross-attention heads and FFN channels for this first experiment.
+The learned decisions are static across clips, queries and sigmas at deployment.
+
+Following the 12 October gate-policy amendment, initialize every FP32 logit at
+$\alpha_{b,h}=+3$ and use continuous sigmoid gates with fixed temperature one:
+
+$$
+g_{b,h}=\operatorname{sigmoid}(\alpha_{b,h}),\qquad
+g_{b,h}(0)=0.9525741268\ldots,\qquad
+L_{\rm sparse}=\frac1{1536}\sum_{b,h}g_{b,h}.
+$$
+
+Use ordinary sigmoid gradients for 700 updates, with no gate noise or temperature
+annealing. A positive mean-gate penalty encourages suppression in this soft phase.
+The soft forward has no fixed binary head count. An exact count would make a
+head-count penalty constant and remove its selection pressure.
+The initialized gates are near one, rather than an exact dense reproduction;
+verify native parity separately with explicit all-one/zero-adapter gates.
+
+After 700 updates, save soft/hardened predictions with identical adapter weights.
+For the next 300 updates, select
+$\bar m=\operatorname{SelectLegal}(\alpha,K)$ at the declared final budget and use
+$m=\operatorname{stopgrad}(\bar m-g)+g$: binary forwards with biased STE gradients.
+Disable the soft sparsity penalty in this fixed-count phase. Freeze the final
+mask after update 1,000, then perform 500 compact adapter updates.
+`SelectLegal` is a proposed legal-count selector, not an existing API.
+The plan starts with retained counts $\{16,20,24,28,32\}$ per block and global
+budgets near 10%, 23% and 33% removal. Record actual counts.
+Retained pruning gates become one; removed heads become zero.
+Use stable original-ID ties and the same feasible counts in all comparison arms.
+
+Soft learning can produce uniform attenuation or adapter compensation rather
+than useful discrete choices. Plot gate distributions and measure the soft-to-hard
+quality change before recovery. Do not fold soft amplitudes into retained weights
+or interpret logits as causal importance. Search all eligible heads; energy
+supplies a comparator. Compare a 1,000-soft/500-compact control at the same total
+updates. The FFN proposal in §7.5.2 remains a separate experiment.
+
+**Bounded recovery.** Freeze the pretrained backbone and jointly train the head
+logits with a small, fixed LoRA adapter on declared attention projections.
+Keep its rank, targets, updates and data budget fixed across comparison arms.
+Match total adapter updates, including selection and final compact recovery.
+The energy arm receives the same adapter updates with its fixed-ranking ramp;
+its gate trajectory differs from learned soft suppression. Match final budgets
+and adapter updates, and report that difference.
+This estimates which sets work with limited adaptation, rather than only measuring
+their immediate frozen-weight damage. It does not establish optimal recoverability.
+MobileWan jointly trains gates and weights (§4.15); TinyFusion motivates selection
+with recovery (§4.8). This soft-selection/binary-export/LoRA combination is an LTX adaptation.
+Use a short frozen-weight gate control to separate selection from adaptation.
+Also freeze the learned and energy masks, discard selection adapters, and give
+each fresh identically initialized LoRA recovery for 500 updates. Include energy
+identities at the learned block counts and an unpruned fresh-adapter control.
+Report their additional cost; they isolate mask quality under common recovery.
+
+**Official training loss.** Use native velocity MSE against the saved noise minus
+clean capture, as in the local official trainer's
+[`FlexibleStrategy`](../../../packages/ltx-trainer/src/ltx_trainer/training_strategies/flexible.py).
+The original dev teacher supplies evaluation references; it is not the target.
+For clean capture $y$, noise $\epsilon$, native velocity $v_S$ and generated-token
+set $Q$, define
+
+$$
+v^*=\epsilon-y,\qquad
+L_v=\frac1{C|Q|}\sum_{q\in Q}\|v_{S,q}-v^*_q\|_2^2,\qquad
+L=L_v+\lambda_s(t)L_{\rm sparse}(g).
+$$
+
+Exclude c0, normalize per clip and reduce errors in FP32. Obtain native velocity
+through a new public helper in `core.ltx_adapter`; do not divide rounded BF16
+clean outputs by sigma for the training loss. Verify its stock clean conversion
+against ordinary inference. The baseline adds no teacher-x0, direction, regional
+or temporal loss. The adopted target/reduction does not reproduce every part of
+official training: this plan retains its fixed D0 inputs and eight sigmas.
+
+Use $\lambda_s(t)=10^{-3}\min(t/300,1)$ during soft updates only. Binary refinement
+and compact recovery use $L_v$ alone. This initial coefficient must be checked
+against actual velocity gradients before confirmation; it is not an optimal value.
+Compare a zero-penalty control. Exact final counts constrain binary forwards,
+rather than soft-gate mass.
+
+**Specific human-protection comparisons.** Keep them separate from the baseline.
+On learning GT only, define six motion/size buckets using motion tertiles and
+median person area. Compare bucket/actor-balanced draws with the original draw
+policy, preserving official loss and paired evaluation inputs.
+Then compare $L_v$ with an added person velocity MSE, coefficient one.
+Against that person-only arm, test added face and mean-valid-hand velocity MSE,
+each coefficient 0.5. Normalize each region per clip using fixed GT coverage;
+map verified face/hand annotation boxes through the recorded crop and VAE pooling.
+The plan defines 25% box expansion, 32-pixel minimum crops, absent-region rules,
+draw cycles, artifacts and one-factor comparisons. These reductions extend the
+stock unweighted loss; they are hypotheses motivated by specialized contributions.
+No semantic label ties a group of heads to one switch.
+
+A dense model can have nonzero official velocity loss and gradients.
+Verify zero loss only for predictions equal to the exact velocity target.
+Required decoded person, face and hand checks can reject low-loss candidates.
+Official training may improve capture fidelity while changing original-teacher
+behavior; keep both measurements and the unpruned adapter control.
+
+**Distribution and splits.** Initially sample the eight exact sigmas from the
+current dev study equally. Preserve complete 18- and 28-frame clips, clean c0,
+empty context, white objective and full bidirectional attention.
+Compare high-noise emphasis only as a later controlled variable; Wan's sampling
+distribution is not automatically the LTX D0 distribution.
+Cover multiple actors and motions. Use multiple noise draws with saved identities,
+and pair every teacher/student call on the same draw.
+Use actor-disjoint learning, validation and blind-test sets.
+An actor inspected for selection or tuning is no longer blind.
+Recompute the energy comparator from the same learning membership, excluding
+validation actors. Do not reuse an all-train pooled mask across a new split.
+
+**Code and feasibility gate.** Reuse `data.whole_clip` for saved inputs and
+`score.hooks` for the intervention boundary. Add a prune-owned learning entrypoint
+and registered logit/adapter state; the current raw mask tensors are not a complete
+bounded-gate learner. Their initializer detaches supplied tensors.
+`core.session.Session.transformer` surrounds its lifetime with `torch.no_grad()`.
+The student path needs explicit gradient enablement and backbone freezing.
+Teacher references use `no_grad`, pruning disabled and adapter delta zero.
+Generate required original-teacher velocity/clean records once and reuse exact
+inputs across arms and optimization replicates in a capped shared store.
+Official training needs no teacher forward or cached target for every draw.
+
+Before sustained training, verify all-one/zero-adapter baseline reproduction,
+exact +3 initialization, finite velocity and sparsity gradients, unchanged
+frozen weights and exact c0.
+Check complete-clip backward memory at both lengths with activation checkpointing.
+Small optimizer state does not make backward propagation through 48 blocks cheap.
+Do not substitute shorter training segments without recording a distribution change.
+Also benchmark a few candidate compact widths on the current dev geometry.
+Include aligned FFN-only widths before choosing the next speed study.
+Full Q/K normalization keeps those projections full-width; head reduction does
+not imply proportional parameter or latency reduction.
+
+**First comparison.** Begin near 10% removal, using a feasible realized budget.
+Compare the energy-selected and learned masks with the same adapter budget,
+input draws and compact execution policy. Include the unchanged model and a seeded
+random-mask control. Compare gate-only learning separately from joint learning.
+Measure both hard-mask quality before final recovery and quality after matched recovery.
+Expand to 23% and 33% only after the first budget passes the declared gates.
+Use a few single-head removals as sanity checks; an exhaustive deletion sweep is
+not a prerequisite for this learner.
+
+**Compact recovery and acceptance.** Freeze the selected binary mask, create the
+actual reduced-width network, and complete the bounded recovery in that network.
+Retained pruning decisions become one; removed heads disappear.
+Merge LoRA before timing, or include its measured runtime overhead.
+`compact_faithful` remains a storage/fidelity control, not the speed candidate.
+
+Report raw functional-mask versus compact-export parity before recovery.
+If that fails, preserve the failed result. Training the compact network defines
+a changed-model arm, not a repair of the original parity claim.
+For that arm, use the trained in-memory compact network as the new reference and
+check saved/reloaded execution with the unchanged 0.02 tolerance.
+Evaluate its quality separately against both the original teacher and capture.
+Keep full Q/K normalization and original head identities in either arm.
+
+Inspect synchronized decoded videos on unseen actors and independent noise at
+every required sigma. Report foreground and face/hand damage alongside motion,
+whole-frame errors and worst-case failures. Measure complete forward latency,
+memory and storage separately on the target GPU, using the existing ABA/BAB gate.
+Accept the hard compact candidate only when execution fidelity, human quality and
+the declared cost goal all pass. If head widths offer no useful measured speed,
+use a promising aligned-FFN profile to prepare the separate channel study;
+otherwise test recoverable static depth. Soft loss alone does not justify a
+larger head-mask speed study.
+
+#### 7.5.2. FFN recommendation: individual choices, aligned widths and bounded recovery
+
+**Status: proposed; not run yet.** This is a separate FFN experiment, rather than
+an expansion of the head-only plan. The first comparison retains every attention
+head, block, residual dimension and conditioning path.
+
+**Question.** Can learned channel choices preserve people better at the same FFN width?
+
+**Gate and weights.** For one token vector $x$ in video block $b$, let
+$W_{{\rm up},b}\in\mathbb R^{H_b\times D_{\rm in}}$ and
+$W_{{\rm down},b}\in\mathbb R^{D_{\rm out}\times H_b}$. LTX uses GELU:
+
+$$
+a_b=\operatorname{GELU}(W_{{\rm up},b}x+b_{{\rm up},b}),\qquad
+y_b=W_{{\rm down},b}(m_b\odot a_b)+b_{{\rm down},b}.
+$$
+
+There is one FP32 logit $\alpha_{b,j}$ for each original intermediate channel.
+The current 48 video FFNs with width 16,384 give 786,432 decisions.
+The mask is static across tokens, clips and sigmas at deployment.
+It acts after GELU, immediately before `ff.net[2]`.
+
+For the first pilot, fix the same retained width $K_b=14{,}848$ in every block.
+This removes 9.375% of eligible FFN channels, rather than 9.375% of the model.
+Use binary forwards with the surrogate gradient
+
+$$
+p_{b,j}=\operatorname{sigmoid}(\alpha_{b,j}/\tau),\qquad
+\bar m_b=\operatorname{TopK}(p_b,K_b),\qquad
+m_b=\operatorname{stopgrad}(\bar m_b-p_b)+p_b.
+$$
+
+`TopK` returns a binary keep mask with stable, recorded tie handling.
+Its gradient estimator is approximate. Start with all channels present, then
+ramp removal through legal widths; reuse the same decision during recomputation.
+A fixed hard width needs no additional sparsity penalty to enforce that width.
+Hard-concrete masks with explicit width constraints remain an alternate estimator,
+not the default first pilot. Validate the final binary budget in either case.
+
+The final-width constraint is $\sum_j\bar m_{b,j}=K_b$, with
+$K_b\in128\mathbb N$ and a declared positive minimum.
+This does **not** impose $m_{b,j}=m_{b,k}$ on neighboring channels.
+First hold all $K_b$ fixed to isolate selection. Later compare width allocation
+over a predeclared legal set, using the same total parameter budget:
+
+$$
+C_{\rm FFN}=\sum_b K_b
+\left(D_{{\rm in},b}+D_{{\rm out},b}
++\mathbf 1_{\text{up bias},b}\right).
+$$
+
+This counts the retained channel-dependent weights and up biases; down biases
+remain unchanged. Count all other parameters separately. Parameter cost is not
+latency; benchmark each candidate architecture and complete D0 calls (§8).
+Alignment and the initial width remain hardware hypotheses (§7.1).
+
+**Recovery and loss.** Freeze pretrained weights and jointly learn logits with
+rank-16 LoRA on `ff.net[0].proj` and `ff.net[2]`, with scale $16/16=1$.
+For each targeted weight, use $W'=W+sBA$, where $A\in\mathbb R^{r\times d_{\rm in}}$
+and $B\in\mathbb R^{d_{\rm out}\times r}$. Initialize $A$ with seeded random
+values and $B=0$; record the seed and initializer. Keep adapter parameters and
+optimizer states FP32, with BF16 projection arithmetic as in the head plan.
+Use identical adapter targets, rank, data, draws and total updates in every
+FFN comparison. Include a frozen-weight gate control. This adapts Compresso's
+joint-learning mechanism; it does not reproduce its LLM prompting procedure.
+
+Use the official velocity loss and target in §7.5.1:
+
+$$
+\mathcal L=L_v=\operatorname{MSE}_{f>0}(v_S,\epsilon-y),
+\qquad \sum_j\bar m_{b,j}=K_b.
+$$
+
+This baseline excludes the clean first latent frame and uses no auxiliary term.
+Average per clip; preserve actor-disjoint splits,
+paired saved noise and all eight exact sigmas from the head plan.
+Test the plan's person/small-region weighting and balanced calibration as separate
+extensions, stating which question is tested. Faces and hands require decoded checks.
+FANG motivates attention to specialized contributions, but neither region weights
+nor learned logits prove that a channel has a single semantic function.
+
+**First comparison.** Compare the current RMS-selected mask plus LoRA, learned
+individual channels plus the same LoRA budget, and seeded random channels plus
+that budget. Measure quality after selection and after matched compact recovery.
+Also disable adapters to measure each selected mask's immediate deletion damage.
+Official velocity loss can have nonzero gradients at the unchanged dense point.
+Its target is saved noise minus capture, rather than the original teacher.
+
+**Grouping comparison.** Run this after the individual-channel pilot passes.
+Hold each block's retained width, loss, adapter budget and inputs fixed.
+
+- **Importance ordering:** retain prefixes of an ordering, following DynaBERT's
+  idea. At one width this is ranking selection; nested training is a separate
+  multi-width question with its extra training cost reported.
+- **Balanced grouping:** use balanced weight clustering or a defined GELU
+  co-activation similarity on learning data. For a shared-gate arm, create
+  equal-sized groups before training and record their original channel indices.
+- **Contiguous grouping:** tie one gate across 128 adjacent original channels
+  and retain 116 groups per block at the pilot width. This tests the hardware
+  grouping hypothesis without adopting WIDE's dynamic routers or kernels.
+
+Use 128 channels per shared-gate group for the first matched comparison, including
+seeded random groups of that size. Report grouping time and memory.
+Balanced clusters and original contiguous groups must keep the same channel count.
+Use a separate loss-weighting comparison for functional protection; do not tie
+all person-related neurons to one removable gate.
+Once static selected channels are packed into compact dense matrices, their
+original grouping need not save extra runtime. Compare quality and measured cost
+against free per-channel selection, rather than assuming a grouping speed benefit.
+
+**Export and code boundary.** For retained original indices $S_b$, export
+$W'_{{\rm up},b}[S_b,:]$, $b_{{\rm up},b}[S_b]$ and
+$W'_{{\rm down},b}[:,S_b]$; keep $b_{{\rm down},b}$ unchanged.
+Preserve the same channel order in both projections and in adapter transfer.
+Slice up-projection $B$ rows and down-projection $A$ columns for compact recovery;
+merge adapters before timing. No runtime gather or full-width reconstruction
+is needed for these static FFNs.
+
+`score/hooks.py:attach_ffn_masks` already provides the correct boundary, but it
+detaches supplied tensors and is not a complete logit learner. Its planned gate
+provider must preserve gradients, as required for heads in §7.5.1.
+For this later FFN study, extend the planned `learn/gates.py` with a separate
+per-channel hard-forward mode; keep the head pilot's soft policy fixed.
+Reuse the planned `learn/adapters.py`, `learn/losses.py` and `learn/checkpoints.py`;
+add a separate proposed `learn/ffn.py` entrypoint and FFN study config.
+Extend recovery/export validation for FFN adapter slicing and
+original-index provenance, with mirrored design docs. These learning modules
+are proposed files, not available commands.
+
+`score/export_pruned.py:_slice_ffn` already handles arbitrary retained channels.
+Use that surgery after adapter fusion. The existing feed-forward implementation
+supports real compact widths; shared groups require no new upstream FFN layer.
+Preserve raw functional-versus-compact parity results, including failures.
+If compact recovery changes weights, use its trained in-memory network as the
+reload reference, retaining the 0.02 tolerance and independent quality gate.
+Use full and region quality–latency plots, per-sigma/worst-actor errors, and
+matched capture/teacher/student videos. All-one reproduction, finite gradients,
+unchanged frozen weights and complete-clip backward memory precede sustained work.
+No FFN training, export or speed result is claimed here.
 
 ### 7.6. Reconstruction and budgeted recovery
 
-First fit retained output projections to the original local outputs with
-calibration-only ridge regression. Evaluate unseen actors and complete forward
+For the recommended head experiment, bounded LoRA recovery in §7.5.1 comes first.
+Algebraic reconstruction remains a separate alternative, not its prerequisite.
+For that reconstruction arm, first fit retained output projections to the original
+local outputs with calibration-only ridge regression. Evaluate unseen actors and complete forward
 outputs, not just the fitted layer. This is a SparseGPT/LLM-Surgeon-inspired
 adaptation rather than an exact reproduction.
 
@@ -1408,11 +1925,13 @@ samples and ABA/BAB brackets on the same device/software/precision. Profiling
 explains overhead but does not replace complete forward timing. Claim speed
 only when the gain survives both orders and exceeds measured drift.
 
-**Order of work.** Establish executable dense widths, compare inexpensive
-rankings, test adaptive allocation and static block removal, then add compensation
-and explicitly budgeted recovery. Accept candidates when correctness, held-out
-content/motion and measured cost agree. If only storage improves, label the
-result as storage compression.
+**Order of work.** For the current human-region question, first check compact
+execution and full-clip gradient feasibility. Then compare energy-selected and
+learned binary heads with matched recovery (§7.5.1). Freeze the selected mask,
+recover in compact execution and test unseen actors and noise.
+Other rankings, reconstruction and static depth remain separate experiments.
+Accept candidates when correctness, held-out content/motion and measured cost
+agree. If only storage improves, label the result as storage compression.
 
 Implementation contracts remain in the source-matching [design index](README.md)
 and [validation guide](VALIDATION.md). Revise this agenda when new methods are
