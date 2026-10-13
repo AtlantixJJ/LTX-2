@@ -191,6 +191,13 @@ def verify_candidate(base: dict, candidate: dict) -> dict:
             pruning.get("model_key") != base["model"]["model_key"]):
         raise ValueError("candidate export task/source differs from native whole-clip D0")
     family = pruning.get("family", "width")
+    if family == "width_recovered":
+        from scripts.prune.checks.learned_heads import validate_envelope  # noqa: PLC0415
+
+        artifact_path = Path(pruning.get("artifact", ""))
+        if not artifact_path.is_file() or provenance.file_sha256(artifact_path) != pruning.get("artifact_sha256"):
+            raise ValueError("recovered export artifact content differs or is unavailable")
+        return validate_envelope(artifact_path, base=base, candidate=path)
     if family == "depth":
         artifact_path = Path(pruning.get("artifact", ""))
         if not artifact_path.is_file() or provenance.file_sha256(artifact_path) != pruning.get("artifact_sha256"):

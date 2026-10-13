@@ -175,3 +175,29 @@ def test_candidate_rejects_cross_task_export(tmp_path: Path) -> None:
     }
     with pytest.raises(ValueError, match="native whole-clip D0"):
         whole_clip.verify_candidate(base, candidate)
+
+
+def test_recovered_dispatch_rejects_unknown_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    artifact = tmp_path / "recovered.json"
+    artifact.write_text(json.dumps({"format": "unknown", "family": "width_recovered"}))
+    path = tmp_path / "candidate.safetensors"
+    config = {
+        "transformer": {
+            "pruning": {
+                "task": "whole_clip_d0",
+                "family": "width_recovered",
+                "model_key": "2.5",
+                "source_transformer_fingerprint": "source",
+                "artifact": str(artifact),
+                "artifact_sha256": provenance.file_sha256(artifact),
+            }
+        }
+    }
+    save_file({"weight": torch.ones(1)}, str(path), metadata={"config": json.dumps(config)})
+    monkeypatch.setattr(whole_clip, "verify_pair", lambda *_: None)
+    base = {"model": {"model_key": "2.5", "transformer_fingerprint": "source"}}
+    candidate = {
+        "model": {"transformer_path": str(path), "transformer_fingerprint": provenance.checkpoint_fingerprint(path)}
+    }
+    with pytest.raises(ValueError, match="unsupported recovered"):
+        whole_clip.verify_candidate(base, candidate)

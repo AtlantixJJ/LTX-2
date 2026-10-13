@@ -1,0 +1,22 @@
+"""Plot declared scientific data on CPU; no metric generation or model loading."""
+import json
+from pathlib import Path
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+
+def plot(root, question, name, data, *, ylabel, claim):
+    if not data or any('x' not in row or 'y' not in row for row in data):
+        raise ValueError('a scientific figure requires complete saved plotted data')
+    root = Path(root)
+    destination = root/'figures'/f'{question}_{name}'
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    figure, axis = plt.subplots(figsize=(7, 4), constrained_layout=True)
+    axis.plot([r['x'] for r in data], [r['y'] for r in data], marker='o')
+    axis.set(xlabel='Declared comparison case', ylabel=ylabel, title=claim)
+    figure.savefig(destination.with_suffix('.png'), dpi=180)
+    figure.savefig(destination.with_suffix('.pdf'))
+    plt.close(figure)
+    destination.with_suffix('.data.json').write_text(json.dumps({'question': question, 'claim': claim, 'data': data}, allow_nan=False, indent=2)+'\n')

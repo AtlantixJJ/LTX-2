@@ -3,6 +3,13 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+import torch
+
+from ltx_core.model.transformer.model import X0Model
+from scripts.prune.core.ltx_adapter import velocity_forward
 
 
 def test_no_module_but_the_adapter_imports_ltx_privates() -> None:
@@ -40,3 +47,29 @@ def test_adapter_docstring_names_a_resolvable_pinned_commit() -> None:
     assert m, "ltx_adapter.py must record its pinned LTX-2 commit, e.g. 'Pinned at LTX-2 commit 9a1c49b'"
     result = subprocess.run(["git", "cat-file", "-e", m.group(1)], capture_output=True, check=False)
     assert result.returncode == 0, f"{m.group(1)} is not a resolvable commit in this repo"
+
+
+def test_native_velocity_conversion_single_call() -> None:
+    class Velocity(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def forward(self, video: SimpleNamespace, audio: object, perturbations: object) -> tuple[torch.Tensor, None]:
+            del audio, perturbations
+            self.calls += 1
+            return video.latent * 2, None
+
+    core = Velocity()
+    model = X0Model(core)
+    video = SimpleNamespace(
+        latent=torch.randn(1, 8, 3), timesteps=torch.tensor([0.0, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]).view(1, 8, 1)
+    )
+    expected, _ = model(video, None, None)
+    core.calls = 0
+    native, clean = velocity_forward(model, video)
+    assert core.calls == 1
+    assert torch.equal(clean, expected)
+    assert torch.equal(native, video.latent * 2)
+    with pytest.raises(ValueError, match="X0Model"):
+        velocity_forward(core, video)

@@ -1,0 +1,72 @@
+"""Rebuild a Markdown report from declared saved artifacts; never launch models."""
+import json
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def checked_inputs(narrative):
+    import hashlib
+    for item in narrative['required_files']:
+        path = ROOT/item['path']
+        if not path.is_file():
+            raise FileNotFoundError(f'missing report evidence: {path}')
+        if hashlib.sha256(path.read_bytes()).hexdigest() != item['sha256']:
+            raise ValueError(f'changed report evidence: {path}')
+
+
+def main():
+    narrative = json.loads((ROOT/'configs/narrative.json').read_text())
+    checked_inputs(narrative)
+    study_path = ROOT/'configs/frozen_study.json'
+    study = json.loads(study_path.read_text()) if study_path.exists() else None
+    failures = [json.loads(p.read_text()) for p in sorted((ROOT/'logs').glob('*.failure.json'))]
+    feasibility = ROOT/'checks/feasibility.json'
+    native = json.loads(feasibility.read_text()) if feasibility.exists() else None
+    blocks = ['# Learned head pruning with bounded recovery', '', '## Problem', '', narrative['problem'], '',
+              '## Terms', '', *['- '+term for term in narrative['terms']], '', '## Common setup', '', narrative['setup'], '',
+              '## Main findings', '']
+    if failures:
+        blocks += [f'1. A required execution stage failed: {failures[-1]["message"]}. See R1.']
+    else:
+        blocks += ['1. No learned-versus-energy quality or speed result is accepted yet. See R2 and R9.']
+    blocks += ['', 'Quality decision: pending required decoded metrics and video review.',
+               'Cost decision: pending complete matched ABA/BAB timing and drift checks.', '']
+    for question in narrative['questions']:
+        qid = question['id']
+        blocks += [f'## {qid}. {question["title"]}', '']
+        if qid == 'R1' and study is not None:
+            split = study['splits']
+            answer = f'Preparation verified {len(split["learning"])} learning views, {len(split["validation"])} validation views and {len(split["test"])} test views.'
+            if native:
+                answer += ' Native feasibility completed; timing and quality remain separate gates.'
+            elif failures:
+                answer += ' Native feasibility cannot pass while the recorded execution failure remains unresolved.'
+            elif (ROOT/'logs/feasibility.pid').exists():
+                answer += ' Native feasibility was launched; no completion receipt exists yet.'
+            else:
+                answer += ' Native feasibility is not run yet.'
+            blocks += ['**Short answer:** '+answer, '',
+                       f'Test label: `{split["test_label"]}`. Region tracks: `{study["region_tracks"]["status"]}`.', '',
+                       'Matched source evidence: the frozen study pins complete component files, actual context bytes, source/crop/matte records and paired noise draws.', '']
+        else:
+            blocks += ['**Short answer:** '+question.get('answer', 'Not run yet. No scientific conclusion is available for this comparison.'), '']
+        if question.get('results'):
+            blocks += ['**Results:** '+question['results'], '']
+        blocks += [question['design'], '']
+        if qid == 'R1' and failures:
+            blocks += ['**Results:** '+failures[-1]['error']+': '+failures[-1]['message'], '']
+        for item in narrative.get('figures', []):
+            if item['question'] == qid:
+                blocks += [f'![{item["claim"]}]({item["png"]})', '', item['caption'], '']
+        for item in narrative.get('videos', []):
+            if item['question'] == qid:
+                blocks += [f'[![{item["caption"]}]({item["poster"]})]({item["video"]})', '', item['caption'], '']
+    (ROOT/'REPORT.md').write_text('\n'.join(blocks)+'\n')
+    from validate import validate
+    validate(ROOT)
+
+
+if __name__ == '__main__':
+    main()

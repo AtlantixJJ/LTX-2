@@ -48,3 +48,12 @@ Actor identity spans clips, Parts, views and filesystem aliases.
 `tests/test_hooks.py` checks branch boundaries, widths and cleanup.
 `tests/test_mask_artifact.py` checks schema, content identity and incomplete families.
 `tests/test_actor_holdout.py` checks actor separation.
+
+## Live pruning gate providers
+
+`attach_head_provider` attaches only video self-attention heads at the existing output-projection input.
+It obtains the current microbatch's FP32 gate tensor from the caller.
+It preserves that tensor's gradient graph and uses the same values during checkpoint recomputation.
+The caller creates the graph before forward and removes hooks on exit.
+Text heads, native input-dependent gates and ordinary strict binary artifact readers retain their contracts.
+The provider fixture checks accumulated gate gradients, text exclusion and hook cleanup.

@@ -1,0 +1,26 @@
+"""Check saved wide/narrow screenshots; human inspection remains required.
+
+Render Markdown externally at 1440 and 480 pixels. This reader requires both
+screenshots and their review notes. It never starts a model or a decoder.
+"""
+import json
+from pathlib import Path
+
+from PIL import Image
+
+
+def main():
+    root = Path(__file__).resolve().parents[1]
+    notes = json.loads((root/'validation/layout_notes.json').read_text())
+    for width in (1440, 480):
+        path = root/f'validation/layout_{width}.png'
+        with Image.open(path) as image:
+            if image.width != width:
+                raise ValueError('layout screenshot width differs')
+        if notes.get(str(width), {}).get('reviewed') is not True:
+            raise ValueError('each reading width requires a real layout review')
+    (root/'validation/layout.json').write_text(json.dumps({'status': 'reviewed', 'widths': [1440, 480]})+'\n')
+
+
+if __name__ == '__main__':
+    main()

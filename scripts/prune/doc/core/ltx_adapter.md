@@ -33,3 +33,11 @@ Review these accesses when upstream interfaces change. The revision does not ins
 
 `tests/test_ltx_adapter.py` checks the private-access boundary and recorded revision.
 A changed upstream interface also needs a native model load.
+
+## Native velocity learning
+
+`velocity_forward` accepts the supported timestep-based `X0Model` only.
+It calls the underlying video-only velocity model once and returns native velocity plus stock clean conversion.
+The caller owns autograd and exact c0 restoration.
+Unsupported wrappers fail explicitly; inference continues through the ordinary wrapper.
+The single-call fixture checks exact clean conversion and rejects a bare velocity model.

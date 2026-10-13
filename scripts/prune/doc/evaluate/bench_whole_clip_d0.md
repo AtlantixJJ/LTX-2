@@ -75,3 +75,14 @@ One geometry and one view do not establish general throughput.
 Shared manifest and candidate checks are covered by the CPU suite.
 A native benchmark must verify saved-output differences and inspect all timing repetitions.
 See [acceptance gates](../VALIDATION.md).
+
+## Dev and recovered timing
+
+Session setup now passes the baseline's explicit transformer path, including the dev override.
+Recovered candidates enter strict shared validation before loading.
+The benchmark sets the native deterministic policy before CUDA initialization.
+Recorded outputs, measured outputs and differences must all be finite.
+The relative denominator uses the documented diagnostic floor, without hiding an invalid output.
+Default timing uses two warmups and seven repetitions.
+Outside-arm drift above two percent triggers twenty repetitions and preserves the first timing rows.
+The result records recovered learning provenance separately from timing and ordinary saved-output checks.

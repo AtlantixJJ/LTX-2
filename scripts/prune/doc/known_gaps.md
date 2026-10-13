@@ -79,3 +79,25 @@ These helpers do not establish native scoring or removal quality.
 The producer now supports explicit direct dev schedules and capture-only D0.
 The restricted agent baseline wrapper now accepts unmodified direct dev D0 at sigma <=0.95.
 Per-view score records now reject incomplete observations and changed resume identities.
+
+## Learned head implementation and scientific evidence
+
+The +3 gate learner, legal selector, official velocity loss and adapter/moment transfer are implemented.
+CPU preparation, bounded native phases, paired teacher records, compact export, strict recovered validation and media readers are implemented.
+The execution probe phase tests head layouts and FFN widths separately.
+Main, soft-only, fixed-ranking, balanced, regional, sequential and common fresh recovery paths remain scientific comparisons.
+Their implementation does not establish a successful native backward, quality winner or speed candidate.
+
+GT face and hand tracks require a reviewed source-pixel schema and pinned producer.
+The learner never guesses the existing keypoint layout or substitutes body boxes.
+Preparation pins installed AlexNet LPIPS and cached weights when available.
+Missing LPIPS or required region coverage prevents decoded quality acceptance.
+Native feasibility, sustained paired training, final quality and cost results must use saved stage receipts.
+
+S0 has verified all 308 selected views and six learning buckets in the first frozen study.
+The first S1 failed in an unintended inference graph before any backward update.
+The zero-adapter parity control now disables autograd. A new frozen revision must rerun native gates.
+
+The corrected single-GPU S1 now fails in actual checkpointed backward FFN recomputation.
+No full backward acceptance receipt exists. A two-GPU block placement change is proposed in the experiment records.
+Sustained learning remains blocked by this native gate; inference timing is independent.

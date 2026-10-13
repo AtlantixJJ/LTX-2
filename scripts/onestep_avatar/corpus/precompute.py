@@ -439,6 +439,15 @@ def _read_cropped_masks(
     return np.stack(pooled)
 
 
+def read_cropped_capture_masks(path: Path, box_xyxy: tuple[float, float, float, float]) -> np.ndarray:
+    """Replay canonical capture-only mask pixels without rendering a guide.
+
+    Callers must use the recorded capture crop. This public reader shares the
+    paired producer's interpolation and grid; it does not choose another crop.
+    """
+    return _read_cropped_masks(path, box_xyxy, ALPHA_GRID, ALPHA_GRID)
+
+
 def discover_capture_sources(corpus_root: Path, views: set[int] | None = None) -> list[CaptureSource]:
     """Discover raw views; no processed capture video is required."""
     sources: list[CaptureSource] = []

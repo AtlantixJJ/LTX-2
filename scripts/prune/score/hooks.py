@@ -209,6 +209,41 @@ def attach_ffn_masks(
     return attached
 
 
+def attach_head_provider(model: torch.nn.Module, provider: Callable[[str], torch.Tensor]) -> MaskAttachments:
+    """Attach live self-attention gates, retaining their microbatch graph.
+
+    The caller creates a graph before each forward and keeps it unchanged
+    through backward recomputation. Existing binary artifact readers stay strict.
+    """
+    attached = MaskAttachments()
+    for name, attn in iter_video_attention(model):
+        if not name.endswith(".attn1"):
+            continue
+
+        def hook(
+            _mod: torch.nn.Module,
+            args: tuple[torch.Tensor, ...],
+            *,
+            name: str = name,
+            attn: torch.nn.Module = attn,
+        ) -> tuple[torch.Tensor]:
+            (x,) = args
+            gate = provider(name)
+            if gate.shape != (attn.heads,) or gate.dtype != torch.float32:
+                raise ValueError(f"{name}: invalid live head gate shape or dtype")
+            if x.shape[-1] != attn.heads * attn.dim_head:
+                raise ValueError(f"{name}: live gate activation width differs")
+            return (
+                (
+                    x.reshape(*x.shape[:-1], attn.heads, attn.dim_head)
+                    * gate.to(device=x.device, dtype=x.dtype).view(1, 1, -1, 1)
+                ).reshape_as(x),
+            )
+
+        attached.handles.append(attn.to_out[0].register_forward_pre_hook(hook))
+    return attached
+
+
 def collect_activations(
     model: torch.nn.Module, which: str, callback: Callable[[str, torch.Tensor, torch.nn.Module], None]
 ) -> MaskAttachments:

@@ -92,3 +92,11 @@ A completed input manifest reuses its pinned epsilon. Orphan files without a man
 Every sigma still passes through `build_input`, which remains the sole reconstruction calculation.
 The input manifest declares `whole_clip_d0_inputs_v1`; it does not claim saved rollout completion.
 The tiny dataset-worker tests verify exact saved-noise reuse and first-frame conditioning across sigmas.
+
+## Recovered width candidates
+
+`verify_candidate` dispatches `width_recovered` to `checks.learned_heads` through a deferred import.
+The export must pin a matching versioned recovered envelope and full merged tensor inventory.
+That validator checks source components, original IDs, geometry wrappers, recovery state, consumed noise and actor separation.
+Unknown or incomplete recovered formats fail.
+The input owner keeps its original single-seed geometry, FP32 mixing, c0 and guidance rules.

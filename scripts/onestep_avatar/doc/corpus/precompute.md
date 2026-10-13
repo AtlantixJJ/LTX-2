@@ -314,3 +314,11 @@ CUDA.
 ## Tests
 
 `tests/test_precompute.py`
+
+## Public capture-only mask replay
+
+`read_cropped_capture_masks` exposes the paired producer's existing crop calculation for capture-only consumers.
+It accepts a source matte and the recorded capture crop, and returns the canonical 256-square uint8 frames.
+It selects no crop and requires no rendered guide or alpha.
+The existing paired pass retains its guide checks and behavior.
+Capture-only repair writes these frames through `corpus.mask_video.write_mask_video`, then verifies replay before study freeze.

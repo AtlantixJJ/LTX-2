@@ -132,3 +132,24 @@ Native dev direct-call parity, hook transparency, full dataset scoring and held-
 Direct dev CPU producer checks verify one call, exact sigma, missing-guide independence and saved completion.
 Per-view score tests reject missing blocks, heads, sigmas, nonfinite energy and changed noise identities.
 Native queue acceptance and full-span dev parity remain separate gates.
+
+## Learned head controls
+
+The focused CPU controls cover exact +3 initialization, independent microbatch graphs and analytic sparsity gradients.
+They compare tiny legal-count selection with brute force and verify binary-forward STE gradients.
+The official FP32 loss fixture matches `FlexibleStrategy._compute_modality_loss`.
+Other controls verify original-ID adapter/moment slicing, zero delta, exact resumed updates and fusion payloads.
+GT region tests cover source coordinates, expansion, crop mapping, visibility and empty coverage.
+Teacher tests verify immutable reuse and bounded evidence storage.
+
+Native feasibility remains required at both 18 and 28 latent frames and all eight sigmas.
+It separates ordinary wrapper parity, all-one gates, zero adapters and the attenuated sigmoid(3) student.
+Ten complete-clip backwards per length must leave at least 2 GiB of device headroom.
+Execution probes test the three declared head layouts, all-one export and FFN-only widths.
+Use both ABA and BAB; drift above two percent increases repetitions to twenty.
+
+Check structural transfer, adapter transfer, fusion and merged reload independently.
+Keep failures rather than treating later recovery as proof of earlier parity.
+Merged reload must have maximum absolute difference at most 0.02 for every case.
+Recovered validation requires complete update/draw coverage and full source/noise/context/tensor hashes.
+Required decoded region metrics and reviewed videos cannot pass with missing coverage.

@@ -103,3 +103,22 @@ The restricted queue wrapper accepts unmodified direct dev D0 at sigma <=0.95.
 `score.mobilewan_aggregate` owns complete coverage checks, train-only mask freezing and final cohort statistics.
 It reads saved worker records and never opens a GPU model.
 Final statistics retain original head indices and exact pooled/per-sigma conditions.
+
+## Learned head recovery
+
+`learn/` owns scalar pruning gates, FP32 adapters, official velocity loss and bounded phase execution.
+`data.learned_head_study` owns actor splits, paired draws and the frozen input authority.
+`data.foreground` calls public corpus crop and mask owners; it does not infer semantic keypoint indices.
+`learn.teacher_references` is the only producer of shared original-teacher evidence.
+`core.ltx_adapter.velocity_forward` accesses the supported X0 wrapper's underlying velocity model once.
+
+Learning imports core, data and score boundaries. It does not import avatar training or execution.
+Recovered export calls existing coupled structural surgery and merges only compact V/output adapters.
+Recovered validation enters `data.whole_clip.verify_candidate` through a deferred checks import.
+Frozen evaluation can import learning's numerical and input helpers; it performs no optimization.
+The new learned evaluator produces versioned paired evidence separate from ordinary baseline rollouts.
+
+The `width_recovered` family uses `whole_clip_d0_learned_heads_v1`.
+Its envelope pins original IDs, both geometry wrappers, components, training state, consumed noise and merged tensors.
+Stored compact widths preserve full original Q/K normalization and RoPE identities.
+Native structural, transfer, fusion and merged-reload checks remain separate from decoded quality.

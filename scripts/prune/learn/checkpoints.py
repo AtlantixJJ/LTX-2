@@ -1,0 +1,180 @@
+"""Immutable publication and resumable adapter/gate state for learned heads."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import random
+import tempfile
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from scripts.prune.core.provenance import file_sha256
+
+
+def digest(value):
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    ).hexdigest()
+
+
+def tensor_hash(value):
+    value = value.detach().cpu().contiguous()
+    return digest(
+        {
+            "shape": list(value.shape),
+            "dtype": str(value.dtype),
+            "bytes": hashlib.sha256(value.reshape(-1).view(torch.uint8).numpy().tobytes()).hexdigest(),
+        }
+    )
+
+
+def publish(path, writer):
+    """Atomic create. Writers never replace completed evidence."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=".publish-", suffix=path.suffix)
+    os.close(fd)
+    try:
+        writer(Path(name))
+        with open(name, "rb") as stream:
+            os.fsync(stream.fileno())
+        try:
+            os.link(name, path)
+        except FileExistsError:
+            if file_sha256(name) != file_sha256(path):
+                raise ValueError(f"completed artifact differs: {path}") from None
+    finally:
+        Path(name).unlink(missing_ok=True)
+    return path
+
+
+def publish_json(path, value):
+    raw = json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    return publish(path, lambda p: p.write_text(raw))
+
+
+def publish_tensor(path, value):
+    value = value.detach().cpu().contiguous()
+    if Path(path).exists():
+        if tensor_hash(torch.load(path, map_location="cpu", weights_only=True)) != tensor_hash(value):
+            raise ValueError(f"completed tensor differs: {path}")
+        return Path(path)
+
+    # A stable stream filename avoids archive-name-dependent torch.save bytes.
+    def write(p):
+        with p.open("wb") as stream:
+            torch.save(value, stream)
+
+    return publish(path, write)
+
+
+def rng_state():
+    result = {"python": random.getstate(), "numpy": np.random.get_state(), "torch": torch.get_rng_state()}
+    if torch.cuda.is_initialized():
+        result["cuda_device"] = torch.cuda.current_device()
+        result["cuda"] = torch.cuda.get_rng_state()
+    return result
+
+
+def restore_rng(state):
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    if "cuda" in state:
+        torch.cuda.set_rng_state(state["cuda"])
+
+
+def save(path, *, identity, update, phase, gates, adapters, adapter_optimizer, gate_optimizer=None, lineage=None):
+    from scripts.prune.learn.adapters import state_dict
+
+    state = {
+        "format": "head_learning_state_v1",
+        "identity": identity,
+        "update": update,
+        "phase": phase,
+        "draw_cursor": update * 2,
+        "alpha": gates.alpha.detach().cpu(),
+        "mask": gates.decision,
+        "adapters": state_dict(adapters),
+        "adapter_optimizer": adapter_optimizer.state_dict(),
+        "gate_optimizer": gate_optimizer.state_dict() if gate_optimizer else None,
+        "rng": rng_state(),
+        "lineage": lineage or {},
+    }
+
+    def write(p):
+        with p.open("wb") as stream:
+            torch.save(state, stream)
+
+    if Path(path).exists():
+        old = load(path, identity)
+        if (
+            old["update"] != update
+            or old["phase"] != phase
+            or tensor_hash(old["alpha"]) != tensor_hash(state["alpha"])
+            or {k: tensor_hash(v) for k, v in old["adapters"].items()}
+            != {k: tensor_hash(v) for k, v in state["adapters"].items()}
+        ):
+            raise ValueError("checkpoint update differs")
+        return Path(path)
+    publish(path, write)
+    publish_json(
+        Path(path).with_suffix(".json"),
+        {
+            "identity": identity,
+            "update": update,
+            "phase": phase,
+            "sha256": file_sha256(path),
+            "tensor_hashes": {k: tensor_hash(v) for k, v in state["adapters"].items()},
+            "alpha_sha256": tensor_hash(state["alpha"]),
+            "lineage": state["lineage"],
+        },
+    )
+    return Path(path)
+
+
+def load(path, identity=None):
+    receipt = json.loads(Path(path).with_suffix(".json").read_text())
+    if file_sha256(path) != receipt["sha256"]:
+        raise ValueError("checkpoint bytes changed")
+    state = torch.load(path, map_location="cpu", weights_only=False)  # Own trusted optimizer/RNG record.
+    if state.get("format") != "head_learning_state_v1" or (identity is not None and state["identity"] != identity):
+        raise ValueError("checkpoint training identity changed")
+    if state["draw_cursor"] != state["update"] * 2 or state["identity"] != receipt["identity"]:
+        raise ValueError("checkpoint draw cursor or receipt differs")
+    if {k: tensor_hash(v) for k, v in state["adapters"].items()} != receipt["tensor_hashes"]:
+        raise ValueError("adapter inventory changed")
+    if tensor_hash(state["alpha"]) != receipt["alpha_sha256"]:
+        raise ValueError("checkpoint logits changed")
+    return state
+
+
+def verify_prefix(state, prefix_identity):
+    if state["update"] != 700 or state["phase"] != "soft" or state["identity"].get("prefix") != prefix_identity:
+        raise ValueError("only the matching budget-independent 700-soft prefix can branch")
+    return {"source_update": 700, "source_identity": state["identity"], "shared_prefix": prefix_identity}
+
+
+def validate_finalists(study, *, arm=None, seed=None):
+    """Blind work requires immutable candidate hashes, rather than a marker file."""
+    path = Path(study["root"]) / "provenance/finalists_frozen.json"
+    record = json.loads(path.read_text())
+    if (
+        record.get("study") != study["identity"]
+        or record.get("config_sha256") != study["config_sha256"]
+        or record.get("test_actors") != study["splits"]["test_actors"]
+        or record.get("status") != "frozen"
+        or not record.get("candidates")
+    ):
+        raise ValueError("blind work requires exact frozen study, settings, actors and finalist candidates")
+    for candidate in record["candidates"]:
+        for label in ("checkpoint", "mask", "envelope"):
+            if file_sha256(candidate[label]["path"]) != candidate[label]["sha256"]:
+                raise ValueError("a frozen finalist changed before blind inference")
+    if arm is not None and not any(c["arm"] == arm and c["replicate_seed"] == seed for c in record["candidates"]):
+        raise ValueError("candidate was not frozen before blind inference")
+    return record

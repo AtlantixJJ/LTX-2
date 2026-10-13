@@ -341,3 +341,96 @@ Each video has six panels in two rows by three columns, with the matched recorde
 Full source and individual decoded videos remain available.
 Report code reads these saved artifacts and must not run this model-facing stage.
 See [media design](evaluate/mobilewan_media.md).
+
+## Learned head phases
+
+Run all commands from `LTX-2` in conda environment `ltx`.
+The user-authorized device pool for this experiment is physical GPUs 0–3.
+Check occupancy before loading a model. Keep one model process per GPU.
+Preparation and checkpoint export use CPU only.
+Set `export CUBLAS_WORKSPACE_CONFIG=:4096:8` before GPU commands.
+For isolation, set `CUDA_VISIBLE_DEVICES=<physical GPU>` and use logical `--gpu-id 0`.
+The corrected active revision is `_r2`; keep the original frozen study intact.
+Prepare into a new empty output directory when code changes.
+
+```bash
+conda run --no-capture-output -n ltx python -m scripts.prune.data.learned_head_study \
+  --config scripts/prune/configs/learned_heads_dev8.json \
+  --plan ../plans/2026-10-12-learned-head-pruning-experiment.md \
+  --output ../expr/refiner_prune/2.5/learned_heads_dev8_new
+```
+
+Preparation checks complete clips, source bytes, canonical crops and foreground replay.
+It pins an immutable plan snapshot, source components, actual empty context, actor splits and paired draws.
+`--seen-actors` supplies further audited exclusions.
+`--region-tracks` supplies reviewed source-pixel face and hand boxes with pinned producer identity.
+It does not guess the corpus keypoint layout.
+
+Use the resulting `configs/frozen_study.json` for each following module.
+The commands below use an example shell variable for that path.
+
+```bash
+STUDY_PATH=../expr/refiner_prune/2.5/learned_heads_dev8_20261012_r2/configs/frozen_study.json
+conda run --no-capture-output -n ltx python -m scripts.prune.learn.heads --study "$STUDY_PATH" --phase feasibility --gpu-id 0
+conda run --no-capture-output -n ltx python -m scripts.prune.learn.heads --study "$STUDY_PATH" --phase execution_probes --gpu-id 0
+conda run --no-capture-output -n ltx python -m scripts.prune.learn.heads --study "$STUDY_PATH" --phase energy_calibration --gpu-id 0
+conda run --no-capture-output -n ltx python -m scripts.prune.learn.heads --study "$STUDY_PATH" --phase teacher_references --split validation --gpu-id 0
+conda run --no-capture-output -n ltx python -m scripts.prune.learn.heads --study "$STUDY_PATH" --phase selection --arm learned_joint --replicate-seed 42 --removed-heads 152 --gpu-id 0
+conda run --no-capture-output -n ltx python -m scripts.prune.score.export_learned_heads --study "$STUDY_PATH" --arm learned_joint --replicate-seed 42 --stage compact_base
+conda run --no-capture-output -n ltx python -m scripts.prune.learn.heads --study "$STUDY_PATH" --phase compact_recovery --arm learned_joint --replicate-seed 42 --removed-heads 152 --gpu-id 0
+conda run --no-capture-output -n ltx python -m scripts.prune.score.export_learned_heads --study "$STUDY_PATH" --arm learned_joint --replicate-seed 42 --stage final_merged
+conda run --no-capture-output -n ltx python -m scripts.prune.checks.learned_heads --study "$STUDY_PATH" --arm learned_joint --replicate-seed 42 --gpu-id 0
+conda run --no-capture-output -n ltx python -m scripts.prune.evaluate.learned_heads --study "$STUDY_PATH" --split validation --arm learned_joint --replicate-seed 42 --gpu-id 0
+conda run --no-capture-output -n ltx python -m scripts.prune.evaluate.learned_head_media --study "$STUDY_PATH" --split validation --arms energy learned_joint --replicate-seed 42 --gpu-id 0
+```
+
+Run the same selection/recovery sequence for `energy`, `random` and `learned_soft_only`.
+Each paired seed uses the same frozen ordinary draws and adapter initialization.
+Use a separate frozen study directory for each removal budget.
+Training paths are arm/seed scoped; checkpoint identity rejects changing the budget in an existing run.
+`learned_balanced` uses its separately frozen balanced draws.
+`learned_person` requires canonical person coverage.
+`learned_small_regions` additionally requires reviewed face and hand tracks.
+`learned_no_sparsity` keeps the main schedule with zero sparsity coefficient.
+`learned_sequential` keeps zero adapter delta during selection, then receives 1,500 recovery adapter updates.
+Fresh controls run only `compact_recovery`: `learned_fresh`, `energy_fresh`, `energy_counts_fresh` and `dense_fresh`.
+They use frozen primary masks and fresh full-source adapter initialization, with fresh optimizer state.
+
+No speed training starts without both feasibility and execution-probe evidence.
+`--quality-research` explicitly selects a quality pilot when timing has not established a speed saving.
+`--max-updates N` bounds a smoke run and saves a resumable checkpoint.
+`--branch-prefix PATH` requires the identical 700-soft prefix and records its source hash.
+Resume checks code, config, components, consumed noise, optimizer state and original IDs.
+Changed scientific settings need a new frozen study and output path.
+
+Use `setsid` and an external wall-time bound for persistent model work:
+
+```bash
+setsid timeout --signal=TERM --kill-after=120s 12h \
+  conda run --no-capture-output -n ltx python -m scripts.prune.learn.heads \
+  --study "$STUDY_PATH" --phase selection --arm learned_joint \
+  --replicate-seed 42 --removed-heads 152 --gpu-id 0 > ../expr/refiner_prune/2.5/learned_heads_dev8_20261012_r2/logs/selection.log 2>&1 < /dev/null &
+```
+
+Teacher records live under `teacher/references`. Training saves small adapter/gate checkpoints and immutable update receipts.
+Exports, native checks, paired predictions, metrics and media retain separate paths.
+A completed numeric evaluation is not a decoded quality pass.
+Blind teacher generation and inference require `provenance/finalists_frozen.json` after validation selection.
+
+Set the cuBLAS policy in the launcher environment before importing any native module:
+
+```bash
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+```
+
+Some upstream imports initialize CUDA while the module loads.
+The CLI checks the existing policy and refuses to change it after CUDA initialization.
+Use this export before every GPU command above, including checks and media.
+For a persistent launch, `CUBLAS_WORKSPACE_CONFIG=:4096:8 setsid timeout ...` also passes the policy to its children.
+
+## Four-GPU native memory test
+
+The user-authorized four-device diagnostic uses all physical GPUs 0–3 in one process.
+Freeze `configs/learned_heads_dev8_four_gpu.json` into a new directory before execution.
+Run [checks.four_gpu_feasibility](checks/four_gpu_feasibility.md#usage) with the prior r2 study as the numerical reference.
+The test preserves full clips and scientific settings; single-GPU timing stays a separate gate.

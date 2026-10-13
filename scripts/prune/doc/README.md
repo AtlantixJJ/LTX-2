@@ -63,39 +63,52 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | Source | Design | Physical lines |
 |---|---|---:|
 | `checks/__init__.py` | package marker | 1 |
-| `checks/mobilewan_native.py` | [design](checks/mobilewan_native.md) | 118 |
 | `checks/export_parity.py` | [design](checks/export_parity.md) | 147 |
+| `checks/four_gpu_feasibility.py` | [design](checks/four_gpu_feasibility.md) | 103 |
+| `checks/learned_heads.py` | [design](checks/learned_heads.md) | 221 |
+| `checks/mobilewan_native.py` | [design](checks/mobilewan_native.md) | 118 |
 | `core/__init__.py` | package marker | 1 |
-| `core/artifacts.py` | [design](core/artifacts.md) (small-module supplement) | 40 |
-| `core/geometry.py` | [design](core/geometry.md) (small-module supplement) | 72 |
-| `core/ltx_adapter.py` | [design](core/ltx_adapter.md) (small-module supplement) | 42 |
+| `core/artifacts.py` | [design](core/artifacts.md) | 40 |
+| `core/geometry.py` | [design](core/geometry.md) | 72 |
+| `core/ltx_adapter.py` | [design](core/ltx_adapter.md) | 59 |
 | `core/model_registry.py` | [design](core/model_registry.md) | 179 |
 | `core/preflight.py` | [design](core/preflight.md) | 136 |
 | `core/provenance.py` | [design](core/provenance.md) | 119 |
 | `core/session.py` | [design](core/session.md) | 117 |
 | `data/__init__.py` | package marker | 1 |
+| `data/foreground.py` | [design](data/foreground.md) | 140 |
 | `data/head_score_dataset.py` | [design](data/head_score_dataset.md) | 139 |
+| `data/learned_head_study.py` | [design](data/learned_head_study.md) | 479 |
 | `data/prompt_cache.py` | [design](data/prompt_cache.md) | 111 |
-| `data/whole_clip.py` | [design](data/whole_clip.md) | 346 |
+| `data/whole_clip.py` | [design](data/whole_clip.md) | 353 |
 | `evaluate/__init__.py` | package marker | 1 |
-| `evaluate/bench_whole_clip_d0.py` | [design](evaluate/bench_whole_clip_d0.md) | 140 |
-| `evaluate/decode.py` | [design](evaluate/decode.md) (small-module supplement) | 23 |
+| `evaluate/bench_whole_clip_d0.py` | [design](evaluate/bench_whole_clip_d0.md) | 193 |
+| `evaluate/decode.py` | [design](evaluate/decode.md) | 23 |
+| `evaluate/learned_head_media.py` | [design](evaluate/learned_head_media.md) | 271 |
+| `evaluate/learned_heads.py` | [design](evaluate/learned_heads.md) | 298 |
 | `evaluate/metrics.py` | [design](evaluate/metrics.md) | 103 |
-| `evaluate/whole_clip_baseline.py` | [design](evaluate/whole_clip_baseline.md) | 707 |
-| `evaluate/whole_clip_d0.py` | [design](evaluate/whole_clip_d0.md) | 245 |
-| `score/__init__.py` | package marker | 1 |
-| `score/mobilewan_records.py` | [design](score/mobilewan_records.md) | 134 |
-| `score/mobilewan_aggregate.py` | [design](score/mobilewan_aggregate.md) | 241 |
-| `score/mobilewan_dataset.py` | [design](score/mobilewan_dataset.md) | 212 |
 | `evaluate/mobilewan_media.py` | [design](evaluate/mobilewan_media.md) | 218 |
 | `evaluate/mobilewan_removal.py` | [design](evaluate/mobilewan_removal.md) | 215 |
-| `score/mobilewan_heads.py` | [design](score/mobilewan_heads.md) | 127 |
-| `score/estimators.py` | [design](score/estimators.md) (small-module supplement) | 48 |
+| `evaluate/whole_clip_baseline.py` | [design](evaluate/whole_clip_baseline.md) | 707 |
+| `evaluate/whole_clip_d0.py` | [design](evaluate/whole_clip_d0.md) | 245 |
+| `learn/adapters.py` | [design](learn/adapters.md) | 127 |
+| `learn/checkpoints.py` | [design](learn/checkpoints.md) | 180 |
+| `learn/gates.py` | [design](learn/gates.md) | 123 |
+| `learn/heads.py` | [design](learn/heads.md) | 1162 |
+| `learn/losses.py` | [design](learn/losses.md) | 61 |
+| `learn/teacher_references.py` | [design](learn/teacher_references.md) | 105 |
+| `score/__init__.py` | package marker | 1 |
+| `score/estimators.py` | [design](score/estimators.md) | 48 |
 | `score/export_depth.py` | [design](score/export_depth.md) | 431 |
+| `score/export_learned_heads.py` | [design](score/export_learned_heads.md) | 240 |
 | `score/export_pruned.py` | [design](score/export_pruned.md) | 205 |
 | `score/ffn_reconstruction.py` | [design](score/ffn_reconstruction.md) | 261 |
-| `score/hooks.py` | [design](score/hooks.md) | 229 |
-| `score/token_sampling.py` | [design](score/token_sampling.md) (small-module supplement) | 79 |
+| `score/hooks.py` | [design](score/hooks.md) | 264 |
+| `score/mobilewan_aggregate.py` | [design](score/mobilewan_aggregate.md) | 241 |
+| `score/mobilewan_dataset.py` | [design](score/mobilewan_dataset.md) | 212 |
+| `score/mobilewan_heads.py` | [design](score/mobilewan_heads.md) | 127 |
+| `score/mobilewan_records.py` | [design](score/mobilewan_records.md) | 134 |
+| `score/token_sampling.py` | [design](score/token_sampling.md) | 79 |
 | `score/whole_clip_d0_scores.py` | [design](score/whole_clip_d0_scores.md) | 164 |
 
 `scripts/` and `scripts/prune/` remain PEP 420 namespace packages.

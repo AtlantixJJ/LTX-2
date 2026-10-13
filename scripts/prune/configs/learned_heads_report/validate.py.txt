@@ -1,0 +1,37 @@
+"""Validate report coverage and declared media using saved files only."""
+import json
+import re
+from pathlib import Path
+
+
+def validate(root):
+    root = Path(root)
+    narrative = json.loads((root/'configs/narrative.json').read_text())
+    report = (root/'REPORT.md').read_text()
+    ids = [q['id'] for q in narrative['questions']]
+    if ids != [f'R{i}' for i in range(1, 18)]:
+        raise ValueError('all seventeen report questions must remain explicit')
+    for q in narrative['questions']:
+        if len(q['title'].split()) > 15 or f'## {q["id"]}. {q["title"]}' not in report:
+            raise ValueError('report question/title agreement failed')
+    for target in re.findall(r'\]\(([^)]+)\)', report):
+        if '://' not in target and not (root/target).is_file():
+            raise FileNotFoundError(f'missing report link: {target}')
+    for figure in narrative.get('figures', []):
+        if figure['question'] not in ids:
+            raise ValueError('figure has no matching report question')
+        for field in ('png', 'pdf', 'data'):
+            if not (root/figure[field]).is_file():
+                raise FileNotFoundError(f'missing scientific figure: {figure[field]}')
+    for video in narrative.get('videos', []):
+        rendering = json.loads((root/video['rendering']).read_text())
+        if not rendering['source_frames'] or rendering['fps'] != 30:
+            raise ValueError('comparison must preserve full source frames and playback rate')
+    destination = root/'validation/report.json'
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps({'status': 'passed_saved_report_structure', 'scientific_acceptance': False,
+                                      'layout_review': 'separate_required_gate'}, indent=2)+'\n')
+
+
+if __name__ == '__main__':
+    validate(Path(__file__).resolve().parents[1])

@@ -1936,3 +1936,12 @@ agree. If only storage improves, label the result as storage compression.
 Implementation contracts remain in the source-matching [design index](README.md)
 and [validation guide](VALIDATION.md). Revise this agenda when new methods are
 implemented or matched LTX evidence changes the priorities.
+
+### Learned-head implementation status, 12 October 2026
+
+The [learned-head experiment plan](../../../../plans/2026-10-12-learned-head-pruning-experiment.md) now has executable source owners.
+See the [phase run guide](usage.md#learned-head-phases) and [CPU/native controls](VALIDATION.md#learned-head-controls).
+Implemented: +3 sigmoid gates, legal binary STE refinement, official velocity loss, rank-16 V/output adapters,
+original-ID moment transfer, shared teacher records, frozen preparation, execution probes, recovered export and paired evaluation.
+Implemented code and passing CPU fixtures do not establish measured pruning quality, native feasibility or speed.
+Use the experiment's saved stage receipts for measured status.

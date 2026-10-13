@@ -75,3 +75,9 @@ The [verification guide](doc/VALIDATION.md#cpu-gate) explains test coverage and 
 MobileWan numerical helpers and a capture-only membership audit are available.
 See [audit usage](doc/usage.md#mobilewan-capture-audit).
 Native dev dataset execution and the final removal study remain in development.
+
+Learned head pruning with bounded LoRA recovery is implemented under [`learn/`](learn/).
+Start with [CPU study preparation](doc/data/learned_head_study.md), then follow the [phase run guide](doc/usage.md#learned-head-phases).
+The [export](doc/score/export_learned_heads.md), [checks](doc/checks/learned_heads.md),
+[paired evaluation](doc/evaluate/learned_heads.md) and [media](doc/evaluate/learned_head_media.md) pages describe their separate evidence gates.
+Native feasibility and decoded quality remain required before claiming an accepted compact candidate.

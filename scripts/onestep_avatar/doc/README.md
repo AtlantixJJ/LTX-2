@@ -88,7 +88,7 @@ start queue work.
 | `corpus/geometry.py` | [corpus/geometry.md](corpus/geometry.md) | 111 |
 | `corpus/mask_video.py` | [corpus/mask_video.md](corpus/mask_video.md) | 181 |
 | `corpus/motion.py` | [corpus/motion.md](corpus/motion.md) | 187 |
-| `corpus/precompute.py` | [corpus/precompute.md](corpus/precompute.md) | 1390 |
+| `corpus/precompute.py` | [corpus/precompute.md](corpus/precompute.md) | 1399 |
 | `corpus/qa.py` | source header | 29 |
 | `corpus/subset.py` | [corpus/subset.md](corpus/subset.md) | 400 |
 | `decode_saved.py` | [decode_saved.md](decode_saved.md) | 192 |

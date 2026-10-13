@@ -93,3 +93,14 @@ Pool raw energy before normalization. Use only train membership for removal allo
 `evaluate.mobilewan_media` decodes those saved predictions and creates synchronized comparisons.
 Full dataset execution and reviewed results are separate gates; helper tests do not prove them.
 The producer supports explicit direct dev and capture-only D0. Its restricted agent queue wrapper supports unmodified direct dev D0 at sigma <=0.95.
+
+## Learned heads
+
+`learn/` owns FP32 scalar gates, V/output adapters, official velocity loss, immutable teacher references and bounded model phases.
+`data.learned_head_study` freezes disjoint actors, complete clips, paired draws and actual source/context/component bytes.
+`data.foreground` orchestrates public corpus crop and mask owners; reviewed GT tracks supply semantic regions.
+Recovered exports use `whole_clip_d0_learned_heads_v1` and candidate family `width_recovered`.
+Validate all consumed draws, original head IDs, optimizer transfer and merged tensor inventory.
+Preserve full original Q/K normalization. Retained pruning gates are exactly one in compact recovery.
+Keep structural, transfer, fusion, merged reload, decoded quality and speed evidence separate.
+Standalone prune phases keep their direct launch ownership and explicit dev transformer override.

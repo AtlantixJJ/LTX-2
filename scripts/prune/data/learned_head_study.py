@@ -1,0 +1,479 @@
+"""CPU preparation of complete, actor-disjoint learned-head experiments."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.metadata
+import importlib.util
+import json
+import platform
+import random
+import re
+from collections import Counter, defaultdict
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from scripts.onestep_avatar import media
+from scripts.onestep_avatar.corpus.dataset import CaptureManifest, ClipStore
+from scripts.onestep_avatar.corpus.subset import load_membership
+from scripts.prune.core import model_registry
+from scripts.prune.core.provenance import file_sha256
+from scripts.prune.data import foreground, prompt_cache, whole_clip
+from scripts.prune.data.head_score_dataset import CSV_SHA, JSON_SHA, SEMANTIC_SHA, SIGMAS, official_schedule
+from scripts.prune.learn.checkpoints import digest, publish, publish_json, tensor_hash
+
+SALT = "learned-heads-dev8-v1"
+
+
+def report_resources(output, plan):
+    """Install saved-only report tools and proposed questions before execution."""
+    templates = Path(__file__).resolve().parents[1] / "configs/learned_heads_report"
+    for template in templates.glob("*.py.txt"):
+        target = output / "code" / template.name.removesuffix(".txt")
+        publish(target, lambda p, template=template: p.write_bytes(template.read_bytes()))
+        doc = output / "code/doc" / template.name.removesuffix(".py.txt")
+        publish(
+            doc.with_suffix(".md"),
+            lambda p, target=target: p.write_text(
+                f"# {target.name}\n\n## Objective\n\nRead saved experiment evidence only.\n\n## Usage\n\n"
+                f"Run `conda run -n ltx python {target}` on CPU.\n\n## Data flow\n\n"
+                "Declared narrative and saved artifacts enter the report reader. Missing evidence fails.\n\n"
+                "## Organization logic\n\nValidate declared files before rendering or plotting. Never start models or repair missing runs.\n\n"
+                "## Invariants\n\nKeep question, figure, source hash and media roles consistent.\n\n"
+                "## Gotchas\n\nSaved schema validation cannot prove scientific acceptance or visual readability.\n\n"
+                "## Tests\n\nCheck missing evidence with transformer and decoder imports blocked.\n"
+            ),
+        )
+    text = plan.read_text()
+    questions = []
+    for match in re.finditer(r"^### (R\d+)\. ([^\n]+)\n(.*?)(?=^### |^## |\Z)", text, re.M | re.S):
+        if int(match[1][1:]) <= 17:
+            questions.append({"id": match[1], "title": match[2], "design": match[3].strip(), "status": "planned"})
+    publish_json(
+        output / "configs/narrative.json",
+        {
+            "problem": "Choose fewer executable heads while preserving people and motion in whole-clip D0 predictions.",
+            "terms": [
+                "Teacher: unchanged LTX-2.5 dev without recovery adapters.",
+                "D0: one direct prediction from noised recorded capture.",
+                "c0: supplied clean first latent frame.",
+                "Soft gate: sigmoid of a learned scalar logit.",
+                "Binary refinement: legal hard forwards with sigmoid straight-through gradients.",
+                "Energy arm: fixed projected-energy ranking with matched adapter training.",
+                "Joint arm: learned gates and rank-16 V/output adapters.",
+                "VAE GT: recorded capture latent decoded by the pinned VAE.",
+                "RGB GT: recorded pixels after their original crop and white matte.",
+                "Sigma: the saved FP32 input noise level.",
+                "Block: one transformer layer.",
+                "Fresh recovery: new zero-delta adapters and optimizer moments.",
+            ],
+            "setup": "White capture, empty text, full bidirectional attention, complete clips, clean c0 and exact independent [sigma,0] schedules.",
+            "questions": questions,
+            "required_files": [],
+            "figures": [],
+            "videos": [],
+        },
+    )
+
+
+def order(role, value):
+    return hashlib.sha256(f"{SALT}:{role}:{value}".encode()).hexdigest(), value
+
+
+def normalized_actor(actor):
+    value = str(actor).removeprefix("dna_actor:").strip()
+    return str(int(value)) if value.isdecimal() else value
+
+
+def view_pair(views):
+    chosen = []
+    for length in sorted({s["n_latent_frames"] for s in views}):
+        chosen.append(
+            min(
+                (s for s in views if s["n_latent_frames"] == length), key=lambda s: order("learning", s["relative_dir"])
+            )
+        )
+    remaining = sorted((s for s in views if s not in chosen), key=lambda s: order("learning", s["relative_dir"]))
+    return (chosen + remaining)[:2]
+
+
+def select_splits(sources, seen, *, validation_actors=20, learning_views=256, test_actors=6):
+    grouped = defaultdict(list)
+    for source in sources:
+        actor = normalized_actor(source["actor"])
+        grouped[actor].append({**source, "actor": actor})
+    train = {s["actor"] for group in grouped.values() for s in group if s["split"] == "train"}
+    held = {s["actor"] for group in grouped.values() for s in group if s["split"] == "held_out"}
+    if train & held or len(train) <= validation_actors:
+        raise ValueError("invalid actor split authority")
+    validation = sorted(train, key=lambda a: order("validation", a))[:validation_actors]
+    learning = sorted(
+        train - set(validation), key=lambda a: (min(order("learning", s["relative_dir"]) for s in grouped[a]), a)
+    )
+    pools = {a: sorted(grouped[a], key=lambda s: order("learning", s["relative_dir"])) for a in learning}
+    selected = []
+    used_lengths = defaultdict(set)
+    while len(selected) < learning_views:
+        progressed = False
+        for actor in learning:
+            choices = pools[actor]
+            if not choices:
+                continue
+            candidate = next((s for s in choices if s["n_latent_frames"] not in used_lengths[actor]), choices[0])
+            choices.remove(candidate)
+            selected.append(candidate)
+            used_lengths[actor].add(candidate["n_latent_frames"])
+            progressed = True
+            if len(selected) == learning_views:
+                break
+        if not progressed:
+            raise ValueError("insufficient complete learning views")
+    blind = sorted(held - {normalized_actor(a) for a in seen}, key=lambda a: order("test", a))[:test_actors]
+    return {
+        "learning": selected,
+        "validation": [s for a in validation for s in view_pair(grouped[a])],
+        "test": [s for a in blind for s in view_pair(grouped[a])],
+        "learning_actors": sorted(train - set(validation)),
+        "validation_actors": validation,
+        "test_actors": blind,
+        "test_label": "blind" if len(blind) == test_actors else "held_out_generalization",
+    }
+
+
+def assign_buckets(sources, stats):
+    motion = np.array([stats[s["relative_dir"]]["motion_amount"] for s in sources])
+    area = np.array([stats[s["relative_dir"]]["person_area"] for s in sources])
+    cuts = np.quantile(motion, [1 / 3, 2 / 3]).tolist()
+    median = float(np.median(area))
+    buckets = {
+        s["relative_dir"]: int(np.searchsorted(cuts, motion[i], side="right")) * 2 + int(area[i] >= median)
+        for i, s in enumerate(sources)
+    }
+    return {
+        "motion_tertiles": cuts,
+        "person_area_median": median,
+        "buckets": buckets,
+        "counts": {str(i): sum(b == i for b in buckets.values()) for i in range(6)},
+    }
+
+
+def draw_list(sources, seed, *, buckets=None, updates=1500):
+    rng = random.Random(seed)
+    groups = defaultdict(lambda: defaultdict(list))
+    if buckets is not None:
+        for source in sources:
+            groups[buckets[source["relative_dir"]]][source["actor"]].append(source)
+        if set(groups) != set(range(6)):
+            raise ValueError("balanced arm requires all six motion/size buckets")
+    draws = []
+    for j in range(updates * 2):
+        if buckets is None:
+            source = sources[rng.randrange(len(sources))]
+        else:
+            bucket = groups[(j // 8) % 6]
+            actor = rng.choice(sorted(bucket))
+            source = rng.choice(bucket[actor])
+        draws.append(
+            {
+                "microbatch": j,
+                "view": source["relative_dir"],
+                "sigma_index": [0, 7, 1, 6, 2, 5, 3, 4][j % 8],
+                "noise_seed": 1_000_000 + 10_000 * seed + j,
+            }
+        )
+    return draws
+
+
+def code_identity():
+    repo = Path(__file__).resolve().parents[3]
+    paths = list((repo / "scripts/prune").rglob("*.py"))
+    paths += list((repo / "packages/ltx-core/src/ltx_core").rglob("*.py"))
+    paths += list((repo / "packages/ltx-pipelines/src/ltx_pipelines/utils").rglob("*.py"))
+    paths += list((repo / "scripts/onestep_avatar/corpus").glob("*.py"))
+    paths += list((repo / "scripts/onestep_avatar/model").glob("*.py"))
+    files = {str(p.relative_to(repo)): file_sha256(p) for p in sorted(paths) if "tests" not in p.parts}
+    return {"sha256": digest(files), "files": files}
+
+
+def load_study(path, *, verify_components=True):
+    path = Path(path)
+    study = json.loads(path.read_text())
+    recorded = study.pop("identity", None)
+    if recorded != digest(study) or study.get("format") != "learned_head_study_v1":
+        raise ValueError("frozen study identity changed")
+    study["identity"] = recorded
+    if code_identity() != study["code"]:
+        raise ValueError("frozen model code changed; create a new study")
+    if file_sha256(study["plan"]["path"]) != study["plan"]["sha256"]:
+        raise ValueError("frozen plan changed")
+    for item in study["files"]:
+        if file_sha256(item["path"]) != item["sha256"]:
+            raise ValueError(f"frozen input changed: {item['path']}")
+    if verify_components:
+        for item in study["components"].values():
+            if file_sha256(item["path"]) != item["file_sha256"]:
+                raise ValueError("frozen component changed")
+    return study
+
+
+def prepare_view(args):
+    """Independent CPU audit; cache only fully checked source and GT statistics."""
+    membership_path, source, is_learning, output, region_tracks = args
+    import cv2
+
+    torch.set_num_threads(1)
+    cv2.setNumThreads(1)
+    membership = load_membership(Path(membership_path))
+    store, crop = ClipStore(membership), CaptureManifest.load(Path(membership["corpus_root"]))
+    output = Path(output)
+    key = hashlib.sha256(source["relative_dir"].encode()).hexdigest()
+    receipt_path = output / "provenance/source_audits" / f"{key}.json"
+    reader_identity = digest(
+        {str(p): file_sha256(p) for p in (Path(__file__), Path(foreground.__file__), Path(media.__file__))}
+    )
+    if receipt_path.exists():
+        cached = json.loads(receipt_path.read_text())
+        if (
+            cached.get("reader_identity") != reader_identity
+            or cached["source"]["capture_encode_record"] != source["capture_encode_record"]
+        ):
+            raise ValueError("cached source audit code or source changed; use a new preparation directory")
+        for item in cached["files"]:
+            if file_sha256(item["path"]) != item["sha256"]:
+                raise ValueError("cached source audit input changed")
+        return cached
+    source_files, statistics = [], None
+    view = (Path(membership["corpus_root"]) / source["relative_dir"]).resolve()
+    identity = whole_clip.actor_identity(str(view))
+    if identity != "dna_actor:" + source["actor"]:
+        raise ValueError("actor metadata or alias differs")
+    capture = view / "ltx_vae_latent_white.pt"
+    for p, expected in (
+        (capture, source["capture_latent_sha256"]),
+        (view / "rgb.mp4", source["rgb_sha256"]),
+        (view / "../../meta.json", source["clip_metadata_sha256"]),
+    ):
+        if file_sha256(p) != expected:
+            raise ValueError(f"changed source: {p}")
+        source_files.append({"path": str(p.resolve()), "sha256": expected})
+    clip = store.load(source["relative_dir"], require_guide=False)
+    if list(clip.z_y.shape) != source["shape"] or clip.fps != 30 or clip.z_y.dtype != torch.bfloat16:
+        raise ValueError("full capture geometry changed")
+    if list(crop.box_for(view)) != source["capture_encode_record"]["box_xyxy"]:
+        raise ValueError("recorded crop differs from canonical crop authority")
+    matte, _, mask_identity = foreground.person_coverage(view, source["capture_encode_record"])
+    for p in (view / "mask.mp4", view / "capture_mask_crop.mp4"):
+        source_files.append({"path": str(p), "sha256": file_sha256(p)})
+    key = hashlib.sha256(source["relative_dir"].encode()).hexdigest()
+    publish_json(output / "regions" / key / "canonical_mask.json", mask_identity)
+    if region_tracks["status"] == "verified":
+        tracks = region_tracks["views"][source["relative_dir"]]
+        for name in ("face", "left_hand", "right_hand"):
+            _, coverage_record = foreground.region_coverage(
+                tracks[name], matte, source["capture_encode_record"], schema=tracks["schema"]
+            )
+            publish_json(output / "regions" / key / f"{name}.json", coverage_record)
+    verified_source = {**source, "resolved_dir": str(view), "capture": str(capture)}
+    if is_learning:
+        rgb = media.recorded_capture_rgb(
+            {**source, "box_xyxy": source["capture_encode_record"]["box_xyxy"]},
+            Path(membership["corpus_root"]),
+            "white",
+            source["n_latent_frames"],
+        )
+        statistics = foreground.gt_statistics(rgb, matte)
+    print(f"verified {source['relative_dir']}", flush=True)
+    result = {
+        "source": verified_source,
+        "files": source_files,
+        "statistics": statistics,
+        "reader_identity": reader_identity,
+    }
+    publish_json(output / "provenance/source_audits" / f"{key}.json", result)
+    return result
+
+
+def prepare(config_path, plan, output, seen_path=None, region_path=None):
+    config = json.loads(config_path.read_text())
+    if (
+        config["target"] != "epsilon_minus_capture"
+        or config["alpha_init"] != 3
+        or config["temperature"] != 1
+        or [config[k] for k in ("soft_updates", "binary_updates", "compact_updates")] != [700, 300, 500]
+        or config["sigmas"] != SIGMAS
+        or config["variant"] != "dev"
+    ):
+        raise ValueError("preset changes require an explicit protocol amendment")
+    workspace = Path(__file__).resolve().parents[4]
+    alias = Path("/home/jianjinx/data2/VideoDiffusionModels")
+    if alias.exists() and alias.resolve() != workspace.resolve():
+        raise ValueError("workspace alias differs")
+    membership_path = workspace / config["membership"]
+    if file_sha256(membership_path) != JSON_SHA or file_sha256(membership_path.with_suffix(".csv")) != CSV_SHA:
+        raise ValueError("membership source pins changed")
+    membership = load_membership(membership_path)
+    if membership["sha256"] != SEMANTIC_SHA:
+        raise ValueError("membership semantic identity changed")
+    seen = {"actors": config["known_seen_actors"], "evidence": ["known inspected IDs in the frozen protocol"]}
+    if seen_path:
+        extra = json.loads(seen_path.read_text())
+        seen["actors"] = sorted(set(seen["actors"]) | set(extra["actors"]))
+        seen["evidence"] += extra["evidence"]
+    region_tracks = {"status": "not_verified", "views": {}}
+    if region_path:
+        region_tracks = json.loads(region_path.read_text())
+        if region_tracks.get("status") != "verified" or not region_tracks.get("views"):
+            raise ValueError("region input requires reviewed GT tracks for the selected views")
+    # Reserve conservatively: every actor named by previous delivered experiment evidence is seen.
+    inspected = []
+    for p in workspace.glob("expr/refiner_prune/2.5/*/evaluation/**/metrics.json"):
+        old = json.loads(p.read_text())
+        seen["actors"] += [normalized_actor(row["actor"]) for row in old.get("rows", []) if "actor" in row]
+        inspected.append({"path": str(p), "sha256": file_sha256(p)})
+    for p in workspace.glob("expr/refiner_prune/2.5/*/evaluation/results.json"):
+        old = json.loads(p.read_text())
+        for case in old.get("cases", []):
+            if "actor" in case:
+                seen["actors"].append(normalized_actor(case["actor"]))
+        inspected.append({"path": str(p), "sha256": file_sha256(p)})
+    for p in workspace.glob("expr/refiner_prune/2.5/**/REPORT.md"):
+        text = p.read_text()
+        found = re.findall(r"Part_\d+/0*(\d+)_\d+/views/", text)
+        found += re.findall(r'(?i)\bactor\s*[:=]\s*["\x27]?(\d+)', text)
+        if found:
+            seen["actors"] += [normalized_actor(a) for a in found]
+            inspected.append({"path": str(p), "sha256": file_sha256(p)})
+    seen["actors"] = sorted(set(seen["actors"]))
+    seen["evidence"] += inspected
+    splits = select_splits(
+        membership["sources"],
+        seen["actors"],
+        validation_actors=config["validation_actors"],
+        learning_views=config["learning_views"],
+        test_actors=config["test_actors"],
+    )
+    output = output.resolve()
+    report_resources(output, plan)
+    frozen_plan = output / "provenance/plan.md"
+    publish(frozen_plan, lambda p: p.write_bytes(plan.read_bytes()))
+    publish_json(output / "provenance/seen_actors.json", seen)
+    publish_json(output / "provenance/splits.json", splits)
+    from concurrent.futures import ProcessPoolExecutor
+
+    stats, verified, files = {}, {}, []
+    selected = splits["learning"] + splits["validation"] + splits["test"]
+    learning_ids = {s["relative_dir"] for s in splits["learning"]}
+    tasks = [(str(membership_path), s, s["relative_dir"] in learning_ids, str(output), region_tracks) for s in selected]
+    with ProcessPoolExecutor(max_workers=4) as pool:
+        for result in pool.map(prepare_view, tasks):
+            source = result["source"]
+            verified[source["relative_dir"]] = source
+            files += result["files"]
+            if result["statistics"] is not None:
+                stats[source["relative_dir"]] = result["statistics"]
+    for role in ("learning", "validation", "test"):
+        splits[role] = [verified[s["relative_dir"]] for s in splits[role]]
+    coverage = assign_buckets(splits["learning"], stats)
+    publish_json(output / "coverage/learning_buckets.json", {**coverage, "statistics": stats})
+    draws = {}
+    for seed in config["replicate_seeds"]:
+        for policy, buckets in (("ordinary", None), ("balanced", coverage["buckets"])):
+            if buckets is not None and any(v == 0 for v in coverage["counts"].values()):
+                continue
+            path = output / f"draws/replicate_{seed}_{policy}.json"
+            publish_json(path, draw_list(splits["learning"], seed, buckets=buckets))
+            draws[f"{seed}:{policy}"] = {"path": str(path), "sha256": file_sha256(path)}
+            files.append(draws[f"{seed}:{policy}"])
+    components = {
+        role: {"path": str((workspace / p).resolve()), "file_sha256": file_sha256(workspace / p)}
+        for role, p in config["components"].items()
+    }
+    model = model_registry.resolve("2.5", **{f"{role}_path": value["path"] for role, value in components.items()})
+    cache = prompt_cache.cache_path("2.5", "")
+    if not cache.is_file():
+        raise FileNotFoundError(f"empty-context cache required before freeze: {cache}")
+    context = torch.load(cache, map_location="cpu", weights_only=True)
+    files.append({"path": str(cache.resolve()), "sha256": file_sha256(cache)})
+    if region_path:
+        files.append({"path": str(region_path.resolve()), "sha256": file_sha256(region_path)})
+    files += [
+        {"path": str(membership_path), "sha256": JSON_SHA},
+        {"path": str(membership_path.with_suffix(".csv")), "sha256": CSV_SHA},
+        {
+            "path": str(Path(membership["corpus_root"]) / "capture_latent_manifest.json"),
+            "sha256": file_sha256(Path(membership["corpus_root"]) / "capture_latent_manifest.json"),
+        },
+    ]
+    study = {
+        "format": "learned_head_study_v1",
+        "config": config,
+        "config_sha256": file_sha256(config_path),
+        "plan": {"path": str(frozen_plan), "sha256": file_sha256(frozen_plan), "original_path": str(plan.resolve())},
+        "components": components,
+        "splits": splits,
+        "seen": seen,
+        "coverage": coverage,
+        "draws": draws,
+        "files": files,
+        "text_context": {
+            "path": str(cache.resolve()),
+            "tensor_sha256": tensor_hash(context),
+            "bytes_sha256": hashlib.sha256(context.contiguous().view(torch.uint8).numpy().tobytes()).hexdigest(),
+        },
+        "schedule": official_schedule(components["transformer"]["path"]),
+        "scale_factors": list(model.scale_factors),
+        "code": code_identity(),
+        "root": str(output),
+        "region_tracks": region_tracks,
+        "length_counts": dict(Counter(s["n_latent_frames"] for s in splits["learning"])),
+    }
+    study["software"] = {
+        "torch": str(torch.__version__),
+        "cuda": torch.version.cuda,
+        "python": platform.python_version(),
+        "packages": {name: importlib.metadata.version(name) for name in ("numpy", "safetensors", "transformers")},
+    }
+    metric_spec = importlib.util.find_spec("lpips")
+    alexnet = Path(torch.hub.get_dir()) / "checkpoints/alexnet-owt-7be5be79.pth"
+    if metric_spec is not None and alexnet.is_file():
+        metric_root = Path(metric_spec.origin).parent
+        weights = metric_root / "weights/v0.1/alex.pth"
+        study["perceptual_metric"] = {
+            "status": "pinned",
+            "backbone": "alex",
+            "version": importlib.metadata.version("lpips"),
+            "preprocess": "GT-fixed boxes; 256px bilinear resize; RGB [0,1] -> [-1,1]",
+            "weights": [{"path": str(p), "sha256": file_sha256(p)} for p in (weights, alexnet)],
+        }
+        study["files"] += study["perceptual_metric"]["weights"]
+    else:
+        study["perceptual_metric"] = {"status": "missing", "backbone": "alex", "quality_gate": "cannot_pass"}
+    study["identity"] = digest(study)
+    publish_json(output / "configs/frozen_study.json", study)
+    return study
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--config", type=Path, required=True)
+    p.add_argument("--plan", type=Path, required=True)
+    p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--seen-actors", type=Path)
+    p.add_argument("--region-tracks", type=Path)
+    args = p.parse_args()
+    torch.set_num_threads(4)
+    try:
+        prepare(args.config, args.plan, args.output, args.seen_actors, args.region_tracks)
+    except Exception as exc:
+        publish_json(
+            args.output / "logs/preparation.failure.json",
+            {"phase": "preparation", "error": type(exc).__name__, "message": str(exc)},
+        )
+        raise
+
+
+if __name__ == "__main__":
+    main()

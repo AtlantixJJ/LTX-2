@@ -117,3 +117,42 @@ Average raw energies over sigmas and equal-weight views before dividing by the c
 Actor-cluster bootstrap draws retain all views and sigmas, and recompute normalization in each replicate.
 Global allocation uses ascending pooled train scores, original block/head ties and one retained head per block.
 This helper supplies no native execution evidence yet.
+
+## Learned head velocity path
+
+Use native velocity from `core.ltx_adapter.velocity_forward` for learning.
+The helper calls the velocity model once and applies the stock timestep-based clean conversion.
+Do not divide rounded clean outputs by sigma to form the training prediction.
+The target is saved `epsilon.float() - capture.float()`.
+Reduce squared error over generated tokens and channels in FP32; c0 has no loss weight.
+The unchanged teacher remains an evaluation reference, rather than the loss target.
+
+Every logit starts at +3. Soft gates use sigmoid with temperature one.
+The first 700 updates add mean-gate sparsity, with coefficient ramping to 0.001 over 300 updates.
+The next 300 updates use an exact legal binary forward and a sigmoid straight-through gradient.
+An exact block/count dynamic program selects retained original heads.
+A fixed decision serves both microbatches and backward recomputation within an update.
+Each microbatch creates its own gate graph and divides its complete loss by two.
+
+At update 1,000, freeze the binary IDs and transfer rank-16 adapters and Adam moments by channel identity.
+The compact network then receives 500 adapter updates, with retained pruning amplitudes one.
+The soft-only arm hardens after 1,000 soft updates.
+Energy and random arms use a matched 300-update removal ramp and the same adapter budget.
+Fresh recovery discards selection adapters and moments, then initializes full-source adapters before slicing.
+
+```mermaid
+flowchart LR
+  I("saved capture and epsilon") --> N["shared D0 input"]
+  N -->|"scalar pruning gates"| M["native velocity forward"]
+  M --> L["official generated-token loss"]
+  L --> A(["FP32 gate and adapter update"])
+  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
+  classDef tensor fill:#dcf5df,stroke:#43854b,color:#173b1c;
+  classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
+  class N,M,L proc;
+  class I tensor;
+  class A out;
+```
+
+Recovered outputs use the `width_recovered` family.
+Their versioned envelope binds full study and component identities, original head IDs, all consumed draws and merged tensor contents.
