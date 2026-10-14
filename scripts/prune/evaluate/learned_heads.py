@@ -14,8 +14,7 @@ import torch
 from scripts.onestep_avatar.model import common
 from scripts.prune.checks.learned_heads import compare, validate_envelope
 from scripts.prune.core import ltx_adapter, provenance
-from scripts.prune.data.head_score_dataset import SIGMAS
-from scripts.prune.data.learned_head_study import load_study
+from scripts.prune.data.learned_head_study import load_study, study_sigmas
 from scripts.prune.learn import adapters, checkpoints, losses
 from scripts.prune.learn.heads import input_case, numerical_policy, open_current, reference_identity
 from scripts.prune.learn.teacher_references import TeacherReferences
@@ -46,6 +45,21 @@ def paired_metrics(velocity, student, teacher_velocity, teacher, capture, epsilo
         "clean_frame_equal": True,
     }
     return result
+
+
+def capture_metrics(velocity, student, capture, epsilon, *, prefix_tokens):
+    if (
+        student.shape != capture.shape
+        or not torch.isfinite(student).all()
+        or not torch.equal(student[:, :prefix_tokens], capture[:, :prefix_tokens])
+    ):
+        raise ValueError("GT metrics require finite matched capture and exact clean frame")
+    return {
+        "capture_mse": float((student[:, prefix_tokens:].float() - capture[:, prefix_tokens:].float()).square().mean()),
+        "official_velocity_mse": float(losses.velocity_mse(velocity, epsilon, capture, prefix_tokens)["official"]),
+        "clean_frame_equal": True,
+        "reference": "gt_capture",
+    }
 
 
 def actor_bootstrap(rows, metric, *, draws=2000, seed=42):
@@ -100,14 +114,15 @@ def evaluate(study, arm, seed, split, gpu_id):
     }
     numerical_policy()
     current = open_current(study, gpu_id)
-    cache = TeacherReferences(root / "teacher/references")
+    gt_only = study["config"].get("monitor_reference") == "gt_capture"
+    cache = None if gt_only else TeacherReferences(root / "teacher/references")
     rows = []
     expected_paths = [
         root
         / f"evaluation/{split}/{arm}/replicate_{seed}/records/{hashlib.sha256(s['relative_dir'].encode()).hexdigest()}/seed_{noise_seed}/sigma_{i}.json"
         for s in study["splits"][split]
         for noise_seed in study["config"]["evaluation_seeds"]
-        for i in range(8)
+        for i in range(len(study_sigmas(study)))
     ]
     resident = nullcontext(None) if all(p.exists() for p in expected_paths) else current.transformer(candidate)
     with resident as model:
@@ -116,7 +131,7 @@ def evaluate(study, arm, seed, split, gpu_id):
                 raise ValueError("evaluation actor was used for learning")
             key = hashlib.sha256(source["relative_dir"].encode()).hexdigest()
             for noise_seed in study["config"]["evaluation_seeds"]:
-                for index, sigma in enumerate(SIGMAS):
+                for index, sigma in enumerate(study_sigmas(study)):
                     out = (
                         root
                         / f"evaluation/{split}/{arm}/replicate_{seed}/records/{key}/seed_{noise_seed}/sigma_{index}.json"
@@ -131,34 +146,46 @@ def evaluate(study, arm, seed, split, gpu_id):
                     grid, video, c0, capture, eps, inputs, manifest = input_case(
                         study, current, source, noise_seed, sigma
                     )
-                    ref_id = reference_identity(study, current, grid, video, eps, inputs, manifest, sigma)
-                    ref = cache.read(ref_id)
+                    ref_id = (
+                        None
+                        if gt_only
+                        else reference_identity(study, current, grid, video, eps, inputs, manifest, sigma)
+                    )
+                    ref = None if gt_only else cache.read(ref_id)
                     if out.exists():
                         record, values = saved_case(out, case_id)
                         velocity, clean = values["velocity"].to(current.device), values["clean"].to(current.device)
                     else:
                         velocity, clean = ltx_adapter.velocity_forward(model, video)
                         clean = common.with_clean_prefix(clean, c0)
-                    teacher_v, teacher_z = ref["velocity"].to(current.device), ref["clean"].to(current.device)
-                    metrics = paired_metrics(
-                        velocity,
-                        clean,
-                        teacher_v,
-                        teacher_z,
-                        capture,
-                        eps,
-                        sigma=sigma,
-                        prefix_tokens=grid.tokens_per_latent_frame,
-                    )
-                    start = grid.tokens_per_latent_frame
-                    dt = (video.latent[:, start:].float() - teacher_z[:, start:].float()) / sigma
-                    ds = (video.latent[:, start:].float() - clean[:, start:].float()) / sigma
-                    metrics["direction_relative_l2"] = float((ds - dt).norm() / dt.norm().clamp_min(1e-8))
-                    sl, tl = [grid.unpatchify_block(v, grid.latent_frames).float() for v in (clean, teacher_z)]
-                    metrics["temporal_disagreement"] = float(
-                        ((sl[:, :, 2:] - sl[:, :, 1:-1]) - (tl[:, :, 2:] - tl[:, :, 1:-1])).square().mean()
-                    )
-                    numeric_pass = metrics["direction_relative_l2"] <= 0.05 and metrics["capture_mse_increase"] <= 0.05
+                    if gt_only:
+                        metrics = capture_metrics(
+                            velocity, clean, capture, eps, prefix_tokens=grid.tokens_per_latent_frame
+                        )
+                        numeric_pass = None
+                    else:
+                        teacher_v, teacher_z = ref["velocity"].to(current.device), ref["clean"].to(current.device)
+                        metrics = paired_metrics(
+                            velocity,
+                            clean,
+                            teacher_v,
+                            teacher_z,
+                            capture,
+                            eps,
+                            sigma=sigma,
+                            prefix_tokens=grid.tokens_per_latent_frame,
+                        )
+                        start = grid.tokens_per_latent_frame
+                        dt = (video.latent[:, start:].float() - teacher_z[:, start:].float()) / sigma
+                        ds = (video.latent[:, start:].float() - clean[:, start:].float()) / sigma
+                        metrics["direction_relative_l2"] = float((ds - dt).norm() / dt.norm().clamp_min(1e-8))
+                        sl, tl = [grid.unpatchify_block(v, grid.latent_frames).float() for v in (clean, teacher_z)]
+                        metrics["temporal_disagreement"] = float(
+                            ((sl[:, :, 2:] - sl[:, :, 1:-1]) - (tl[:, :, 2:] - tl[:, :, 1:-1])).square().mean()
+                        )
+                        numeric_pass = (
+                            metrics["direction_relative_l2"] <= 0.05 and metrics["capture_mse_increase"] <= 0.05
+                        )
                     if out.exists():
                         if record["metrics"] != metrics:
                             raise ValueError("saved paired metrics differ from revalidated tensors")
@@ -178,7 +205,9 @@ def evaluate(study, arm, seed, split, gpu_id):
                             }
                         record = {
                             "identity": case_id,
-                            "teacher_key": checkpoints.digest(ref_id),
+                            "teacher_key": None if gt_only else checkpoints.digest(ref_id),
+                            "input_manifest_sha256": provenance.file_sha256(inputs / "manifest.json"),
+                            "reference": "gt_capture" if gt_only else "original_teacher",
                             "tensors": tensors,
                             "metrics": metrics,
                             "schedule": [sigma, 0.0],
@@ -194,7 +223,14 @@ def evaluate(study, arm, seed, split, gpu_id):
         "case_count": len(rows),
         "rows": rows,
         "quality_pass": None,
-        "uncertainty": {k: actor_bootstrap(rows, k) for k in ("direction_relative_l2", "capture_mse_increase")},
+        "uncertainty": {
+            k: actor_bootstrap(rows, k)
+            for k in (
+                ("capture_mse", "official_velocity_mse")
+                if gt_only
+                else ("direction_relative_l2", "capture_mse_increase")
+            )
+        },
         "limitation": "native agreement and capture errors do not establish human quality",
     }
     checkpoints.publish_json(root / f"evaluation/{split}/{arm}/replicate_{seed}/metrics.json", summary)
@@ -208,7 +244,11 @@ def native_checks(study, arm, seed, gpu_id):
     directory = root / f"training/{arm}/replicate_{seed}/checkpoints"
     final_step = 2500 if arm == "learned_sequential" else 1500
     selection, final = [checkpoints.load(directory / f"update_{i}.pt") for i in (1000, final_step)]
-    selection_source_state = adapters.fresh_source_state(seed) if arm.endswith("_fresh") else selection["adapters"]
+    selection_source_state = (
+        adapters.fresh_source_state(seed, rank=study["config"]["rank"])
+        if arm.endswith("_fresh")
+        else selection["adapters"]
+    )
     mask = selection["mask"].cpu()
     cases = [next(s for s in study["splits"]["validation"] if s["n_latent_frames"] == length) for length in (18, 28)]
     predictions = {}
@@ -237,7 +277,7 @@ def native_checks(study, arm, seed, gpu_id):
                             else adapters.transfer(selection_source_state, mask),
                         )
                     for source in cases:
-                        for i, sigma in enumerate(SIGMAS):
+                        for i, sigma in enumerate(study_sigmas(study)):
                             grid, video, c0, _, _, _, _ = input_case(study, current, source, 2042, sigma)
                             _, clean = ltx_adapter.velocity_forward(model, video)
                             predictions[(role, state_name, source["n_latent_frames"], i)] = common.with_clean_prefix(
@@ -251,7 +291,7 @@ def native_checks(study, arm, seed, gpu_id):
                                 module.base.weight.data.copy_(module.merged_weight())
                                 module.enabled = False
                         for source in cases:
-                            for i, sigma in enumerate(SIGMAS):
+                            for i, sigma in enumerate(study_sigmas(study)):
                                 _, video, c0, _, _, _, _ = input_case(study, current, source, 2042, sigma)
                                 _, clean = ltx_adapter.velocity_forward(model, video)
                                 predictions[("compact", fusion_role, source["n_latent_frames"], i)] = (
@@ -265,7 +305,7 @@ def native_checks(study, arm, seed, gpu_id):
     ):
         results = []
         for length in (18, 28):
-            for i, sigma in enumerate(SIGMAS):
+            for i, sigma in enumerate(study_sigmas(study)):
                 results.append(
                     {
                         "frames": length,

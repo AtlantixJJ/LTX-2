@@ -128,7 +128,10 @@ Reduce squared error over generated tokens and channels in FP32; c0 has no loss 
 The unchanged teacher remains an evaluation reference, rather than the loss target.
 
 Every logit starts at +3. Soft gates use sigmoid with temperature one.
-The first 700 updates add mean-gate sparsity, with coefficient ramping to 0.001 over 300 updates.
+The first 700 updates add the frozen sparsity penalty and its configured coefficient ramp.
+The seven-level GT preset uses mean `relu(alpha+3)`, with the coefficient ramping to one over 300 updates.
+The sparsity derivative is zero at or below alpha minus three. This stops pressure, without clamping the optimizer state.
+The older eight-level preset also supports mean-sigmoid sparsity for exact reproduction.
 The next 300 updates use an exact legal binary forward and a sigmoid straight-through gradient.
 An exact block/count dynamic program selects retained original heads.
 A fixed decision serves both microbatches and backward recomputation within an update.

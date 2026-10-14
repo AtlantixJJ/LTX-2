@@ -3,31 +3,13 @@
 import argparse
 import json
 import time
-from contextlib import contextmanager
 from pathlib import Path
 
 import torch
 
 from scripts.prune.data.learned_head_study import load_study
 from scripts.prune.learn import checkpoints, heads
-from scripts.prune.learn.placement import partition
-
-
-class PlacedSession:
-    def __init__(self, current, devices, reference_root):
-        self.current = current
-        self.device = current.device
-        self.execution_devices = tuple(torch.device(f"cuda:{d}") for d in devices)
-        self.reference_root = reference_root
-
-    def __getattr__(self, name):
-        return getattr(self.current, name)
-
-    @contextmanager
-    def transformer(self, *args, **kwargs):
-        with self.current.transformer(*args, **kwargs) as model:
-            with partition(model, self.execution_devices):
-                yield model
+from scripts.prune.learn.placement import PlacedSession
 
 
 def main():

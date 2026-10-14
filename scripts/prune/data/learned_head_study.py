@@ -21,14 +21,15 @@ from scripts.onestep_avatar.corpus.dataset import CaptureManifest, ClipStore
 from scripts.onestep_avatar.corpus.subset import load_membership
 from scripts.prune.core import model_registry
 from scripts.prune.core.provenance import file_sha256
-from scripts.prune.data import foreground, prompt_cache, whole_clip
+from scripts.prune.data import foreground, prompt_cache, training_windows, whole_clip
 from scripts.prune.data.head_score_dataset import CSV_SHA, JSON_SHA, SEMANTIC_SHA, SIGMAS, official_schedule
 from scripts.prune.learn.checkpoints import digest, publish, publish_json, tensor_hash
+from scripts.prune.learn.protocol import draws_per_update, validate as validate_protocol
 
 SALT = "learned-heads-dev8-v1"
 
 
-def report_resources(output, plan):
+def report_resources(output, plan, *, rank=16):
     """Install saved-only report tools and proposed questions before execution."""
     templates = Path(__file__).resolve().parents[1] / "configs/learned_heads_report"
     for template in templates.glob("*.py.txt"):
@@ -63,7 +64,7 @@ def report_resources(output, plan):
                 "Soft gate: sigmoid of a learned scalar logit.",
                 "Binary refinement: legal hard forwards with sigmoid straight-through gradients.",
                 "Energy arm: fixed projected-energy ranking with matched adapter training.",
-                "Joint arm: learned gates and rank-16 V/output adapters.",
+                f"Joint arm: learned gates and rank-{rank} V/output adapters.",
                 "VAE GT: recorded capture latent decoded by the pinned VAE.",
                 "RGB GT: recorded pixels after their original crop and white matte.",
                 "Sigma: the saved FP32 input noise level.",
@@ -160,7 +161,15 @@ def assign_buckets(sources, stats):
     }
 
 
-def draw_list(sources, seed, *, buckets=None, updates=1500):
+def study_sigmas(study):
+    """Read the exact frozen learned-study grid; historical scoring keeps its own grid."""
+    return study["config"]["sigmas"]
+
+
+def draw_list(sources, seed, *, buckets=None, updates=1500, sigma_indices=None, draws_per_update=2):
+    cycle = list(sigma_indices) if sigma_indices is not None else [0, 7, 1, 6, 2, 5, 3, 4]
+    if not cycle or set(cycle) != set(range(len(cycle))) or any(type(i) is not int for i in cycle):
+        raise ValueError("sigma cycle must contain each grid index exactly once")
     rng = random.Random(seed)
     groups = defaultdict(lambda: defaultdict(list))
     if buckets is not None:
@@ -169,18 +178,20 @@ def draw_list(sources, seed, *, buckets=None, updates=1500):
         if set(groups) != set(range(6)):
             raise ValueError("balanced arm requires all six motion/size buckets")
     draws = []
-    for j in range(updates * 2):
+    if type(draws_per_update) is not int or draws_per_update < 1:
+        raise ValueError("draws per update must be a positive integer")
+    for j in range(updates * draws_per_update):
         if buckets is None:
             source = sources[rng.randrange(len(sources))]
         else:
-            bucket = groups[(j // 8) % 6]
+            bucket = groups[(j // len(cycle)) % 6]
             actor = rng.choice(sorted(bucket))
             source = rng.choice(bucket[actor])
         draws.append(
             {
                 "microbatch": j,
                 "view": source["relative_dir"],
-                "sigma_index": [0, 7, 1, 6, 2, 5, 3, 4][j % 8],
+                "sigma_index": cycle[j % len(cycle)],
                 "noise_seed": 1_000_000 + 10_000 * seed + j,
             }
         )
@@ -221,7 +232,8 @@ def load_study(path, *, verify_components=True):
 
 def prepare_view(args):
     """Independent CPU audit; cache only fully checked source and GT statistics."""
-    membership_path, source, is_learning, output, region_tracks = args
+    membership_path, source, is_learning, output, region_tracks = args[:5]
+    audit_foreground = args[5] if len(args) > 5 else True
     import cv2
 
     torch.set_num_threads(1)
@@ -264,49 +276,58 @@ def prepare_view(args):
         raise ValueError("full capture geometry changed")
     if list(crop.box_for(view)) != source["capture_encode_record"]["box_xyxy"]:
         raise ValueError("recorded crop differs from canonical crop authority")
-    matte, _, mask_identity = foreground.person_coverage(view, source["capture_encode_record"])
-    for p in (view / "mask.mp4", view / "capture_mask_crop.mp4"):
-        source_files.append({"path": str(p), "sha256": file_sha256(p)})
-    key = hashlib.sha256(source["relative_dir"].encode()).hexdigest()
-    publish_json(output / "regions" / key / "canonical_mask.json", mask_identity)
-    if region_tracks["status"] == "verified":
-        tracks = region_tracks["views"][source["relative_dir"]]
-        for name in ("face", "left_hand", "right_hand"):
-            _, coverage_record = foreground.region_coverage(
-                tracks[name], matte, source["capture_encode_record"], schema=tracks["schema"]
-            )
-            publish_json(output / "regions" / key / f"{name}.json", coverage_record)
     verified_source = {**source, "resolved_dir": str(view), "capture": str(capture)}
-    if is_learning:
-        rgb = media.recorded_capture_rgb(
-            {**source, "box_xyxy": source["capture_encode_record"]["box_xyxy"]},
-            Path(membership["corpus_root"]),
-            "white",
-            source["n_latent_frames"],
-        )
-        statistics = foreground.gt_statistics(rgb, matte)
+    if audit_foreground:
+        matte, _, mask_identity = foreground.person_coverage(view, source["capture_encode_record"])
+        for p in (view / "mask.mp4", view / "capture_mask_crop.mp4"):
+            source_files.append({"path": str(p), "sha256": file_sha256(p)})
+        key = hashlib.sha256(source["relative_dir"].encode()).hexdigest()
+        publish_json(output / "regions" / key / "canonical_mask.json", mask_identity)
+        if region_tracks["status"] == "verified":
+            tracks = region_tracks["views"][source["relative_dir"]]
+            for name in ("face", "left_hand", "right_hand"):
+                _, coverage_record = foreground.region_coverage(
+                    tracks[name], matte, source["capture_encode_record"], schema=tracks["schema"]
+                )
+                publish_json(output / "regions" / key / f"{name}.json", coverage_record)
+        if is_learning:
+            rgb = media.recorded_capture_rgb(
+                {**source, "box_xyxy": source["capture_encode_record"]["box_xyxy"]},
+                Path(membership["corpus_root"]),
+                "white",
+                source["n_latent_frames"],
+            )
+            statistics = foreground.gt_statistics(rgb, matte)
     print(f"verified {source['relative_dir']}", flush=True)
     result = {
         "source": verified_source,
         "files": source_files,
         "statistics": statistics,
         "reader_identity": reader_identity,
+        "foreground_audit": "verified" if audit_foreground else "deferred",
     }
     publish_json(output / "provenance/source_audits" / f"{key}.json", result)
     return result
 
 
-def prepare(config_path, plan, output, seen_path=None, region_path=None):
+def prepare(config_path, plan, output, seen_path=None, region_path=None, *, uniform_f18=False):
     config = json.loads(config_path.read_text())
+    if uniform_f18:
+        config["uniform_f18"] = True
+    crop_training = training_windows.enabled(config)
+    validate_protocol(config)
     if (
         config["target"] != "epsilon_minus_capture"
         or config["alpha_init"] != 3
         or config["temperature"] != 1
         or [config[k] for k in ("soft_updates", "binary_updates", "compact_updates")] != [700, 300, 500]
-        or config["sigmas"] != SIGMAS
+        or config["sigmas"] not in (SIGMAS, SIGMAS[:-1])
         or config["variant"] != "dev"
     ):
         raise ValueError("preset changes require an explicit protocol amendment")
+    cycle = config["sigma_indices_cycle"]
+    if len(cycle) != len(config["sigmas"]) or sorted(cycle) != list(range(len(config["sigmas"]))):
+        raise ValueError("frozen sigma cycle does not cover the declared grid once")
     workspace = Path(__file__).resolve().parents[4]
     alias = Path("/home/jianjinx/data2/VideoDiffusionModels")
     if alias.exists() and alias.resolve() != workspace.resolve():
@@ -322,7 +343,10 @@ def prepare(config_path, plan, output, seen_path=None, region_path=None):
         extra = json.loads(seen_path.read_text())
         seen["actors"] = sorted(set(seen["actors"]) | set(extra["actors"]))
         seen["evidence"] += extra["evidence"]
+    audit_foreground = config.get("foreground_preparation", "full") != "deferred"
     region_tracks = {"status": "not_verified", "views": {}}
+    if not audit_foreground and region_path:
+        raise ValueError("reviewed regional preparation requires foreground replay")
     if region_path:
         region_tracks = json.loads(region_path.read_text())
         if region_tracks.get("status") != "verified" or not region_tracks.get("views"):
@@ -356,7 +380,12 @@ def prepare(config_path, plan, output, seen_path=None, region_path=None):
         test_actors=config["test_actors"],
     )
     output = output.resolve()
-    report_resources(output, plan)
+    if crop_training and any(s["n_latent_frames"] < 18 for s in splits["learning"]):
+        raise ValueError("uniform F18 learning sources must have at least 18 latent frames")
+    effective_config = output / "provenance/effective_config.json" if uniform_f18 else config_path
+    if uniform_f18:
+        publish_json(effective_config, config)
+    report_resources(output, plan, rank=config["rank"])
     frozen_plan = output / "provenance/plan.md"
     publish(frozen_plan, lambda p: p.write_bytes(plan.read_bytes()))
     publish_json(output / "provenance/seen_actors.json", seen)
@@ -364,9 +393,14 @@ def prepare(config_path, plan, output, seen_path=None, region_path=None):
     from concurrent.futures import ProcessPoolExecutor
 
     stats, verified, files = {}, {}, []
+    if uniform_f18:
+        files.append({"path": str(effective_config), "sha256": file_sha256(effective_config)})
     selected = splits["learning"] + splits["validation"] + splits["test"]
     learning_ids = {s["relative_dir"] for s in splits["learning"]}
-    tasks = [(str(membership_path), s, s["relative_dir"] in learning_ids, str(output), region_tracks) for s in selected]
+    tasks = [
+        (str(membership_path), s, s["relative_dir"] in learning_ids, str(output), region_tracks, audit_foreground)
+        for s in selected
+    ]
     with ProcessPoolExecutor(max_workers=4) as pool:
         for result in pool.map(prepare_view, tasks):
             source = result["source"]
@@ -376,15 +410,27 @@ def prepare(config_path, plan, output, seen_path=None, region_path=None):
                 stats[source["relative_dir"]] = result["statistics"]
     for role in ("learning", "validation", "test"):
         splits[role] = [verified[s["relative_dir"]] for s in splits[role]]
-    coverage = assign_buckets(splits["learning"], stats)
+    coverage = (
+        assign_buckets(splits["learning"], stats)
+        if audit_foreground
+        else {
+            "status": "deferred",
+            "counts": {},
+            "buckets": {},
+            "reason": "unweighted GT pilot consumes capture latents; foreground replay and buckets are deferred",
+        }
+    )
     publish_json(output / "coverage/learning_buckets.json", {**coverage, "statistics": stats})
     draws = {}
     for seed in config["replicate_seeds"]:
         for policy, buckets in (("ordinary", None), ("balanced", coverage["buckets"])):
-            if buckets is not None and any(v == 0 for v in coverage["counts"].values()):
+            if buckets is not None and (not audit_foreground or any(v == 0 for v in coverage["counts"].values())):
                 continue
             path = output / f"draws/replicate_{seed}_{policy}.json"
-            publish_json(path, draw_list(splits["learning"], seed, buckets=buckets))
+            publish_json(path, draw_list(
+                splits["learning"], seed, buckets=buckets, sigma_indices=cycle,
+                draws_per_update=draws_per_update(config),
+            ))
             draws[f"{seed}:{policy}"] = {"path": str(path), "sha256": file_sha256(path)}
             files.append(draws[f"{seed}:{policy}"])
     components = {
@@ -410,7 +456,7 @@ def prepare(config_path, plan, output, seen_path=None, region_path=None):
     study = {
         "format": "learned_head_study_v1",
         "config": config,
-        "config_sha256": file_sha256(config_path),
+        "config_sha256": file_sha256(effective_config),
         "plan": {"path": str(frozen_plan), "sha256": file_sha256(frozen_plan), "original_path": str(plan.resolve())},
         "components": components,
         "splits": splits,
@@ -463,10 +509,11 @@ def main():
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--seen-actors", type=Path)
     p.add_argument("--region-tracks", type=Path)
+    p.add_argument("--uniform-f18", action="store_true", help="Train on continuous 18-latent windows from full sources.")
     args = p.parse_args()
     torch.set_num_threads(4)
     try:
-        prepare(args.config, args.plan, args.output, args.seen_actors, args.region_tracks)
+        prepare(args.config, args.plan, args.output, args.seen_actors, args.region_tracks, uniform_f18=args.uniform_f18)
     except Exception as exc:
         publish_json(
             args.output / "logs/preparation.failure.json",

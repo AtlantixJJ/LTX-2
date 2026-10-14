@@ -1,7 +1,13 @@
 import pytest
 import torch
 
-from scripts.prune.learn.losses import phase_loss, velocity_mse, velocity_target
+from scripts.prune.learn.losses import (
+    phase_loss,
+    sparsity_coefficient,
+    sparsity_gradient,
+    velocity_mse,
+    velocity_target,
+)
 
 
 def test_official_target_mask_sign_and_regions():
@@ -41,3 +47,72 @@ def test_matches_official_fp32_masked_routine():
     mask[:, :2] = False
     stock = FlexibleStrategy._compute_modality_loss(v, e - y, mask).mean()
     torch.testing.assert_close(velocity_mse(v, e, y, 2)["official"], stock)
+
+
+@pytest.mark.parametrize("update", [1, 150, 300, 547])
+def test_raw_logit_l1_floor_warmup_and_two_clip_accumulation(update):
+    alpha = torch.tensor([-4.0, -3.0, -2.0, 0.0, 3.0], requires_grad=True)
+    for _ in range(2):
+        loss, penalty = phase_loss(
+            {"official": torch.tensor(0.0), "coverage": {}},
+            alpha.sigmoid(),
+            update=update,
+            phase="soft",
+            lambda_max=1.0,
+            logits=alpha,
+            sparsity_kind="relu_logits",
+        )
+        loss.backward()
+    coefficient = min(update / 300, 1.0)
+    torch.testing.assert_close(penalty, torch.tensor(2.0 * coefficient))
+    expected = torch.tensor([0.0, 0.0, 1.0, 1.0, 1.0]) * coefficient / 5
+    torch.testing.assert_close(alpha.grad, expected)
+    torch.testing.assert_close(
+        alpha.grad, sparsity_gradient(alpha, update=update, phase="soft", lambda_max=1, kind="relu_logits")
+    )
+
+
+@pytest.mark.parametrize("phase", ["binary", "compact"])
+def test_raw_logit_penalty_is_disabled_after_soft_selection(phase):
+    alpha = torch.full((2, 3), 3.0, requires_grad=True)
+    _, penalty = phase_loss(
+        {"official": torch.tensor(1.0), "coverage": {}},
+        alpha.sigmoid(),
+        update=800,
+        phase=phase,
+        lambda_max=1,
+        logits=alpha,
+        sparsity_kind="relu_logits",
+    )
+    assert penalty == 0
+    assert torch.count_nonzero(sparsity_gradient(alpha, update=800, phase=phase, lambda_max=1, kind="relu_logits")) == 0
+
+
+@pytest.mark.parametrize("update,expected", [(1, 0.0109), (50, 0.055), (100, 0.1), (200, 0.1)])
+def test_nonzero_start_ramp_matches_accumulated_autograd(update, expected):
+    schedule = {"lambda_max": 0.1, "lambda_warmup": 100, "lambda_start_multiplier": 0.1}
+    assert sparsity_coefficient(update, "soft", **schedule) == pytest.approx(expected)
+    alpha = torch.tensor([-4.0, -3.0, -2.0, 0.0, 3.0], requires_grad=True)
+    for _ in range(2):
+        loss, penalty = phase_loss(
+            {"official": torch.tensor(0.0), "coverage": {}}, alpha.sigmoid(),
+            update=update, phase="soft", logits=alpha, sparsity_kind="relu_logits", **schedule,
+        )
+        loss.backward()
+    assert float(penalty.detach()) == pytest.approx(2 * expected)
+    torch.testing.assert_close(
+        alpha.grad, sparsity_gradient(alpha, update=update, phase="soft", kind="relu_logits", **schedule)
+    )
+    torch.testing.assert_close(alpha.grad[:2], torch.zeros(2))
+    for phase in ("binary", "compact", "fixed"):
+        assert sparsity_coefficient(update, phase, **schedule) == 0
+
+
+@pytest.mark.parametrize("bad", [
+    {"lambda_max": float("nan")}, {"lambda_max": float("inf")},
+    {"lambda_warmup": 0}, {"lambda_warmup": -1},
+    {"lambda_start_multiplier": -0.1}, {"lambda_start_multiplier": 1.1},
+])
+def test_invalid_sparsity_ramps_fail(bad):
+    with pytest.raises(ValueError, match="ramp"):
+        sparsity_coefficient(1, "soft", **bad)

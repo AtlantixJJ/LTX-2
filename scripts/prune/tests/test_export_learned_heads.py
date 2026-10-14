@@ -26,3 +26,47 @@ def test_merge_algebra_inventory_and_reload(tmp_path):
     assert mask['0.attn2'] == [1]*4
     with pytest.raises(ValueError, match='mask'):
         masks_from_tensor(torch.full((1, 4), .5), {'0.attn1': 4})
+
+
+def test_gt_export_supplies_missing_inputs_without_model_or_rescoring(tmp_path, monkeypatch):
+    import hashlib
+
+    from scripts.prune.core.provenance import file_sha256
+    from scripts.prune.data import whole_clip
+    from scripts.prune.learn import heads
+    from scripts.prune.score.export_learned_heads import geometry_wrappers, prepare_geometry_inputs
+    from scripts.prune.tests.test_whole_clip_baseline import _Session, _vae, _views
+
+    current = _Session(_vae(tmp_path))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('structural input preparation must not load a model')
+
+    monkeypatch.setattr(current, 'transformer', forbidden)
+    monkeypatch.setattr(heads, 'open_current', lambda *args: current)
+    sources = []
+    for view, frames in zip(_views(tmp_path / 'corpus'), (18, 28), strict=True):
+        capture = view / 'ltx_vae_latent_white.pt'
+        bundle = torch.load(capture, map_location='cpu', weights_only=True)
+        bundle['master'] = torch.zeros(bundle['master'].shape[0], frames, 2, 2, dtype=torch.bfloat16)
+        torch.save(bundle, capture)
+        sources.append({
+            'capture': str(capture), 'capture_latent_sha256': file_sha256(capture),
+            'shape': list(bundle['master'].shape), 'fps': bundle['fps'], 'resolved_dir': str(view),
+            'relative_dir': view.relative_to(tmp_path / 'corpus').as_posix(), 'n_latent_frames': frames,
+            'capture_encode_record': {'schema_version': bundle['schema_version']},
+        })
+    study = {'root': str(tmp_path / 'study'), 'splits': {'learning': sources}, 'config': {'sigmas': [.9, .4]}}
+    first = tmp_path / 'study/inputs' / hashlib.sha256(sources[0]['relative_dir'].encode()).hexdigest() / 'seed_42'
+    whole_clip.prepare_score_inputs(first, sources[0], current=current, sigmas=[.9, .4], seed=42)
+    original = (first / 'epsilon.pt').read_bytes()
+    prepare_geometry_inputs(study, 0)
+    assert (first / 'epsilon.pt').read_bytes() == original
+    wrappers = geometry_wrappers(study, {'0.attn1': [1, 0]}, tmp_path / 'masks')
+    assert set(wrappers) == {'18', '28'}
+    for wrapper in wrappers.values():
+        record = json.loads(open(wrapper['path']).read())
+        assert record['provenance']['seed'] == 42
+        whole_clip.validate_native_provenance(record['provenance'])
+    monkeypatch.setattr(heads, 'open_current', forbidden)
+    prepare_geometry_inputs(study, 0)

@@ -24,7 +24,12 @@ Pinned membership supplies views. GT-only replay supplies motion and area. Split
 ## Organization logic
 
 Validation uses twenty hashed train actors. Learning uses actor rounds until 256 views are selected. Later rounds prefer an unused clip length.
-Blind selection excludes known inspected actors and actors cited in earlier evidence. Each seed has 3,000 named noise draws and an eight-sigma cycle.
+Blind selection excludes known inspected actors and actors cited in earlier evidence. Each seed has 3,000 named noise draws.
+The frozen config selects all eight registered sigmas or the first seven, excluding the lowest level.
+The sigma cycle contains each selected index exactly once. Two consecutive draws form an optimizer update.
+For seven levels, `[0,6,1,5,2,4,3]` repeats. Seven updates cover every level twice.
+Training, input manifests, native checks and evaluation read this frozen grid through `study_sigmas`.
+Historical head-score records retain their separate eight-level grid.
 
 ## Invariants
 
@@ -44,5 +49,14 @@ Four independent CPU workers audit the selected views.
 Each completed source audit pins its reader code and file content before reusing GT statistics.
 Changed code or source bytes reject the cache; no selected view disappears after a failure.
 Preparation installs saved-only report readers from `configs/learned_heads_report/`.
+Report terms use the configured adapter rank, including rank 128.
 The narrative preserves all seventeen questions and labels unrun comparisons explicitly.
 Missing declared report evidence raises an error and launches no model or decoder.
+
+## Deferred foreground preparation
+
+The unweighted GT preset uses `foreground_preparation=deferred`.
+It still verifies capture, RGB and metadata hashes, complete latent geometry, fps and canonical crop records.
+It does not decode or replay mattes, compute regional tracks or motion/size buckets on the training critical path.
+Mark this scope in every source audit. Generate only ordinary paired draws.
+Regional and balanced training reject this preset. Their later studies require complete foreground preparation.

@@ -58,3 +58,27 @@ def test_balanced_bucket_sigma_coverage():
     draws = draw_list(pool, 42, buckets={str(i): i for i in range(6)})
     assert {(int(d["view"]), d["sigma_index"]) for d in draws[:48]} == {(b, i) for b in range(6) for i in range(8)}
     assert torch.tensor([d["sigma_index"] for d in draws[:8]]).unique().numel() == 8
+
+
+def test_seven_sigma_draws_keep_views_and_noise_but_exclude_lowest_level():
+    from scripts.prune.data.head_score_dataset import SIGMAS
+    from scripts.prune.data.learned_head_study import study_sigmas
+
+    pool = sources()
+    cycle = [0, 6, 1, 5, 2, 4, 3]
+    old = draw_list(pool, 42)
+    new = draw_list(pool, 42, sigma_indices=cycle)
+    assert [(d["view"], d["noise_seed"]) for d in old] == [(d["view"], d["noise_seed"]) for d in new]
+    assert [d["sigma_index"] for d in new[:14]] == cycle * 2
+    grid = study_sigmas({"config": {"sigmas": SIGMAS[:-1]}})
+    assert set(grid[d["sigma_index"]] for d in new) == set(SIGMAS[:-1])
+    assert SIGMAS[-1] not in grid
+    assert len(new) == 3000
+
+
+def test_sigma_cycle_rejects_duplicate_or_missing_indices():
+    import pytest
+
+    for cycle in [[], [0, 0], [0, 2], [0, 1.0]]:
+        with pytest.raises(ValueError, match="sigma cycle"):
+            draw_list(sources(), 42, sigma_indices=cycle)

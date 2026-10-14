@@ -72,23 +72,44 @@ def publish_tensor(path, value):
     return publish(path, write)
 
 
-def rng_state():
+def rng_state(devices=None):
     result = {"python": random.getstate(), "numpy": np.random.get_state(), "torch": torch.get_rng_state()}
     if torch.cuda.is_initialized():
-        result["cuda_device"] = torch.cuda.current_device()
-        result["cuda"] = torch.cuda.get_rng_state()
+        devices = [torch.cuda.current_device()] if devices is None else devices
+        result["cuda_states"] = {int(d): torch.cuda.get_rng_state(d) for d in sorted(set(devices))}
     return result
 
 
 def restore_rng(state):
+    if "ranks" in state:
+        import torch.distributed as dist
+
+        if not dist.is_initialized() or dist.get_world_size() != state["world_size"]:
+            raise ValueError("distributed checkpoint requires the recorded rank count")
+        state = state["ranks"][dist.get_rank()]
     random.setstate(state["python"])
     np.random.set_state(state["numpy"])
     torch.set_rng_state(state["torch"])
+    for device, value in state.get("cuda_states", {}).items():
+        torch.cuda.set_rng_state(value, device=int(device))
     if "cuda" in state:
-        torch.cuda.set_rng_state(state["cuda"])
+        torch.cuda.set_rng_state(state["cuda"], device=state.get("cuda_device", 0))
 
 
-def save(path, *, identity, update, phase, gates, adapters, adapter_optimizer, gate_optimizer=None, lineage=None):
+def save(
+    path,
+    *,
+    identity,
+    update,
+    phase,
+    gates,
+    adapters,
+    adapter_optimizer,
+    gate_optimizer=None,
+    lineage=None,
+    rng_override=None,
+    draws_per_update=2,
+):
     from scripts.prune.learn.adapters import state_dict
 
     state = {
@@ -96,13 +117,19 @@ def save(path, *, identity, update, phase, gates, adapters, adapter_optimizer, g
         "identity": identity,
         "update": update,
         "phase": phase,
-        "draw_cursor": update * 2,
+        "draw_cursor": update * draws_per_update,
+        "draws_per_update": draws_per_update,
         "alpha": gates.alpha.detach().cpu(),
         "mask": gates.decision,
         "adapters": state_dict(adapters),
         "adapter_optimizer": adapter_optimizer.state_dict(),
         "gate_optimizer": gate_optimizer.state_dict() if gate_optimizer else None,
-        "rng": rng_state(),
+        "rng": rng_override
+        if rng_override is not None
+        else rng_state(
+            [p.device.index for module in adapters.values() for p in (module.A, module.B) if p.device.type == "cuda"]
+            + ([gates.alpha.device.index] if gates.alpha.device.type == "cuda" else [])
+        ),
         "lineage": lineage or {},
     }
 
@@ -128,6 +155,7 @@ def save(path, *, identity, update, phase, gates, adapters, adapter_optimizer, g
             "identity": identity,
             "update": update,
             "phase": phase,
+            "draws_per_update": draws_per_update,
             "sha256": file_sha256(path),
             "tensor_hashes": {k: tensor_hash(v) for k, v in state["adapters"].items()},
             "alpha_sha256": tensor_hash(state["alpha"]),
@@ -144,7 +172,13 @@ def load(path, identity=None):
     state = torch.load(path, map_location="cpu", weights_only=False)  # Own trusted optimizer/RNG record.
     if state.get("format") != "head_learning_state_v1" or (identity is not None and state["identity"] != identity):
         raise ValueError("checkpoint training identity changed")
-    if state["draw_cursor"] != state["update"] * 2 or state["identity"] != receipt["identity"]:
+    count = state.get("draws_per_update", 2)
+    if (
+        type(count) is not int or count < 1
+        or state["draw_cursor"] != state["update"] * count
+        or count != receipt.get("draws_per_update", 2)
+        or state["identity"] != receipt["identity"]
+    ):
         raise ValueError("checkpoint draw cursor or receipt differs")
     if {k: tensor_hash(v) for k, v in state["adapters"].items()} != receipt["tensor_hashes"]:
         raise ValueError("adapter inventory changed")

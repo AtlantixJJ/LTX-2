@@ -86,7 +86,7 @@ The +3 gate learner, legal selector, official velocity loss and adapter/moment t
 CPU preparation, bounded native phases, paired teacher records, compact export, strict recovered validation and media readers are implemented.
 The execution probe phase tests head layouts and FFN widths separately.
 Main, soft-only, fixed-ranking, balanced, regional, sequential and common fresh recovery paths remain scientific comparisons.
-Their implementation does not establish a successful native backward, quality winner or speed candidate.
+Their implementation does not establish a quality winner or speed candidate.
 
 GT face and hand tracks require a reviewed source-pixel schema and pinned producer.
 The learner never guesses the existing keypoint layout or substitutes body boxes.
@@ -94,10 +94,16 @@ Preparation pins installed AlexNet LPIPS and cached weights when available.
 Missing LPIPS or required region coverage prevents decoded quality acceptance.
 Native feasibility, sustained paired training, final quality and cost results must use saved stage receipts.
 
-S0 has verified all 308 selected views and six learning buckets in the first frozen study.
-The first S1 failed in an unintended inference graph before any backward update.
-The zero-adapter parity control now disables autograd. A new frozen revision must rerun native gates.
+The single-process block placement and four-process FSDP methods have separate native acceptance gates.
+Passing a small-model or block-placement check does not establish full-length FSDP acceptance.
+Keep run-specific memory results, failures and retired artifacts in experiment records and the active plan.
 
-The corrected single-GPU S1 now fails in actual checkpointed backward FFN recomputation.
-No full backward acceptance receipt exists. A two-GPU block placement change is proposed in the experiment records.
-Sustained learning remains blocked by this native gate; inference timing is independent.
+## GT-reference FSDP pilot
+
+The direct four-rank FSDP method is implemented with replicated small FP32 trainable state.
+Small distributed/serial gradient and exact resume checks pass. Native full-clip FSDP acceptance passes for the frozen primary pilot.
+The direct supervisor runs formal training. Full training completion and decoded quality remain pending.
+The user-directed GT reference mode requires no teacher cache or speed probe before training.
+Historical score reuse declares its actual learning-view coverage. Reviewed small-region tracks and decoded quality acceptance remain separate gaps.
+Unweighted training defers foreground replay and bucket preparation. Regional and balanced arms require a separate full preparation.
+Compact export lazily creates missing structural input manifests after selection; it does not rerun calibration or teacher forwards.

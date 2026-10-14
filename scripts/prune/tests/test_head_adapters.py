@@ -38,3 +38,26 @@ def test_original_ids_and_moments_slice():
     result = transfer_optimizer(opt, list(state), mask, head_dim=2)
     for i, name in enumerate(state):
         assert result["state"][i]["step"] == 7 and torch.equal(result["state"][i]["exp_avg"], compact[name])
+
+
+def test_rank128_attachment_matches_fresh_source_initialization(monkeypatch):
+    from scripts.prune.learn import adapters
+
+    model = torch.nn.Module()
+    model.attn = torch.nn.Module()
+    model.attn.to_v = torch.nn.Linear(8, 8)
+    model.attn.to_out = torch.nn.ModuleList([torch.nn.Linear(8, 8)])
+    monkeypatch.setattr(adapters, "iter_video_attention", lambda m: [("0.attn1", m.attn)])
+    attached = adapters.attach(model, 42, rank=128)
+    expected = adapters.fresh_source_state(42, blocks=1, width=8, rank=128)
+    actual = adapters.state_dict(attached)
+    assert set(actual) == set(expected)
+    for key in actual:
+        assert torch.equal(actual[key], expected[key])
+    for adapter in attached.values():
+        assert adapter.A.shape == (128, 8) and adapter.B.shape == (8, 128)
+        x = torch.randn(2, 3, 8)
+        assert torch.equal(adapter(x), adapter.base(x))
+        adapter(x).square().mean().backward()
+        assert adapter.B.grad is not None and adapter.B.grad.norm() > 0
+        assert adapter.base.weight.grad is None

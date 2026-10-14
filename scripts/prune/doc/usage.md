@@ -403,6 +403,12 @@ No speed training starts without both feasibility and execution-probe evidence.
 Resume checks code, config, components, consumed noise, optimizer state and original IDs.
 Changed scientific settings need a new frozen study and output path.
 
+For the user-directed loss amendment, stop the source workers at a checkpoint boundary.
+Run the CPU [`data.resume_learned_heads`](data/resume_learned_heads.md#usage) owner to freeze the raw-logit loss in a new root.
+It retains source update receipts, both optimizers and all rank RNG states. It does not reset the global update count.
+The continuation uses `mean(relu(alpha+3))` and `lambda(t)=min(t/300,1)` during the remaining soft phase.
+Binary refinement and compact recovery keep the sparsity penalty disabled.
+
 Use `setsid` and an external wall-time bound for persistent model work:
 
 ```bash
@@ -434,3 +440,93 @@ The user-authorized four-device diagnostic uses all physical GPUs 0–3 in one p
 Freeze `configs/learned_heads_dev8_four_gpu.json` into a new directory before execution.
 Run [checks.four_gpu_feasibility](checks/four_gpu_feasibility.md#usage) with the prior r2 study as the numerical reference.
 The test preserves full clips and scientific settings; single-GPU timing stays a separate gate.
+
+## Sustained four-GPU learning
+
+A frozen study with `native_placement` automatically applies four-GPU block placement to learning and recovery.
+Use `CUDA_VISIBLE_DEVICES=0,1,2,3` and `--gpu-id 0` for these phases.
+Keep the same cuBLAS policy. Each twelve-hour segment saves its last completed update before bounded exit.
+Resume with the identical command and frozen source. Do not edit production sources during a live study.
+Single-GPU teacher, energy and speed phases can run independently before learning occupies all four devices.
+
+## Four-rank FSDP with GT references
+
+The frozen `learned_heads_dev8_fsdp_gt.json` preset uses four-rank FSDP and exactly two unique clips per update.
+Run directly from LTX-2 in ltx. This path does not use the avatar queue.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 CUBLAS_WORKSPACE_CONFIG=:4096:8 torchrun --standalone --nproc_per_node=4 -m scripts.prune.checks.fsdp_native --study "$STUDY_PATH"
+CUDA_VISIBLE_DEVICES=0,1,2,3 CUBLAS_WORKSPACE_CONFIG=:4096:8 torchrun --standalone --nproc_per_node=4 -m scripts.prune.learn.heads --study "$STUDY_PATH" --phase selection --arm learned_joint --replicate-seed 42 --removed-heads 152 --gpu-id 0
+```
+
+The native acceptance check saves unsharded controls and checks both full clip lengths, gradients, resume and per-rank memory.
+Training requires that acceptance. It does not require teacher references or speed-test receipts in GT mode.
+Use the same direct command with `--phase compact_recovery` after exporting the compact base.
+Resume an interrupted segment with the identical frozen study and command.
+`data.reuse_head_scores` imports compatible historical raw observations for the available current learning views on CPU.
+It declares missing coverage and pins all consumed evidence. No held-out actor enters the energy ranking.
+GT numeric evaluation and decoded media use the saved capture references without a teacher cache.
+
+For the complete paired pilot, start one detached owner for the frozen study:
+
+```bash
+conda activate ltx
+STUDY_PATH="$PWD/../expr/refiner_prune/2.5/learned_heads_fsdp_gt_20261013_r6/configs/frozen_study.json"
+RUN_ROOT="$(dirname "$(dirname "$STUDY_PATH")")"
+CUDA_VISIBLE_DEVICES='' CUBLAS_WORKSPACE_CONFIG=:4096:8 setsid python -u -m scripts.prune.learn.run_full --study "$STUDY_PATH" > "$RUN_ROOT/logs/full.log" 2>&1 < /dev/null &
+```
+
+The owner runs CPU score reuse, native acceptance, selection, compact export, recovery and final merge for each arm.
+Defaults are `learned_joint energy`, seed 42 and 152 removed heads. Each arm has 1,000 selection and 500 recovery updates.
+Compact export saves missing structural input manifests after selection, without model forwards or fresh calibration.
+The owner resumes bounded segments only when saved progress increases; other failures stop the assigned run.
+Read `monitoring/status.json` for live loss, gradients, memory and checkpoint paths. It updates every thirty seconds.
+`monitoring/owner.pid` records the owner. SIGTERM to that PID stops only this run's children.
+GT numeric validation and decoded review follow the completed pair as separate gates.
+
+## Fresh seven-level GT training
+
+Use `configs/learned_heads_dev7_fsdp_gt_logit_l1.json` for a fresh raw-logit-loss experiment.
+It omits sigma 0.1 and resets every trainable tensor, optimizer and training counter.
+The first 700 updates use soft gates, then 300 use binary gates with no sparsity penalty.
+Read each exact sigma from the frozen study. Historical energy rankings retain their declared scoring scope.
+
+```bash
+conda activate ltx
+CUDA_VISIBLE_DEVICES= CUBLAS_WORKSPACE_CONFIG=:4096:8 python -m scripts.prune.data.learned_head_study --config scripts/prune/configs/learned_heads_dev7_fsdp_gt_logit_l1.json --plan ../plans/2026-10-12-learned-head-pruning-experiment.md --output ../expr/refiner_prune/2.5/learned_heads_fsdp_gt_20261014_r8_fresh_logit_l1_dev7
+CUDA_VISIBLE_DEVICES=0,1,2,3 CUBLAS_WORKSPACE_CONFIG=:4096:8 python -u -m scripts.prune.learn.run_full --study ../expr/refiner_prune/2.5/learned_heads_fsdp_gt_20261014_r8_fresh_logit_l1_dev7/configs/frozen_study.json
+```
+
+The supervisor can reuse explicitly attributed native execution acceptance for unchanged model inputs at retained noise levels.
+Such reuse does not establish fresh-loss quality. Verify loss coefficients, gradients and four-rank memory on initial formal updates.
+
+## Rank-128 seven-level training
+
+Use `configs/learned_heads_dev7_fsdp_gt_logit_l1_rank128.json` for rank-128 V/output adapters with scaling one.
+Keep full clips, the seven sigmas, loss warmup and soft/binary boundaries unchanged.
+A rank change starts fresh tensors and optimizers; a rank-16 checkpoint cannot resume rank-128 tensors directly.
+The same direct supervisor command accepts the separate frozen rank-128 study.
+Verify actual rank-128 memory and gradients on the first full-length native updates.
+
+```bash
+conda activate ltx
+CUDA_VISIBLE_DEVICES=0,1,2,3 CUBLAS_WORKSPACE_CONFIG=:4096:8 python -u -m scripts.prune.learn.run_full --study ../expr/refiner_prune/2.5/learned_heads_fsdp_gt_20261014_r9_fresh_logit_l1_dev7_rank128/configs/frozen_study.json
+```
+
+For the lower sparsity coefficient and higher gate LR recipe, use
+`configs/learned_heads_dev7_fsdp_gt_logit_l1_rank128_lambda01_gatelr01.json`.
+It uses `lambda(t)=0.1*(0.1+0.9*min(t/100,1))` and gate LR 0.1 from the first update.
+The effective sparsity weight starts at 0.01 at t=0, is 0.0109 on update one, and reaches 0.1 at update 100.
+The loss remains `mean(relu(alpha+3))`; its sparsity gradient is zero at or below minus three.
+Adapter LR stays 0.0001 with its 50-update warmup. Rank, inputs, draw cycle and phase boundaries stay unchanged.
+Start a separate fresh study with new trainable tensors, empty optimizer states and a new W&B run.
+The coefficient, ramp and gate LR change together, so this compares recipes rather than isolating the coefficient.
+
+The confirmed 100-update-ramp run has a separate frozen study. Launch or resume its direct owner with:
+
+```bash
+conda activate ltx
+CUDA_VISIBLE_DEVICES=0,1,2,3 CUBLAS_WORKSPACE_CONFIG=:4096:8 python -u -m scripts.prune.learn.run_full --study ../expr/refiner_prune/2.5/learned_heads_fsdp_gt_20261014_r11_fresh_rank128_lambda01_gatelr01_ramp100/configs/frozen_study.json
+```
+
+Read its `monitoring/status.json` and `monitoring/fresh_initial_verification.json` for actual startup evidence.

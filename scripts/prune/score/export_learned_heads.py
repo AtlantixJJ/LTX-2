@@ -19,6 +19,29 @@ from scripts.prune.score import export_pruned
 FORMAT = "whole_clip_d0_learned_heads_v1"
 
 
+def prepare_geometry_inputs(study, gpu_id):
+    """Supply legacy seed-42 provenance without calibration or transformer forwards."""
+    import hashlib
+
+    from scripts.prune.learn import heads
+
+    root = Path(study["root"])
+    missing = []
+    for source in study["splits"]["learning"]:
+        key = hashlib.sha256(source["relative_dir"].encode()).hexdigest()
+        inputs = root / "inputs" / key / "seed_42"
+        if not (inputs / "manifest.json").exists():
+            missing.append((source, inputs))
+    if not missing:
+        return
+    heads.numerical_policy()
+    current = heads.open_current(study, gpu_id)
+    with torch.no_grad():
+        for source, inputs in missing:
+            whole_clip.prepare_score_inputs(inputs, source, current=current, sigmas=study["config"]["sigmas"], seed=42)
+    print(f"saved {len(missing)} missing structural input manifests; no model forwards", flush=True)
+
+
 def masks_from_tensor(mask, widths):
     names = [f"{b}.attn1" for b in range(len(mask))]
     if (
@@ -232,8 +255,12 @@ def main():
     p.add_argument("--arm", required=True)
     p.add_argument("--replicate-seed", type=int, default=42)
     p.add_argument("--stage", choices=("compact_base", "final_merged"), required=True)
+    p.add_argument("--input-gpu-id", type=int, help="Save missing seed-42 structural inputs on this GPU; no model load.")
     args = p.parse_args()
-    print(run_export(load_study(args.study), args.arm, args.replicate_seed, args.stage))
+    study = load_study(args.study)
+    if args.input_gpu_id is not None:
+        prepare_geometry_inputs(study, args.input_gpu_id)
+    print(run_export(study, args.arm, args.replicate_seed, args.stage))
 
 
 if __name__ == "__main__":

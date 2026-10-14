@@ -102,7 +102,7 @@ def validate_envelope(path, *, base=None, candidate=None, verify_components=True
         expected_study = study["identity"]
         if receipt["update"] <= 700 and p in record["lineage"].get("prefix_receipts", {}):
             expected_study = record["lineage"]["source_identity"]["study"]
-        if receipt["study"] != expected_study or len(receipt["draws"]) != 2:
+        if receipt["study"] != expected_study or len(receipt["draws"]) != config.get("global_unique_clips", 2):
             raise ValueError("incomplete paired microbatch coverage")
         for draw in receipt["draws"]:
             manifest_path = Path(draw["input_manifest"])
@@ -112,6 +112,12 @@ def validate_envelope(path, *, base=None, candidate=None, verify_components=True
             epsilon = manifest_path.parent / native["videos"][0]["artifacts"]["epsilon"]
             if provenance.file_sha256(epsilon) != draw["epsilon_sha256"]:
                 raise ValueError("consumed training epsilon changed")
+            if study["config"].get("uniform_f18", False):
+                from scripts.prune.data.training_windows import validate_saved_window
+
+                if "training_window" not in draw:
+                    raise ValueError("uniform F18 export requires consumed window evidence")
+                validate_saved_window(manifest_path.parent, draw["training_window"])
     if actual_updates != expected_updates:
         raise ValueError("training update coverage differs from declared arm budget")
     for wrapper in record["structural_wrappers"].values():

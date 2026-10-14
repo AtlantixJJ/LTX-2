@@ -82,3 +82,26 @@ def partition(model, devices):
             handle.remove()
         # The enclosing Session releases all parameter storage. Moving the
         # trained model back to one GPU here could itself exhaust that GPU.
+
+
+class PlacedSession:
+    """Apply frozen block placement to every resident model, including recovery."""
+
+    def __init__(self, current, devices, reference_root=None):
+        self.current = current
+        self.device = current.device
+        self.execution_devices = tuple(torch.device(f"cuda:{d}") for d in devices)
+        self.reference_root = reference_root
+        if self.execution_devices[0] != self.device:
+            raise ValueError("placement primary differs from Session device")
+        if len(devices) != 4 or devices != [0, 1, 2, 3] or torch.cuda.device_count() != 4:
+            raise ValueError("placement requires exactly four visible GPUs")
+
+    def __getattr__(self, name):
+        return getattr(self.current, name)
+
+    @contextmanager
+    def transformer(self, *args, **kwargs):
+        with self.current.transformer(*args, **kwargs) as model:
+            with partition(model, self.execution_devices):
+                yield model

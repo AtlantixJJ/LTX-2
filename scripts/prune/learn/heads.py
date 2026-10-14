@@ -22,10 +22,9 @@ import torch
 from scripts.onestep_avatar.corpus.dataset import load_training_master
 from scripts.onestep_avatar.model import common
 from scripts.prune.core import ltx_adapter, provenance, session
-from scripts.prune.data import foreground, whole_clip
-from scripts.prune.data.head_score_dataset import SIGMAS
-from scripts.prune.data.learned_head_study import load_study
-from scripts.prune.learn import adapters, checkpoints, losses
+from scripts.prune.data import foreground, training_windows, whole_clip
+from scripts.prune.data.learned_head_study import load_study, study_sigmas
+from scripts.prune.learn import adapters, checkpoints, losses, protocol
 from scripts.prune.learn.gates import HeadGates, nearest_removed, select_legal
 from scripts.prune.learn.teacher_references import TeacherReferences
 from scripts.prune.score import hooks, token_sampling
@@ -120,7 +119,12 @@ def open_current(study, gpu_id):
 def input_case(study, current, source, seed, sigma):
     key = hashlib.sha256(source["relative_dir"].encode()).hexdigest()
     root = Path(study["root"]) / f"inputs/{key}/seed_{seed}"
-    manifest = whole_clip.prepare_score_inputs(root, source, current=current, sigmas=SIGMAS, seed=seed)
+    import fcntl
+
+    root.parent.mkdir(parents=True, exist_ok=True)
+    with (root.parent / f"{root.name}.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        manifest = whole_clip.prepare_score_inputs(root, source, current=current, sigmas=study_sigmas(study), seed=seed)
     grid, video, c0, row = whole_clip.build_input(
         root, manifest, view=source["resolved_dir"], sigma=sigma, current=current
     )
@@ -128,6 +132,12 @@ def input_case(study, current, source, seed, sigma):
     clean = grid.patchify(capture.unsqueeze(0).to(current.device))
     epsilon = whole_clip.load_epsilon(root, row).to(current.device)
     return grid, video, c0, clean, epsilon, root, manifest
+
+
+def training_input_case(study, current, source, seed, sigma):
+    """Apply only the frozen training crop; other consumers keep full sources."""
+    case = input_case(study, current, source, seed, sigma)
+    return training_windows.crop_case(case, current, seed, sigma) if training_windows.enabled(study["config"]) else case
 
 
 def reference_identity(study, current, grid, video, epsilon, root, manifest, sigma):
@@ -164,7 +174,7 @@ def teacher_phase(study, current, split, deadline):
     with resident as model:
         for source in sources:
             for seed in study["config"]["evaluation_seeds"]:
-                for sigma in SIGMAS:
+                for sigma in study_sigmas(study):
                     if time.monotonic() >= deadline:
                         raise TimeoutError("teacher phase bound reached; completed references remain immutable")
                     grid, video, c0, _, eps, root, manifest = input_case(study, current, source, seed, sigma)
@@ -195,7 +205,7 @@ def energy_phase(study, current, deadline):
             key = hashlib.sha256(source["relative_dir"].encode()).hexdigest()
             path = root / f"calibration/energy/{key}.json"
             native_root = root / f"inputs/{key}/seed_42"
-            manifest = whole_clip.prepare_score_inputs(native_root, source, current=current, sigmas=SIGMAS, seed=42)
+            manifest = whole_clip.prepare_score_inputs(native_root, source, current=current, sigmas=study_sigmas(study), seed=42)
             identity = {
                 "study": study["identity"],
                 "view": source["relative_dir"],
@@ -210,7 +220,7 @@ def energy_phase(study, current, deadline):
                 records.append(record)
                 continue
             observations = []
-            for j, sigma in enumerate(SIGMAS):
+            for j, sigma in enumerate(study_sigmas(study)):
                 partial = path.with_suffix(f".sigma{j}.json")
                 if partial.exists():
                     saved = json.loads(partial.read_text())
@@ -238,11 +248,11 @@ def energy_phase(study, current, deadline):
                     raise ValueError("energy coverage or native output failed")
                 checkpoints.publish_json(partial, {"identity": identity, "sigma": sigma, "energies": energies})
                 observations.append(energies)
-            record = {"identity": identity, "sigmas": SIGMAS, "energies": observations}
+            record = {"identity": identity, "sigmas": study_sigmas(study), "energies": observations}
             checkpoints.publish_json(path, record)
             records.append(record)
     raw = torch.tensor(
-        [[r["energies"][i][f"{b}.attn1"] for b in range(48)] for r in records for i in range(8)], dtype=torch.float64
+        [[r["energies"][i][f"{b}.attn1"] for b in range(48)] for r in records for i in range(len(study_sigmas(study)))], dtype=torch.float64
     ).mean(0)
     if not torch.isfinite(raw).all() or (raw.mean(1) <= 0).any():
         raise ValueError("invalid pooled raw energy")
@@ -298,6 +308,14 @@ def train_identity(study, arm, seed, removed, draws):
 
 def training_phase(study, current, args, deadline):
     root, config = Path(study["root"]), study["config"]
+    uniform_f18 = training_windows.enabled(config)
+    draw_count = protocol.validate(config)
+    if config.get("foreground_preparation") == "deferred" and args.arm in (
+        "learned_balanced",
+        "learned_person",
+        "learned_small_regions",
+    ):
+        raise ValueError("regional and balanced arms require foreground preparation")
     fresh = args.arm.endswith("_fresh")
     if fresh and args.phase != "compact_recovery":
         raise ValueError("fresh controls run only compact recovery")
@@ -309,18 +327,28 @@ def training_phase(study, current, args, deadline):
         or nearest_removed(args.removed_heads, allowed, heads=config["heads"]) != args.removed_heads
     ):
         raise ValueError("removal budget differs from frozen feasible choices")
+    devices = getattr(current, "execution_devices", (current.device,))
+    runtime = getattr(current, "distributed", None)
     # Sustained training is gated by native execution evidence, never a schema-only receipt.
     feasibility_path = root / "checks/feasibility.json"
     feasibility = json.loads(feasibility_path.read_text())
     if feasibility.get("study") != study["identity"] or feasibility.get("passed") is not True:
         raise ValueError("sustained learning requires passed native feasibility")
-    teacher_completion = json.loads((root / "teacher/validation_completion.json").read_text())
-    if teacher_completion["study"] != study["identity"]:
-        raise ValueError("monitoring requires original-teacher references for this study")
-    probe_path = root / "checks/execution_probes.json"
-    probe = json.loads(probe_path.read_text()) if probe_path.exists() else {}
-    if not (probe.get("study") == study["identity"] and probe.get("speed_layout_passed")) and not args.quality_research:
-        raise ValueError("no reproducible compact speed saving; explicitly request a quality research pilot")
+    if runtime and feasibility.get("method") != runtime.feasibility_method:
+        raise ValueError("distributed learning requires the matching native execution gate")
+    gt_monitor = config.get("monitor_reference") == "gt_capture"
+    if not gt_monitor:
+        teacher_completion = json.loads((root / "teacher/validation_completion.json").read_text())
+        if teacher_completion["study"] != study["identity"]:
+            raise ValueError("monitoring requires original-teacher references for this study")
+        probe_path = root / "checks/execution_probes.json"
+        probe = json.loads(probe_path.read_text()) if probe_path.exists() else {}
+        if (
+            not (probe.get("study") == study["identity"] and probe.get("speed_layout_passed"))
+            and not args.quality_research
+        ):
+            raise ValueError("no reproducible compact speed saving; explicitly request a quality research pilot")
+    save_checkpoint = runtime.save if runtime else checkpoints.save
     policy = "balanced" if args.arm == "learned_balanced" else "ordinary"
     draw_record = study["draws"][f"{args.replicate_seed}:{policy}"]
     draws = json.loads(Path(draw_record["path"]).read_text())
@@ -332,9 +360,23 @@ def training_phase(study, current, args, deadline):
     scores = None
     if args.arm == "energy":
         ranking = json.loads((root / "calibration/ranking.json").read_text())
-        if ranking["study"] != study["identity"] or ranking["views"] != [
-            s["relative_dir"] for s in study["splits"]["learning"]
-        ]:
+        expected_views = [s["relative_dir"] for s in study["splits"]["learning"]]
+        actual_views = ranking["views"]
+        reused = config.get("energy_scope") == "existing_learning_subset"
+        if (
+            ranking["study"] != study["identity"]
+            or (not reused and actual_views != expected_views)
+            or (
+                reused
+                and (
+                    ranking.get("requested_views") != expected_views
+                    or not actual_views
+                    or not set(actual_views).issubset(expected_views)
+                    or set(actual_views) & set(ranking["missing_views"])
+                    or set(actual_views) | set(ranking["missing_views"]) != set(expected_views)
+                )
+            )
+        ):
             raise ValueError("energy ranking uses another learning pool")
         for p, sha in ranking["records"].items():
             if provenance.file_sha256(p) != sha:
@@ -356,6 +398,10 @@ def training_phase(study, current, args, deadline):
                     raise ValueError("consumed training input changed since checkpoint")
                 native = whole_clip.load_manifest(input_path.parent)
                 whole_clip.load_epsilon(input_path.parent, native["videos"][0])
+                if uniform_f18:
+                    if "training_window" not in draw:
+                        raise ValueError("uniform F18 resume requires saved window evidence")
+                    training_windows.validate_saved_window(input_path.parent, draw["training_window"])
     lineage = previous["lineage"] if previous else {}
     if fresh and previous is None:
         from scripts.prune.score import export_pruned
@@ -378,7 +424,7 @@ def training_phase(study, current, args, deadline):
             lineage["mask_source"] = {"path": str(frozen_path), "sha256": provenance.file_sha256(frozen_path)}
         source_path = Path(study["components"]["transformer"]["path"])
         model_path = root / f"exports/{args.arm}/replicate_{args.replicate_seed}/compact_base.safetensors"
-        if not model_path.exists():
+        if not model_path.exists() and (runtime is None or runtime.primary):
             checkpoints.publish(
                 model_path,
                 lambda p: export_pruned.export(
@@ -389,6 +435,8 @@ def training_phase(study, current, args, deadline):
                     mode="compact",
                 ),
             )
+        if runtime:
+            torch.distributed.barrier()
         gates.decision = fixed_mask.to(current.device)
         lineage.update(
             {
@@ -435,9 +483,12 @@ def training_phase(study, current, args, deadline):
         go = optimizer([gates.alpha], config["gate_lr"], config) if scores is None and not compact else None
         if fresh and previous is None:
             adapters.load_state(
-                attached, adapters.transfer(adapters.fresh_source_state(args.replicate_seed), gates.decision.cpu())
+                attached,
+                adapters.transfer(
+                    adapters.fresh_source_state(args.replicate_seed, rank=config["rank"]), gates.decision.cpu()
+                ),
             )
-            checkpoints.save(
+            save_checkpoint(
                 directory / "checkpoints/update_1000.pt",
                 identity=identity,
                 update=1000,
@@ -469,12 +520,22 @@ def training_phase(study, current, args, deadline):
         sources = {s["relative_dir"]: s for s in study["splits"]["learning"]}
         end = (2500 if args.arm == "learned_sequential" else 1500) if compact else 1000
         live = hooks.attach_head_provider(model, gates.provider) if not compact else hooks.MaskAttachments()
+        if runtime and not runtime.uses_ddp:
+            model = runtime.wrap(model, ap)
+        from scripts.prune.learn.step import TrainingStep
+
+        if runtime and runtime.uses_ddp:
+            gates.alpha.requires_grad_(go is not None)
+        training = TrainingStep(model, gates, config, args.arm)
+        if runtime and runtime.uses_ddp:
+            training = runtime.wrap_step(training)
+        frozen_parameters = [(p, p._version) for p in model.parameters() if not p.requires_grad]
         stop = [False]
         old = signal.signal(signal.SIGTERM, lambda *_: stop.__setitem__(0, True))
         phase = previous["phase"] if previous else "soft"
         try:
             if not previous and not fresh:
-                checkpoints.save(
+                save_checkpoint(
                     directory / "checkpoints/update_0000.pt",
                     identity=identity,
                     update=0,
@@ -486,9 +547,10 @@ def training_phase(study, current, args, deadline):
                 )
             for update in range(start + 1, end + 1):
                 previous_mask = gates.decision.detach().clone() if gates.decision is not None else None
-                if stop[0] or time.monotonic() >= deadline:
+                requested_stop = stop[0] or time.monotonic() >= deadline
+                if runtime.any(requested_stop) if runtime else requested_stop:
                     if update > start + 1:
-                        checkpoints.save(
+                        save_checkpoint(
                             directory / f"checkpoints/update_{update - 1:04d}.pt",
                             identity=identity,
                             update=update - 1,
@@ -525,14 +587,17 @@ def training_phase(study, current, args, deadline):
                     go.zero_grad(set_to_none=True)
                 started = time.monotonic()
                 scalars = []
-                torch.cuda.reset_peak_memory_stats(current.device)
+                for device in devices:
+                    torch.cuda.reset_peak_memory_stats(device)
                 draw_update = update - 1000 if compact and args.arm == "learned_sequential" else update
-                for draw in draws[(draw_update - 1) * 2 : draw_update * 2]:
-                    g = gates.microbatch()
-                    grid, video, c0, capture, eps, inputs, manifest = input_case(
-                        study, current, sources[draw["view"]], draw["noise_seed"], SIGMAS[draw["sigma_index"]]
+                selected = protocol.update_draws(draws, draw_update, config, runtime.rank if runtime else None)
+                if runtime:
+                    runtime.mask(gates)
+                for draw in selected:
+                    sigma = study_sigmas(study)[draw["sigma_index"]]
+                    grid, video, c0, capture, eps, inputs, manifest = training_input_case(
+                        study, current, sources[draw["view"]], draw["noise_seed"], sigma
                     )
-                    velocity, clean = ltx_adapter.velocity_forward(model, video)
                     regions = None
                     if args.arm in ("learned_person", "learned_small_regions"):
                         source = sources[draw["view"]]
@@ -547,34 +612,42 @@ def training_phase(study, current, args, deadline):
                                     tracks[name], matte, source["capture_encode_record"], schema=tracks["schema"]
                                 )
                                 regions[name] = region_grid.reshape(1, -1).to(current.device)
-                    terms = losses.velocity_mse(velocity, eps, capture, grid.tokens_per_latent_frame, regions)
-                    loss, penalty = losses.phase_loss(
-                        terms,
-                        g,
-                        update=update,
-                        phase=phase,
-                        lambda_max=0 if args.arm == "learned_no_sparsity" else config["lambda_max"],
-                        person=config["person_coefficient"] if regions else 0.0,
-                        small_region=config["small_region_coefficient"] if args.arm == "learned_small_regions" else 0.0,
+                    regions = training_windows.slice_regions(regions, manifest.get("training_window"))
+                    accumulation = 1 if runtime and runtime.uses_ddp else 2
+                    loss, official, penalty = training(
+                        video, eps, capture, grid.tokens_per_latent_frame, update, phase, regions, accumulation,
                     )
-                    if not torch.isfinite(loss):
-                        raise ValueError("nonfinite training loss")
-                    loss.backward()
+                    (loss * (accumulation if runtime else 1)).backward()
                     scalars.append(
                         {
-                            "official": float(terms["official"].detach()),
+                            "official": float(official),
                             "penalty": float(penalty.detach()),
+                            "sigma": sigma,
+                            "sigma_index": draw["sigma_index"],
                             "input_manifest": str(inputs / "manifest.json"),
                             "input_manifest_sha256": provenance.file_sha256(inputs / "manifest.json"),
                             "epsilon_sha256": manifest["videos"][0]["artifacts"]["epsilon_sha256"],
+                            **({"training_window": manifest["training_window"]} if uniform_f18 else {}),
                         }
                     )
-                    del velocity, clean, loss, terms, capture, eps, grid, video, c0
+                    del loss, official, capture, eps, grid, video, c0
+                local_scalars = scalars
+                if runtime:
+                    runtime.reduce_gradients(ap + ([gates.alpha] if go else []))
+                    scalars = runtime.draws(scalars)
                 anorm = float(torch.nn.utils.clip_grad_norm_(ap, 1.0, error_if_nonfinite=True))
                 sparse_gradient = torch.zeros_like(gates.alpha)
                 if phase == "soft" and args.arm != "learned_no_sparsity":
-                    p = gates.alpha.detach().sigmoid()
-                    sparse_gradient = config["lambda_max"] * min(update / 300, 1.0) * p * (1 - p) / p.numel()
+                    sparse_gradient = losses.sparsity_gradient(
+                        gates.alpha,
+                        update=update,
+                        phase=phase,
+                        lambda_max=config["lambda_max"],
+                        lambda_warmup=config.get("lambda_warmup", 300),
+                        lambda_start_multiplier=config.get("lambda_start_multiplier", 0.0),
+                        kind=config.get("sparsity_penalty", "mean_sigmoid"),
+                        logit_offset=config.get("sparsity_logit_offset", 3.0),
+                    )
                 sparse_norm = float(sparse_gradient.norm())
                 velocity_norm = (
                     float((gates.alpha.grad - sparse_gradient).norm()) if go and gates.alpha.grad is not None else 0.0
@@ -592,6 +665,30 @@ def training_phase(study, current, args, deadline):
                     gates.decision = select_legal(gates.alpha if scores is None else scores, kept, allowed).to(
                         current.device
                     )
+                memory = []
+                for device in devices:
+                    if device.type != "cuda":
+                        continue
+                    torch.cuda.synchronize(device)
+                    free, _ = torch.cuda.mem_get_info(device)
+                    memory.append(
+                        {
+                            "device": str(device),
+                            "peak_allocated": torch.cuda.max_memory_allocated(device),
+                            "peak_reserved": torch.cuda.max_memory_reserved(device),
+                            "free": free,
+                        }
+                    )
+                    if free < config["headroom_bytes"]:
+                        raise RuntimeError(f"training device headroom below frozen minimum: {device}")
+                if runtime:
+                    memory = [item for rank_memory in runtime.gather(memory) for item in rank_memory]
+                    runtime.mask(gates)
+                rank_metrics = runtime.gather({
+                    "rank": runtime.rank, "sigma": local_scalars[0]["sigma"],
+                    "official": local_scalars[0]["official"], "penalty": local_scalars[0]["penalty"],
+                    "seconds": time.monotonic() - started,
+                }) if runtime else []
                 receipt = {
                     "study": study["identity"],
                     "update": update,
@@ -601,23 +698,36 @@ def training_phase(study, current, args, deadline):
                     "logit_gradient_norm": gnorm,
                     "velocity_logit_gradient_norm": velocity_norm,
                     "sparsity_logit_gradient_norm": sparse_norm,
+                    "sparsity_penalty_kind": config.get("sparsity_penalty", "mean_sigmoid"),
+                    "sparsity_logit_offset": config.get("sparsity_logit_offset", 3.0),
+                    "sparsity_lambda": losses.sparsity_coefficient(
+                        update,
+                        phase,
+                        lambda_max=config["lambda_max"],
+                        lambda_warmup=config.get("lambda_warmup", 300),
+                        lambda_start_multiplier=config.get("lambda_start_multiplier", 0.0),
+                    )
+                    if phase == "soft" and args.arm != "learned_no_sparsity"
+                    else 0.0,
                     "legal_mask_changes": int((gates.decision - previous_mask).abs().sum())
                     if previous_mask is not None and gates.decision is not None
                     else 0,
                     "gates": gates.snapshot(),
                     "seconds": time.monotonic() - started,
                     "peak_bytes": torch.cuda.max_memory_allocated(current.device),
+                    "devices": memory,
+                    **({"rank_metrics": rank_metrics} if runtime else {}),
                 }
                 receipt_path = directory / f"updates/{update:04d}.json"
                 if receipt_path.exists():
                     old_receipt = json.loads(receipt_path.read_text())
-                    fixed = [k for k in receipt if k not in ("seconds", "peak_bytes")]
+                    fixed = [k for k in receipt if k not in ("seconds", "peak_bytes", "devices", "rank_metrics")]
                     if any(old_receipt.get(k) != receipt[k] for k in fixed):
                         raise ValueError("replayed update differs from immutable progress evidence")
-                else:
+                elif runtime is None or runtime.primary:
                     checkpoints.publish_json(receipt_path, receipt)
                 if update % 100 == 0 or update in (700, 1000, 1500):
-                    checkpoints.save(
+                    save_checkpoint(
                         directory / f"checkpoints/update_{update:04d}.pt",
                         identity=identity,
                         update=update,
@@ -631,12 +741,12 @@ def training_phase(study, current, args, deadline):
                     if not compact:
                         monitor(study, current, model, gates, args.arm, args.replicate_seed, update, kept, scores)
                 print(
-                    f"{args.arm} update={update} phase={phase} velocity_mse={sum(r['official'] for r in scalars) / 2:.6g}",
+                    f"{args.arm} update={update} phase={phase} velocity_mse={sum(r['official'] for r in scalars) / draw_count:.6g}",
                     flush=True,
                 )
                 if args.max_updates and update - start >= args.max_updates:
                     if update % 100:
-                        checkpoints.save(
+                        save_checkpoint(
                             directory / f"checkpoints/update_{update:04d}.pt",
                             identity=identity,
                             update=update,
@@ -651,9 +761,10 @@ def training_phase(study, current, args, deadline):
         finally:
             signal.signal(signal.SIGTERM, old)
             live.detach_all()
-    checkpoints.publish_json(
-        directory / f"{args.phase}_completion.json", {"identity": identity, "update": end, "status": "complete"}
-    )
+    if runtime is None or runtime.primary:
+        checkpoints.publish_json(
+            directory / f"{args.phase}_completion.json", {"identity": identity, "update": end, "status": "complete"}
+        )
 
 
 def feasibility(study, current, deadline):
@@ -666,7 +777,7 @@ def feasibility(study, current, deadline):
         model.eval().requires_grad_(False)
         for source in cases:
             rows = []
-            for sigma in SIGMAS:
+            for sigma in study_sigmas(study):
                 if time.monotonic() >= deadline:
                     raise TimeoutError("native feasibility bound reached")
                 grid, video, c0, capture, eps, _, _ = input_case(study, current, source, 42, sigma)
@@ -683,7 +794,7 @@ def feasibility(study, current, deadline):
                         reference_root
                         / "checks/feasibility"
                         / f"F{source['n_latent_frames']}"
-                        / f"sigma_{SIGMAS.index(sigma)}"
+                        / f"sigma_{study_sigmas(study).index(sigma)}"
                     )
                     reference_velocity = torch.load(
                         reference_dir / "native_velocity.pt", map_location="cpu", weights_only=True
@@ -708,7 +819,7 @@ def feasibility(study, current, deadline):
                     Path(study["root"])
                     / "checks/feasibility"
                     / f"F{source['n_latent_frames']}"
-                    / f"sigma_{SIGMAS.index(sigma)}"
+                    / f"sigma_{study_sigmas(study).index(sigma)}"
                 )
                 checkpoints.publish_tensor(destination / "native_velocity.pt", velocity)
                 checkpoints.publish_tensor(destination / "native_clean.pt", common.with_clean_prefix(clean, c0))
@@ -736,10 +847,10 @@ def feasibility(study, current, deadline):
                 root / f"checks/feasibility/F{source['n_latent_frames']}/controls.json",
                 {"study": study["identity"], "rows": rows},
             )
-            print(f"F{source['n_latent_frames']} all eight native controls passed", flush=True)
+            print(f"F{source['n_latent_frames']} all declared native controls passed", flush=True)
         del native, velocity, clean, all_one, near_velocity, near_clean, terms
         # Verify zero-adapter training parity before bounded ten-update backwards.
-        attached = adapters.attach(model, 42)
+        attached = adapters.attach(model, 42, config["rank"])
         frozen_parameters = [(p, p._version) for p in model.parameters() if not p.requires_grad]
         ap = adapters.parameters(attached)
         ao = optimizer(ap, config["adapter_lr"], config)
@@ -757,14 +868,14 @@ def feasibility(study, current, deadline):
                             {
                                 "frames": source["n_latent_frames"],
                                 "update": update,
-                                "sigma": SIGMAS[(update - 1) % 8],
+                                "sigma": study_sigmas(study)[(update - 1) % len(study_sigmas(study))],
                                 "phase": "soft" if update <= 5 else "binary",
                             }
                         )
                         + "\n"
                     )
                     grid, video, c0, capture, eps, _, _ = input_case(
-                        study, current, source, 42 + update, SIGMAS[(update - 1) % 8]
+                        study, current, source, 42 + update, study_sigmas(study)[(update - 1) % len(study_sigmas(study))]
                     )
                     # Parity is an inference control. Retaining its full-clip adapter
                     # graph defeats checkpointing before the actual backward test.
@@ -792,13 +903,29 @@ def feasibility(study, current, deadline):
                     with hooks.attach_head_provider(model, gates.provider):
                         velocity, _ = ltx_adapter.velocity_forward(model, video)
                         terms = losses.velocity_mse(velocity, eps, capture, grid.tokens_per_latent_frame)
-                        loss, _ = losses.phase_loss(terms, gate, update=update, phase=gates.phase, accumulation=2)
+                        loss, _ = losses.phase_loss(
+                            terms, gate, update=update, phase=gates.phase, accumulation=2,
+                            lambda_max=config["lambda_max"],
+                            lambda_warmup=config.get("lambda_warmup", 300),
+                            lambda_start_multiplier=config.get("lambda_start_multiplier", 0.0),
+                            logits=gates.alpha,
+                            sparsity_kind=config.get("sparsity_penalty", "mean_sigmoid"),
+                            logit_offset=config.get("sparsity_logit_offset", 3.0),
+                        )
                         loss.backward()
                         del velocity, loss, terms, gate
                         gate = gates.microbatch()
                         velocity, _ = ltx_adapter.velocity_forward(model, video)
                         terms = losses.velocity_mse(velocity, eps, capture, grid.tokens_per_latent_frame)
-                        loss, _ = losses.phase_loss(terms, gate, update=update, phase=gates.phase, accumulation=2)
+                        loss, _ = losses.phase_loss(
+                            terms, gate, update=update, phase=gates.phase, accumulation=2,
+                            lambda_max=config["lambda_max"],
+                            lambda_warmup=config.get("lambda_warmup", 300),
+                            lambda_start_multiplier=config.get("lambda_start_multiplier", 0.0),
+                            logits=gates.alpha,
+                            sparsity_kind=config.get("sparsity_penalty", "mean_sigmoid"),
+                            logit_offset=config.get("sparsity_logit_offset", 3.0),
+                        )
                         loss.backward()
                     for device in devices:
                         torch.cuda.synchronize(device)
@@ -846,7 +973,7 @@ def feasibility(study, current, deadline):
                     )
                     del velocity, loss, terms, gate, grid, video, c0, capture, eps
             # Reset paired zero-delta state for the second length.
-            adapters.load_state(attached, adapters.fresh_source_state(42))
+            adapters.load_state(attached, adapters.fresh_source_state(42, rank=config["rank"]))
             gates.alpha.data.fill_(3.0)
             ao = optimizer(ap, config["adapter_lr"], config)
             go = optimizer([gates.alpha], config["gate_lr"], config)
@@ -908,7 +1035,7 @@ def execution_probes(study, current, deadline):
     root, config = Path(study["root"]), study["config"]
     source_path = Path(study["components"]["transformer"]["path"])
     cases = [next(s for s in study["splits"]["learning"] if s["n_latent_frames"] == length) for length in (18, 28)]
-    sigma = SIGMAS[0]
+    sigma = study_sigmas(study)[0]
     evidence = {}
     for label, masks in probe_layouts(config).items():
         output = root / f"exports/execution_probes/{label}.safetensors"
@@ -1022,22 +1149,29 @@ def execution_probes(study, current, deadline):
 
 def monitor(study, current, model, gates, arm, seed, update, kept, scores=None):
     """Paired quick validation and hardening evidence, with unchanged adapters."""
-    from scripts.prune.evaluate.learned_heads import paired_metrics
+    from scripts.prune.evaluate.learned_heads import capture_metrics, paired_metrics
 
     root = Path(study["root"])
-    cache = TeacherReferences(root / "teacher/references")
+    gt_only = study["config"].get("monitor_reference") == "gt_capture"
+    runtime = getattr(current, "distributed", None)
+    cache = None if gt_only else TeacherReferences(root / "teacher/references")
     actors = study["splits"]["validation_actors"][:4]
     cases = [next(s for s in study["splits"]["validation"] if s["actor"] == actor) for actor in actors]
+    ddp = runtime is not None and runtime.uses_ddp
+    if ddp:
+        cases = [source for index, source in enumerate(cases) if index % runtime.world == runtime.rank]
     original = gates.phase, gates.decision, gates.current
     rows = []
     final_mask = select_legal(gates.alpha if scores is None else scores, kept, gates.allowed).to(current.device)
     with torch.no_grad():
         for source in cases:
-            for i in (0, 4, 7):
-                sigma = SIGMAS[i]
+            for i in (0, 4, len(study_sigmas(study)) - 1):
+                sigma = study_sigmas(study)[i]
                 grid, video, c0, capture, eps, inputs, manifest = input_case(study, current, source, 2042, sigma)
-                ref_id = reference_identity(study, current, grid, video, eps, inputs, manifest, sigma)
-                teacher = cache.read(ref_id)
+                ref_id = (
+                    None if gt_only else reference_identity(study, current, grid, video, eps, inputs, manifest, sigma)
+                )
+                teacher = None if gt_only else cache.read(ref_id)
                 outputs = {}
                 for state in ("trained", "hardened"):
                     gates.phase = original[0] if state == "trained" else "compact"
@@ -1050,18 +1184,26 @@ def monitor(study, current, model, gates, arm, seed, update, kept, scores=None):
                         / f"checks/{arm}/replicate_{seed}/monitor_{update:04d}"
                         / hashlib.sha256(source["relative_dir"].encode()).hexdigest()
                     )
-                    checks = paired_metrics(
-                        velocity,
-                        clean,
-                        teacher["velocity"].to(current.device),
-                        teacher["clean"].to(current.device),
-                        capture,
-                        eps,
-                        sigma=sigma,
-                        prefix_tokens=grid.tokens_per_latent_frame,
-                    )
+                    if gt_only:
+                        checks = capture_metrics(
+                            velocity, clean, capture, eps, prefix_tokens=grid.tokens_per_latent_frame
+                        )
+                    else:
+                        checks = paired_metrics(
+                            velocity,
+                            clean,
+                            teacher["velocity"].to(current.device),
+                            teacher["clean"].to(current.device),
+                            capture,
+                            eps,
+                            sigma=sigma,
+                            prefix_tokens=grid.tokens_per_latent_frame,
+                        )
                     path = directory / f"sigma_{i}_{state}.pt"
-                    checkpoints.publish_tensor(path, grid.unpatchify_block(clean, grid.latent_frames))
+                    if runtime is None or runtime.primary or ddp:
+                        checkpoints.publish_tensor(path, grid.unpatchify_block(clean, grid.latent_frames))
+                    if runtime and not ddp:
+                        torch.distributed.barrier()
                     outputs[state] = {"metrics": checks, "path": str(path), "sha256": provenance.file_sha256(path)}
                 rows.append(
                     {
@@ -1070,14 +1212,19 @@ def monitor(study, current, model, gates, arm, seed, update, kept, scores=None):
                         "sigma": sigma,
                         "states": outputs,
                         "input_manifest_sha256": provenance.file_sha256(inputs / "manifest.json"),
-                        "teacher_key": checkpoints.digest(ref_id),
+                        "reference": "gt_capture" if gt_only else "original_teacher",
+                        "teacher_key": None if gt_only else checkpoints.digest(ref_id),
+                        **({"rank": runtime.rank} if ddp else {}),
                     }
                 )
     gates.phase, gates.decision, gates.current = original
-    checkpoints.publish_json(
-        root / f"checks/{arm}/replicate_{seed}/monitor_{update:04d}.json",
-        {"study": study["identity"], "update": update, "rows": rows, "hardening_is_model_change": True},
-    )
+    if ddp:
+        rows = [row for rank_rows in runtime.gather(rows) for row in rank_rows]
+    if runtime is None or runtime.primary:
+        checkpoints.publish_json(
+            root / f"checks/{arm}/replicate_{seed}/monitor_{update:04d}.json",
+            {"study": study["identity"], "update": update, "rows": rows, "hardening_is_model_change": True},
+        )
 
 
 def main():
@@ -1111,7 +1258,27 @@ def main():
     study = load_study(args.study)
     if args.replicate_seed not in study["config"]["replicate_seeds"]:
         p.error("replicate seed is not frozen")
+    distributed = None
+    if study["config"].get("distributed_training") in (protocol.FSDP_METHOD, protocol.DDP_METHOD) and args.phase in (
+        "selection",
+        "compact_recovery",
+    ):
+        from scripts.prune.learn.distributed import Runtime, Session
+
+        if protocol.is_ddp(study["config"]):
+            from scripts.prune.learn.ddp import DDPRuntime
+
+            distributed = DDPRuntime(study["config"])
+        else:
+            distributed = Runtime()
+        args.gpu_id = distributed.local_rank
     current = open_current(study, args.gpu_id)
+    if distributed:
+        current = Session(current, distributed)
+    if args.phase in ("feasibility", "selection", "compact_recovery") and "native_placement" in study["config"]:
+        from scripts.prune.learn.placement import PlacedSession
+
+        current = PlacedSession(current, study["config"]["native_placement"]["logical_devices"])
     deadline = time.monotonic() + study["config"]["wall_time_hours"] * 3600
     random.seed(args.replicate_seed)
     np.random.seed(args.replicate_seed)
@@ -1129,7 +1296,8 @@ def main():
         else:
             training_phase(study, current, args, deadline)
         checkpoints.publish_json(
-            Path(study["root"]) / f"provenance/phase_receipts/{args.phase}_{provenance.run_id()}.json",
+            Path(study["root"])
+            / f"provenance/phase_receipts/{args.phase}_rank{args.gpu_id}_{provenance.run_id()}.json",
             {
                 "study": study["identity"],
                 "phase": args.phase,
@@ -1137,7 +1305,9 @@ def main():
                 "replicate_seed": args.replicate_seed,
                 "status": "bounded_partial" if args.max_updates else "returned_without_error",
                 "elapsed_seconds": time.monotonic() - started,
-                "gpu_hours": (time.monotonic() - started) / 3600,
+                "gpu_hours": (time.monotonic() - started)
+                * len(getattr(current, "execution_devices", (current.device,)))
+                / 3600,
                 "gpu_id": args.gpu_id,
                 "gpu_name": torch.cuda.get_device_name(current.device),
                 "scope": "resident phase wall time; includes monitoring; session setup recorded separately",
@@ -1156,6 +1326,9 @@ def main():
             },
         )
         raise
+    finally:
+        if distributed:
+            distributed.close()
 
 
 if __name__ == "__main__":

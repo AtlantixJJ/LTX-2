@@ -117,7 +117,8 @@ def test_resume_identical_optimizer_and_rng(tmp_path):
         checkpoints.verify_prefix(state, "one")
 
 
-def test_real_phase_loop_matches_interrupted_resume(tmp_path, monkeypatch):
+@pytest.mark.parametrize("gt_only", [False, True])
+def test_real_phase_loop_matches_interrupted_resume(tmp_path, monkeypatch, gt_only):
     import argparse
     import copy
     import json
@@ -178,6 +179,8 @@ def test_real_phase_loop_matches_interrupted_resume(tmp_path, monkeypatch):
         "warmup_updates": 50,
         "lambda_max": 0.001,
     }
+    if gt_only:
+        config["monitor_reference"] = "gt_capture"
     input_root = tmp_path / "input"
     input_root.mkdir()
     (input_root / "manifest.json").write_text("{}")
@@ -208,6 +211,8 @@ def test_real_phase_loop_matches_interrupted_resume(tmp_path, monkeypatch):
             ("checks/execution_probes.json", {"study": "one", "speed_layout_passed": True}),
             ("teacher/validation_completion.json", {"study": "one"}),
         ):
+            if gt_only and name != "checks/feasibility.json":
+                continue
             p = root / name
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(json.dumps(data))

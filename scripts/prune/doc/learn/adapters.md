@@ -15,7 +15,9 @@ For heads [0,2] and dimension two, retained channels are [0,1,4,5]. V slices B r
 
 ## Invariants
 
-Rank remains 16. Scaling remains one. Fresh recovery initializes full-source tensors before slicing. Optimizer step counters survive ordinary transfer.
+The frozen study supplies the adapter rank. The default API rank is 16; the high-capacity preset uses 128.
+Scaling remains one. Fresh recovery initializes full-source tensors at the frozen rank before slicing.
+Native checks and evaluation use the same rank when resetting source state. Optimizer step counters survive ordinary transfer.
 
 ## Gotchas
 

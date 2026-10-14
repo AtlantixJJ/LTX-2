@@ -13,6 +13,8 @@ conda run --no-capture-output -n ltx python -m scripts.prune.score.export_learne
 ```
 
 `--stage` selects compact_base or final_merged. Export performs CPU surgery.
+`--input-gpu-id 0` saves missing seed-42 structural input manifests before surgery. It loads no transformer and runs no scoring.
+The full GT supervisor uses this option after selection. The CUDA device only creates native noise and input metadata.
 
 Outputs: Compact checkpoint, geometry wrappers, masks and recovered envelope.
 See the [run guide](../usage.md#learned-head-phases).
@@ -24,6 +26,8 @@ The final binary selection supplies original head IDs. Existing coupled export r
 ## Organization logic
 
 Separate seed-42 legacy wrappers retain each clip geometry. The recovered envelope pins every consumed draw receipt and the full frozen study.
+GT training can reuse historical energy without creating these wrappers' inputs.
+Save only missing inputs with the shared native input producer after selection. Preserve the complete learning-view scope and original seed-42 contract.
 Fusion computes W0 plus B@A in FP32, then rounds once. The checkpoint pins its envelope; the envelope pins the merged tensor inventory.
 
 ## Invariants
@@ -37,3 +41,4 @@ Structural transfer, fusion and reload are different numerical checks. An export
 ## Tests
 
 Run `test_export_learned_heads.py` with CUDA hidden. Native BF16 checks remain separate scientific gates.
+The lazy-input test verifies missing-view selection, saved native settings and refusal to open a transformer.

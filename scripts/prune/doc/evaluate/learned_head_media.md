@@ -37,3 +37,10 @@ LPIPS and motion amount support review; they do not establish identity or correc
 ## Tests
 
 Run `test_learned_head_media.py` with CUDA hidden. Native BF16 checks remain separate scientific gates.
+
+## GT-reference mode
+
+Use matched capture RGB, capture VAE and candidate panels. There is no teacher panel or teacher-cache read.
+Score candidates against VAE GT and RGB GT. Keep the VAE-versus-RGB comparison as the reconstruction ceiling.
+Bootstrap absolute GT LPIPS where coverage is valid. Teacher-relative increases and flags stay absent.
+Media identities bind saved input hashes and noise settings; use one stable case hash for each synchronized comparison.

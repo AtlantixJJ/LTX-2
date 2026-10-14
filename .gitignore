@@ -37,6 +37,10 @@ wandb/
 *.jpg
 *.jpeg
 *.json
+!scripts/prune/configs/learned_heads_dev8_fsdp_gt.json
+!scripts/prune/configs/learned_heads_dev7_fsdp_gt_logit_l1.json
+!scripts/prune/configs/learned_heads_dev7_fsdp_gt_logit_l1_rank128.json
+!scripts/prune/configs/learned_heads_dev7_fsdp_gt_logit_l1_rank128_lambda01_gatelr01.json
 *.m4a
 *.mov
 *.mp3

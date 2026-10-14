@@ -15,7 +15,8 @@ A prefix branch requires update 700, the soft phase and a matching budget-indepe
 
 ## Invariants
 
-Completed files never change. A changed checkpoint fails. Only the active CUDA device contributes RNG state.
+Completed files never change. A changed checkpoint fails. Save RNG states for every CUDA device that owns an adapter or gate. Restore each state on its recorded device.
+Legacy single-device records remain readable. Do not initialize unrelated GPU contexts.
 
 ## Gotchas
 
@@ -31,3 +32,10 @@ Run `test_head_learning_state.py` with CUDA hidden. Native BF16 checks remain se
 A marker file without these fields fails.
 Candidate inference additionally checks the arm and replicate seed against that frozen list.
 Teacher reference generation uses the same freeze before producing blind evidence.
+
+## Distributed resume
+
+Four-rank FSDP keeps adapters, gates and Adam moments replicated in FP32.
+The runtime gathers each rank's Python, NumPy, CPU and local CUDA RNG state before saving on rank zero.
+Restore selects the recorded rank's state and rejects a different world size.
+All ranks wait until immutable checkpoint publication finishes.

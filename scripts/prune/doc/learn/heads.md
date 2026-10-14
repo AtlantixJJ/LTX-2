@@ -27,6 +27,7 @@ Feasibility checks native velocity conversion, all-one gates and zero adapters. 
 Execution probes export three 152-head layouts and four FFN widths. ABA/BAB timing repeats twenty times when drift exceeds two percent.
 Selection uses 700 soft and 300 binary updates. Soft-only uses 1,000 soft updates. Fixed energy and random arms ramp for 300 updates.
 Recovery slices adapters and Adam moments at original head IDs. Fresh controls reset adapters and moments. Sequential recovery uses 1,500 adapter updates.
+Every attachment and fresh source-state reset consumes the frozen adapter rank, including rank 128.
 
 ## Invariants
 
@@ -58,3 +59,44 @@ Feasibility compares every native prediction against saved single-GPU references
 It publishes each completed backward update and per-device peak allocated/reserved bytes and free headroom.
 It rejects zero gate/adapter gradients and changes to frozen parameter version counters.
 Failures retain current clip length, update and sigma in the diagnostic receipt.
+
+## Sustained four-GPU execution
+
+The frozen `native_placement` selects the same twelve-block layout for feasibility, selection and compact recovery.
+Teacher references, calibration and speed probes retain independent single-GPU execution.
+Training records allocated, reserved and free bytes on each used device after every update.
+Every device must retain the frozen two-GiB minimum headroom. CUDA RNG state spans all adapter and gate owners.
+Device memory and timing are excluded from exact replay comparison; scientific update records must agree.
+Phase GPU-hours count all resident execution devices.
+
+## FSDP and GT monitoring
+
+`distributed_training=fsdp_frozen_replicated_adapters` selects a direct four-process torchrun launch.
+FSDP shards frozen BF16 blocks and ignores the small FP32 trainable parameters.
+Two ranks consume each of the two saved draws. One local sample loss is multiplied by two to undo accumulation division.
+Average replicated gradients once, then use the existing separate clipping and AdamW owners.
+Only rank zero publishes common updates. All ranks contribute RNG state and participate in monitoring forwards.
+`monitor_reference=gt_capture` removes teacher-cache and speed-gate requirements for this declared quality experiment.
+Monitor official velocity MSE, generated-frame capture MSE and exact clean-frame equality in trained and hardened states.
+Use shared-input file locks to prevent duplicate ranks from publishing half-written input bundles.
+
+The GT preset defers foreground replay and bucket preparation because its main loss consumes only capture latents and noise.
+Regional and balanced arms reject that deferred scope. They require a separately prepared study.
+
+## Raw-logit sparsity
+
+The frozen config selects the sparsity penalty and logit offset. Pass the raw FP32 logits to the shared loss owner.
+Record the penalty form, offset and actual warmup coefficient with each update.
+Pass the frozen ramp duration and start multiplier to the shared coefficient owner for loss, gradient and receipt.
+The adapter LR uses its existing phase warmup. Gate LR is constant from the first update.
+Use the matching analytic sparsity gradient before clipping to separate velocity and sparsity gradient norms.
+Continuation restores the saved optimizers, masks, RNG state and global update count. A changed loss requires a separate frozen study.
+The continuation owner preserves source update receipts in checkpoint lineage; never rewrite their original study identities.
+
+## Frozen sigma grid
+
+Read the exact noise levels from the frozen study, never from the historical score grid.
+The seven-level preset omits sigma 0.1. Its input manifests also declare only these seven levels.
+Draw indices select the frozen grid. Quick monitors use indices zero, four and the last selected level.
+For a fresh run, initialize adapters, logits, optimizer moments and RNG state from the declared seed.
+The first 700 updates use soft gates. Update 701 starts binary refinement with sparsity disabled.

@@ -23,8 +23,11 @@ A frozen arm, split and replicate select the merged model. Saved original-teache
 
 ## Organization logic
 
-Every selected view uses three saved noise seeds and eight sigmas. Saved native velocity and restored clean output drive separate metrics.
+Every selected view uses three saved noise seeds and the exact frozen sigma grid.
+The seven-level preset excludes the old lowest level from evaluation as well as training.
+Saved native velocity and restored clean output drive separate metrics.
 Direction agreement uses the rounded stock clean conversion. Official velocity MSE uses epsilon minus capture. Actor bootstrap averages within actors first.
+Fresh recovery references initialize full-source adapters at the frozen rank before structural slicing.
 
 ## Invariants
 
@@ -37,3 +40,11 @@ Numeric completion leaves quality unset. Structural, transfer, fusion and reload
 ## Tests
 
 Run `test_learned_head_evaluation.py` with CUDA hidden. Native BF16 checks remain separate scientific gates.
+
+## GT-reference mode
+
+The frozen `monitor_reference=gt_capture` selects capture-only metrics without reading a teacher cache.
+Save official velocity MSE and generated-frame capture MSE with exact clean-frame equality.
+Bind each prediction to the saved input manifest and noise. Bootstrap each absolute metric by actor.
+Do not apply teacher-relative thresholds or claim a numerical quality pass from GT errors alone.
+Export and merged-reload parity checks remain independent.

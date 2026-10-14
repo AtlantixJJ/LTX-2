@@ -100,3 +100,71 @@ def test_four_gpu_checkpoint_matches_single_gpu_gradients():
         torch.testing.assert_close(y.grad, expected_input, rtol=0, atol=0)
         for parameter, expected_gradient in zip(student.parameters(), expected, strict=True):
             torch.testing.assert_close(parameter.grad.cpu(), expected_gradient, rtol=0, atol=0)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(torch.cuda.device_count() < 4, reason="requires four visible GPUs")
+def test_four_gpu_rng_resume_replays_each_device():
+    from scripts.prune.learn.checkpoints import restore_rng, rng_state
+
+    torch.manual_seed(123)
+    state = rng_state([0, 1, 2, 3])
+    expected = [torch.rand(17, device=f"cuda:{i}") for i in range(4)]
+    restore_rng(state)
+    actual = [torch.rand(17, device=f"cuda:{i}") for i in range(4)]
+    for first, second in zip(expected, actual, strict=True):
+        assert torch.equal(first, second)
+    assert set(state["cuda_states"]) == {0, 1, 2, 3}
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(torch.cuda.device_count() < 4, reason="requires four visible GPUs")
+def test_four_gpu_adam_checkpoint_resume_matches_continuous(tmp_path):
+    from types import SimpleNamespace
+
+    from scripts.prune.learn import checkpoints
+
+    def setup():
+        modules = {
+            str(i): SimpleNamespace(
+                A=torch.nn.Parameter(torch.ones(2, device=f"cuda:{i}")),
+                B=torch.nn.Parameter(torch.zeros(2, device=f"cuda:{i}")),
+            )
+            for i in range(4)
+        }
+        parameters = [p for module in modules.values() for p in (module.A, module.B)]
+        return modules, torch.optim.AdamW(parameters, lr=0.01)
+
+    def step(modules, optimizer):
+        optimizer.zero_grad(set_to_none=True)
+        for module in modules.values():
+            ((module.A + module.B - torch.rand_like(module.A)) ** 2).mean().backward()
+        optimizer.step()
+
+    torch.manual_seed(43)
+    modules, optimizer = setup()
+    step(modules, optimizer)
+    gates = SimpleNamespace(alpha=torch.nn.Parameter(torch.ones(2, device="cuda:0")), decision=None)
+    path = tmp_path / "resume.pt"
+    checkpoints.save(
+        path,
+        identity={"study": "tiny"},
+        update=1,
+        phase="soft",
+        gates=gates,
+        adapters=modules,
+        adapter_optimizer=optimizer,
+    )
+    step(modules, optimizer)
+    expected = [p.detach().cpu().clone() for module in modules.values() for p in (module.A, module.B)]
+    state = checkpoints.load(path, {"study": "tiny"})
+    resumed, resumed_optimizer = setup()
+    with torch.no_grad():
+        for name, module in resumed.items():
+            for key in ("A", "B"):
+                getattr(module, key).copy_(state["adapters"][f"{name}.{key}"])
+    resumed_optimizer.load_state_dict(state["adapter_optimizer"])
+    checkpoints.restore_rng(state["rng"])
+    step(resumed, resumed_optimizer)
+    for parameter, target in zip([p for m in resumed.values() for p in (m.A, m.B)], expected, strict=True):
+        assert torch.equal(parameter.cpu(), target)

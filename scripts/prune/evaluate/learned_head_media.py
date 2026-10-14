@@ -63,8 +63,9 @@ def panels(recorded, vae_gt, teacher, candidates):
     rows = [
         ("capture_rgb", "Capture RGB", recorded, "White matte"),
         ("capture_vae", "Capture VAE", vae_gt, "GT decoding"),
-        ("teacher", "Teacher", teacher, "VAE decoding"),
     ]
+    if teacher is not None:
+        rows.append(("teacher", "Teacher", teacher, "VAE decoding"))
     rows += [(arm, arm.replace("_", " "), pixels, "VAE decoding") for arm, pixels in candidates.items()]
     if len({len(pixels) for _, _, pixels, _ in rows}) != 1:
         raise ValueError("comparison panels need complete matched source frames")
@@ -105,6 +106,7 @@ def main():
     args = p.parse_args()
     study = load_study(args.study)
     root = Path(study["root"])
+    gt_only = study["config"].get("monitor_reference") == "gt_capture"
     summaries = {
         arm: json.loads(
             (root / f"evaluation/{args.split}/{arm}/replicate_{args.replicate_seed}/metrics.json").read_text()
@@ -123,7 +125,8 @@ def main():
             key = (raw["identity"]["view"], raw["identity"]["noise_seed"], raw["identity"]["sigma"])
             matched.setdefault(key, {})[arm] = raw
     if any(
-        set(group) != set(args.arms) or len({r["teacher_key"] for r in group.values()}) != 1
+        set(group) != set(args.arms)
+        or len({r["input_manifest_sha256"] if gt_only else r["teacher_key"] for r in group.values()}) != 1
         for group in matched.values()
     ):
         raise ValueError("comparison arms do not share every teacher/input/noise case")
@@ -142,24 +145,28 @@ def main():
             view, noise_seed, sigma = key
             source = next(s for s in study["splits"][args.split] if s["relative_dir"] == view)
             first = next(iter(group.values()))
-            teacher_root = root / "teacher/references" / first["teacher_key"]
-            teacher_record = json.loads((teacher_root / "manifest.json").read_text())
-            if provenance.file_sha256(teacher_root / "clean.pt") != teacher_record["clean"]["file_sha256"]:
-                raise ValueError("teacher media reference changed")
+            if not gt_only:
+                teacher_root = root / "teacher/references" / first["teacher_key"]
+                teacher_record = json.loads((teacher_root / "manifest.json").read_text())
+                if provenance.file_sha256(teacher_root / "clean.pt") != teacher_record["clean"]["file_sha256"]:
+                    raise ValueError("teacher media reference changed")
             from scripts.onestep_avatar.corpus.dataset import load_training_master
 
             capture, _ = load_training_master(Path(source["capture"]))
             # Input geometry remains owned by the native reconstruction path.
             grid, _, _, _, _, _, _ = input_case(study, current, source, noise_seed, sigma)
-            teacher_tokens = torch.load(teacher_root / "clean.pt", map_location="cpu", weights_only=True)
-            teacher_latent = grid.unpatchify_block(teacher_tokens.to(current.device), grid.latent_frames)
+            if not gt_only:
+                teacher_tokens = torch.load(teacher_root / "clean.pt", map_location="cpu", weights_only=True)
+                teacher_latent = grid.unpatchify_block(teacher_tokens.to(current.device), grid.latent_frames)
             decoded = {}
             for arm, record in group.items():
                 latent = torch.load(record["tensors"]["latent"]["path"], map_location="cpu", weights_only=True)
                 decoded[arm] = media.decode(current, latent, decoder, 42).mul(255).round().to(torch.uint8)
             recorded = source_pixels(source)
             vae_gt = media.decode(current, capture.unsqueeze(0), decoder, 42).mul(255).round().to(torch.uint8)
-            teacher = media.decode(current, teacher_latent, decoder, 42).mul(255).round().to(torch.uint8)
+            teacher = (
+                None if gt_only else media.decode(current, teacher_latent, decoder, 42).mul(255).round().to(torch.uint8)
+            )
             matte, _, _ = foreground.person_coverage(
                 Path(source["resolved_dir"]), source["capture_encode_record"], replay=False
             )
@@ -168,7 +175,7 @@ def main():
             errors = {
                 arm: {
                     "to_vae_gt": pixel_metrics(pixels, vae_gt, weights),
-                    "to_teacher": pixel_metrics(pixels, teacher, weights),
+                    **({} if gt_only else {"to_teacher": pixel_metrics(pixels, teacher, weights)}),
                     "to_rgb_gt": pixel_metrics(pixels, recorded, weights),
                 }
                 for arm, pixels in decoded.items()
@@ -188,13 +195,19 @@ def main():
                     region_weights[name] = (mask, coordinate["crop_boxes"], coordinate["valid"])
             if perceptual:
                 for region, (w, boxes, valid) in region_weights.items():
-                    teacher_error = region_lpips(
-                        perceptual, teacher, vae_gt, w, current.device, boxes=boxes, valid=valid
+                    teacher_error = (
+                        None
+                        if gt_only
+                        else region_lpips(perceptual, teacher, vae_gt, w, current.device, boxes=boxes, valid=valid)
                     )
                     ceiling = region_lpips(perceptual, vae_gt, recorded, w, current.device, boxes=boxes, valid=valid)
                     for arm, pixels in decoded.items():
                         scored = region_lpips(perceptual, pixels, vae_gt, w, current.device, boxes=boxes, valid=valid)
-                        increase = scored["lpips"] - teacher_error["lpips"] if scored["lpips"] is not None else None
+                        increase = (
+                            (scored["lpips"] - teacher_error["lpips"])
+                            if not gt_only and scored["lpips"] is not None and teacher_error["lpips"] is not None
+                            else None
+                        )
                         errors[arm][region] = {
                             **scored,
                             "teacher_to_vae_gt": teacher_error,
@@ -222,14 +235,17 @@ def main():
                 poster_frame=min(30, len(recorded) - 1),
                 common_settings={"sigma": sigma, "seed": noise_seed, "source": view, "schedule": [sigma, 0.0]},
             )
-            destination = root / "media" / f"replicate_{args.replicate_seed}" / first["teacher_key"]
+            from scripts.prune.learn.checkpoints import digest
+
+            case_key = digest(list(key)) if gt_only else first["teacher_key"]
+            destination = root / "media" / f"replicate_{args.replicate_seed}" / case_key
             sources_path = root / "media/sources" / Path(source["resolved_dir"]).parent.parent.name / Path(view).name
             preserve_source(Path(source["resolved_dir"]) / "rgb.mp4", sources_path / "rgb.mp4", source["rgb_sha256"])
             preserve_source(Path(source["resolved_dir"]) / "mask.mp4", sources_path / "mask.mp4")
             for label, pixels in {
                 "capture_rgb": recorded,
                 "capture_vae": vae_gt,
-                "teacher_vae": teacher,
+                **({} if gt_only else {"teacher_vae": teacher}),
                 **decoded,
             }.items():
                 saved_video(pixels, destination / f"{label}.mp4", source["fps"])
@@ -249,7 +265,10 @@ def main():
         uncertainty[arm] = {}
         for region in ("person", "face", "hands"):
             rows = [
-                {"actor": r["actor"], "increase": r["errors"][arm].get(region, {}).get("paired_increase")}
+                {
+                    "actor": r["actor"],
+                    "increase": r["errors"][arm].get(region, {}).get("lpips" if gt_only else "paired_increase"),
+                }
                 for r in records
             ]
             valid_rows = [r for r in rows if r["increase"] is not None]

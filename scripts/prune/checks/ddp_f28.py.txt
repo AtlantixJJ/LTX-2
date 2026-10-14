@@ -1,0 +1,203 @@
+"""Bounded two-rank DDP memory check with one complete F18 or F28 clip per GPU.
+
+This diagnostic has a .txt suffix so adding it does not change the frozen
+learner's Python inventory. Run its file from LTX-2 with PYTHONPATH=$PWD in
+the ltx environment. See doc/checks/ddp_f28.md for the complete command.
+"""
+
+import argparse
+import json
+import os
+import time
+from datetime import timedelta
+from pathlib import Path
+
+import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+from scripts.prune.core import ltx_adapter, provenance, session
+from scripts.prune.data.learned_head_study import code_identity
+from scripts.prune.learn import adapters, checkpoints, heads, losses
+from scripts.prune.learn.gates import HeadGates
+from scripts.prune.score import hooks
+
+
+class TrainingClip(torch.nn.Module):
+    """Register both adapters and hook-owned logits with the DDP reducer."""
+
+    def __init__(self, model, gates, config):
+        super().__init__()
+        self.model, self.gates, self.config = model, gates, config
+
+    def forward(self, video, epsilon, capture, prefix, update):
+        g = self.gates.microbatch()
+        velocity, clean = ltx_adapter.velocity_forward(self.model, video)
+        terms = losses.velocity_mse(velocity, epsilon, capture, prefix)
+        loss, _ = losses.phase_loss(
+            terms, g, update=update, phase="soft", accumulation=1,
+            logits=self.gates.alpha, lambda_max=self.config["lambda_max"],
+            lambda_warmup=self.config.get("lambda_warmup", 300),
+            lambda_start_multiplier=self.config.get("lambda_start_multiplier", 0.0),
+            sparsity_kind=self.config["sparsity_penalty"],
+            logit_offset=self.config["sparsity_logit_offset"],
+        )
+        if not torch.equal(clean[:, :prefix], capture[:, :prefix]):
+            raise ValueError("clean first latent frame changed")
+        return loss, terms["official"].detach()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--study", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--updates", type=int, default=3)
+    parser.add_argument("--latent-frames", type=int, choices=(18, 28), default=28)
+    args = parser.parse_args()
+    if not 2 <= args.updates <= 5:
+        raise ValueError("test must cover Adam allocation and a subsequent update; maximum five")
+    rank, local = int(os.environ["RANK"]), int(os.environ["LOCAL_RANK"])
+    if int(os.environ["WORLD_SIZE"]) != 2:
+        raise ValueError("exactly two ranks required")
+    heads.numerical_policy()
+    torch.set_num_threads(4)
+    torch.cuda.set_device(local)
+    device = torch.device(f"cuda:{local}")
+    args.output.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    stage, update = "initialize", 0
+    records = []
+
+    def record(status, **extra):
+        free, total = torch.cuda.mem_get_info(device)
+        row = {
+            "rank": rank, "local_gpu": local, "status": status,
+            "stage": stage, "update": update, "seconds": time.monotonic() - started,
+            "allocated_bytes": torch.cuda.memory_allocated(device),
+            "reserved_bytes": torch.cuda.memory_reserved(device),
+            "peak_allocated_bytes": torch.cuda.max_memory_allocated(device),
+            "peak_reserved_bytes": torch.cuda.max_memory_reserved(device),
+            "free_bytes": free, "total_bytes": total, **extra,
+        }
+        records.append(row)
+        (args.output / f"rank_{rank}.json").write_text(json.dumps(records, indent=2) + "\n")
+        print(json.dumps(row), flush=True)
+        return row
+
+    try:
+        dist.init_process_group("nccl", device_id=device, timeout=timedelta(seconds=120))
+        study = json.loads(args.study.read_text())
+        identity = study.pop("identity")
+        if checkpoints.digest(study) != identity:
+            raise ValueError("source study contents changed")
+        study["identity"] = identity
+        config = study["config"]
+        candidates = [s for s in study["splits"]["learning"] if s["n_latent_frames"] == args.latent_frames]
+        if len(candidates) < 2:
+            raise ValueError(f"two distinct F{args.latent_frames} learning clips required")
+        source = candidates[rank]
+        study["root"] = str(args.output.resolve())
+        # This is a fresh memory diagnostic, not a resumed frozen training run.
+        # Pin current code separately and verify original components before load.
+        stage = "verify_components"
+        if rank == 0:
+            for item in study["components"].values():
+                if provenance.file_sha256(item["path"]) != item["file_sha256"]:
+                    raise ValueError("source component changed")
+            (args.output / "provenance.json").write_text(json.dumps({
+                "source_study": identity,
+                "source_study_file": str(args.study.resolve()),
+                "source_study_sha256": provenance.file_sha256(args.study),
+                "current_code": code_identity(),
+                "diagnostic_sha256": provenance.file_sha256(Path(__file__)),
+                "components": study["components"], "config": config,
+                "sources": candidates[:2], "method": "two_rank_ddp_full_replicas",
+                "updates_requested": args.updates, "visible_gpus": os.environ["CUDA_VISIBLE_DEVICES"],
+                "latent_frames": args.latent_frames,
+                "allocator_config": os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "default"),
+                "torch": str(torch.__version__), "cuda": torch.version.cuda,
+            }, indent=2) + "\n")
+        dist.barrier()
+        current = session.open_session(
+            argparse.Namespace(model="2.5", gpu_id=local, seed=42),
+            script="prune.checks.ddp_f28", prompt="",
+            transformer_path=Path(study["components"]["transformer"]["path"]),
+        )
+        if checkpoints.tensor_hash(current.context) != study["text_context"]["tensor_sha256"]:
+            raise ValueError("empty text context differs")
+        stage = "load_model"
+        with current.transformer(Path(study["components"]["transformer"]["path"])) as model, torch.enable_grad():
+            model.eval().requires_grad_(False)
+            attached = adapters.attach(model, 42, config["rank"])
+            ap = adapters.parameters(attached)
+            gates = HeadGates(config["blocks"], config["heads"]).to(device)
+            gates.phase = "soft"
+            live = hooks.attach_head_provider(model, gates.provider)
+            model.velocity_model.set_gradient_checkpointing(True)
+            model.train()
+            frozen = [(p, p._version) for p in model.parameters() if not p.requires_grad]
+            ao = heads.optimizer(ap, config["adapter_lr"], config)
+            go = heads.optimizer([gates.alpha], config["gate_lr"], config)
+            record("loaded", frozen_bytes=sum(p.numel() * p.element_size() for p, _ in frozen),
+                   adapter_parameters=sum(p.numel() for p in ap), checkpointing=True)
+            stage = "ddp_initialize"
+            training = DDP(TrainingClip(model, gates, config), device_ids=[local],
+                           broadcast_buffers=False, gradient_as_bucket_view=True)
+            # Initial DDP broadcasts are setup, not optimizer weight changes.
+            frozen = [(p, p._version) for p, _ in frozen]
+            torch.cuda.synchronize(device)
+            torch.cuda.empty_cache()
+            record("ready")
+            for update in range(1, args.updates + 1):
+                ao.zero_grad(set_to_none=True)
+                go.zero_grad(set_to_none=True)
+                torch.cuda.reset_peak_memory_stats(device)
+                stage = "prepare_input"
+                sigma = config["sigmas"][(update + rank - 1) % len(config["sigmas"])]
+                grid, video, c0, capture, eps, inputs, manifest = heads.input_case(
+                    study, current, source, 42000 + rank, sigma,
+                )
+                if capture.shape != (1, args.latent_frames * 1024, 128):
+                    raise ValueError(f"expected full F{args.latent_frames} at 1024x1024")
+                record("input_ready", clip=source["relative_dir"], sigma=sigma,
+                       input_manifest=str(inputs / "manifest.json"),
+                       input_manifest_sha256=provenance.file_sha256(inputs / "manifest.json"),
+                       epsilon_sha256=manifest["videos"][0]["artifacts"]["epsilon_sha256"])
+                stage = "forward"
+                loss, mse = training(video, eps, capture, grid.tokens_per_latent_frame, update)
+                torch.cuda.synchronize(device)
+                record("forward_complete", loss=float(loss.detach()), velocity_mse=float(mse))
+                stage = "backward"
+                loss.backward()
+                torch.cuda.synchronize(device)
+                anorm = float(torch.nn.utils.clip_grad_norm_(ap, 1, error_if_nonfinite=True))
+                gnorm = float(torch.nn.utils.clip_grad_norm_([gates.alpha], 1, error_if_nonfinite=True))
+                if anorm <= 0 or gnorm <= 0 or any(p.grad is None for p in ap):
+                    raise ValueError("missing or zero trainable gradient")
+                record("backward_complete", adapter_gradient_norm=anorm, gate_gradient_norm=gnorm)
+                stage = "optimizer"
+                ao.step()
+                go.step()
+                torch.cuda.synchronize(device)
+                if any(p._version != version for p, version in frozen):
+                    raise ValueError("frozen parameter changed")
+                digest = checkpoints.digest({
+                    "alpha": checkpoints.tensor_hash(gates.alpha),
+                    "adapters": {k: checkpoints.tensor_hash(v) for k, v in adapters.state_dict(attached).items()},
+                })
+                digests = [None, None]
+                dist.all_gather_object(digests, digest)
+                if digests[0] != digests[1]:
+                    raise ValueError("DDP trainable states differ after update")
+                record("update_complete", trainable_state_sha256=digest, frozen_unchanged=True)
+                del loss, mse, grid, video, c0, capture, eps
+            record("passed")
+            live.detach_all()
+        dist.destroy_process_group()
+    except Exception as exc:
+        record("failed", error=type(exc).__name__, message=str(exc))
+        raise
+
+
+if __name__ == "__main__":
+    main()

@@ -39,3 +39,9 @@ A gradient estimator must explicitly enable autograd inside the normally gradien
 
 `tests/test_session.py` checks dtype ownership and GPU lifetime.
 `scripts/onestep_avatar/tests/test_prompt_and_whole_clip.py` checks prompt selection.
+
+## Native stored precision
+
+The standard transformer context preserves stored checkpoint precision.
+LTX-2.5 has BF16 matrices and small FP32 modulation tables. The nominal BF16 session dtype does not round those native tables.
+Distributed consumers must preserve this mixed inventory rather than flatten FP32 tables with BF16 matrices.
