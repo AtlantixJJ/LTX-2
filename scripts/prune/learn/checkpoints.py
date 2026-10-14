@@ -112,6 +112,8 @@ def save(
 ):
     from scripts.prune.learn.adapters import state_dict
 
+    if type(draws_per_update) is not int or draws_per_update < 1:
+        raise ValueError("checkpoint draws per update must be a positive integer")
     state = {
         "format": "head_learning_state_v1",
         "identity": identity,
@@ -141,6 +143,7 @@ def save(
         old = load(path, identity)
         if (
             old["update"] != update
+            or old.get("draws_per_update", 2) != draws_per_update
             or old["phase"] != phase
             or tensor_hash(old["alpha"]) != tensor_hash(state["alpha"])
             or {k: tensor_hash(v) for k, v in old["adapters"].items()}

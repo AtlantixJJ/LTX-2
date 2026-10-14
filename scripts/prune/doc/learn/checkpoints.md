@@ -35,7 +35,10 @@ Teacher reference generation uses the same freeze before producing blind evidenc
 
 ## Distributed resume
 
-Four-rank FSDP keeps adapters, gates and Adam moments replicated in FP32.
+FSDP and full-replica DDP keep adapters, gates and Adam moments replicated in FP32.
 The runtime gathers each rank's Python, NumPy, CPU and local CUDA RNG state before saving on rank zero.
 Restore selects the recorded rank's state and rejects a different world size.
 All ranks wait until immutable checkpoint publication finishes.
+Store `draws_per_update` and `draw_cursor=update*draws_per_update` in new checkpoints.
+Four-rank DDP checkpoints use four. Legacy checkpoints without the field use two.
+Verify the count against the receipt and frozen batch before resume. Replaying a changed batch requires a separate study.

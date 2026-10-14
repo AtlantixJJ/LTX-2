@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from scripts.prune.data.learned_head_study import load_study
-from scripts.prune.learn import checkpoints
+from scripts.prune.learn import checkpoints, protocol
 
 
 def main():
@@ -22,9 +22,14 @@ def main():
     study = load_study(args.study)
     if (
         study["config"].get("monitor_reference") != "gt_capture"
-        or study["config"].get("distributed_training") != "fsdp_frozen_replicated_adapters"
+        or study["config"].get("distributed_training") not in (protocol.FSDP_METHOD, protocol.DDP_METHOD)
     ):
-        raise ValueError("direct full run requires the frozen GT/FSDP preset")
+        raise ValueError("direct full run requires a frozen GT distributed preset")
+    protocol.validate(study["config"])
+    devices = ",".join(str(gpu) for gpu in study["config"]["gpu_ids"])
+    world = len(study["config"]["gpu_ids"])
+    ddp = protocol.is_ddp(study["config"])
+    method = "uniform_f18_ddp" if ddp else "four_rank_fsdp"
     if args.replicate_seed not in study["config"]["replicate_seeds"]:
         raise ValueError("replicate seed is not frozen")
     root = Path(study["root"])
@@ -33,6 +38,7 @@ def main():
     (root / "monitoring/owner.pid").write_text(str(os.getpid()) + "\n")
     serial = len(list((root / "logs").glob("full_*_*.log")))
     child = None
+    loggers = []
     state = {
         "study": study["identity"],
         "owner_pid": os.getpid(),
@@ -55,8 +61,8 @@ def main():
         state["training"] = {}
         for arm in args.arms:
             folder = root / f"training/{arm}/replicate_{args.replicate_seed}"
-            updates = sorted((folder / "updates").glob("*.json"))
-            saved = sorted((folder / "checkpoints").glob("*.json"))
+            updates = sorted(p for p in (folder / "updates").glob("*.json") if p.stem.isdecimal())
+            saved = sorted((folder / "checkpoints").glob("update_*.json"))
             state["training"][arm] = {
                 "last_update": json.loads(updates[-1].read_text()) if updates else None,
                 "checkpoint": str(saved[-1]) if saved else None,
@@ -76,7 +82,7 @@ def main():
         serial += 1
         log = root / f"logs/full_{serial:03d}_{label}.log"
         command = (
-            [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc_per_node=4", "-m", module]
+            [sys.executable, "-m", "torch.distributed.run", "--standalone", f"--nproc_per_node={world}", "-m", module]
             if four
             else [sys.executable, "-m", module]
         )
@@ -129,7 +135,7 @@ def main():
                     "--gpu-id",
                     "0",
                 ],
-                "0,1,2,3",
+                devices,
                 True,
             )
             if code == 0:
@@ -148,19 +154,32 @@ def main():
         gate = root / "checks/feasibility.json"
         if not gate.exists():
             free = subprocess.check_output(
-                ["nvidia-smi", "-i", "0,1,2,3", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], text=True
+                ["nvidia-smi", "-i", devices, "--query-gpu=memory.free", "--format=csv,noheader,nounits"], text=True
             )
             if any(int(v) < 45056 for v in free.splitlines()):
                 raise RuntimeError("GPUs 0–3 must be free for native model initialization")
-            if run("fsdp_native", "scripts.prune.checks.fsdp_native", [], "0,1,2,3", True):
-                raise RuntimeError("native FSDP acceptance failed")
+            module = "scripts.prune.checks.ddp_native" if ddp else "scripts.prune.checks.fsdp_native"
+            if run("ddp_native" if ddp else "fsdp_native", module, [], devices, True):
+                raise RuntimeError("native distributed acceptance failed")
         acceptance = json.loads(gate.read_text())
         if (
             acceptance.get("study") != study["identity"]
             or not acceptance.get("passed")
-            or acceptance.get("method") != "four_rank_fsdp"
+            or acceptance.get("method") != method
+            or (ddp and acceptance.get("world_size") != world)
         ):
-            raise ValueError("native FSDP acceptance does not match the frozen study")
+            raise ValueError("native distributed acceptance does not match the frozen study")
+        if study["config"].get("wandb", {}).get("enabled", False):
+            status()
+            for arm in args.arms:
+                command = [sys.executable, "-u", "-m", "scripts.prune.learn.wandb_logger",
+                           "--study", str(args.study.resolve()), "--arm", arm,
+                           "--replicate-seed", str(args.replicate_seed)]
+                with (root/f"logs/wandb_{arm}.log").open("a") as stream:
+                    logger = subprocess.Popen(command, cwd=Path(__file__).resolve().parents[3],
+                        env=dict(os.environ, CUDA_VISIBLE_DEVICES=""), stdout=stream, stderr=subprocess.STDOUT,
+                        stdin=subprocess.DEVNULL, start_new_session=True)
+                loggers.append(logger)
         for arm in args.arms:
             train("selection", arm)
             flags = ["--arm", arm, "--replicate-seed", str(args.replicate_seed)]
@@ -185,6 +204,12 @@ def main():
         raise
     finally:
         status()
+        for logger in loggers:
+            try:
+                logger.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                logger.terminate()
+                logger.wait(timeout=30)
 
 
 if __name__ == "__main__":

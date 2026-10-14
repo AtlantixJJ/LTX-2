@@ -31,6 +31,7 @@ A draw starting at five uses source latents `[5,23)`. Source latent five is clea
 The new temporal positions start at zero. Spatial crop, fps, weights and text context stay the same.
 
 ```mermaid
+%%{init: {"themeVariables": {"fontSize": "14px"}}}%%
 flowchart LR
   I("full capture and saved noise") --> W["same continuous 18-latent slice"]
   W --> C["local grid and clean window first latent"]

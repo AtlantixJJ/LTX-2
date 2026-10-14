@@ -107,3 +107,12 @@ The user-directed GT reference mode requires no teacher cache or speed probe bef
 Historical score reuse declares its actual learning-view coverage. Reviewed small-region tracks and decoded quality acceptance remain separate gaps.
 Unweighted training defers foreground replay and bucket preparation. Regional and balanced arms require a separate full preparation.
 Compact export lazily creates missing structural input manifests after selection; it does not rerun calibration or teacher forwards.
+
+## Uniform-F18 DDP training
+
+The production DDP route, deterministic temporal crop and shared CPU W&B logger are implemented.
+Four-rank CPU checks establish mean gradients and exact resume; they do not prove native memory or quality.
+The prior two-rank F18 native diagnostic passed three updates. Full F28 training failed its memory test.
+A new four-rank uniform-crop study requires its own `checks.ddp_native` receipt before formal training.
+Native crop acceptance, sustained training, full-source monitoring memory and final compact quality remain separate gates.
+The current run remains user-stopped; implementation work does not authorize a restart.

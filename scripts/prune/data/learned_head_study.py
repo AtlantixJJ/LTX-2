@@ -24,7 +24,8 @@ from scripts.prune.core.provenance import file_sha256
 from scripts.prune.data import foreground, prompt_cache, training_windows, whole_clip
 from scripts.prune.data.head_score_dataset import CSV_SHA, JSON_SHA, SEMANTIC_SHA, SIGMAS, official_schedule
 from scripts.prune.learn.checkpoints import digest, publish, publish_json, tensor_hash
-from scripts.prune.learn.protocol import draws_per_update, validate as validate_protocol
+from scripts.prune.learn.protocol import draws_per_update
+from scripts.prune.learn.protocol import validate as validate_protocol
 
 SALT = "learned-heads-dev8-v1"
 
@@ -504,7 +505,8 @@ def prepare(config_path, plan, output, seen_path=None, region_path=None, *, unif
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--config", type=Path, required=True)
+    p.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[1]
+                   / "configs/learned_heads_dev7_ddp_gt_uniform_f18_rank128.json")
     p.add_argument("--plan", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--seen-actors", type=Path)

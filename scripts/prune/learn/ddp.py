@@ -30,8 +30,10 @@ class DDPRuntime(Runtime):
         params = [p for p in step.parameters() if p.requires_grad]
         self.agree(checkpoints.digest({str(i): checkpoints.tensor_hash(p) for i, p in enumerate(params)}))
         return DistributedDataParallel(
-            step, device_ids=[self.local_rank] if self.device.type == "cuda" else None,
-            broadcast_buffers=False, gradient_as_bucket_view=True,
+            step,
+            device_ids=[self.local_rank] if self.device.type == "cuda" else None,
+            broadcast_buffers=False,
+            gradient_as_bucket_view=True,
         )
 
     def reduce_gradients(self, parameters):

@@ -20,6 +20,9 @@ See the [run guide](../usage.md#learned-head-phases).
 ## Data flow
 
 The frozen study selects explicit dev components and draws. The shared input owner constructs every complete native D0 input.
+`training_input_case` applies the frozen F18 crop only to optimizer inputs.
+The current default uses full-replica DDP with one draw per rank and native gradient checkpointing.
+Four ranks consume four distinct draw indices; no rank duplication occurs.
 
 ## Organization logic
 
@@ -100,3 +103,26 @@ The seven-level preset omits sigma 0.1. Its input manifests also declare only th
 Draw indices select the frozen grid. Quick monitors use indices zero, four and the last selected level.
 For a fresh run, initialize adapters, logits, optimizer moments and RNG state from the declared seed.
 The first 700 updates use soft gates. Update 701 starts binary refinement with sparsity disabled.
+
+## Uniform F18 and DDP
+
+The `ddp_full_replicas` preset requires `uniform_f18=true`, accumulation one and a four-draw global batch on four GPUs.
+`learn.protocol` selects each rank's draw and checks complete schedule coverage.
+`data.training_windows` slices aligned continuous capture/noise tokens, resets positions and inserts the selected window's clean first latent.
+Preserve full source manifests. Each consumed draw records window bounds, coordinate policy and cropped tensor hashes.
+Resume verifies both full source bytes and the actual consumed slices.
+
+`TrainingStep` registers native model and pruning logits together inside the DDP forward.
+The local loss has no accumulation division. DDP averages gradients once across ranks.
+The runtime checks those gradients before separate clipping and Adam steps; it never reduces them a second time.
+The four copies have identical trained state. Freeze gate parameters when no gate optimizer is active.
+Checkpoint cursor uses four consumed draws per update; legacy FSDP retains its two-draw contract.
+
+Quick GT monitoring assigns different actors to ranks and gathers all unique actor/sigma cases into one receipt.
+Monitoring still uses full source clips. It runs native no-grad forwards directly on replicas, without a DDP backward.
+Each rank publishes only its own case tensors; rank zero publishes the gathered monitor JSON.
+Every optimizer receipt contains global draws and separate rank sigma/timing records for W&B.
+Total loss and validation errors are global means. Rank sigma and memory appear as multiline charts.
+
+The recipe keeps rank/alpha 128, gate LR 0.1 and `lambda(t)=0.1*(0.1+0.9*min(t/100,1))`.
+Existing FSDP, block-placement and older losses remain explicit reproduction paths.

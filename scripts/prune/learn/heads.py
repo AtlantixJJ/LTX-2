@@ -388,6 +388,8 @@ def training_phase(study, current, args, deadline):
     paths = sorted((directory / "checkpoints").glob("update_*.pt"))
     previous = checkpoints.load(paths[-1], identity) if paths else None
     if previous:
+        if previous.get("draws_per_update", 2) != draw_count:
+            raise ValueError("checkpoint draw count differs from frozen batch")
         for receipt_path in sorted((directory / "updates").glob("*.json")):
             receipt = json.loads(receipt_path.read_text())
             if receipt["update"] > previous["update"]:
@@ -622,6 +624,7 @@ def training_phase(study, current, args, deadline):
                         {
                             "official": float(official),
                             "penalty": float(penalty.detach()),
+                            "total_loss": float(loss.detach()) * accumulation,
                             "sigma": sigma,
                             "sigma_index": draw["sigma_index"],
                             "input_manifest": str(inputs / "manifest.json"),
@@ -687,6 +690,7 @@ def training_phase(study, current, args, deadline):
                 rank_metrics = runtime.gather({
                     "rank": runtime.rank, "sigma": local_scalars[0]["sigma"],
                     "official": local_scalars[0]["official"], "penalty": local_scalars[0]["penalty"],
+                    "total_loss": local_scalars[0]["total_loss"],
                     "seconds": time.monotonic() - started,
                 }) if runtime else []
                 receipt = {

@@ -2,7 +2,7 @@
 
 ## Objective
 
-Run and monitor the user-authorized full paired GT training through direct prune CLIs.
+Run the frozen GT training recipe through direct prune CLIs and one CPU logger per arm.
 
 ## Usage
 
@@ -13,38 +13,48 @@ CUDA_VISIBLE_DEVICES= CUBLAS_WORKSPACE_CONFIG=:4096:8 setsid python -u -m script
 ```
 
 Arguments select the study, arm list and replicate seed. Defaults are learned_joint and energy, seed 42.
-Outputs include phase logs, immutable launch records, a mutable thirty-second monitoring/status.json and PID records.
-See the prune run guide. Stop the recorded owner PID with SIGTERM; it forwards termination to owned child groups.
+Use `--arms learned_joint` for the learned arm alone.
+Outputs include phase logs, immutable launch records, mutable thirty-second `monitoring/status.json` and PID records.
+See the [run guide](../usage.md#uniform-f18-ddp-training). A user-stopped run remains stopped until the user requests a launch.
 
 ## Data flow
 
-A frozen GT/FSDP study enters direct CPU score reuse, native FSDP acceptance, full selection and compact recovery.
-Each learning phase reads the same paired draw list. Export and evaluation remain separate package CLIs.
+The frozen config selects uniform-F18 DDP or the retained legacy FSDP method.
+CPU historical score reuse, native acceptance, selection, export, compact recovery and final merge follow the same declared study.
+The DDP recipe uses one F18 optimizer draw per rank. Source manifests, calibration and quality evaluation retain full sources.
 
 ## Organization logic
 
-Verify four free GPUs before native work. Skip only already-completed, matching artifacts.
-Run native parity, gradient and resume acceptance before the first sustained learner.
-Start four ranks through torchrun. Internal twelve-hour learning bounds save the last completed update.
+Read devices and world size from the config. Check free memory before initial native loading.
+Select `checks.ddp_native` for uniform-F18 DDP; select `checks.fsdp_native` for FSDP.
+Require matching study identity and method. DDP acceptance must also match the frozen world size.
+Native acceptance runs separately and its trained tensors never seed formal training.
+
+Start the configured ranks through torchrun. Internal twelve-hour learning bounds save the latest completed checkpoint.
 An external thirteen-hour timeout has ten-minute termination grace.
-Resume only TimeoutError exits with increased saved progress. Other errors stop this assigned run.
-Selection uses 1,000 updates; recovery uses 500. Export the compact base between phases and merge afterward.
-At compact export, save missing seed-42 structural inputs on GPU zero without a transformer forward. CPU surgery follows in the same child.
-This metadata step occurs after selection and needs no teacher or calibration pass.
-After the pair completes, GT numeric validation and decoded quality review remain the next separate gates.
+Resume only TimeoutError exits with increased published progress. Other errors stop the assigned run.
+Selection uses 1,000 updates and recovery uses 500. Export the compact base between phases and merge afterward.
+Compact export lazily saves structural inputs on GPU zero without model forwards; CPU surgery follows.
+
+When `wandb.enabled=true`, start one CPU receipt logger per arm with an arm-specific W&B run.
+The logger owns rank line-series charts and averaged global metrics. It does not load a model or decoder.
+The owner publishes a final stopped/failed/completed status; loggers close after their final receipt pass.
+If a logger has not exited, termination is bounded after a thirty-second wait.
 
 ## Invariants
 
-Only physical GPUs zero through three. No teacher preparation or speed testing.
-No global job queue, reservation database or unrelated process control.
-The driver starts only this study's direct children and monitors its own saved evidence.
-Do not edit production sources during a live frozen study.
+Use only the frozen authorized devices, normally GPUs zero through three. No teacher preparation or speed testing in GT mode.
+No avatar queue or unrelated process control. Do not edit production sources during a live frozen study.
+W&B metric tabs omit arm prefixes; separate runs avoid collisions between learned and energy metrics.
+Numeric update filenames are the only published training receipts. Ignore atomic temporary files.
 
 ## Gotchas
 
-A diagnostic pass does not establish pruning quality. A complete numeric validation does not establish perceptual quality.
-The historical energy pool can be partial; its imported record declares actual coverage.
+A native diagnostic does not establish pruning quality. Numeric validation does not establish perceptual quality.
+Historical energy can cover only part of the learning pool; the imported record declares actual coverage.
+The earlier two-rank F18 memory pass is supporting evidence, not native acceptance for a new four-rank crop study.
 
 ## Tests
 
-Check frozen study validation and child failure handling. Native correctness is owned by fsdp_small and fsdp_native.
+CPU DDP tests check averaging, frozen state and exact resume. Crop tests check source alignment and window identity.
+Logger tests verify rank charts and global means. Native DDP acceptance remains a separate authorized GPU gate.

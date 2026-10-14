@@ -153,3 +153,17 @@ Keep failures rather than treating later recovery as proof of earlier parity.
 Merged reload must have maximum absolute difference at most 0.02 for every case.
 Recovered validation requires complete update/draw coverage and full source/noise/context/tensor hashes.
 Required decoded region metrics and reviewed videos cannot pass with missing coverage.
+
+## Uniform-F18 DDP and logging
+
+The four-rank CPU DDP fixture compares real reducer gradients with independent serial four-draw accumulation.
+It includes native-style non-reentrant checkpointing and hook-owned gates, verifies frozen state and exact checkpoint resume.
+Crop fixtures check F18 identity, nonzero longer-source windows, local conditioning, region alignment and saved source hashes.
+Logger fixtures check one rank line per series and globally averaged losses and unique validation cases.
+No online W&B request or GPU workload is needed for those CPU checks.
+
+`checks.ddp_native` is the separate native BF16 gate for a newly frozen DDP study.
+It checks F18 and cropped-F28 sources, nonzero crop conditioning, all-one parity, soft/binary gradients, memory and exact resume.
+The saved acceptance must match the study, DDP method and configured world size before sustained training.
+Two-rank full-F18 memory evidence does not establish four-rank crop execution or full-source validation memory.
+Keep those native checks pending when the user has stopped GPU training.

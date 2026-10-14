@@ -6,6 +6,8 @@ This package selects and exports smaller LTX transformer structures.
 Its native task is one full-clip bidirectional D0 forward at each exact `[sigma,0]` schedule.
 Capture frame zero is a clean condition. Later frames are generated.
 There is no generated history, cache or sliding window.
+Learned-head training has an explicit input option: continuous F18 temporal crops from verified full sources.
+`data.training_windows` owns that option. Calibration and evaluation keep the full-source contract.
 
 Read the [algorithm](core_algorithm.md), [verification gates](VALIDATION.md)
 and [run guide](usage.md) after this page.
@@ -116,6 +118,10 @@ Learning imports core, data and score boundaries. It does not import avatar trai
 Recovered export calls existing coupled structural surgery and merges only compact V/output adapters.
 Recovered validation enters `data.whole_clip.verify_candidate` through a deferred checks import.
 Frozen evaluation can import learning's numerical and input helpers; it performs no optimization.
+`learn.step` registers native prediction and hook-owned gates inside one trainable module.
+`learn.ddp` replicates the complete backbone and averages gradients once through DDP.
+`learn.protocol` binds batch size, rank draw assignment and checkpoint cursor semantics.
+`learn.wandb_logger` reads saved receipts on CPU and owns rank charts and global metric means.
 The new learned evaluator produces versioned paired evidence separate from ordinary baseline rollouts.
 
 The `width_recovered` family uses `whole_clip_d0_learned_heads_v1`.

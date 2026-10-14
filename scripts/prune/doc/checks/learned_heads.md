@@ -25,6 +25,8 @@ The envelope connects source components, binary IDs, compact base, recovery stat
 
 Validation checks format, source, actor separation, update coverage, adapters, original IDs and every consumed noise file.
 Structural inventory independently checks each compact source tensor. Native checks compare masked/compact, transferred, fused and reloaded networks.
+Each update must contain the frozen number of consumed draws: four for four-rank DDP, two for legacy FSDP.
+Uniform-F18 draws require reconstructed window bounds and capture/noise tensor hashes in addition to full-source file pins.
 
 ## Invariants
 

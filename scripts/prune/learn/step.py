@@ -23,7 +23,11 @@ class TrainingStep(torch.nn.Module):
         terms = losses.velocity_mse(velocity, epsilon, capture, prefix_tokens, regions)
         cfg = self.config
         loss, penalty = losses.phase_loss(
-            terms, gates, update=update, phase=phase, accumulation=accumulation,
+            terms,
+            gates,
+            update=update,
+            phase=phase,
+            accumulation=accumulation,
             lambda_max=0 if self.arm == "learned_no_sparsity" else cfg["lambda_max"],
             lambda_warmup=cfg.get("lambda_warmup", 300),
             lambda_start_multiplier=cfg.get("lambda_start_multiplier", 0.0),

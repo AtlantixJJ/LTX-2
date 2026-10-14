@@ -94,7 +94,7 @@ def saved_case(tmp_path):
     seed = 42
     full, current, dense = case(28, seed)
     capture_path = tmp_path / "capture.pt"
-    torch.save({"master": dense[0], "fps": 30}, capture_path)
+    torch.save({"schema_version": 2, "master": dense[0], "fps": 30}, capture_path)
     torch.save(full[4], tmp_path / "epsilon.pt")
     row = {"view": "case", "sigma": 0.9, "schedule": [0.9, 0.0], "artifacts": {
         "capture": str(capture_path), "capture_sha256": file_sha256(capture_path), "fps": 30,

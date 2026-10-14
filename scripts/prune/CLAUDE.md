@@ -3,6 +3,8 @@
 Pruning has one task: a full-clip bidirectional D0 forward at each `[sigma, 0]`
 schedule, with the capture's first latent frame clean. Calibration, ablation,
 export parity, output quality and timing use that same input contract.
+Learned-head optimizer inputs can use the frozen `uniform_f18` training amendment:
+continuous 18-latent crops with a clean window first latent. Full-source evidence stays explicit.
 
 Run from LTX-2 in the `ltx` conda environment. Check `nvidia-smi` before loading
 models. Keep `scripts/` and `scripts/prune/` as PEP 420 namespace packages.
@@ -104,3 +106,9 @@ Validate all consumed draws, original head IDs, optimizer transfer and merged te
 Preserve full original Q/K normalization. Retained pruning gates are exactly one in compact recovery.
 Keep structural, transfer, fusion, merged reload, decoded quality and speed evidence separate.
 Standalone prune phases keep their direct launch ownership and explicit dev transformer override.
+New learned-head training uses `configs/learned_heads_dev7_ddp_gt_uniform_f18_rank128.json` by default.
+Use full model replicas, native block gradient checkpointing and one F18 draw per DDP rank.
+Four ranks consume four draws. Preserve raw-logit loss, the 100-update weight ramp and gate LR 0.1.
+W&B uses one CPU writer per arm. Rank sigma/memory charts have one line per rank;
+total loss and validation errors are averaged scalars. Metric tabs omit `learned_joint/`.
+Do not restart a user-stopped run while updating code or documentation.

@@ -344,6 +344,60 @@ See [media design](evaluate/mobilewan_media.md).
 
 ## Learned head phases
 
+New training uses the **uniform-F18 rank128 DDP** preset described below.
+The full-source FSDP and older phase commands later in this guide are reproduction paths.
+Code or documentation updates do not restart user-stopped training.
+
+## Uniform F18 DDP training
+
+Use `configs/learned_heads_dev7_ddp_gt_uniform_f18_rank128.json` for subsequent learned-head runs.
+It is also the default config when `data.learned_head_study --config` is omitted.
+Four ranks on GPUs 0–3 each store a full BF16 model and consume one independent F18 draw per update.
+Native non-reentrant block gradient checkpointing stays enabled. Adapters and gates are FP32.
+DDP averages their gradients once; no manual second gradient average runs.
+
+Keep F18 sources intact. Crop longer sources to one continuous 18-latent span using the draw's noise seed.
+Capture and saved epsilon share bounds. The first latent of the window is clean c0; positions start locally at zero.
+This yields 137 decoder frames at the original 1024×1024 geometry and fps.
+It does not re-encode raw RGB. Full-source manifests and per-draw crop hashes both remain saved.
+Calibration, export parity and GT quality evaluation still use full sources.
+
+Keep rank/alpha 128, adapter LR 0.0001, gate LR 0.1 and `mean(relu(alpha+3))`.
+Use `lambda(t)=0.1*(0.1+0.9*min(t/100,1))`: weight 0.0109 at update one and 0.1 from update 100.
+Keep seven sigmas, the cycle `[0,6,1,5,2,4,3]` and 700-soft/300-binary/500-compact updates.
+Four draws per update cover each sigma four times in seven updates. Draw cursors and checkpoint records use this batch size.
+Use a new empty output directory and freeze the current plan/code/config before any authorized launch.
+
+```bash
+conda activate ltx
+CUDA_VISIBLE_DEVICES= CUBLAS_WORKSPACE_CONFIG=:4096:8 python -m scripts.prune.data.learned_head_study \
+  --config scripts/prune/configs/learned_heads_dev7_ddp_gt_uniform_f18_rank128.json \
+  --plan ../plans/2026-10-12-learned-head-pruning-experiment.md \
+  --output ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_new
+
+CUDA_VISIBLE_DEVICES= CUBLAS_WORKSPACE_CONFIG=:4096:8 setsid python -u -m scripts.prune.learn.run_full \
+  --study ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_new/configs/frozen_study.json \
+  --arms learned_joint \
+  > ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_new/logs/full.log 2>&1 < /dev/null &
+```
+
+These are launch instructions for a future authorized run; the stopped study stays stopped.
+The owner checks occupancy, runs matching `checks.ddp_native` acceptance, then starts formal DDP training.
+Native acceptance covers crop semantics, full F18 and cropped F28 sources, gradients, memory and exact resume.
+The older two-rank F18 memory result is supporting evidence, not a replacement for the new four-rank acceptance.
+No teacher cache, fresh head scoring, speed test or avatar queue is required.
+
+W&B logging is enabled in this preset. One CPU writer reads rank-zero published receipts.
+Use one line-series chart per rank-varying value: `train/sigma`, `ranks/update_s` and the memory charts.
+Four ranks give four lines labeled rank 0 through rank 3 in each chart.
+`train/loss`, velocity MSE, sparse loss and `validation/trained_sigma_2_gt_latent_mse` each log a single mean.
+Validation averages unique cases gathered from all ranks. The third monitored sigma uses index two.
+Metric tabs are `train`, `gates`, `memory`, `ranks` and `validation`, without a `learned_joint/` prefix.
+Chart refresh defaults to ten updates and includes every saved point; global scalar metrics log each update.
+Different arms use separate W&B runs with identical metric names. See [logger design](learn/wandb_logger.md).
+
+## Learned head reproduction commands
+
 Run all commands from `LTX-2` in conda environment `ltx`.
 The user-authorized device pool for this experiment is physical GPUs 0–3.
 Check occupancy before loading a model. Keep one model process per GPU.

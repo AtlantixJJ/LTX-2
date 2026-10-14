@@ -41,14 +41,13 @@ def test_feasibility_zero_adapter_control_does_not_retain_graph(tmp_path, monkey
         with torch.no_grad():
             yield model
 
-    def attach(candidate, seed):
+    def attach(candidate, seed, rank):
         candidate.projection = ProjectionAdapter(candidate.projection, rank=2)
         return {"0.attn1.v": candidate.projection}
 
     video = SimpleNamespace(latent=torch.randn(1, 2, 4))
     grid = SimpleNamespace(tokens_per_latent_frame=1)
     zero = torch.zeros_like(video.latent)
-    monkeypatch.setattr(heads, "SIGMAS", [1.0])
     monkeypatch.setattr(heads, "input_case", lambda *a: (grid, video, zero[:, :1], zero, zero, None, None))
     monkeypatch.setattr(heads.adapters, "attach", attach)
     monkeypatch.setattr(heads.hooks, "attach_head_provider", lambda *a: nullcontext())
@@ -62,7 +61,8 @@ def test_feasibility_zero_adapter_control_does_not_retain_graph(tmp_path, monkey
         "root": str(tmp_path),
         "components": {"transformer": {"path": "unused"}},
         "splits": {"learning": [{"n_latent_frames": n} for n in (18, 28)]},
-        "config": {"adapter_lr": 0.0001, "gate_lr": 0.01, "betas": [0.9, 0.999], "adam_epsilon": 1e-8},
+        "config": {"adapter_lr": 0.0001, "gate_lr": 0.01, "betas": [0.9, 0.999], "adam_epsilon": 1e-8,
+                   "sigmas": [1.0], "rank": 2},
     }
     with pytest.raises(BeforeBackward):
         heads.feasibility(study, current, float("inf"))
@@ -178,6 +178,7 @@ def test_real_phase_loop_matches_interrupted_resume(tmp_path, monkeypatch, gt_on
         "adam_epsilon": 1e-8,
         "warmup_updates": 50,
         "lambda_max": 0.001,
+        "sigmas": [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2],
     }
     if gt_only:
         config["monitor_reference"] = "gt_capture"

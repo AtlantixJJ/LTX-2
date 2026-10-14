@@ -129,15 +129,19 @@ The unchanged teacher remains an evaluation reference, rather than the loss targ
 
 Every logit starts at +3. Soft gates use sigmoid with temperature one.
 The first 700 updates add the frozen sparsity penalty and its configured coefficient ramp.
-The seven-level GT preset uses mean `relu(alpha+3)`, with the coefficient ramping to one over 300 updates.
+The current seven-level GT preset uses mean `relu(alpha+3)` and `lambda(t)=0.1*(0.1+0.9*min(t/100,1))`.
+The effective coefficient is 0.0109 at update one and 0.1 from update 100. Gate LR is constant 0.1.
+Earlier presets retain their declared zero-start, 300-update ramp for reproduction.
 The sparsity derivative is zero at or below alpha minus three. This stops pressure, without clamping the optimizer state.
 The older eight-level preset also supports mean-sigmoid sparsity for exact reproduction.
 The next 300 updates use an exact legal binary forward and a sigmoid straight-through gradient.
 An exact block/count dynamic program selects retained original heads.
-A fixed decision serves both microbatches and backward recomputation within an update.
-Each microbatch creates its own gate graph and divides its complete loss by two.
+A fixed decision serves all draws and backward recomputation within an update.
+Full-replica DDP uses one complete local loss per rank and one averaged gradient update.
+Four ranks consume four independently scheduled F18 windows. No second gradient reduction occurs.
+Legacy serial/FSDP two-draw studies retain their declared accumulation semantics.
 
-At update 1,000, freeze the binary IDs and transfer rank-16 adapters and Adam moments by channel identity.
+At update 1,000, freeze the binary IDs and transfer adapters at their frozen rank and Adam moments by channel identity.
 The compact network then receives 500 adapter updates, with retained pruning amplitudes one.
 The soft-only arm hardens after 1,000 soft updates.
 Energy and random arms use a matched 300-update removal ramp and the same adapter budget.
@@ -159,3 +163,15 @@ flowchart LR
 
 Recovered outputs use the `width_recovered` family.
 Their versioned envelope binds full study and component identities, original head IDs, all consumed draws and merged tensor contents.
+
+## Uniform F18 optimizer inputs
+
+Use every latent in F18 sources and one uniform continuous 18-latent span in longer sources.
+For F28 sources, start positions zero through ten are legal and equally selectable.
+Select the start using a separate RNG keyed by the draw noise seed. Preserve optimizer RNG state.
+Slice capture and saved epsilon at the same bounds. Rebuild window-local positions and first-keyframe marks.
+The window's first latent is clean c0; only its remaining 17 latents enter velocity MSE.
+The aligned decoder output is 137 frames at the original spatial geometry and fps.
+This is a slice of continuous VAE latents, not an independent re-encode of a raw RGB crop.
+Full-source calibration, export parity and quality evaluation retain the original input contract.
+Store both full source/noise file pins and actual consumed window tensor hashes.
