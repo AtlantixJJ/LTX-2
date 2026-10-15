@@ -133,6 +133,7 @@ def save(
             + ([gates.alpha.device.index] if gates.alpha.device.type == "cuda" else [])
         ),
         "lineage": lineage or {},
+        "progressive": gates.progressive.state_dict() if getattr(gates, "progressive", None) else None,
     }
 
     def write(p):
@@ -141,6 +142,11 @@ def save(
 
     if Path(path).exists():
         old = load(path, identity)
+        if state["progressive"] is not None:
+            from scripts.prune.data.resume_learned_heads import unchanged_state_hash
+
+            if unchanged_state_hash(old) != unchanged_state_hash(state):
+                raise ValueError("replayed progressive checkpoint state differs")
         if (
             old["update"] != update
             or old.get("draws_per_update", 2) != draws_per_update
@@ -163,6 +169,7 @@ def save(
             "tensor_hashes": {k: tensor_hash(v) for k, v in state["adapters"].items()},
             "alpha_sha256": tensor_hash(state["alpha"]),
             "lineage": state["lineage"],
+            "progressive_sha256": digest(state["progressive"]) if state["progressive"] is not None else None,
         },
     )
     return Path(path)
@@ -187,6 +194,17 @@ def load(path, identity=None):
         raise ValueError("adapter inventory changed")
     if tensor_hash(state["alpha"]) != receipt["alpha_sha256"]:
         raise ValueError("checkpoint logits changed")
+    if state.get("progressive") is not None:
+        from scripts.prune.learn.progressive import ProgressivePolicy
+
+        policy = ProgressivePolicy.from_state(state["progressive"])
+        if not torch.equal(policy.window[-1], state["alpha"]):
+            raise ValueError("checkpoint progressive snapshot differs from logits")
+        fixed = ~policy.free
+        if not torch.equal(state["alpha"][fixed], policy.frozen[fixed]):
+            raise ValueError("checkpoint terminal logits changed")
+        if policy.update != state["update"] or digest(state["progressive"]) != receipt.get("progressive_sha256"):
+            raise ValueError("checkpoint progressive cursor or history changed")
     return state
 
 

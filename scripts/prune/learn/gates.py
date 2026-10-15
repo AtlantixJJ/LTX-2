@@ -77,6 +77,7 @@ class HeadGates(nn.Module):
         self.phase = "soft"
         self.decision = None
         self.current = None
+        self.progressive = None
 
     def begin_update(self, phase, kept=None, scores=None, ramp=1.0):
         if phase not in ("soft", "binary", "fixed", "compact", "all_one"):
@@ -92,7 +93,9 @@ class HeadGates(nn.Module):
 
     def microbatch(self):
         p = self.alpha.sigmoid()
-        if self.phase == "soft":
+        if self.progressive is not None and self.phase == "soft":
+            self.current = self.progressive.compose(self.alpha)
+        elif self.phase == "soft":
             self.current = p
         elif self.phase == "binary":
             self.current = self.decision + (p - p.detach())
@@ -112,8 +115,9 @@ class HeadGates(nn.Module):
         return self.current[int(name.split(".")[0])]
 
     def snapshot(self):
-        p = self.alpha.detach().sigmoid().cpu()
+        p = (self.progressive.compose(self.alpha) if self.progressive else self.alpha.sigmoid()).detach().cpu()
         return {
+            **({"counts": self.progressive.counts()} if self.progressive else {}),
             "mean": float(p.mean()),
             "quantiles": torch.quantile(p.flatten(), torch.tensor([0.0, 0.1, 0.5, 0.9, 1.0])).tolist(),
             "block_means": p.mean(1).tolist(),

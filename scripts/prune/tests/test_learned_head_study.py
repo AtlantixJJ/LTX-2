@@ -82,3 +82,49 @@ def test_sigma_cycle_rejects_duplicate_or_missing_indices():
     for cycle in [[], [0, 0], [0, 2], [0, 1.0]]:
         with pytest.raises(ValueError, match="sigma cycle"):
             draw_list(sources(), 42, sigma_indices=cycle)
+
+
+def test_ten_level_preset_covers_high_dev_tail_without_changing_noise_or_validation():
+    import json
+    from collections import Counter
+    from pathlib import Path
+
+    from ltx_core.components.schedulers import LTX2Scheduler
+    from scripts.prune.data.head_score_dataset import SIGMAS
+    from scripts.prune.data.learned_head_study import monitor_sigma_indices, validate_sigma_grid
+
+    path = Path(__file__).resolve().parents[1] / "configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json"
+    config = json.loads(path.read_text())
+    stock = LTX2Scheduler().execute(steps=30).tolist()
+    validate_sigma_grid(config, {"original_grid": stock})
+    expected_high = {s for s in stock if 0.9 <= s <= 0.95}
+    assert len(expected_high) == 5 and expected_high <= set(config["sigmas"])
+    assert set(config["sigmas"]) == set(SIGMAS[:-1]) | expected_high
+    assert config["gate_lr"] == 0.01 and config["lambda_max"] == 0.01
+    assert [config["sigmas"][i] for i in monitor_sigma_indices({"config": config})] == [SIGMAS[i] for i in (0, 4, 6)]
+    old = draw_list(sources(), 42, sigma_indices=[0, 6, 1, 5, 2, 4, 3], draws_per_update=4)
+    new = draw_list(sources(), 42, sigma_indices=config["sigma_indices_cycle"], draws_per_update=4)
+    assert [(d["view"], d["noise_seed"]) for d in new] == [(d["view"], d["noise_seed"]) for d in old]
+    assert Counter(d["sigma_index"] for d in new[:20]) == {i: 2 for i in range(10)}
+
+
+def test_sigma_validation_rejects_nonstock_levels_and_invalid_monitor_indices():
+    import copy
+
+    import pytest
+
+    from scripts.prune.data.head_score_dataset import SIGMAS
+    from scripts.prune.data.learned_head_study import monitor_sigma_indices, validate_sigma_grid
+
+    cfg = {"sigmas": SIGMAS[:-1], "sigma_indices_cycle": [0, 6, 1, 5, 2, 4, 3]}
+    schedule = {"original_grid": SIGMAS}
+    validate_sigma_grid(cfg, schedule)
+    assert monitor_sigma_indices({"config": cfg}) == [0, 4, 6]
+    for grid in ([0.945, *SIGMAS[1:-1]], [*SIGMAS[:-2], SIGMAS[0]], [*SIGMAS[:-2], 0.0]):
+        with pytest.raises(ValueError, match="training sigmas"):
+            validate_sigma_grid({**cfg, "sigmas": grid}, schedule)
+    for indices in ([0, 0, 6], [0, 4, 7], [0, 4], [0, 4, 6.0]):
+        bad = copy.deepcopy(cfg)
+        bad["monitor_sigma_indices"] = indices
+        with pytest.raises(ValueError, match="monitor sigma indices"):
+            validate_sigma_grid(bad, schedule)

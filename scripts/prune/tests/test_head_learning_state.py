@@ -179,6 +179,9 @@ def test_real_phase_loop_matches_interrupted_resume(tmp_path, monkeypatch, gt_on
         "warmup_updates": 50,
         "lambda_max": 0.001,
         "sigmas": [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2],
+        "soft_updates": 700,
+        "binary_updates": 300,
+        "compact_updates": 500,
     }
     if gt_only:
         config["monitor_reference"] = "gt_capture"
@@ -243,6 +246,12 @@ def test_real_phase_loop_matches_interrupted_resume(tmp_path, monkeypatch, gt_on
             heads.training_phase(study, current, args, time.monotonic() + 30)
         paths.append(root / "training/learned_joint/replicate_42/checkpoints/update_0002.pt")
     a, b = [checkpoints.load(path) for path in paths]
+    traces = [
+        [torch.load(p.parent.parent / f"gate_trace/{u:04d}.pt", weights_only=True) for u in (1, 2)] for p in paths
+    ]
+    for continuous, resumed in zip(*traces, strict=True):
+        assert continuous.shape == (3, 1, 4) and torch.equal(continuous, resumed)
+    assert torch.equal(traces[0][1][0], a["alpha"])  # trace row 0 is the logit state after the update
     assert torch.equal(a["alpha"], b["alpha"])
     assert all(torch.equal(a["adapters"][k], b["adapters"][k]) for k in a["adapters"])
     assert all(torch.equal(base_before[n], p) for n, p in native.named_parameters())

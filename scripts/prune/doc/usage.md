@@ -342,6 +342,39 @@ Full source and individual decoded videos remain available.
 Report code reads these saved artifacts and must not run this model-facing stage.
 See [media design](evaluate/mobilewan_media.md).
 
+## Learned head checkpoint media
+
+During live learned-head training, decode each 100-update monitor checkpoint on one free GPU outside the training ranks.
+The pinned `.py.txt` template keeps the study's frozen code identity. Run the reference stage once, then one media stage per checkpoint:
+
+```bash
+RUN=../expr/refiner_prune/2.5/<study>
+CUDA_VISIBLE_DEVICES=5 CUBLAS_WORKSPACE_CONFIG=:4096:8 PYTHONPATH="$PWD" \
+python -u scripts/prune/evaluate/learned_head_checkpoint_media.py.txt \
+  --study $RUN/configs/frozen_study.json --stage reference --update 100 --output $RUN/partial
+CUDA_VISIBLE_DEVICES=5 CUBLAS_WORKSPACE_CONFIG=:4096:8 PYTHONPATH="$PWD" \
+python -u scripts/prune/evaluate/learned_head_checkpoint_media.py.txt \
+  --study $RUN/configs/frozen_study.json --stage media --update 100 --output $RUN/partial
+```
+
+The `steps` stage (`--updates N... --actors A...`) renders the report videos: native, soft and hard at σ 0.9490 and 0.9098 with one direct step and four Euler steps.
+Partial report code under the study reads these receipts only. See [checkpoint media design](evaluate/learned_head_checkpoint_media.md).
+
+## Extend the soft phase
+
+Fork a completed soft checkpoint into a new study with a longer budget, after the source owner stops:
+
+```bash
+CUDA_VISIBLE_DEVICES='' python -m scripts.prune.data.extend_learned_heads \
+  --previous $SRC/configs/frozen_study.json \
+  --checkpoint $SRC/training/learned_joint/replicate_42/checkpoints/update_0700.pt \
+  --plan ../plans/2026-10-12-learned-head-pruning-experiment.md --output $NEW \
+  --soft-updates 2000 --binary-updates 0 --compact-updates 500
+```
+
+Then start `learn.run_full` on `$NEW/configs/frozen_study.json` with `--arms learned_joint`, as in the uniform F18 DDP section.
+Soft training resumes at update 701; compact export follows the selection end. See [extension design](data/extend_learned_heads.md).
+
 ## Learned head phases
 
 New training uses the **uniform-F18 rank128 DDP** preset described below.
@@ -350,7 +383,7 @@ Code or documentation updates do not restart user-stopped training.
 
 ## Uniform F18 DDP training
 
-Use `configs/learned_heads_dev7_ddp_gt_uniform_f18_rank128.json` for subsequent learned-head runs.
+Use `configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json` for subsequent learned-head runs.
 It is also the default config when `data.learned_head_study --config` is omitted.
 Four ranks on GPUs 0–3 each store a full BF16 model and consume one independent F18 draw per update.
 Native non-reentrant block gradient checkpointing stays enabled. Adapters and gates are FP32.
@@ -362,16 +395,18 @@ This yields 137 decoder frames at the original 1024×1024 geometry and fps.
 It does not re-encode raw RGB. Full-source manifests and per-draw crop hashes both remain saved.
 Calibration, export parity and GT quality evaluation still use full sources.
 
-Keep rank/alpha 128, adapter LR 0.0001, gate LR 0.1 and `mean(relu(alpha+3))`.
-Use `lambda(t)=0.1*(0.1+0.9*min(t/100,1))`: weight 0.0109 at update one and 0.1 from update 100.
-Keep seven sigmas, the cycle `[0,6,1,5,2,4,3]` and 700-soft/300-binary/500-compact updates.
-Four draws per update cover each sigma four times in seven updates. Draw cursors and checkpoint records use this batch size.
+Keep rank/alpha 128, adapter LR 0.0001, gate LR 0.01 and `mean(relu(alpha+3))`.
+Use `lambda(t)=0.01*(0.1+0.9*min(t/100,1))`: weight 0.00109 at update one and 0.01 from update 100.
+Use ten sigmas, the cycle `[0,9,1,8,2,7,3,6,4,5]` and 700-soft/300-binary/500-compact updates.
+The grid adds all missing official 30-step dev levels in [0.9,0.95] to the previous seven levels.
+Four draws per update cover each sigma twice in five updates. Draw cursors and checkpoint records use this batch size.
+Validation keeps the previous three levels through `monitor_sigma_indices=[0,7,9]`.
 Use a new empty output directory and freeze the current plan/code/config before any authorized launch.
 
 ```bash
 conda activate ltx
 CUDA_VISIBLE_DEVICES= CUBLAS_WORKSPACE_CONFIG=:4096:8 python -m scripts.prune.data.learned_head_study \
-  --config scripts/prune/configs/learned_heads_dev7_ddp_gt_uniform_f18_rank128.json \
+  --config scripts/prune/configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json \
   --plan ../plans/2026-10-12-learned-head-pruning-experiment.md \
   --output ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_new
 
@@ -584,3 +619,19 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 CUBLAS_WORKSPACE_CONFIG=:4096:8 python -u -m script
 ```
 
 Read its `monitoring/status.json` and `monitoring/fresh_initial_verification.json` for actual startup evidence.
+
+## Progressive head gate removal
+
+Prepare the study with the complete CPU command in [progressive preparation](data/progressive_head_study.md#usage).
+Check GPUs 0–3 with `nvidia-smi` before starting the direct owner. Use the ltx environment from LTX-2:
+
+```bash
+setsid conda run --no-capture-output -n ltx python -m scripts.prune.learn.run_full \
+  --study ../expr/refiner_prune/2.5/progressive_head_gate_removal_f18_20261015/configs/frozen_study.json \
+  --arms learned_progressive --replicate-seed 42 \
+  > ../expr/refiner_prune/2.5/progressive_head_gate_removal_f18_20261015/logs/owner.log 2>&1 < /dev/null &
+```
+
+The owner runs fresh native acceptance on four ranks, then the sole 500-update progressive arm.
+Read `monitoring/status.json`, its active log, `training/learned_progressive/replicate_42/events/` and saved monitor receipts.
+Training ends after the final committed-state monitor. Compact export and timing are outside this experiment.

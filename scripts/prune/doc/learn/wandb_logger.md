@@ -31,13 +31,25 @@ Use `update` as the optimizer axis and `validation/update` as the checkpoint axi
 
 `train/sigma`, `ranks/update_s` and each memory chart use `wandb.plot.line_series`.
 Each chart has one line per rank, labeled rank 0 through rank 3 for four ranks.
-Refresh charts at update one, every ten updates by default, and on exit. Every refresh includes all saved points.
+Refresh charts at updates one and two, every ten updates by default, and on exit. Every refresh includes all saved points.
+The update-two refresh gives each rank two points, so startup line charts can draw a segment.
 Store rank differences in these charts; do not create four separate scalar panels.
 
 `train/loss`, velocity MSE and sparse loss are means over the global consumed draws.
 The actual undivided total loss includes any active regional loss. Historical unweighted receipts use velocity plus sparse loss.
 Gradient norms and gate statistics describe the synchronized state, so they remain single scalars.
 Step duration uses the slowest rank for the global duration scalar.
+
+Log both gate-gradient components at every optimizer update:
+
+- `train/sparsity_logit_gradient_norm` is the L2 norm of the analytic gradient of `lambda * L_sparse` with respect to gate logits.
+- `train/velocity_logit_gradient_norm` is the L2 norm of the synchronized total logit gradient minus that sparsity gradient.
+
+Measure both before gate-gradient clipping and AdamW. DDP averages the gradient vectors before these norms are computed.
+These are single synchronized series, not four rank curves or an average of four gradient norms.
+The main learned arm has no regional loss, so its second series measures only the velocity loss.
+For an arm with regional losses, that series also includes the regional gradient contributions.
+Sparsity is zero outside the soft phase. Compact recovery has no trainable gate gradient.
 
 Validation averages unique actor/view/sigma cases gathered from all ranks.
 `validation/trained_sigma_2_gt_latent_mse` is one averaged scalar, never four lines.
@@ -61,3 +73,11 @@ A correct chart does not establish quality or physical compression. Existing exp
 `test_wandb_logger.py` checks four actual W&B line-series labels, total-loss means and unique-case validation means.
 It checks constant gate LR, missing rank/batch evidence and hidden temporary-file filtering without contacting W&B.
 Use an offline writer smoke check for cursor, lifecycle and chart publication.
+
+Phase-relative steps use the frozen budget through `protocol.phase_budget`. A config without budget keys uses the 700/300/500 preset.
+
+## Progressive gate removal
+
+Progressive update receipts add free/removed counts, eligible/selected counts and threshold shortfalls.
+Validation logs actual mixed-state capture MSE, including each saved sigma. No globally hardened state is fabricated.
+The CPU writer exits when the owner publishes `progressive_training_complete`.

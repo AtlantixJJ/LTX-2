@@ -10,6 +10,8 @@ import signal
 import time
 from pathlib import Path
 
+from scripts.prune.learn import protocol
+
 
 def read(path):
     return json.loads(Path(path).read_text())
@@ -33,7 +35,10 @@ def training_metrics(row, config):
     penalty = sum(d["penalty"] for d in draws) / len(draws)
     total = sum(d.get("total_loss", d["official"] + d["penalty"]) for d in draws) / len(draws)
     phase, step = row["phase"], row["update"]
-    phase_start = 1000 if phase == "compact" else 700 if phase == "binary" else 0
+    # Older frozen configs predate explicit budgets in this reader; they used 700/300/500.
+    budget = {"soft_updates": 700, "binary_updates": 300, "compact_updates": 500, **config}
+    soft_end, selection_end, _ = protocol.phase_budget(budget)
+    phase_start = selection_end if phase == "compact" else soft_end if phase == "binary" else 0
     rank_rows = row.get("rank_metrics", [])
     values = {
         "update": step,
@@ -56,6 +61,11 @@ def training_metrics(row, config):
         values["train/" + name] = row[name]
     for name in ("mean", "le_0_1", "lt_0_5", "ge_0_9"):
         values["gates/" + name] = row["gates"][name]
+    if "progressive" in row:
+        for name, count in row["progressive"]["counts"].items():
+            values["gates/" + name] = count
+        for name in ("eligible_count", "requested_count", "selected_count", "shortfall"):
+            values["gates/" + name] = row["progressive"][name]
     for name, value in zip(("min", "p10", "median", "p90", "max"), row["gates"]["quantiles"], strict=True):
         values["gates/" + name] = value
     if not all(math.isfinite(value) for value in values.values()):
@@ -75,7 +85,7 @@ def validation_metrics(monitor):
     if not rows:
         raise ValueError("empty validation monitor")
     values = {"validation/update": monitor["update"], "validation/cases": len(rows)}
-    for state in ("trained", "hardened"):
+    for state in (("trained",) if "progressive" in monitor else ("trained", "hardened")):
         values[f"validation/{state}_gt_latent_mse"] = sum(
             r["states"][state]["metrics"]["capture_mse"] for r in rows
         ) / len(rows)
@@ -214,7 +224,7 @@ def main():
                 history.append(row)
                 cursor["train_update"] = row["update"]
                 save(cursor_path, cursor)
-                if row["update"] == 1 or row["update"] % interval == 0:
+                if row["update"] in (1, 2) or row["update"] % interval == 0:
                     log_charts()
             for path in sorted((root / f"checks/{args.arm}/replicate_{args.replicate_seed}").glob("monitor_*.json")):
                 if str(path) in cursor["validation"]:
@@ -231,7 +241,7 @@ def main():
             )
             status_path = directory / "status.json"
             status = read(status_path)["status"] if status_path.exists() else "starting"
-            if status in ("failed", "stopped", "paired_training_complete_GT_validation_pending"):
+            if status in ("failed", "stopped", "paired_training_complete_GT_validation_pending", "progressive_training_complete"):
                 metadata["status"] = status
                 break
             save(directory / f"{stem}.json", metadata)

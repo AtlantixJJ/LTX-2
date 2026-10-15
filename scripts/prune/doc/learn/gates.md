@@ -24,3 +24,8 @@ Sigmoid(3) is approximately 0.952574. This initial network differs from the teac
 ## Tests
 
 Run `test_learned_gates.py` with CUDA hidden. Native BF16 checks remain separate scientific gates.
+
+## Progressive gate removal
+
+The progressive policy composes free sigmoid gates with exact removed zeros during the soft phase.
+Snapshots measure actual mixed amplitudes and include free/removed counts. Legacy gate phases retain their existing semantics.

@@ -128,3 +128,9 @@ The `width_recovered` family uses `whole_clip_d0_learned_heads_v1`.
 Its envelope pins original IDs, both geometry wrappers, components, training state, consumed noise and merged tensors.
 Stored compact widths preserve full original Q/K normalization and RoPE identities.
 Native structural, transfer, fusion and merged-reload checks remain separate from decoded quality.
+
+## Progressive gate removal
+
+`learn/progressive.py` owns trajectory statistics, terminal gate decisions, frozen Adam coordinates and policy serialization.
+`data/progressive_head_study.py` owns verified checkpoint-zero reuse and the exact r13 draw prefix.
+The existing learner owns optimizer execution, event publication, checkpoint ordering and actual-state monitors.

@@ -33,7 +33,7 @@ Native acceptance runs separately and its trained tensors never seed formal trai
 Start the configured ranks through torchrun. Internal twelve-hour learning bounds save the latest completed checkpoint.
 An external thirteen-hour timeout has ten-minute termination grace.
 Resume only TimeoutError exits with increased published progress. Other errors stop the assigned run.
-Selection uses 1,000 updates and recovery uses 500. Export the compact base between phases and merge afterward.
+The frozen config sets the phase budget through `protocol.phase_budget`. Selection ends at `soft_updates + binary_updates` (1,000 for the 700/300/500 preset) and recovery ends 500 updates later. Export the compact base between phases and merge afterward.
 Compact export lazily saves structural inputs on GPU zero without model forwards; CPU surgery follows.
 
 When `wandb.enabled=true`, start one CPU receipt logger per arm with an arm-specific W&B run.
@@ -58,3 +58,9 @@ The earlier two-rank F18 memory pass is supporting evidence, not native acceptan
 
 CPU DDP tests check averaging, frozen state and exact resume. Crop tests check source alignment and window identity.
 Logger tests verify rank charts and global means. Native DDP acceptance remains a separate authorized GPU gate.
+
+## Progressive gate removal
+
+A progressive study accepts only `--arms learned_progressive --replicate-seed 42`.
+It requires fresh progressive native acceptance, runs 500 soft updates and their saved monitors, then ends.
+It performs no compact export, binary training or recovery. Read `progressive_training_complete` as training completion only.

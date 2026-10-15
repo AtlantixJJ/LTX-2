@@ -26,6 +26,9 @@ def main():
     ):
         raise ValueError("direct full run requires a frozen GT distributed preset")
     protocol.validate(study["config"])
+    progressive = study["config"].get("progressive_policy") is not None
+    if progressive and (args.arms != ["learned_progressive"] or args.replicate_seed != 42):
+        raise ValueError("progressive study has one arm and seed 42")
     devices = ",".join(str(gpu) for gpu in study["config"]["gpu_ids"])
     world = len(study["config"]["gpu_ids"])
     ddp = protocol.is_ddp(study["config"])
@@ -115,8 +118,11 @@ def main():
 
     def train(phase, arm):
         folder = root / f"training/{arm}/replicate_{args.replicate_seed}"
-        boundary = 1000 if phase == "selection" else 1500
-        if (folder / f"checkpoints/update_{boundary:04d}.pt").exists():
+        _, selection_end, compact_end = protocol.phase_budget(study["config"])
+        boundary = selection_end if phase == "selection" else compact_end
+        if (folder / f"checkpoints/update_{boundary:04d}.pt").exists() and (
+            not progressive or (root / f"checks/{arm}/replicate_{args.replicate_seed}/monitor_{boundary:04d}.json").exists()
+        ):
             return
         for segment in range(12):
             before = len(list((folder / "updates").glob("*.json")))
@@ -130,10 +136,9 @@ def main():
                     arm,
                     "--replicate-seed",
                     str(args.replicate_seed),
-                    "--removed-heads",
-                    "152",
                     "--gpu-id",
                     "0",
+                    *([] if progressive else ["--removed-heads", "152"]),
                 ],
                 devices,
                 True,
@@ -167,6 +172,8 @@ def main():
             or not acceptance.get("passed")
             or acceptance.get("method") != method
             or (ddp and acceptance.get("world_size") != world)
+            or (progressive and acceptance.get("progressive_execution") is not True)
+            or (progressive and acceptance.get("arbitrary_removal_count") != 3)
         ):
             raise ValueError("native distributed acceptance does not match the frozen study")
         if study["config"].get("wandb", {}).get("enabled", False):
@@ -182,6 +189,8 @@ def main():
                 loggers.append(logger)
         for arm in args.arms:
             train("selection", arm)
+            if progressive:
+                continue
             flags = ["--arm", arm, "--replicate-seed", str(args.replicate_seed)]
             if run(
                 f"{arm}_compact_export",
@@ -193,7 +202,7 @@ def main():
             train("compact_recovery", arm)
             if run(f"{arm}_merge", "scripts.prune.score.export_learned_heads", [*flags, "--stage", "final_merged"]):
                 raise RuntimeError("merged export failed")
-        state["status"] = "paired_training_complete_GT_validation_pending"
+        state["status"] = "progressive_training_complete" if progressive else "paired_training_complete_GT_validation_pending"
     except BaseException as error:
         state.update(
             status="stopped" if isinstance(error, KeyboardInterrupt) else "failed",

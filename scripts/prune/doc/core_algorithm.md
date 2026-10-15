@@ -129,8 +129,8 @@ The unchanged teacher remains an evaluation reference, rather than the loss targ
 
 Every logit starts at +3. Soft gates use sigmoid with temperature one.
 The first 700 updates add the frozen sparsity penalty and its configured coefficient ramp.
-The current seven-level GT preset uses mean `relu(alpha+3)` and `lambda(t)=0.1*(0.1+0.9*min(t/100,1))`.
-The effective coefficient is 0.0109 at update one and 0.1 from update 100. Gate LR is constant 0.1.
+The current ten-level GT preset uses mean `relu(alpha+3)` and `lambda(t)=0.01*(0.1+0.9*min(t/100,1))`.
+The effective coefficient is 0.00109 at update one and 0.01 from update 100. Gate LR is constant 0.01.
 Earlier presets retain their declared zero-start, 300-update ramp for reproduction.
 The sparsity derivative is zero at or below alpha minus three. This stops pressure, without clamping the optimizer state.
 The older eight-level preset also supports mean-sigmoid sparsity for exact reproduction.
@@ -175,3 +175,11 @@ The aligned decoder output is 137 frames at the original spatial geometry and fp
 This is a slice of continuous VAE latents, not an independent re-encode of a raw RGB crop.
 Full-source calibration, export parity and quality evaluation retain the original input contract.
 Store both full source/noise file pins and actual consumed window tensor hashes.
+
+## Progressive gate removal
+
+The progressive alternative uses 500 soft updates and no binary or compact phase.
+At the configured interval, filter by positive decrease and regret, then rank globally by regret and decreasing logit decrease.
+Remove up to the rounded-up fraction of the original head count; leave every other free gate soft.
+Free gates retain sigmoid gradients and free-logit sparsity with denominator 1,536. Terminal heads have no logit update.
+The [policy design](learn/progressive.md) defines trajectory statistics, deterministic global selection and exact resume.

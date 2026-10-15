@@ -106,9 +106,16 @@ Validate all consumed draws, original head IDs, optimizer transfer and merged te
 Preserve full original Q/K normalization. Retained pruning gates are exactly one in compact recovery.
 Keep structural, transfer, fusion, merged reload, decoded quality and speed evidence separate.
 Standalone prune phases keep their direct launch ownership and explicit dev transformer override.
-New learned-head training uses `configs/learned_heads_dev7_ddp_gt_uniform_f18_rank128.json` by default.
+New learned-head training uses `configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json` by default.
 Use full model replicas, native block gradient checkpointing and one F18 draw per DDP rank.
-Four ranks consume four draws. Preserve raw-logit loss, the 100-update weight ramp and gate LR 0.1.
+Four ranks consume four draws. Preserve raw-logit loss and the 100-update weight ramp.
+The current preset uses gate LR 0.01 and sparsity coefficient 0.01, with effective weight 0.001 to 0.01.
+Its ten-level grid includes all five official 30-step dev sigmas in [0.9, 0.95].
 W&B uses one CPU writer per arm. Rank sigma/memory charts have one line per rank;
 total loss and validation errors are averaged scalars. Metric tabs omit `learned_joint/`.
 Do not restart a user-stopped run while updating code or documentation.
+
+The progressive alternative uses `data.progressive_head_study` and the single `learned_progressive` arm.
+It starts from verified r13 checkpoint zero, preserves 2,000 draws and removes globally ranked subsets at a configured interval.
+Fresh native acceptance must exercise mixed gates and exact resume before its 500 updates on GPUs 0–3.
+See `doc/learn/progressive.md`; monitors use only actual mixed gates and preserve optimizer RNG.

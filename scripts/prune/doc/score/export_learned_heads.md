@@ -21,7 +21,7 @@ See the [run guide](../usage.md#learned-head-phases).
 
 ## Data flow
 
-The final binary selection supplies original head IDs. Existing coupled export reduces V, native gate and output widths.
+The selection checkpoint at the frozen selection end (`protocol.phase_budget`) supplies original head IDs; the final step is the compact end. Existing coupled export reduces V, native gate and output widths.
 
 ## Organization logic
 

@@ -9,11 +9,11 @@ Freeze source identity, disjoint actors and paired optimization draws.
 Started by: a direct human or agent CLI. Run from `LTX-2` in conda environment `ltx`.
 
 ```bash
-CUDA_VISIBLE_DEVICES= python -m scripts.prune.data.learned_head_study --config scripts/prune/configs/learned_heads_dev7_ddp_gt_uniform_f18_rank128.json --plan ../plans/2026-10-12-learned-head-pruning-experiment.md --output ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_new
+CUDA_VISIBLE_DEVICES= python -m scripts.prune.data.learned_head_study --config scripts/prune/configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json --plan ../plans/2026-10-12-learned-head-pruning-experiment.md --output ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_new
 ```
 
 `--seen-actors` adds audited exclusions. `--region-tracks` accepts reviewed GT box records.
-The default config is the seven-level uniform-F18 rank128 DDP preset.
+The default config is the ten-level uniform-F18 rank128 DDP preset.
 `--uniform-f18` explicitly adds the crop option to another compatible preset and saves its effective config.
 
 Outputs: Frozen study, source pins, regions, buckets and paired draws.
@@ -28,9 +28,14 @@ Pinned membership supplies views. GT-only replay supplies motion and area. Split
 Validation uses twenty hashed train actors. Learning uses actor rounds until 256 views are selected. Later rounds prefer an unused clip length.
 Blind selection excludes known inspected actors and actors cited in earlier evidence.
 Each seed has `1500*global_unique_clips` named draws: 6,000 for four-rank DDP, 3,000 for legacy two-draw studies.
-The frozen config selects all eight registered sigmas or the first seven, excluding the lowest level.
+The frozen config selects exact, distinct, descending levels from the official 30-step dev scheduler, with no latent argument.
+Only positive values at most 0.95 are accepted. Historical seven/eight-level configs remain supported.
 The sigma cycle contains each selected index exactly once. Four consecutive draws form a four-rank DDP update.
 For seven levels, `[0,6,1,5,2,4,3]` repeats. Seven DDP updates cover every level four times.
+The current ten-level grid adds 0.9403364062309265, 0.9309937953948975 and 0.9098098278045654 to the earlier seven levels.
+It therefore covers all five official dev levels in [0.9, 0.95].
+Cycle `[0,9,1,8,2,7,3,6,4,5]` gives every level twice in five four-draw updates.
+`monitor_sigma_indices=[0,7,9]` preserves the previous three validation levels despite the expanded training grid.
 Legacy FSDP studies retain two draws per update and twice-per-level coverage in seven updates.
 Training, input manifests, native checks and evaluation read this frozen grid through `study_sigmas`.
 Historical head-score records retain their separate eight-level grid.

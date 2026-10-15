@@ -167,3 +167,11 @@ It checks F18 and cropped-F28 sources, nonzero crop conditioning, all-one parity
 The saved acceptance must match the study, DDP method and configured world size before sustained training.
 Two-rank full-F18 memory evidence does not establish four-rank crop execution or full-source validation memory.
 Keep those native checks pending when the user has stopped GPU training.
+
+## Progressive gate removal
+
+Before sustained progressive training, require all-free parity, exact removed-zero execution and zero frozen gradients and Adam moments.
+Require legal irreversible decisions and exact resumed native updates across a decision, including checkpoint recomputation.
+CPU checks alone cannot satisfy this gate. Save the native `progressive_execution` acceptance flag under the new study identity.
+Every 50 formal updates, inspect events, losses and actual-state capture MSE. Few eligible removals limit the evidence.
+Latent MSE does not establish decoded video quality.

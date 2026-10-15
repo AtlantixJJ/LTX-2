@@ -23,7 +23,7 @@ from scripts.onestep_avatar.corpus.dataset import load_training_master
 from scripts.onestep_avatar.model import common
 from scripts.prune.core import ltx_adapter, provenance, session
 from scripts.prune.data import foreground, training_windows, whole_clip
-from scripts.prune.data.learned_head_study import load_study, study_sigmas
+from scripts.prune.data.learned_head_study import load_study, monitor_sigma_indices, study_sigmas
 from scripts.prune.learn import adapters, checkpoints, losses, protocol
 from scripts.prune.learn.gates import HeadGates, nearest_removed, select_legal
 from scripts.prune.learn.teacher_references import TeacherReferences
@@ -31,6 +31,7 @@ from scripts.prune.score import hooks, token_sampling
 from scripts.prune.score.mobilewan_heads import projected_energy
 
 ARMS = (
+    "learned_progressive",
     "learned_joint",
     "learned_soft_only",
     "energy",
@@ -308,8 +309,12 @@ def train_identity(study, arm, seed, removed, draws):
 
 def training_phase(study, current, args, deadline):
     root, config = Path(study["root"]), study["config"]
+    soft_end, selection_end, compact_end = protocol.phase_budget(config)
     uniform_f18 = training_windows.enabled(config)
     draw_count = protocol.validate(config)
+    progressive = args.arm == "learned_progressive"
+    if progressive != (config.get("progressive_policy") is not None):
+        raise ValueError("progressive study runs only its single progressive arm")
     if config.get("foreground_preparation") == "deferred" and args.arm in (
         "learned_balanced",
         "learned_person",
@@ -322,7 +327,7 @@ def training_phase(study, current, args, deadline):
     if args.arm == "learned_small_regions" and study["region_tracks"]["status"] != "verified":
         raise ValueError("regional runs require verified canonical coverage and reviewed GT region records")
     allowed = [config["allowed_counts"] for _ in range(config["blocks"])]
-    if (
+    if not progressive and (
         args.removed_heads not in config["removed_heads"]
         or nearest_removed(args.removed_heads, allowed, heads=config["heads"]) != args.removed_heads
     ):
@@ -353,10 +358,14 @@ def training_phase(study, current, args, deadline):
     draw_record = study["draws"][f"{args.replicate_seed}:{policy}"]
     draws = json.loads(Path(draw_record["path"]).read_text())
     identity = train_identity(
-        study, args.arm, args.replicate_seed, 0 if args.arm == "dense_fresh" else args.removed_heads, draw_record
+        study, args.arm, args.replicate_seed, 0 if progressive or args.arm == "dense_fresh" else args.removed_heads, draw_record
     )
     gates = HeadGates(config["blocks"], config["heads"], allowed).to(current.device)
-    kept = config["blocks"] * config["heads"] - args.removed_heads
+    if progressive:
+        from scripts.prune.learn.progressive import ProgressivePolicy
+
+        gates.progressive = ProgressivePolicy(gates.alpha, config["progressive_policy"])
+    kept = None if progressive else config["blocks"] * config["heads"] - args.removed_heads
     scores = None
     if args.arm == "energy":
         ranking = json.loads((root / "calibration/ranking.json").read_text())
@@ -412,7 +421,9 @@ def training_phase(study, current, args, deadline):
             fixed_mask = torch.ones(48, 32)
         else:
             source_arm = "energy" if args.arm == "energy_fresh" else "learned_joint"
-            frozen_path = root / f"training/{source_arm}/replicate_{args.replicate_seed}/checkpoints/update_1000.pt"
+            frozen_path = (
+                root / f"training/{source_arm}/replicate_{args.replicate_seed}/checkpoints/update_{selection_end:04d}.pt"
+            )
             frozen = checkpoints.load(frozen_path)
             if frozen["identity"]["study"] != study["identity"]:
                 raise ValueError("fresh mask comes from another study")
@@ -462,18 +473,18 @@ def training_phase(study, current, args, deadline):
         lineage["prefix_receipts"] = {
             str(p.resolve()): provenance.file_sha256(p)
             for p in sorted(prefix_updates.glob("*.json"))
-            if json.loads(p.read_text())["update"] <= 700
+            if json.loads(p.read_text())["update"] <= soft_end
         }
-    start = previous["update"] if previous else (1000 if fresh else 0)
+    start = previous["update"] if previous else (selection_end if fresh else 0)
     compact = args.phase == "compact_recovery"
-    if compact and not fresh and (previous is None or start < 1000):
+    if compact and not fresh and (previous is None or start < selection_end):
         raise ValueError("compact recovery requires the completed selection checkpoint")
     model_path = (
         root / f"exports/{args.arm}/replicate_{args.replicate_seed}/compact_base.safetensors"
         if compact
         else Path(study["components"]["transformer"]["path"])
     )
-    if not compact and start >= 1000:
+    if not compact and start >= selection_end and not progressive:
         return
     with current.transformer(model_path) as model, torch.enable_grad():
         model.train().requires_grad_(False)
@@ -491,9 +502,9 @@ def training_phase(study, current, args, deadline):
                 ),
             )
             save_checkpoint(
-                directory / "checkpoints/update_1000.pt",
+                directory / f"checkpoints/update_{selection_end:04d}.pt",
                 identity=identity,
-                update=1000,
+                update=selection_end,
                 phase="compact",
                 gates=gates,
                 adapters=attached,
@@ -503,7 +514,7 @@ def training_phase(study, current, args, deadline):
         if previous:
             state = previous["adapters"]
             opt_state = previous["adapter_optimizer"]
-            if compact and start == 1000 and not fresh:
+            if compact and start == selection_end and not fresh:
                 state = adapters.transfer(state, previous["mask"])
                 names = [f"{name}.{k}" for name in attached for k in ("A", "B")]
                 opt_state = adapters.transfer_optimizer(opt_state, names, previous["mask"])
@@ -515,12 +526,19 @@ def training_phase(study, current, args, deadline):
             adapters.load_state(attached, state)
             ao.load_state_dict(opt_state)
             gates.alpha.data.copy_(previous["alpha"])
+            if progressive:
+                if previous.get("progressive") is None:
+                    raise ValueError("progressive resume lacks policy state")
+                gates.progressive = ProgressivePolicy.from_state(previous["progressive"], config["progressive_policy"])
+                gates.progressive.verify_ranks(current.device)
             gates.decision = previous["mask"].to(current.device) if previous["mask"] is not None else None
             if go and previous["gate_optimizer"]:
                 go.load_state_dict(previous["gate_optimizer"])
             checkpoints.restore_rng(previous["rng"])
         sources = {s["relative_dir"]: s for s in study["splits"]["learning"]}
-        end = (2500 if args.arm == "learned_sequential" else 1500) if compact else 1000
+        end = (
+            (compact_end + 1000 if args.arm == "learned_sequential" else compact_end) if compact else selection_end
+        )
         live = hooks.attach_head_provider(model, gates.provider) if not compact else hooks.MaskAttachments()
         if runtime and not runtime.uses_ddp:
             model = runtime.wrap(model, ap)
@@ -536,6 +554,13 @@ def training_phase(study, current, args, deadline):
         old = signal.signal(signal.SIGTERM, lambda *_: stop.__setitem__(0, True))
         phase = previous["phase"] if previous else "soft"
         try:
+            if progressive and previous:
+                for event in gates.progressive.history:
+                    path = directory / f"events/{event['update']:04d}.json"
+                    if json.loads(path.read_text()) != event:
+                        raise ValueError("saved progressive event differs from checkpoint")
+                if start and (start % gates.progressive.interval == 0 or start == selection_end):
+                    monitor(study, current, model, gates, args.arm, args.replicate_seed, start, kept, scores)
             if not previous and not fresh:
                 save_checkpoint(
                     directory / "checkpoints/update_0000.pt",
@@ -570,7 +595,7 @@ def training_phase(study, current, args, deadline):
                     else (
                         "fixed"
                         if scores is not None
-                        else ("soft" if update <= 700 or args.arm == "learned_soft_only" else "binary")
+                        else ("soft" if update <= soft_end or args.arm == "learned_soft_only" else "binary")
                     )
                 )
                 ramp = min(update / 300, 1.0)
@@ -581,7 +606,7 @@ def training_phase(study, current, args, deadline):
                     gates.begin_update("binary", kept)
                 else:
                     gates.phase = phase
-                phase_start = 1000 if compact else (700 if phase == "binary" else 0)
+                phase_start = selection_end if compact else (soft_end if phase == "binary" else 0)
                 for group in ao.param_groups:
                     group["lr"] = config["adapter_lr"] * min((update - phase_start) / config["warmup_updates"], 1.0)
                 ao.zero_grad(set_to_none=True)
@@ -591,7 +616,7 @@ def training_phase(study, current, args, deadline):
                 scalars = []
                 for device in devices:
                     torch.cuda.reset_peak_memory_stats(device)
-                draw_update = update - 1000 if compact and args.arm == "learned_sequential" else update
+                draw_update = update - selection_end if compact and args.arm == "learned_sequential" else update
                 selected = protocol.update_draws(draws, draw_update, config, runtime.rank if runtime else None)
                 if runtime:
                     runtime.mask(gates)
@@ -650,21 +675,43 @@ def training_phase(study, current, args, deadline):
                         lambda_start_multiplier=config.get("lambda_start_multiplier", 0.0),
                         kind=config.get("sparsity_penalty", "mean_sigmoid"),
                         logit_offset=config.get("sparsity_logit_offset", 3.0),
+                        free_mask=gates.progressive.free if progressive else None,
                     )
                 sparse_norm = float(sparse_gradient.norm())
                 velocity_norm = (
                     float((gates.alpha.grad - sparse_gradient).norm()) if go and gates.alpha.grad is not None else 0.0
                 )
+                # Per-update gate trace: total logit gradient after DDP averaging and before clipping.
+                gate_grad = gates.alpha.grad.detach().clone() if go and gates.alpha.grad is not None else None
                 gnorm = (
                     float(torch.nn.utils.clip_grad_norm_([gates.alpha], 1.0, error_if_nonfinite=True)) if go else 0.0
                 )
+                if progressive:
+                    gates.progressive.mask_gradient(gates.alpha)
                 if args.arm != "learned_sequential" or compact:
                     ao.step()
                 if go:
                     go.step()
+                event = None
+                if progressive:
+                    if any(not torch.isfinite(p).all() for p in ap):
+                        raise ValueError("nonfinite progressive adapter state")
+                    gates.progressive.protect(gates.alpha, go)
+                    event = gates.progressive.record(update, gates.alpha, go)
+                    if event is not None:
+                        gates.progressive.verify_ranks(current.device)
+                        if runtime is None or runtime.primary:
+                            checkpoints.publish_json(directory / f"events/{update:04d}.json", event)
+                        if runtime:
+                            torch.distributed.barrier()
+                gate_trace = (
+                    torch.stack([gates.alpha.detach(), gate_grad, sparse_gradient.to(gate_grad)]).float().cpu()
+                    if gate_grad is not None
+                    else None
+                )
                 if any(p._version != version for p, version in frozen_parameters):
                     raise ValueError("a frozen pretrained tensor changed during learning")
-                if not compact and scores is None and (update % 100 == 0 or update in (700, 1000)):
+                if not progressive and not compact and scores is None and (update % 100 == 0 or update in (soft_end, selection_end)):
                     gates.decision = select_legal(gates.alpha if scores is None else scores, kept, allowed).to(
                         current.device
                     )
@@ -694,6 +741,11 @@ def training_phase(study, current, args, deadline):
                     "seconds": time.monotonic() - started,
                 }) if runtime else []
                 receipt = {
+                    **({"progressive": {"counts": gates.progressive.counts(),
+                        "selected_ids": event["selected_ids"] if event else [],
+                        **{key: event[key] if event else 0 for key in (
+                            "eligible_count", "requested_count", "selected_count", "shortfall")},
+                        "policy_sha256": checkpoints.digest(gates.progressive.state_dict())}} if progressive else {}),
                     "study": study["identity"],
                     "update": update,
                     "phase": phase,
@@ -730,7 +782,10 @@ def training_phase(study, current, args, deadline):
                         raise ValueError("replayed update differs from immutable progress evidence")
                 elif runtime is None or runtime.primary:
                     checkpoints.publish_json(receipt_path, receipt)
-                if update % 100 == 0 or update in (700, 1000, 1500):
+                if gate_trace is not None and (runtime is None or runtime.primary):
+                    # Rows: logits after the step, total gradient, sparsity gradient. Replays must match bytes.
+                    checkpoints.publish_tensor(directory / f"gate_trace/{update:04d}.pt", gate_trace)
+                if update % (gates.progressive.interval if progressive else 100) == 0 or update in (soft_end, selection_end, compact_end):
                     save_checkpoint(
                         directory / f"checkpoints/update_{update:04d}.pt",
                         identity=identity,
@@ -749,7 +804,7 @@ def training_phase(study, current, args, deadline):
                     flush=True,
                 )
                 if args.max_updates and update - start >= args.max_updates:
-                    if update % 100:
+                    if progressive or update % 100:
                         save_checkpoint(
                             directory / f"checkpoints/update_{update:04d}.pt",
                             identity=identity,
@@ -1152,6 +1207,17 @@ def execution_probes(study, current, deadline):
 
 
 def monitor(study, current, model, gates, arm, seed, update, kept, scores=None):
+    """Monitoring cannot advance optimizer RNG or retain its temporary gate graph."""
+    rng = checkpoints.rng_state()
+    original = gates.phase, gates.decision, gates.current
+    try:
+        return _monitor(study, current, model, gates, arm, seed, update, kept, scores)
+    finally:
+        gates.phase, gates.decision, gates.current = original
+        checkpoints.restore_rng(rng)
+
+
+def _monitor(study, current, model, gates, arm, seed, update, kept, scores=None):
     """Paired quick validation and hardening evidence, with unchanged adapters."""
     from scripts.prune.evaluate.learned_heads import capture_metrics, paired_metrics
 
@@ -1166,10 +1232,11 @@ def monitor(study, current, model, gates, arm, seed, update, kept, scores=None):
         cases = [source for index, source in enumerate(cases) if index % runtime.world == runtime.rank]
     original = gates.phase, gates.decision, gates.current
     rows = []
-    final_mask = select_legal(gates.alpha if scores is None else scores, kept, gates.allowed).to(current.device)
+    progressive = gates.progressive is not None
+    final_mask = None if progressive else select_legal(gates.alpha if scores is None else scores, kept, gates.allowed).to(current.device)
     with torch.no_grad():
         for source in cases:
-            for i in (0, 4, len(study_sigmas(study)) - 1):
+            for i in monitor_sigma_indices(study):
                 sigma = study_sigmas(study)[i]
                 grid, video, c0, capture, eps, inputs, manifest = input_case(study, current, source, 2042, sigma)
                 ref_id = (
@@ -1177,7 +1244,7 @@ def monitor(study, current, model, gates, arm, seed, update, kept, scores=None):
                 )
                 teacher = None if gt_only else cache.read(ref_id)
                 outputs = {}
-                for state in ("trained", "hardened"):
+                for state in (("trained",) if progressive else ("trained", "hardened")):
                     gates.phase = original[0] if state == "trained" else "compact"
                     gates.decision = original[1] if state == "trained" else final_mask
                     gates.microbatch()
@@ -1216,6 +1283,9 @@ def monitor(study, current, model, gates, arm, seed, update, kept, scores=None):
                         "sigma": sigma,
                         "states": outputs,
                         "input_manifest_sha256": provenance.file_sha256(inputs / "manifest.json"),
+                        "epsilon_sha256": manifest["videos"][0]["artifacts"]["epsilon_sha256"],
+                        "context_sha256": study["text_context"]["tensor_sha256"],
+                        "source": source,
                         "reference": "gt_capture" if gt_only else "original_teacher",
                         "teacher_key": None if gt_only else checkpoints.digest(ref_id),
                         **({"rank": runtime.rank} if ddp else {}),
@@ -1227,7 +1297,8 @@ def monitor(study, current, model, gates, arm, seed, update, kept, scores=None):
     if runtime is None or runtime.primary:
         checkpoints.publish_json(
             root / f"checks/{arm}/replicate_{seed}/monitor_{update:04d}.json",
-            {"study": study["identity"], "update": update, "rows": rows, "hardening_is_model_change": True},
+            {"study": study["identity"], "update": update, "rows": rows, "hardening_is_model_change": not progressive,
+             **({"progressive": gates.progressive.state_dict()} if progressive else {})},
         )
 
 

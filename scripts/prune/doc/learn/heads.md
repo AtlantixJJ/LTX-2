@@ -12,7 +12,7 @@ Started by: a direct human or agent CLI. Run from `LTX-2` in conda environment `
 CUBLAS_WORKSPACE_CONFIG=:4096:8 conda run --no-capture-output -n ltx python -m scripts.prune.learn.heads --study ../expr/refiner_prune/2.5/learned_heads_dev8_20261012_r2/configs/frozen_study.json --phase feasibility --gpu-id 0
 ```
 
-`--phase` selects one bounded phase. `--arm`, `--replicate-seed` and `--removed-heads` select the frozen arm. `--branch-prefix` reuses a verified 700-update prefix. `--max-updates` bounds a smoke run.
+`--phase` selects one bounded phase. `--arm`, `--replicate-seed` and `--removed-heads` select the frozen arm. `--branch-prefix` reuses a verified soft-phase prefix. `--max-updates` bounds a smoke run.
 
 Outputs: Phase receipts, learning state, observations, monitoring predictions and timing probes.
 See the [run guide](../usage.md#learned-head-phases).
@@ -28,8 +28,8 @@ Four ranks consume four distinct draw indices; no rank duplication occurs.
 
 Feasibility checks native velocity conversion, all-one gates and zero adapters. Zero-adapter parity runs under `no_grad`; only optimizer forwards enable autograd. Ten backward updates test each complete clip length.
 Execution probes export three 152-head layouts and four FFN widths. ABA/BAB timing repeats twenty times when drift exceeds two percent.
-Selection uses 700 soft and 300 binary updates. Soft-only uses 1,000 soft updates. Fixed energy and random arms ramp for 300 updates.
-Recovery slices adapters and Adam moments at original head IDs. Fresh controls reset adapters and moments. Sequential recovery uses 1,500 adapter updates.
+The frozen config sets the budget: `soft_updates`, `binary_updates` and `compact_updates` give global boundaries through `protocol.phase_budget`. The default preset uses 700 soft and 300 binary updates; an extended study can use 2,000 soft and 0 binary. Soft-only keeps soft gates through the selection end. Fixed energy and random arms ramp for 300 updates.
+Recovery slices adapters and Adam moments at original head IDs. Fresh controls reset adapters and moments. Sequential recovery adds 1,000 adapter updates beyond the compact end.
 Every attachment and fresh source-state reset consumes the frozen adapter rank, including rank 128.
 
 ## Invariants
@@ -93,16 +93,21 @@ Record the penalty form, offset and actual warmup coefficient with each update.
 Pass the frozen ramp duration and start multiplier to the shared coefficient owner for loss, gradient and receipt.
 The adapter LR uses its existing phase warmup. Gate LR is constant from the first update.
 Use the matching analytic sparsity gradient before clipping to separate velocity and sparsity gradient norms.
+Save `sparsity_logit_gradient_norm` and `velocity_logit_gradient_norm` after distributed gradient averaging and before gate clipping.
+The sparsity gradient includes the current lambda. The velocity component is the total gradient minus the analytic sparsity gradient.
+The shared W&B writer logs both as `train/` scalars at every update.
 Continuation restores the saved optimizers, masks, RNG state and global update count. A changed loss requires a separate frozen study.
 The continuation owner preserves source update receipts in checkpoint lineage; never rewrite their original study identities.
 
 ## Frozen sigma grid
 
 Read the exact noise levels from the frozen study, never from the historical score grid.
-The seven-level preset omits sigma 0.1. Its input manifests also declare only these seven levels.
-Draw indices select the frozen grid. Quick monitors use indices zero, four and the last selected level.
+The current ten-level preset omits sigma 0.1 and includes all five official dev levels in [0.9, 0.95].
+Its input manifests declare the complete frozen training grid. Draw indices select that grid.
+Quick monitors use explicit `monitor_sigma_indices` when supplied; historical configs default to zero, four and the last level.
+The ten-level preset selects indices [0,7,9], preserving sigmas 0.9489720463752747, 0.7663628458976746 and 0.48016369342803955.
 For a fresh run, initialize adapters, logits, optimizer moments and RNG state from the declared seed.
-The first 700 updates use soft gates. Update 701 starts binary refinement with sparsity disabled.
+Updates up to `soft_updates` use soft gates. The next update starts binary refinement with sparsity disabled; with zero binary updates, compact recovery starts directly from the soft selection checkpoint.
 
 ## Uniform F18 and DDP
 
@@ -124,5 +129,25 @@ Each rank publishes only its own case tensors; rank zero publishes the gathered 
 Every optimizer receipt contains global draws and separate rank sigma/timing records for W&B.
 Total loss and validation errors are global means. Rank sigma and memory appear as multiline charts.
 
-The recipe keeps rank/alpha 128, gate LR 0.1 and `lambda(t)=0.1*(0.1+0.9*min(t/100,1))`.
+The recipe keeps rank/alpha 128, gate LR 0.01 and `lambda(t)=0.01*(0.1+0.9*min(t/100,1))`.
 Existing FSDP, block-placement and older losses remain explicit reproduction paths.
+
+## Gate trace
+
+When gate logits train, the primary rank writes `training/<arm>/replicate_<seed>/gate_trace/NNNN.pt` for every update.
+It is a (3, blocks, heads) FP32 tensor: row 0 holds the logits after the optimizer step, row 1 the total logit gradient
+after DDP averaging and before clipping, and row 2 the analytic sparsity gradient (zero outside the soft phase).
+The velocity part is row 1 minus row 2. A replayed update must reproduce the same tensor; the update receipts are unchanged.
+Report code uses the trace for per-update regret and direction changes; without it, analysis falls back to checkpoints.
+
+## Progressive gate removal
+
+The `learned_progressive` arm records every post-update logit matrix and commits global removals at the configured interval.
+It publishes event receipts before canonical checkpoints. Resume validates the complete saved event history and replays receipts exactly.
+After each event and at the final update, monitoring saves only the actual mixed state at the three source sigmas for the first four validation actors.
+It uses seed 2042 and preserves Python, NumPy, CPU and local CUDA RNG state, including on failure.
+A resumed boundary repeats its immutable monitor before continuing. It never globally hardens free progressive gates.
+Source, noise, context and prediction hashes accompany each case.
+
+Progressive training bypasses legacy removal budgets and legal-width checks. It records no target total removal count.
+Canonical checkpoints and actual-state monitors follow the configured interval and always include the final update.

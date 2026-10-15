@@ -1,0 +1,16 @@
+{
+  "version": "progressive-head-removal-global-v2",
+  "soft_updates": 500,
+  "binary_updates": 0,
+  "compact_updates": 0,
+  "replicate_seeds": [42],
+  "gpu_ids": [0, 1, 2, 3],
+  "person_coefficient": 0.0,
+  "small_region_coefficient": 0.0,
+  "removed_heads": [],
+  "progressive_policy": {
+    "hardening_interval": 50,
+    "removal_fraction": 0.01,
+    "regret_threshold": 0.10
+  }
+}

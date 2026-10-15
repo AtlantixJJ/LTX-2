@@ -42,3 +42,11 @@ All ranks wait until immutable checkpoint publication finishes.
 Store `draws_per_update` and `draw_cursor=update*draws_per_update` in new checkpoints.
 Four-rank DDP checkpoints use four. Legacy checkpoints without the field use two.
 Verify the count against the receipt and frozen batch before resume. Replaying a changed batch requires a separate study.
+
+## Progressive gate removal
+
+Progressive checkpoints include policy masks, frozen logits, the interval-dependent window cursor and full event history.
+The receipt binds the policy hash. Loading checks mask/history agreement, deterministic rankings, threshold compliance and the update cursor.
+Publishing an existing progressive checkpoint compares the complete trainable, optimizer, RNG and policy payload.
+
+Progressive resume requires the frozen hyperparameters. Policy receipts record candidate ranks and original selected IDs.

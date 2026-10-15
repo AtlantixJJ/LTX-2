@@ -40,3 +40,8 @@ A perfect target prediction gives zero loss. Teacher predictions can have nonzer
 ## Tests
 
 Run `test_head_losses.py` with CUDA hidden. Native BF16 checks remain separate scientific gates.
+
+## Progressive gate removal
+
+Progressive sparsity multiplies each raw-logit ReLU and its analytic derivative by the free mask.
+The mean still divides by the original full matrix size, 1,536, after heads become terminal.

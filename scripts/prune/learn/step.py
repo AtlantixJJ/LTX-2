@@ -3,6 +3,7 @@
 DDP sees every trainable parameter and both gate-gradient paths in this forward.
 The shared native velocity and loss owners retain all numerical decisions.
 Return detached monitoring scalars so the clean-output graph has no extra owner.
+Progressive gates mask sparsity to free logits while retaining the full-head denominator.
 """
 
 import torch
@@ -32,6 +33,7 @@ class TrainingStep(torch.nn.Module):
             lambda_warmup=cfg.get("lambda_warmup", 300),
             lambda_start_multiplier=cfg.get("lambda_start_multiplier", 0.0),
             logits=self.gates.alpha,
+            free_mask=self.gates.progressive.free if self.gates.progressive else None,
             sparsity_kind=cfg.get("sparsity_penalty", "mean_sigmoid"),
             logit_offset=cfg.get("sparsity_logit_offset", 3.0),
             person=cfg["person_coefficient"] if regions else 0.0,

@@ -22,7 +22,7 @@ from scripts.onestep_avatar.corpus.subset import load_membership
 from scripts.prune.core import model_registry
 from scripts.prune.core.provenance import file_sha256
 from scripts.prune.data import foreground, prompt_cache, training_windows, whole_clip
-from scripts.prune.data.head_score_dataset import CSV_SHA, JSON_SHA, SEMANTIC_SHA, SIGMAS, official_schedule
+from scripts.prune.data.head_score_dataset import CSV_SHA, JSON_SHA, SEMANTIC_SHA, official_schedule
 from scripts.prune.learn.checkpoints import digest, publish, publish_json, tensor_hash
 from scripts.prune.learn.protocol import draws_per_update
 from scripts.prune.learn.protocol import validate as validate_protocol
@@ -165,6 +165,30 @@ def assign_buckets(sources, stats):
 def study_sigmas(study):
     """Read the exact frozen learned-study grid; historical scoring keeps its own grid."""
     return study["config"]["sigmas"]
+
+
+def monitor_sigma_indices(study):
+    """Keep quick validation levels explicit when the optimizer grid expands."""
+    count = len(study_sigmas(study))
+    indices = study["config"].get("monitor_sigma_indices", [0, 4, count - 1])
+    if len(indices) != 3 or len(set(indices)) != 3 or any(type(i) is not int or not 0 <= i < count for i in indices):
+        raise ValueError("monitor sigma indices must name three distinct training levels")
+    return indices
+
+
+def validate_sigma_grid(config, schedule):
+    """Accept exact positive dev scheduler levels, with complete draw coverage."""
+    grid = config["sigmas"]
+    if (
+        not grid
+        or any(type(s) not in (int, float) or not 0 < s <= 0.95 or s not in schedule["original_grid"] for s in grid)
+        or grid != sorted(set(grid), reverse=True)
+    ):
+        raise ValueError("training sigmas must be distinct descending exact dev levels in (0, 0.95]")
+    cycle = config["sigma_indices_cycle"]
+    if len(cycle) != len(grid) or any(type(i) is not int for i in cycle) or sorted(cycle) != list(range(len(grid))):
+        raise ValueError("frozen sigma cycle does not cover the declared grid once")
+    monitor_sigma_indices({"config": config})
 
 
 def draw_list(sources, seed, *, buckets=None, updates=1500, sigma_indices=None, draws_per_update=2):
@@ -322,14 +346,13 @@ def prepare(config_path, plan, output, seen_path=None, region_path=None, *, unif
         or config["alpha_init"] != 3
         or config["temperature"] != 1
         or [config[k] for k in ("soft_updates", "binary_updates", "compact_updates")] != [700, 300, 500]
-        or config["sigmas"] not in (SIGMAS, SIGMAS[:-1])
         or config["variant"] != "dev"
     ):
         raise ValueError("preset changes require an explicit protocol amendment")
     cycle = config["sigma_indices_cycle"]
-    if len(cycle) != len(config["sigmas"]) or sorted(cycle) != list(range(len(config["sigmas"]))):
-        raise ValueError("frozen sigma cycle does not cover the declared grid once")
     workspace = Path(__file__).resolve().parents[4]
+    schedule = official_schedule(workspace / config["components"]["transformer"])
+    validate_sigma_grid(config, schedule)
     alias = Path("/home/jianjinx/data2/VideoDiffusionModels")
     if alias.exists() and alias.resolve() != workspace.resolve():
         raise ValueError("workspace alias differs")
@@ -470,7 +493,7 @@ def prepare(config_path, plan, output, seen_path=None, region_path=None, *, unif
             "tensor_sha256": tensor_hash(context),
             "bytes_sha256": hashlib.sha256(context.contiguous().view(torch.uint8).numpy().tobytes()).hexdigest(),
         },
-        "schedule": official_schedule(components["transformer"]["path"]),
+        "schedule": schedule,
         "scale_factors": list(model.scale_factors),
         "code": code_identity(),
         "root": str(output),
@@ -506,7 +529,7 @@ def prepare(config_path, plan, output, seen_path=None, region_path=None, *, unif
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[1]
-                   / "configs/learned_heads_dev7_ddp_gt_uniform_f18_rank128.json")
+                   / "configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json")
     p.add_argument("--plan", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--seen-actors", type=Path)

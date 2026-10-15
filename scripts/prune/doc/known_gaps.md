@@ -116,3 +116,10 @@ The prior two-rank F18 native diagnostic passed three updates. Full F28 training
 A new four-rank uniform-crop study requires its own `checks.ddp_native` receipt before formal training.
 Native crop acceptance, sustained training, full-source monitoring memory and final compact quality remain separate gates.
 The current run remains user-stopped; implementation work does not authorize a restart.
+
+## Progressive global removals
+
+The configurable soft/zero policy and checkpoint-zero preparation have CPU coverage.
+The focused controls cover thresholds, global sorting, percentage rounding, arbitrary head counts and exact event replay.
+Fresh three-head native acceptance gates each new study. CPU tests do not prove native execution or sustained training.
+Event statistics and capture latent MSE cannot establish decoded video quality or compute savings.

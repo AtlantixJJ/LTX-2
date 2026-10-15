@@ -45,3 +45,14 @@ The earlier two-rank F18 memory result is supporting evidence; it cannot substit
 ## Tests
 
 CPU DDP and crop tests verify independent averaging and replay. Run this native acceptance only when GPU execution is authorized.
+
+## Progressive gate removal
+
+For a progressive study, compare all-free native outputs bit-for-bit against ordinary soft gates.
+A disposable three-update policy requests exactly three removals. It uses a three-head fraction and regret threshold one.
+Its first synthetic snapshot makes exactly three heads decline; other heads increase.
+Save after policy cursor two, then replay cursor three and the following update with checkpointed backward.
+Require exact parameters, losses and policy. Check zero removed gradients, frozen logits and cleared Adam moments.
+The three-head fixture proves that functional widths need not be multiples of four. It does not change the formal hyperparameters.
+The native checkpoint filename remains `update_0001.pt`; its progressive cursor is two.
+No disposable state advances the formal checkpoint-zero trajectory.

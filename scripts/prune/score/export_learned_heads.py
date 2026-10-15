@@ -13,7 +13,7 @@ from safetensors.torch import save_file
 from scripts.prune.core import provenance
 from scripts.prune.data import whole_clip
 from scripts.prune.data.learned_head_study import load_study
-from scripts.prune.learn import checkpoints
+from scripts.prune.learn import checkpoints, protocol
 from scripts.prune.score import export_pruned
 
 FORMAT = "whole_clip_d0_learned_heads_v1"
@@ -146,7 +146,9 @@ def merge(source, state, output, *, metadata=None, scaling=1.0, envelope=None, e
 def run_export(study, arm, seed, stage):
     root = Path(study["root"])
     training = root / f"training/{arm}/replicate_{seed}"
-    selection = checkpoints.load(training / "checkpoints/update_1000.pt")
+    _, selection_end, compact_end = protocol.phase_budget(study["config"])
+    selection_path = training / f"checkpoints/update_{selection_end:04d}.pt"
+    selection = checkpoints.load(selection_path)
     if selection["identity"]["study"] != study["identity"]:
         raise ValueError("selection belongs to another frozen study")
     mask = selection["mask"].cpu()
@@ -161,8 +163,8 @@ def run_export(study, arm, seed, stage):
         "mask": mask.tolist(),
         "head_ids": [torch.where(row == 1)[0].tolist() for row in mask],
         "removed_heads": int((mask == 0).sum()),
-        "selection_checkpoint": str(training / "checkpoints/update_1000.pt"),
-        "selection_sha256": provenance.file_sha256(training / "checkpoints/update_1000.pt"),
+        "selection_checkpoint": str(selection_path),
+        "selection_sha256": provenance.file_sha256(selection_path),
     }
     checkpoints.publish_json(mask_path, mask_record)
     wrappers = geometry_wrappers(study, values, mask_path.parent)
@@ -184,7 +186,7 @@ def run_export(study, arm, seed, stage):
         )
     if stage == "compact_base":
         return base_path
-    final_step = 2500 if arm == "learned_sequential" else 1500
+    final_step = compact_end + 1000 if arm == "learned_sequential" else compact_end
     final = checkpoints.load(training / f"checkpoints/update_{final_step}.pt")
     if final["identity"]["study"] != study["identity"] or not torch.equal(final["mask"].cpu(), mask):
         raise ValueError("recovery changed original head IDs or study")
