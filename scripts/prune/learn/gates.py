@@ -115,6 +115,20 @@ class HeadGates(nn.Module):
         return self.current[int(name.split(".")[0])]
 
     def snapshot(self):
+        if self.progressive is not None and hasattr(self.progressive, "one"):
+            free = self.progressive.free
+            p = self.alpha.detach().float().cpu().sigmoid()[free]
+            per_head = self.alpha.detach().float().cpu().sigmoid().masked_fill(~free, float("nan"))
+            return dict(
+                counts=self.progressive.counts(),
+                population="free_heads_only",
+                mean=float(p.mean()) if p.numel() else None,
+                quantiles=torch.quantile(p, torch.tensor([0.0, 0.1, 0.5, 0.9, 1.0])).tolist() if p.numel() else None,
+                block_means=[float(v) if torch.isfinite(v) else None for v in per_head.nanmean(1)],
+                le_0_1=float((p <= 0.1).float().mean()) if p.numel() else None,
+                lt_0_5=float((p < 0.5).float().mean()) if p.numel() else None,
+                ge_0_9=float((p >= 0.9).float().mean()) if p.numel() else None,
+            )
         p = (self.progressive.compose(self.alpha) if self.progressive else self.alpha.sigmoid()).detach().cpu()
         return {
             **({"counts": self.progressive.counts()} if self.progressive else {}),

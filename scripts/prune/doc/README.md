@@ -70,7 +70,7 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `checks/fsdp_small.py` | [design](checks/fsdp_small.md) | 162 |
 | `checks/learned_heads.py` | [design](checks/learned_heads.md) | 227 |
 | `checks/mobilewan_native.py` | [design](checks/mobilewan_native.md) | 118 |
-| `checks/ddp_native.py` | [design](checks/ddp_native.md) | 226 |
+| `checks/ddp_native.py` | [design](checks/ddp_native.md) | 278 |
 | `core/__init__.py` | package marker | 1 |
 | `core/artifacts.py` | [design](core/artifacts.md) | 40 |
 | `core/geometry.py` | [design](core/geometry.md) | 72 |
@@ -95,26 +95,30 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `evaluate/decode.py` | [design](evaluate/decode.md) | 23 |
 | `evaluate/learned_head_media.py` | [design](evaluate/learned_head_media.md) | 290 |
 | `evaluate/learned_head_checkpoint_media.py.txt` | [pinned checkpoint media](evaluate/learned_head_checkpoint_media.md) | 721 |
+| `evaluate/zero_one_checkpoint_media.py.txt` | [design](evaluate/zero_one_checkpoint_media.md) | 706 |
+| `evaluate/progressive_checkpoint_media.py.txt` | [progressive checkpoint media](evaluate/progressive_checkpoint_media.md) | 725 |
 | `evaluate/learned_heads.py` | [design](evaluate/learned_heads.md) | 338 |
 | `evaluate/metrics.py` | [design](evaluate/metrics.md) | 103 |
 | `evaluate/mobilewan_media.py` | [design](evaluate/mobilewan_media.md) | 218 |
 | `evaluate/mobilewan_removal.py` | [design](evaluate/mobilewan_removal.md) | 215 |
 | `evaluate/whole_clip_baseline.py` | [design](evaluate/whole_clip_baseline.md) | 707 |
 | `evaluate/whole_clip_d0.py` | [design](evaluate/whole_clip_d0.md) | 245 |
-| `learn/progressive.py` | [design](learn/progressive.md) | 206 |
+| `learn/zero_one.py` | [design](learn/zero_one.md) | 179 |
+| `data/continue_zero_one.py` | [design](data/continue_zero_one.md) | 187 |
+| `learn/progressive.py` | [design](learn/progressive.md) | 233 |
 | `learn/adapters.py` | [design](learn/adapters.md) | 127 |
 | `learn/checkpoints.py` | [design](learn/checkpoints.md) | 235 |
 | `learn/distributed.py` | [design](learn/distributed.md) | 153 |
-| `learn/gates.py` | [design](learn/gates.md) | 127 |
-| `learn/heads.py` | [design](learn/heads.md) | 1410 |
+| `learn/gates.py` | [design](learn/gates.md) | 141 |
+| `learn/heads.py` | [design](learn/heads.md) | 1485 |
 | `learn/losses.py` | [design](learn/losses.md) | 155 |
 | `learn/placement.py` | [design](learn/placement.md) | 107 |
-| `learn/run_full.py` | [design](learn/run_full.md) | 225 |
+| `learn/run_full.py` | [design](learn/run_full.md) | 251 |
 | `learn/teacher_references.py` | [design](learn/teacher_references.md) | 105 |
 | `learn/ddp.py` | [design](learn/ddp.md) | 51 |
-| `learn/protocol.py` | logic in module header | 69 |
+| `learn/protocol.py` | logic in module header | 77 |
 | `learn/step.py` | logic in module header | 44 |
-| `learn/wandb_logger.py` | [design](learn/wandb_logger.md) | 265 |
+| `learn/wandb_logger.py` | [design](learn/wandb_logger.md) | 284 |
 | `score/__init__.py` | package marker | 1 |
 | `score/estimators.py` | [design](score/estimators.md) | 48 |
 | `score/export_depth.py` | [design](score/export_depth.md) | 431 |
@@ -152,6 +156,7 @@ Run modules from `LTX-2` in `ltx`. Each link goes to its Usage section.
 | [`checks.fsdp_native`](checks/fsdp_native.md#usage) | Accept full-clip FSDP parity and memory | direct torchrun |
 | [`checks/ddp_f28.py.txt`](checks/ddp_f28.md#usage) | Test one full F18 or F28 clip per GPU with two-rank DDP | direct torchrun file |
 | [`evaluate/learned_head_checkpoint_media.py.txt`](evaluate/learned_head_checkpoint_media.md#usage) | Decode and compare saved monitor predictions of a live study | direct file on one free GPU |
+| [`evaluate/progressive_checkpoint_media.py.txt`](evaluate/progressive_checkpoint_media.md#usage) | Compare actual progressive gates with the prior soft study | direct file on GPU 6 |
 | [`data.reuse_head_scores`](data/reuse_head_scores.md#usage) | Import compatible historical raw scores | direct CPU CLI |
 | [`data.resume_learned_heads`](data/resume_learned_heads.md#usage) | Preserve a stopped checkpoint under the amended sparsity loss | direct CPU CLI |
 | [`data.extend_learned_heads`](data/extend_learned_heads.md#usage) | Continue a completed soft checkpoint under a longer phase budget | direct CPU CLI |
@@ -186,3 +191,6 @@ Passing schema checks, CPU tests or export parity alone does not establish decod
 
 The progressive [preparation owner](data/progressive_head_study.md#usage) verifies r13 inputs and checkpoint zero.
 Its [policy owner](learn/progressive.md) defines irreversible mixed gates. The direct run ends after 500 updates and saved monitors.
+
+The [zero/one preparation owner](data/continue_zero_one.md) migrates checkpoint 500 without resetting optimizer/RNG state.
+The [zero/one policy](learn/zero_one.md) adds permanent high-regret ones and supports empty free populations.

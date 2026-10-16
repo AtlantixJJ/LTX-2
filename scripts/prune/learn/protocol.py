@@ -2,7 +2,7 @@
 
 DDP uses one independent draw per rank, one local backward and one automatic
 gradient average. Older presets keep their two-draw schedules unchanged.
-Progressive studies use exactly 500 soft updates and no binary or compact phase.
+Progressive studies use soft updates only; zero/one continuations retain global update numbering.
 They validate configurable hardening interval, original-head fraction and regret threshold.
 """
 
@@ -62,8 +62,16 @@ def phase_budget(config):
     """
     soft, binary, compact = (config[k] for k in ("soft_updates", "binary_updates", "compact_updates"))
     progressive = config.get("progressive_policy") is not None
-    if progressive and (soft, binary, compact) != (500, 0, 0):
-        raise ValueError("progressive study requires 500 soft and no binary or compact updates")
-    if any(type(v) is not int or v < 0 for v in (soft, binary, compact)) or soft < 1 or (compact < 1 and not progressive):
+    if progressive:
+        zero_one = "fixed_one_fraction" in config["progressive_policy"]
+        if binary != 0 or compact != 0 or (not zero_one and soft != 500):
+            raise ValueError(
+                "progressive study requires 500 soft (or a zero/one continuation) and no binary or compact updates"
+            )
+    if (
+        any(type(v) is not int or v < 0 for v in (soft, binary, compact))
+        or soft < 1
+        or (compact < 1 and not progressive)
+    ):
         raise ValueError("phase budgets must be non-negative integers with soft and compact phases")
     return soft, soft + binary, soft + binary + compact

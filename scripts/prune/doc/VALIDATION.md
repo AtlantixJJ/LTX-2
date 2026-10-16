@@ -175,3 +175,7 @@ Require legal irreversible decisions and exact resumed native updates across a d
 CPU checks alone cannot satisfy this gate. Save the native `progressive_execution` acceptance flag under the new study identity.
 Every 50 formal updates, inspect events, losses and actual-state capture MSE. Few eligible removals limit the evidence.
 Latent MSE does not establish decoded video quality.
+
+Zero/one continuation additionally requires bit-identical parent/migrated native predictions,
+exact one execution and zero fixed-one logit gradients/moments. The disposable event must
+select three zeros and two ones. Resume must reproduce the event and next update exactly.

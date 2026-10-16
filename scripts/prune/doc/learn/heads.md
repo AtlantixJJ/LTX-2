@@ -151,3 +151,8 @@ Source, noise, context and prediction hashes accompany each case.
 
 Progressive training bypasses legacy removal budgets and legal-width checks. It records no target total removal count.
 Canonical checkpoints and actual-state monitors follow the configured interval and always include the final update.
+
+Zero/one continuations restore the versioned policy from the saved global checkpoint.
+Each update logs zero and one selection/eligibility/shortfall fields separately.
+The global update owns learning-rate and sparsity schedules; migration does not restart warmup.
+After the free set is empty, zero logit gradients remain valid and LoRA training continues.

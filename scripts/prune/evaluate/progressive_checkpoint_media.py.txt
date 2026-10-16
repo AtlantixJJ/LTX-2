@@ -1,0 +1,725 @@
+"""Progressive study media: saved mixed-gate monitors and matched prior soft checkpoints.
+
+Run in ltx from LTX-2 with CUDA_VISIBLE_DEVICES=6; stages reference, media and steps.
+Derived from learned_head_checkpoint_media.py.txt. Free gates retain sigmoid(alpha).
+Removed gates are exactly zero. The comparison uses the prior study at the same update.
+The template is excluded from the frozen Python inventory; receipts hash these bytes.
+"""
+
+import argparse
+import copy
+import functools
+import hashlib
+import json
+import math
+import os
+import subprocess
+import time
+from pathlib import Path
+
+import torch
+import torch.nn.functional as F
+
+from ltx_trainer.video_utils import save_video
+from scripts.onestep_avatar import media
+from scripts.onestep_avatar.corpus.dataset import load_training_master
+from scripts.onestep_avatar.metrics import lpips_distance
+from scripts.onestep_avatar.model import common
+from scripts.prune.core import ltx_adapter, provenance
+from scripts.prune.data import foreground, whole_clip
+from scripts.prune.data.learned_head_study import load_study, monitor_sigma_indices, study_sigmas
+from scripts.prune.evaluate.learned_heads import capture_metrics
+from scripts.prune.evaluate.mobilewan_media import preserve_source, source_pixels
+from scripts.prune.learn import adapters, checkpoints
+from scripts.prune.learn.gates import HeadGates
+from scripts.prune.learn.progressive import ProgressivePolicy
+from scripts.prune.learn.heads import input_case, numerical_policy, open_current
+from scripts.prune.score import hooks
+
+ARM, SEED, NOISE_SEED, DECODER_SEED = "learned_progressive", 42, 2042, 42
+PANEL = (320, 320)
+REPLAY_TOLERANCE = 0.02
+
+
+def read(path):
+    return json.loads(Path(path).read_text())
+
+
+# Phase-budget generalization deployed after r13 stopped; it changes training budgets only,
+# not inputs, forward, gates, adapters or decoding. Any other drift still fails.
+ALLOWED_CODE_DRIFT = {
+    "scripts/prune/data/extend_learned_heads.py",
+    "scripts/prune/learn/heads.py",
+    "scripts/prune/learn/protocol.py",
+    "scripts/prune/learn/run_full.py",
+    "scripts/prune/learn/wandb_logger.py",
+    "scripts/prune/score/export_learned_heads.py",
+}
+
+
+def load_frozen(path):
+    """`load_study`, tolerating only the declared budget-code drift; returns the drift list."""
+    from scripts.prune.data import learned_head_study
+
+    frozen = read(path)["code"]
+    current = learned_head_study.code_identity()
+    drift = sorted(p for p in set(current["files"]) | set(frozen["files"])
+                   if current["files"].get(p) != frozen["files"].get(p))
+    if set(drift) - ALLOWED_CODE_DRIFT:
+        raise ValueError(f"frozen model code changed outside the budget amendment: {sorted(set(drift) - ALLOWED_CODE_DRIFT)}")
+    if not drift:
+        return load_study(path), drift
+    original = learned_head_study.code_identity
+    learned_head_study.code_identity = lambda: frozen
+    try:
+        return load_study(path), drift
+    finally:
+        learned_head_study.code_identity = original
+
+
+def view_key(source):
+    return hashlib.sha256(source["relative_dir"].encode()).hexdigest()
+
+
+def panel_cases(study):
+    """The same four actors and one view each as `learn.heads.monitor`."""
+    actors = study["splits"]["validation_actors"][:4]
+    return [next(s for s in study["splits"]["validation"] if s["actor"] == a) for a in actors]
+
+
+def monitor_rows(study, update):
+    """Check one saved monitor record and every tensor it names before any GPU work."""
+    root = Path(study["root"])
+    record = read(root / f"checks/{ARM}/replicate_{SEED}/monitor_{update:04d}.json")
+    if record["study"] != study["identity"] or record["update"] != update:
+        raise ValueError("monitor record belongs to another study or update")
+    sigmas = [study_sigmas(study)[i] for i in monitor_sigma_indices(study)]
+    expected = {(s["relative_dir"], sigma) for s in panel_cases(study) for sigma in sigmas}
+    rows = {(r["view"], r["sigma"]): r for r in record["rows"]}
+    if set(rows) != expected or len(record["rows"]) != len(expected):
+        raise ValueError("monitor record does not cover every panel view and sigma once")
+    for row in rows.values():
+        for state in ("trained",):
+            item = row["states"][state]
+            if provenance.file_sha256(item["path"]) != item["sha256"]:
+                raise ValueError(f"saved monitor prediction changed: {item['path']}")
+    return rows
+
+
+def small(pixels, size=PANEL):
+    return torch.cat([
+        F.interpolate(pixels[i:i + 8].float(), size, mode="bilinear", align_corners=False,
+                      antialias=True).round().clamp(0, 255).to(torch.uint8)
+        for i in range(0, len(pixels), 8)
+    ])
+
+
+def frame_psnr(pixels, reference):
+    """Full-frame pixel MSE/PSNR, excluding RGB frame zero (the clean c0 frame)."""
+    if pixels.shape != reference.shape:
+        raise ValueError("decoded GT and candidate shapes differ")
+    total, count = 0.0, 0
+    for i in range(1, len(pixels), 8):
+        delta = (pixels[i:i + 8].float() - reference[i:i + 8].float()) / 255
+        total += delta.double().square().sum().item()
+        count += delta.numel()
+    mse = total / count
+    return {"mse": mse, "psnr": -10 * math.log10(mse) if mse else None}
+
+
+def region_lpips(model, student, reference, weights, device):
+    """GT-box LPIPS like `learned_head_media.region_lpips`, but clamps resized crops to [0, 1].
+
+    Antialiased resizing can leave values a few ULP outside [0, 1]; the pinned metric rejects them.
+    Frame zero is excluded. Boxes come from the fixed GT weights only.
+    """
+    left, right, frame_ids = [], [], []
+    for f in range(1, len(student)):
+        ys, xs = torch.where(weights[f] > 0)
+        if not len(xs):
+            continue
+        x0, y0, x1, y1 = int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+        if min(x1 - x0, y1 - y0) < 32:
+            continue
+        w = weights[f]
+        for value, dest in ((student, left), (reference, right)):
+            masked = value[f].float() / 255 * w[None] + (1 - w[None])
+            crop = masked[:, y0:y1, x0:x1].unsqueeze(0)
+            dest.append(F.interpolate(crop, (256, 256), mode="bilinear", align_corners=False,
+                                      antialias=True)[0].clamp(0, 1))
+        frame_ids.append(f)
+    if not left:
+        return {"lpips": None, "valid_frames": 0, "status": "missing_coverage"}
+    return {"lpips": lpips_distance(model, torch.stack(left), torch.stack(right), device, batch=8),
+            "valid_frames": len(frame_ids), "status": "scored"}
+
+
+def scores(perceptual, pixels, reference, person, device):
+    """Frame and person LPIPS (AlexNet, 256-pixel crops, frame zero excluded) and frame PSNR."""
+    whole = torch.ones_like(person)
+    return {
+        "frame_psnr": frame_psnr(pixels, reference),
+        "frame_lpips": region_lpips(perceptual, pixels, reference, whole, device),
+        "person_lpips": region_lpips(perceptual, pixels, reference, person, device),
+    }
+
+
+def person_weights(source, shape):
+    matte, _, _ = foreground.person_coverage(Path(source["resolved_dir"]), source["capture_encode_record"],
+                                             replay=False)
+    weights = torch.from_numpy(matte).float().unsqueeze(1) / 255
+    return F.interpolate(weights, size=shape, mode="area")[:, 0]
+
+
+def wait_for_device():
+    physical = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    if not physical.isdecimal():
+        raise ValueError("set CUDA_VISIBLE_DEVICES to exactly one free physical GPU")
+    while True:
+        used = int(subprocess.check_output(
+            ["nvidia-smi", "-i", physical, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            text=True).strip())
+        if used < 1024:
+            return physical
+        print("Waiting for free physical GPU", physical, "used MiB", used, flush=True)
+        time.sleep(20)
+
+
+def decoded(current, latent, decoder):
+    pixels = media.decode(current, latent, decoder, DECODER_SEED).mul(255).round().to(torch.uint8)
+    torch.cuda.empty_cache()
+    return pixels
+
+
+def saved(pixels, path, fps):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        save_video(pixels, path, fps=fps, video_format="FCHW")
+    return {"path": str(path), "sha256": provenance.file_sha256(path)}
+
+
+def reference_stage(study, current, output, replay_update):
+    """Native dev predictions, a replay control and decoded references; written once."""
+    root = Path(study["root"])
+    receipt_path = output / "reference/reference.json"
+    if receipt_path.exists():
+        print("Reference receipt exists:", receipt_path, flush=True)
+        return
+    monitor = monitor_rows(study, replay_update)
+    preview = copy.deepcopy(study)
+    preview["root"] = str(output / "reference")
+    sigmas = [study_sigmas(study)[i] for i in monitor_sigma_indices(study)]
+    config = study["config"]
+    state_path = root / f"training/{ARM}/replicate_{SEED}/checkpoints/update_{replay_update:04d}.pt"
+    state = checkpoints.load(state_path)
+    if state["identity"]["study"] != study["identity"] or state["phase"] != "soft":
+        raise ValueError("replay requires a soft checkpoint of this study")
+    rows, controls = [], []
+    gates = HeadGates(config["blocks"], config["heads"], [config["allowed_counts"]] * config["blocks"])
+    gates = gates.to(current.device)
+    with current.transformer() as model, torch.no_grad():
+        model.eval()
+        attached = adapters.attach(model, SEED, config["rank"])
+        handles = hooks.attach_head_provider(model, gates.provider)
+        try:
+            for index, source in enumerate(panel_cases(study)):
+                for sigma in sigmas:
+                    case_inputs = input_case(preview, current, source, NOISE_SEED, sigma)
+                    grid, video, c0, capture, epsilon, bundle, _ = case_inputs
+                    original = root / f"inputs/{view_key(source)}/seed_{NOISE_SEED}"
+                    old = whole_clip.load_manifest(original)
+                    if not torch.equal(epsilon.cpu(), whole_clip.load_epsilon(original, old["videos"][0])):
+                        raise ValueError("reference noise differs from the saved training monitor noise")
+                    row = monitor[(source["relative_dir"], sigma)]
+                    if provenance.file_sha256(original / "manifest.json") != row["input_manifest_sha256"]:
+                        raise ValueError("monitor input manifest differs from the saved input")
+                    case = output / f"reference/actor_{source['actor']}/sigma_{sigma:.16f}"
+                    case.mkdir(parents=True, exist_ok=True)
+                    for module in attached.values():
+                        module.enabled = False
+                    gates.progressive = None
+                    gates.phase = "all_one"
+                    gates.microbatch()
+                    velocity, clean = ltx_adapter.velocity_forward(model, video)
+                    clean = common.with_clean_prefix(clean, c0)
+                    metrics = capture_metrics(velocity, clean, capture, epsilon,
+                                              prefix_tokens=grid.tokens_per_latent_frame)
+                    latent = grid.unpatchify_block(clean, grid.latent_frames).cpu()
+                    path = case / "native.pt"
+                    checkpoints.publish_tensor(path, latent)
+                    del velocity, clean
+                    if index == 0 and sigma == sigmas[0]:
+                        adapters.load_state(attached, state["adapters"])
+                        for module in attached.values():
+                            module.enabled = True
+                        gates.alpha.data.copy_(state["alpha"].to(current.device))
+                        gates.phase = "soft"
+                        gates.progressive = ProgressivePolicy.from_state(state["progressive"])
+                        gates.microbatch()
+                        _, replay = ltx_adapter.velocity_forward(model, video)
+                        replay = grid.unpatchify_block(common.with_clean_prefix(replay, c0), grid.latent_frames).cpu()
+                        reference = torch.load(row["states"]["trained"]["path"], map_location="cpu", weights_only=True)
+                        maximum = float((replay.float() - reference.float()).abs().max())
+                        controls.append({
+                            "control": "single-rank replay versus saved four-rank soft monitor",
+                            "update": replay_update,
+                            "actor": source["actor"], "sigma": sigma, "maximum_absolute_difference": maximum,
+                            "bit_identical": torch.equal(replay, reference), "tolerance": REPLAY_TOLERANCE,
+                            "passed": maximum <= REPLAY_TOLERANCE})
+                        print("Replay control", controls[-1], flush=True)
+                        if maximum > REPLAY_TOLERANCE:
+                            raise ValueError("single-rank replay does not match the saved DDP monitor")
+                    rows.append({"actor": source["actor"], "view": source["relative_dir"], "sigma": sigma,
+                                 "schedule": [sigma, 0.0], "noise_seed": NOISE_SEED,
+                                 "epsilon_tensor_sha256": checkpoints.tensor_hash(epsilon),
+                                 "input_manifest_sha256": row["input_manifest_sha256"],
+                                 "preview_manifest_sha256": provenance.file_sha256(bundle / "manifest.json"),
+                                 "native": {"path": str(path), "sha256": provenance.file_sha256(path),
+                                            "metrics": metrics}})
+                    print("Native prediction", source["actor"], sigma, metrics["capture_mse"], flush=True)
+                    del grid, video, c0, capture, epsilon
+        finally:
+            handles.detach_all()
+    del model, attached, state
+    torch.cuda.empty_cache()
+    import lpips
+
+    perceptual = lpips.LPIPS(net="alex", verbose=False).to(current.device).eval()
+    references = {}
+    with current.decoder() as decoder, torch.no_grad():
+        for source in panel_cases(study):
+            capture, _ = load_training_master(Path(source["capture"]))
+            gt = decoded(current, capture.unsqueeze(0), decoder)
+            rgb = source_pixels(source)
+            person = person_weights(source, gt.shape[-2:])
+            folder = output / f"reference/media/actor_{source['actor']}"
+            sources = folder / "sources"
+            references[source["actor"]] = {
+                "gt_vae": saved(gt, folder / "gt_vae.mp4", source["fps"]),
+                "gt_rgb": saved(rgb, folder / "gt_rgb.mp4", source["fps"]),
+                "source_rgb": preserve_source(Path(source["resolved_dir"]) / "rgb.mp4", sources / "rgb.mp4",
+                                              source["rgb_sha256"]),
+                "vae_to_rgb": scores(perceptual, gt, rgb, person, current.device),
+                "frames": len(gt), "fps": source["fps"],
+            }
+            checkpoints.publish_tensor(folder / "gt_vae_small.pt", small(gt))
+            checkpoints.publish_tensor(folder / "gt_rgb_small.pt", small(rgb))
+            for row in (r for r in rows if r["actor"] == source["actor"]):
+                latent = torch.load(row["native"]["path"], map_location="cpu", weights_only=True)
+                pixels = decoded(current, latent, decoder)
+                case = Path(row["native"]["path"]).parent
+                row["native"]["video"] = saved(pixels, case / "native.mp4", source["fps"])
+                row["native"]["to_vae_gt"] = scores(perceptual, pixels, gt, person, current.device)
+                checkpoints.publish_tensor(case / "native_small.pt", small(pixels))
+                print("Native media", source["actor"], row["sigma"], flush=True)
+                del pixels, latent
+            del gt, rgb, capture
+    checkpoints.publish_json(receipt_path, {
+        "parent_study": study["identity"], "executor_sha256": provenance.file_sha256(__file__),
+        "rows": rows, "controls": controls, "references": references,
+        "decoder": media.native_decoder_settings(), "decoder_seed": DECODER_SEED,
+        "lpips": study["perceptual_metric"]})
+
+
+def media_stage(study, current, output, update):
+    """Decode one checkpoint's saved monitor predictions; score and render matched comparisons."""
+    reference = read(output / "reference/reference.json")
+    if reference["parent_study"] != study["identity"]:
+        raise ValueError("reference belongs to another study")
+    receipt_path = output / f"update_{update:04d}/media.json"
+    if receipt_path.exists():
+        print("Media receipt exists:", receipt_path, flush=True)
+        return
+    rows = monitor_rows(study, update)
+    source_root = Path(study["root"]).parent / "learned_heads_ddp_uniform_f18_20261014_r13_rank128_gate001_sparse001_dev10"
+    source_record = read(source_root / f"checks/learned_joint/replicate_42/monitor_{update:04d}.json")
+    baseline = {(r["view"], r["sigma"]): r for r in source_record["rows"]}
+    for r in baseline.values():
+        item = r["states"]["trained"]
+        if provenance.file_sha256(item["path"]) != item["sha256"]:
+            raise ValueError("historical soft prediction changed")
+    previous = None
+    if update > 100:
+        try:
+            previous = monitor_rows(study, update - 100)
+        except FileNotFoundError:
+            previous = None
+    native = {(r["view"], r["sigma"]): r for r in reference["rows"]}
+    for key, row in rows.items():
+        if native[key]["input_manifest_sha256"] != row["input_manifest_sha256"]:
+            raise ValueError("native reference and monitor inputs differ")
+        item = native[key]["native"]
+        if provenance.file_sha256(item["path"]) != item["sha256"]:
+            raise ValueError("native reference prediction changed")
+    import lpips
+
+    perceptual = lpips.LPIPS(net="alex", verbose=False).to(current.device).eval()
+    results = []
+    with current.decoder() as decoder, torch.no_grad():
+        for source in panel_cases(study):
+            capture, _ = load_training_master(Path(source["capture"]))
+            gt = decoded(current, capture.unsqueeze(0), decoder)
+            person = person_weights(source, gt.shape[-2:])
+            folder = output / f"reference/media/actor_{source['actor']}"
+            small_refs = {name: torch.load(folder / f"{name}_small.pt", weights_only=True)
+                          for name in ("gt_rgb", "gt_vae")}
+            frames = tuple(range(len(gt)))
+            for (view, sigma), row in sorted(rows.items(), key=lambda kv: -kv[0][1]):
+                if view != source["relative_dir"]:
+                    continue
+                case = output / f"update_{update:04d}/media/actor_{source['actor']}/sigma_{sigma:.16f}"
+                result = {"actor": source["actor"], "view": view, "sigma": sigma, "update": update,
+                          "schedule": [sigma, 0.0], "noise_seed": NOISE_SEED,
+                          "latent_metrics": {s: row["states"][s]["metrics"] for s in ("trained",)},
+                          "native_latent_metrics": native[(view, sigma)]["native"]["metrics"],
+                          "native_to_vae_gt": native[(view, sigma)]["native"]["to_vae_gt"], "states": {}}
+                pixel_rows = dict(small_refs)
+                native_dir = Path(native[(view, sigma)]["native"]["path"]).parent
+                pixel_rows["native"] = torch.load(native_dir / "native_small.pt", weights_only=True)
+                states = [("trained", row["states"]["trained"]), ("baseline", baseline[(view, sigma)]["states"]["trained"])]
+                if previous is not None:
+                    states.append(("previous", previous[(view, sigma)]["states"]["trained"]))
+                for name, item in states:
+                    latent = torch.load(item["path"], map_location="cpu", weights_only=True)
+                    pixels = decoded(current, latent, decoder)
+                    entry = {"latent": {"path": item["path"], "sha256": item["sha256"]}}
+                    if name != "previous":
+                        entry["video"] = saved(pixels, case / f"{name}.mp4", source["fps"])
+                        entry["to_vae_gt"] = scores(perceptual, pixels, gt, person, current.device)
+                    result["states"][name] = entry
+                    pixel_rows[name] = small(pixels)
+                    del pixels, latent
+                titles = {
+                    "gt_rgb": ("Capture", "RGB, white matte"), "gt_vae": ("Capture", "VAE decoding"),
+                    "native": ("Native dev", "VAE decoding"),
+                    "previous": ("Progressive", f"Step {update - 100}, VAE"),
+                    "trained": ("Progressive", f"Step {update}, VAE"),
+                    "baseline": ("Prior soft study", f"Step {update}, VAE"),
+                }
+                panels = []
+                for name in ("gt_rgb", "gt_vae", "native", "previous", "trained", "baseline"):
+                    title, value = titles[name]
+                    if name in pixel_rows:
+                        panels.append(media.Panel(name, title, pixel_rows[name], frames, value=value))
+                    else:
+                        panels.append(media.Panel(name, title, None, frames, value=value,
+                                                  missing_reason="No earlier checkpoint"))
+                combined, record = media.render_panels(
+                    panels, question="How does progressive removal change the predicted video?",
+                    layout="comparison", panel_size=PANEL, viewing_width=1008, font_size=20,
+                    fps=source["fps"], poster_frame=min(72, len(gt) - 1),
+                    common_settings={"sigma": sigma, "seed": NOISE_SEED, "view": view, "schedule": [sigma, 0.0],
+                                     "decoder_seed": DECODER_SEED, "update": update})
+                result["comparison"] = media.save_render(combined, record, case)
+                results.append(result)
+                print("Checkpoint media", update, source["actor"], sigma, flush=True)
+                del combined, pixel_rows
+            del gt, capture
+    checkpoints.publish_json(receipt_path, {
+        "parent_study": study["identity"], "update": update,
+        "executor_sha256": provenance.file_sha256(__file__), "rows": results,
+        "previous_update": update - 100 if previous is not None else None,
+        "decoder": media.native_decoder_settings(), "decoder_seed": DECODER_SEED,
+        "lpips": study["perceptual_metric"]})
+
+
+# Report video cases (start sigma, Euler step count); one step is the direct call.
+STEP_CASES = ((0.9098098278045654, 1), (0.9098098278045654, 4), (0.9403364062309265, 8))
+# The training monitor saves one-step predictions at this sigma; replay the trained state there.
+CONTROL_SIGMA = 0.9489720463752747
+MEDIA_TREE = "steps_v2"
+STEP_PANEL = (384, 384)
+
+
+def step_schedule(study, start, steps):
+    """Evenly spaced levels of the official dev grid from `start`, keeping start and zero.
+
+    Python rounding picks the indices; the exact levels are recorded in every receipt.
+    """
+    grid = study["schedule"]["original_grid"]
+    if start not in grid or start not in study_sigmas(study) or grid[-1] != 0.0:
+        raise ValueError("step start must be an official dev grid level and a training sigma")
+    tail = grid[grid.index(start):]
+    count = len(tail) - 1
+    if not 1 <= steps <= count:
+        raise ValueError("step count exceeds the official tail")
+    return [tail[round(j * count / steps)] for j in range(steps + 1)]
+
+
+def euler_sample(model, video, c0, schedule):
+    """Stock Euler sampling from the saved noised input; c0 tokens stay clean at every step.
+
+    Each step blends the stock denoised prediction with clean c0, as `post_process_latent`
+    does, then applies `EulerDiffusionStep` in FP32. The first modality must equal `video`.
+    """
+    from dataclasses import replace
+
+    from ltx_core.components.diffusion_steps import EulerDiffusionStep
+
+    sigmas = torch.tensor(schedule, dtype=torch.float32, device=video.latent.device)
+    stepper, sample = EulerDiffusionStep(), video.latent
+    for i in range(len(schedule) - 1):
+        level = sigmas[i:i + 1].clone()
+        timesteps = torch.where(video.timesteps > 0, level, torch.zeros_like(level)).to(video.timesteps.dtype)
+        modality = replace(video, latent=sample, sigma=level, timesteps=timesteps)
+        if i == 0 and not (torch.equal(modality.timesteps, video.timesteps) and torch.equal(modality.sigma, video.sigma)):
+            raise ValueError("first Euler modality differs from the native D0 input")
+        _, denoised = ltx_adapter.velocity_forward(model, modality)
+        denoised = common.with_clean_prefix(denoised, c0)
+        sample = common.with_clean_prefix(stepper.step(sample, denoised, sigmas, i), c0)
+    return sample
+
+
+def predict(model, grid, video, c0, schedule):
+    """One direct call for one step (the monitor path); Euler steps otherwise."""
+    if len(schedule) == 2:
+        _, clean = ltx_adapter.velocity_forward(model, video)
+        clean = common.with_clean_prefix(clean, c0)
+    else:
+        clean = euler_sample(model, video, c0, schedule)
+    return grid.unpatchify_block(clean, grid.latent_frames).cpu()
+
+
+def saved_prediction(path, compute):
+    """Atomic prediction with a sidecar hash; a rerun reuses a completed prediction."""
+    meta = path.with_suffix(".json")
+    if meta.exists():
+        info = read(meta)
+        if provenance.file_sha256(path) != info["sha256"]:
+            raise ValueError(f"saved prediction changed: {path}")
+        return info
+    path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoints.publish_tensor(path, compute())
+    info = {"path": str(path), "sha256": provenance.file_sha256(path)}
+    checkpoints.publish_json(meta, info)
+    return info
+
+
+def steps_stage(study, current, output, updates, actors):
+    """Native, soft and hard predictions with one direct step and four Euler steps; then media.
+
+    Native predictions are cached once per actor. Per checkpoint, the soft one-step
+    prediction at the top sigma must reproduce the saved training monitor.
+    """
+
+    root = Path(study["root"])
+    config = study["config"]
+    allowed = [config["allowed_counts"]] * config["blocks"]
+    cases = [s for s in panel_cases(study) if s["actor"] in actors]
+    if {s["actor"] for s in cases} != set(actors):
+        raise ValueError("requested actors are not on the monitor panel")
+    if CONTROL_SIGMA != study_sigmas(study)[monitor_sigma_indices(study)[0]]:
+        raise ValueError("control sigma must be the first monitor sigma")
+    schedules = {(start, n): step_schedule(study, start, n) for start, n in STEP_CASES}
+    schedules[(CONTROL_SIGMA, 1)] = step_schedule(study, CONTROL_SIGMA, 1)
+    counts = {}
+    for start, n in STEP_CASES:
+        counts.setdefault(start, []).append(n)
+    counts.setdefault(CONTROL_SIGMA, [])
+    states = {}
+    for u in updates:
+        path = root / f"training/{ARM}/replicate_{SEED}/checkpoints/update_{u:04d}.pt"
+        state = checkpoints.load(path)
+        if state["identity"]["study"] != study["identity"] or state["phase"] not in ("soft", "binary"):
+            raise ValueError("checkpoint media requires soft or binary selection checkpoints of this study")
+        states[u] = state
+        source_root = root.parent / "learned_heads_ddp_uniform_f18_20261014_r13_rank128_gate001_sparse001_dev10"
+        states[(u, "baseline")] = checkpoints.load(source_root / f"training/learned_joint/replicate_42/checkpoints/update_{u:04d}.pt")
+    preview = copy.deepcopy(study)
+    preview["root"] = str(output / "reference")
+    gates = HeadGates(config["blocks"], config["heads"], allowed).to(current.device)
+    controls, predictions = [], {}
+    with current.transformer() as model, torch.no_grad():
+        model.eval()
+        attached = adapters.attach(model, SEED, config["rank"])
+        handles = hooks.attach_head_provider(model, gates.provider)
+        try:
+            for source in cases:
+                for start, wanted_counts in counts.items():
+                    grid, video, c0, _, epsilon, _, _ = input_case(preview, current, source, NOISE_SEED, start)
+                    original = root / f"inputs/{view_key(source)}/seed_{NOISE_SEED}"
+                    old = whole_clip.load_manifest(original)
+                    if not torch.equal(epsilon.cpu(), whole_clip.load_epsilon(original, old["videos"][0])):
+                        raise ValueError("step noise differs from the saved training monitor noise")
+                    runs = [("native", None)] + [(name, u) for u in updates for name in ("progressive", "baseline")]
+                    for name, u in runs:
+                        if name == "native":
+                            for module in attached.values():
+                                module.enabled = False
+                            gates.progressive = None
+                            gates.phase = "all_one"
+                            folder = output / f"reference/steps/actor_{source['actor']}/sigma_{start:.16f}"
+                        else:
+                            active = states[u] if name == "progressive" else states[(u, "baseline")]
+                            adapters.load_state(attached, active["adapters"])
+                            for module in attached.values():
+                                module.enabled = True
+                            gates.alpha.data.copy_(active["alpha"].to(current.device))
+                            gates.phase = "soft"
+                            gates.progressive = (ProgressivePolicy.from_state(active["progressive"])
+                                                 if name == "progressive" else None)
+                            folder = output / f"update_{u:04d}/steps/actor_{source['actor']}/sigma_{start:.16f}"
+                        gates.microbatch()
+                        # The training monitor's "trained" state is soft in the soft phase and the
+                        # hard legal mask in the binary phase; replay the matching state.
+                        trained = "progressive"
+                        wanted = list(wanted_counts)
+                        if start == CONTROL_SIGMA and name == trained and 1 not in wanted:
+                            wanted.insert(0, 1)
+                        for n in wanted:
+                            schedule = schedules[(start, n)]
+                            info = saved_prediction(folder / f"{name}_{n}.pt",
+                                                    functools.partial(predict, model, grid, video, c0, schedule))
+                            predictions[(source["actor"], start, n, name, u)] = info
+                            print("Prediction", source["actor"], start, n, name, u, flush=True)
+                        if name == trained and start == CONTROL_SIGMA:
+                            row = monitor_rows(study, u)[(source["relative_dir"], start)]
+                            monitor_latent = torch.load(row["states"]["trained"]["path"], map_location="cpu",
+                                                        weights_only=True)
+                            ours = torch.load(predictions[(source["actor"], start, 1, name, u)]["path"],
+                                              map_location="cpu", weights_only=True)
+                            difference = float((ours.float() - monitor_latent.float()).abs().max())
+                            controls.append({"control": f"one-step {name} replay versus saved training monitor",
+                                             "actor": source["actor"], "update": u, "sigma": start,
+                                             "maximum_absolute_difference": difference,
+                                             "bit_identical": torch.equal(ours, monitor_latent), "passed": difference <= REPLAY_TOLERANCE})
+                            if difference > REPLAY_TOLERANCE:
+                                raise ValueError("step-stage replay does not match the saved training monitor")
+                        if name == "native" and start == STEP_CASES[0][0]:
+                            one = torch.load(predictions[(source["actor"], start, 1, "native", None)]["path"],
+                                             weights_only=True)
+                            euler = grid.unpatchify_block(euler_sample(model, video, c0, [start, 0.0]),
+                                                          grid.latent_frames).cpu()
+                            difference = float((one.float() - euler.float()).abs().max())
+                            controls.append({"control": "Euler sampler with [sigma, 0] versus direct call",
+                                             "actor": source["actor"], "sigma": start,
+                                             "maximum_absolute_difference": difference,
+                                             "bit_identical": torch.equal(one, euler), "passed": difference <= REPLAY_TOLERANCE})
+                            if difference > REPLAY_TOLERANCE:
+                                raise ValueError("Euler sampler does not reduce to the direct call")
+                    del grid, video, c0, epsilon
+        finally:
+            handles.detach_all()
+    del model, attached, states
+    torch.cuda.empty_cache()
+    import lpips
+
+    perceptual = lpips.LPIPS(net="alex", verbose=False).to(current.device).eval()
+    with current.decoder() as decoder, torch.no_grad():
+        for source in cases:
+            actor = source["actor"]
+            capture, _ = load_training_master(Path(source["capture"]))
+            gt = decoded(current, capture.unsqueeze(0), decoder)
+            person = person_weights(source, gt.shape[-2:])
+            gt_small = small(gt, STEP_PANEL)
+            frames = tuple(range(len(gt)))
+            native = {}
+            for start, n in STEP_CASES:
+                folder = output / f"reference/steps/actor_{actor}/sigma_{start:.16f}"
+                cache = folder / f"native_{n}_media.json"
+                if not cache.exists():
+                    info = predictions[(actor, start, n, "native", None)]
+                    pixels = decoded(current, torch.load(info["path"], weights_only=True), decoder)
+                    checkpoints.publish_tensor(folder / f"native_{n}_small.pt", small(pixels, STEP_PANEL))
+                    checkpoints.publish_json(cache, {"prediction": info,
+                                                     "video": saved(pixels, folder / f"native_{n}.mp4", source["fps"]),
+                                                     "to_vae_gt": scores(perceptual, pixels, gt, person, current.device)})
+                    del pixels
+                native[(start, n)] = read(cache)
+            for u in updates:
+                receipt = output / f"update_{u:04d}/{MEDIA_TREE}/actor_{actor}.json"
+                if receipt.exists():
+                    continue
+                rows = []
+                for start, n in STEP_CASES:
+                    folder = output / f"update_{u:04d}/{MEDIA_TREE}/actor_{actor}/sigma_{start:.16f}"
+                    row = {"actor": actor, "view": source["relative_dir"], "update": u, "sigma": start,
+                           "steps": n, "schedule": schedules[(start, n)], "noise_seed": NOISE_SEED,
+                           "native": native[(start, n)], "states": {}}
+                    pixel_rows = {"gt_vae": gt_small, "native": torch.load(
+                        output / f"reference/steps/actor_{actor}/sigma_{start:.16f}/native_{n}_small.pt",
+                        weights_only=True)}
+                    for name in ("progressive", "baseline"):
+                        info = predictions[(actor, start, n, name, u)]
+                        pixels = decoded(current, torch.load(info["path"], weights_only=True), decoder)
+                        row["states"][name] = {"prediction": info,
+                                               "video": saved(pixels, folder / f"{name}_{n}.mp4", source["fps"]),
+                                               "to_vae_gt": scores(perceptual, pixels, gt, person, current.device)}
+                        pixel_rows[name] = small(pixels, STEP_PANEL)
+                        del pixels
+                    label = "1 step" if n == 1 else f"{n} steps"
+                    panels = [
+                        media.Panel("gt_vae", "Capture", pixel_rows["gt_vae"], frames, value="VAE decoding"),
+                        media.Panel("native", "Native dev", pixel_rows["native"], frames, value=label),
+                        media.Panel("progressive", "Progressive removal",
+                                    pixel_rows["progressive"], frames, value=f"Step {u}, {label}"),
+                        media.Panel("baseline", "Prior soft study",
+                                    pixel_rows["baseline"], frames, value=f"Step {u}, {label}"),
+                    ]
+                    combined, record = media.render_panels(
+                        panels, question="How does progressive removal change the predicted video?",
+                        layout="compact_comparison", panel_size=STEP_PANEL, viewing_width=1008, font_size=22,
+                        fps=source["fps"], poster_frame=min(72, len(gt) - 1),
+                        common_settings={"sigma": start, "schedule": schedules[(start, n)], "seed": NOISE_SEED,
+                                         "view": source["relative_dir"], "decoder_seed": DECODER_SEED,
+                                         "update": u})
+                    row["comparison"] = media.save_render(combined, record, folder / f"steps_{n}")
+                    rows.append(row)
+                    print("Step media", u, actor, start, n, flush=True)
+                    del combined, pixel_rows
+                checkpoints.publish_json(receipt, {
+                    "parent_study": study["identity"], "update": u, "actor": actor, "rows": rows,
+                    "controls": [c for c in controls if c["actor"] == actor and c.get("update") in (u, None)],
+                    "executor_sha256": provenance.file_sha256(__file__),
+                    "code_drift": study.get("code_drift", []),
+                    "decoder": media.native_decoder_settings(), "decoder_seed": DECODER_SEED,
+                    "lpips": study["perceptual_metric"]})
+            del gt, capture
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--study", type=Path, required=True)
+    p.add_argument("--stage", choices=("reference", "media", "steps"), required=True)
+    p.add_argument("--update", type=int, help="reference/media: checkpoint to render, or the replay checkpoint")
+    p.add_argument("--updates", type=int, nargs="+", help="steps: checkpoints to render in one model load")
+    p.add_argument("--actors", nargs="+", help="steps: monitor actors for this process")
+    p.add_argument("--output", type=Path, required=True, help="partial-report root inside the study")
+    args = p.parse_args()
+    if args.stage == "steps":
+        if not args.updates or not args.actors or any(u <= 0 or u % 100 for u in args.updates):
+            raise ValueError("steps needs --actors and 100-update --updates")
+        numerical_policy()
+        torch.set_num_threads(4)
+        study, drift = load_frozen(args.study)
+        study["code_drift"] = drift
+        output = args.output.resolve()
+        if not output.is_relative_to(Path(study["root"]).resolve()):
+            raise ValueError("partial outputs belong inside the study root")
+        wait_for_device()
+        reservation = torch.empty(1280 * 2**20, dtype=torch.uint8, device="cuda:0")
+        current = open_current(study, 0)
+        steps_stage(study, current, output, sorted(args.updates), args.actors)
+        del reservation
+        return
+    if args.update is None or args.update <= 0 or args.update % 100:
+        raise ValueError("monitor checkpoints occur every 100 updates")
+    numerical_policy()
+    torch.set_num_threads(4)
+    study = load_study(args.study)
+    output = args.output.resolve()
+    if not output.is_relative_to(Path(study["root"]).resolve()):
+        raise ValueError("partial outputs belong inside the study root")
+    wait_for_device()
+    # Hold a small allocation across model loading boundaries so other owners see this GPU in use.
+    reservation = torch.empty(1280 * 2**20, dtype=torch.uint8, device="cuda:0")
+    current = open_current(study, 0)
+    if args.stage == "reference":
+        reference_stage(study, current, output, args.update)
+    else:
+        media_stage(study, current, output, args.update)
+    del reservation
+
+
+if __name__ == "__main__":
+    main()

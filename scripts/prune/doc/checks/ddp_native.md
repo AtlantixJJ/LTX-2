@@ -56,3 +56,8 @@ Require exact parameters, losses and policy. Check zero removed gradients, froze
 The three-head fixture proves that functional widths need not be multiples of four. It does not change the formal hyperparameters.
 The native checkpoint filename remains `update_0001.pt`; its progressive cursor is two.
 No disposable state advances the formal checkpoint-zero trajectory.
+
+For zero/one continuation, load parent and migrated step-500 states and require bit-identical native predictions.
+The disposable checkpointed-backward fixture selects three zeros and two ones at the same event.
+Require exact execution, frozen gradients/moments and uninterrupted/resumed equality across the event.
+Record `fixed_one_execution`, `arbitrary_fixed_one_count` and `parent_migration_bit_identical` in fresh acceptance.

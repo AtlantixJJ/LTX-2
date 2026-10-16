@@ -81,3 +81,8 @@ Phase-relative steps use the frozen budget through `protocol.phase_budget`. A co
 Progressive update receipts add free/removed counts, eligible/selected counts and threshold shortfalls.
 Validation logs actual mixed-state capture MSE, including each saved sigma. No globally hardened state is fabricated.
 The CPU writer exits when the owner publishes `progressive_training_complete`.
+
+Zero/one receipts carry free-only distributions, cumulative fixed-one counts and per-branch event fields.
+Publish all available scalars. Omit null distributions when the free population is empty.
+`gates/selected_count` counts new zeros; `gates/one_selected_count` counts new ones.
+The legacy `train/legal_mask_changes` retains its binary-selector meaning.

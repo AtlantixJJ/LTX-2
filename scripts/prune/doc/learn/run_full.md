@@ -64,3 +64,7 @@ Logger tests verify rank charts and global means. Native DDP acceptance remains 
 A progressive study accepts only `--arms learned_progressive --replicate-seed 42`.
 It requires fresh progressive native acceptance, runs 500 soft updates and their saved monitors, then ends.
 It performs no compact export, binary training or recovery. Read `progressive_training_complete` as training completion only.
+
+Zero/one continuations use global soft budgets and require fresh fixed-one execution/migration acceptance.
+The owner can cross bounded twelve-hour segments by resuming its last canonical state without counter reset.
+It runs no binary refinement or compact recovery for this policy.

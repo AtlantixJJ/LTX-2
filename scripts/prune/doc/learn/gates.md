@@ -29,3 +29,7 @@ Run `test_learned_gates.py` with CUDA hidden. Native BF16 checks remain separate
 
 The progressive policy composes free sigmoid gates with exact removed zeros during the soft phase.
 Snapshots measure actual mixed amplitudes and include free/removed counts. Legacy gate phases retain their existing semantics.
+
+Zero/one continuations report distributions over free heads only. Exclude both fixed masks.
+An empty free set records null distributions and block means; W&B omits those unavailable scalars.
+Executed gates remain the policy owner's exact zero/one/soft mixture.

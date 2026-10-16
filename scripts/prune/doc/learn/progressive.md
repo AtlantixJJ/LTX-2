@@ -56,3 +56,9 @@ The terminal mask affects the velocity path and free-logit sparsity. The sparsit
 `test_progressive_gates.py` covers configurable intervals/fractions/thresholds, threshold equality, stable sorting, shortfalls and arbitrary counts.
 It also checks soft/zero gradients, frozen Adam coordinates, serialized ranking validation and exact replay across an event.
 The bounded native check verifies three removed heads with checkpointed backward and exact resumed updates.
+
+## Zero/one extension
+
+`new_policy` selects the [zero/one owner](zero_one.md) when fixed-one settings are present.
+`from_state` dispatches its versioned payload without changing legacy removal-only checkpoints.
+Validate fractions in `(0,1]` and a high-regret threshold above the removal threshold.

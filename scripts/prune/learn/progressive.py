@@ -13,7 +13,8 @@ DEFAULTS = dict(hardening_interval=50, removal_fraction=0.01, regret_threshold=0
 
 
 def validate_config(config):
-    if set(config) != set(DEFAULTS):
+    extra = {"fixed_one_fraction", "fixed_one_regret_threshold"}
+    if set(config) not in (set(DEFAULTS), set(DEFAULTS) | extra):
         raise ValueError("progressive policy requires interval, fraction and regret threshold only")
     interval, fraction, threshold = (config[k] for k in DEFAULTS)
     if type(interval) is not int or interval < 1:
@@ -32,6 +33,19 @@ def validate_config(config):
         or not 0 <= threshold <= 1
     ):
         raise ValueError("regret_threshold must be in [0,1]")
+    if extra <= set(config):
+        fraction, high = config["fixed_one_fraction"], config["fixed_one_regret_threshold"]
+        if (
+            isinstance(fraction, bool)
+            or not isinstance(fraction, (int, float))
+            or not math.isfinite(fraction)
+            or not 0 < fraction <= 1
+            or isinstance(high, bool)
+            or not isinstance(high, (int, float))
+            or not math.isfinite(high)
+            or not config["regret_threshold"] < high <= 1
+        ):
+            raise ValueError("fixed-one fraction or disjoint high-regret threshold differs")
     return dict(config)
 
 
@@ -146,6 +160,10 @@ class ProgressivePolicy:
 
     @classmethod
     def from_state(cls, state, expected_config=None):
+        if state.get("format") == "progressive_zero_one_v1":
+            from scripts.prune.learn.zero_one import ZeroOnePolicy
+
+            return ZeroOnePolicy.from_state(state, expected_config)
         if state.get("format") != "progressive_removal_v2":
             raise ValueError("unsupported progressive policy state")
         if expected_config is not None and state["config"] != validate_config(expected_config):
@@ -204,3 +222,12 @@ class ProgressivePolicy:
             dist.all_gather(gathered, value)
             if any(not torch.equal(value, other) for other in gathered):
                 raise ValueError("distributed progressive policy differs")
+
+
+def new_policy(alpha, config):
+    """Select the configured policy without changing legacy removal-only construction."""
+    if "fixed_one_fraction" in config:
+        from scripts.prune.learn.zero_one import ZeroOnePolicy
+
+        return ZeroOnePolicy(alpha, config)
+    return ProgressivePolicy(alpha, config)

@@ -20,9 +20,9 @@ def main():
     parser.add_argument("--replicate-seed", type=int, default=42)
     args = parser.parse_args()
     study = load_study(args.study)
-    if (
-        study["config"].get("monitor_reference") != "gt_capture"
-        or study["config"].get("distributed_training") not in (protocol.FSDP_METHOD, protocol.DDP_METHOD)
+    if study["config"].get("monitor_reference") != "gt_capture" or study["config"].get("distributed_training") not in (
+        protocol.FSDP_METHOD,
+        protocol.DDP_METHOD,
     ):
         raise ValueError("direct full run requires a frozen GT distributed preset")
     protocol.validate(study["config"])
@@ -121,7 +121,8 @@ def main():
         _, selection_end, compact_end = protocol.phase_budget(study["config"])
         boundary = selection_end if phase == "selection" else compact_end
         if (folder / f"checkpoints/update_{boundary:04d}.pt").exists() and (
-            not progressive or (root / f"checks/{arm}/replicate_{args.replicate_seed}/monitor_{boundary:04d}.json").exists()
+            not progressive
+            or (root / f"checks/{arm}/replicate_{args.replicate_seed}/monitor_{boundary:04d}.json").exists()
         ):
             return
         for segment in range(12):
@@ -174,18 +175,41 @@ def main():
             or (ddp and acceptance.get("world_size") != world)
             or (progressive and acceptance.get("progressive_execution") is not True)
             or (progressive and acceptance.get("arbitrary_removal_count") != 3)
+            or (
+                "fixed_one_fraction" in study["config"].get("progressive_policy", {})
+                and (
+                    not acceptance.get("fixed_one_execution")
+                    or not acceptance.get("parent_migration_bit_identical")
+                    or acceptance.get("arbitrary_fixed_one_count") != 2
+                )
+            )
         ):
             raise ValueError("native distributed acceptance does not match the frozen study")
         if study["config"].get("wandb", {}).get("enabled", False):
             status()
             for arm in args.arms:
-                command = [sys.executable, "-u", "-m", "scripts.prune.learn.wandb_logger",
-                           "--study", str(args.study.resolve()), "--arm", arm,
-                           "--replicate-seed", str(args.replicate_seed)]
-                with (root/f"logs/wandb_{arm}.log").open("a") as stream:
-                    logger = subprocess.Popen(command, cwd=Path(__file__).resolve().parents[3],
-                        env=dict(os.environ, CUDA_VISIBLE_DEVICES=""), stdout=stream, stderr=subprocess.STDOUT,
-                        stdin=subprocess.DEVNULL, start_new_session=True)
+                command = [
+                    sys.executable,
+                    "-u",
+                    "-m",
+                    "scripts.prune.learn.wandb_logger",
+                    "--study",
+                    str(args.study.resolve()),
+                    "--arm",
+                    arm,
+                    "--replicate-seed",
+                    str(args.replicate_seed),
+                ]
+                with (root / f"logs/wandb_{arm}.log").open("a") as stream:
+                    logger = subprocess.Popen(
+                        command,
+                        cwd=Path(__file__).resolve().parents[3],
+                        env=dict(os.environ, CUDA_VISIBLE_DEVICES=""),
+                        stdout=stream,
+                        stderr=subprocess.STDOUT,
+                        stdin=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
                 loggers.append(logger)
         for arm in args.arms:
             train("selection", arm)
@@ -202,7 +226,9 @@ def main():
             train("compact_recovery", arm)
             if run(f"{arm}_merge", "scripts.prune.score.export_learned_heads", [*flags, "--stage", "final_merged"]):
                 raise RuntimeError("merged export failed")
-        state["status"] = "progressive_training_complete" if progressive else "paired_training_complete_GT_validation_pending"
+        state["status"] = (
+            "progressive_training_complete" if progressive else "paired_training_complete_GT_validation_pending"
+        )
     except BaseException as error:
         state.update(
             status="stopped" if isinstance(error, KeyboardInterrupt) else "failed",

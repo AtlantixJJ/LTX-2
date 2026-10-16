@@ -13,8 +13,9 @@ from scripts.prune.learn import adapters, checkpoints, heads
 from scripts.prune.learn.ddp import DDPRuntime
 from scripts.prune.learn.distributed import Session
 from scripts.prune.learn.gates import HeadGates
-from scripts.prune.learn.progressive import ProgressivePolicy
+from scripts.prune.learn.progressive import ProgressivePolicy, new_policy
 from scripts.prune.learn.step import TrainingStep
+from scripts.prune.learn.zero_one import ZeroOnePolicy
 from scripts.prune.score import hooks
 
 
@@ -58,31 +59,68 @@ def main():
             if not torch.equal(native, control):
                 raise ValueError("native zero-adapter all-one control differs")
             progressive = cfg.get("progressive_policy") is not None
+            zero_one = "fixed_one_fraction" in cfg.get("progressive_policy", {})
+            migration_equal = False
             if progressive:
                 gates.phase = "soft"
                 gates.microbatch()
                 with torch.no_grad():
                     soft, _ = ltx_adapter.velocity_forward(model, video)
-                gates.progressive = ProgressivePolicy(gates.alpha, cfg["progressive_policy"])
+                gates.progressive = new_policy(gates.alpha, cfg["progressive_policy"])
                 gates.microbatch()
                 with torch.no_grad():
                     mixed, _ = ltx_adapter.velocity_forward(model, video)
                 if not torch.equal(soft, mixed):
                     raise ValueError("all-free progressive native parity failed")
                 del soft, mixed
+                if zero_one:
+                    initial_adapters = adapters.state_dict(attached)
+                    parent = checkpoints.load(study["zero_one_source"]["checkpoint"])
+                    migrated = checkpoints.load(
+                        root / "training/learned_progressive/replicate_42/checkpoints/update_0500.pt"
+                    )
+                    adapters.load_state(attached, parent["adapters"])
+                    gates.alpha.data.copy_(parent["alpha"])
+                    gates.progressive = ProgressivePolicy.from_state(parent["progressive"])
+                    gates.microbatch()
+                    with torch.no_grad():
+                        parent_prediction, _ = ltx_adapter.velocity_forward(model, video)
+                    adapters.load_state(attached, migrated["adapters"])
+                    gates.alpha.data.copy_(migrated["alpha"])
+                    gates.progressive = ProgressivePolicy.from_state(migrated["progressive"], cfg["progressive_policy"])
+                    gates.microbatch()
+                    with torch.no_grad():
+                        migrated_prediction, _ = ltx_adapter.velocity_forward(model, video)
+                    if not torch.equal(parent_prediction, migrated_prediction):
+                        raise ValueError("parent/migrated native step-500 prediction differs")
+                    migration_equal = True
+                    del parent_prediction, migrated_prediction, parent, migrated
+                    adapters.load_state(attached, initial_adapters)
+                    gates.alpha.data.fill_(3.0)
+                    del initial_adapters
                 # A disposable three-head fixture proves arbitrary functional widths.
                 fixture = dict(hardening_interval=3, removal_fraction=3 / gates.alpha.numel(), regret_threshold=1.0)
-                gates.progressive = ProgressivePolicy(gates.alpha, fixture)
+                if zero_one:
+                    fixture.update(
+                        regret_threshold=0.1, fixed_one_fraction=2 / gates.alpha.numel(), fixed_one_regret_threshold=0.5
+                    )
+                gates.progressive = new_policy(gates.alpha, fixture)
                 value = gates.alpha.detach().clone() + 1
                 value[0, :3] -= 2
                 gates.alpha.data.copy_(value)
+                if zero_one:
+                    value[0, 3:5] = 5
+                    gates.alpha.data.copy_(value)
                 gates.progressive.record(1, gates.alpha)
+                if zero_one:
+                    gates.alpha.data[0, 3:5] = 3
             control_record = {
                 "rank": runtime.rank,
                 "source": source["relative_dir"],
                 "training_window": manifest["training_window"],
                 "all_one_bit_identical": True,
                 "all_free_bit_identical": progressive,
+                "parent_migration_bit_identical": migration_equal,
                 "input_manifest_sha256": provenance.file_sha256(inputs / "manifest.json"),
             }
             del native, control, case, grid, video, c0, capture, eps
@@ -90,7 +128,9 @@ def main():
             model.velocity_model.set_gradient_checkpointing(True)
             ao = heads.optimizer(ap, cfg["adapter_lr"], cfg)
             go = heads.optimizer([gates.alpha], cfg["gate_lr"], cfg)
-            training = runtime.wrap_step(TrainingStep(model, gates, cfg, "learned_progressive" if progressive else "learned_joint"))
+            training = runtime.wrap_step(
+                TrainingStep(model, gates, cfg, "learned_progressive" if progressive else "learned_joint")
+            )
             frozen = [(p, p._version) for p in model.parameters() if not p.requires_grad]
 
             def state_hash():
@@ -131,16 +171,22 @@ def main():
                     gates.progressive.protect(gates.alpha, go)
                     event = gates.progressive.record(number + 1, gates.alpha, go)
                     gates.progressive.verify_ranks(current.device)
-                    if number == 2 and (event['selected_count'] != 3 or event['selected_count'] % 4 == 0):
+                    if number == 2 and (event["selected_count"] != 3 or event["selected_count"] % 4 == 0):
                         raise ValueError("native acceptance must remove exactly three heads")
                     actual = gates.progressive.compose(gates.alpha)
                     free = gates.progressive.free.to(current.device)
-                    if (actual[~free] != 0).any():
-                        raise ValueError("removed gate execution differs")
+                    ones = gates.progressive.one.to(current.device) if zero_one else torch.zeros_like(free)
+                    if (actual[~free & ~ones] != 0).any() or (actual[ones] != 1).any():
+                        raise ValueError("fixed gate execution differs")
+                    if zero_one and number == 2 and event["one_selected_count"] != 2:
+                        raise ValueError("native acceptance must fix exactly two heads at one")
                     if not torch.equal(gates.alpha.detach()[~free], gates.progressive.frozen.to(current.device)[~free]):
                         raise ValueError("frozen native logits changed")
-                    if any((value[~free] != 0).any() for value in go.state[gates.alpha].values()
-                           if isinstance(value, torch.Tensor) and value.shape == gates.alpha.shape):
+                    if any(
+                        (value[~free] != 0).any()
+                        for value in go.state[gates.alpha].values()
+                        if isinstance(value, torch.Tensor) and value.shape == gates.alpha.shape
+                    ):
                         raise ValueError("fixed Adam moments are nonzero")
                 torch.cuda.synchronize(current.device)
                 if any(p._version != version for p, version in frozen):
@@ -193,7 +239,9 @@ def main():
             if any(second[key] != replay[key] for key in ("trainable_state_sha256", "official", "penalty")):
                 raise ValueError("native DDP resumed update differs")
             resumed_third = update(3)
-            if progressive and any(third[key] != resumed_third[key] for key in ("trainable_state_sha256", "official", "penalty")):
+            if progressive and any(
+                third[key] != resumed_third[key] for key in ("trainable_state_sha256", "official", "penalty")
+            ):
                 raise ValueError("native DDP post-event resumed update differs")
             rows += [second, resumed_third, update(4)]
             controls = runtime.gather(control_record)
@@ -213,6 +261,10 @@ def main():
                         "exact_native_resume": True,
                         "progressive_execution": progressive,
                         "arbitrary_removal_count": 3 if progressive else None,
+                        "fixed_one_execution": zero_one,
+                        "arbitrary_fixed_one_count": 2 if zero_one else None,
+                        "parent_migration_bit_identical": zero_one
+                        and all(c["parent_migration_bit_identical"] for c in controls),
                         "disposable_policy": fixture if progressive else None,
                         "elapsed_seconds": time.monotonic() - started,
                         "quality_accepted": False,

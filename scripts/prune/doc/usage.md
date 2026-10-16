@@ -635,3 +635,20 @@ setsid conda run --no-capture-output -n ltx python -m scripts.prune.learn.run_fu
 The owner runs fresh native acceptance on four ranks, then the sole 500-update progressive arm.
 Read `monitoring/status.json`, its active log, `training/learned_progressive/replicate_42/events/` and saved monitor receipts.
 Training ends after the final committed-state monitor. Compact export and timing are outside this experiment.
+
+## Zero/one continuation
+
+Prepare with [continue_zero_one](data/continue_zero_one.md#usage) after CPU checks.
+The user-approved round starts at global step 500 and ends at 4000.
+Then run the direct owner from LTX-2 in ltx:
+
+```bash
+setsid conda run --no-capture-output -n ltx python -u -m scripts.prune.learn.run_full \
+  --study ../expr/refiner_prune/2.5/progressive_zero_one_f18_from_u500_20261016/configs/frozen_study.json \
+  --arms learned_progressive --replicate-seed 42 \
+  > ../expr/refiner_prune/2.5/progressive_zero_one_f18_from_u500_20261016/logs/owner.log 2>&1 < /dev/null &
+```
+
+Check GPUs 0–3 are free first. The owner runs fresh native acceptance, then resumes formal step 501.
+Use GPU 6 for serial reports every 100 updates. Manual progress checks are every 30 minutes.
+Reports contain text-link tables without embedded images. Exact video roles/schedules are defined in the study plan.

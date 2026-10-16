@@ -206,7 +206,9 @@ def energy_phase(study, current, deadline):
             key = hashlib.sha256(source["relative_dir"].encode()).hexdigest()
             path = root / f"calibration/energy/{key}.json"
             native_root = root / f"inputs/{key}/seed_42"
-            manifest = whole_clip.prepare_score_inputs(native_root, source, current=current, sigmas=study_sigmas(study), seed=42)
+            manifest = whole_clip.prepare_score_inputs(
+                native_root, source, current=current, sigmas=study_sigmas(study), seed=42
+            )
             identity = {
                 "study": study["identity"],
                 "view": source["relative_dir"],
@@ -253,7 +255,8 @@ def energy_phase(study, current, deadline):
             checkpoints.publish_json(path, record)
             records.append(record)
     raw = torch.tensor(
-        [[r["energies"][i][f"{b}.attn1"] for b in range(48)] for r in records for i in range(len(study_sigmas(study)))], dtype=torch.float64
+        [[r["energies"][i][f"{b}.attn1"] for b in range(48)] for r in records for i in range(len(study_sigmas(study)))],
+        dtype=torch.float64,
     ).mean(0)
     if not torch.isfinite(raw).all() or (raw.mean(1) <= 0).any():
         raise ValueError("invalid pooled raw energy")
@@ -358,13 +361,17 @@ def training_phase(study, current, args, deadline):
     draw_record = study["draws"][f"{args.replicate_seed}:{policy}"]
     draws = json.loads(Path(draw_record["path"]).read_text())
     identity = train_identity(
-        study, args.arm, args.replicate_seed, 0 if progressive or args.arm == "dense_fresh" else args.removed_heads, draw_record
+        study,
+        args.arm,
+        args.replicate_seed,
+        0 if progressive or args.arm == "dense_fresh" else args.removed_heads,
+        draw_record,
     )
     gates = HeadGates(config["blocks"], config["heads"], allowed).to(current.device)
     if progressive:
-        from scripts.prune.learn.progressive import ProgressivePolicy
+        from scripts.prune.learn.progressive import ProgressivePolicy, new_policy
 
-        gates.progressive = ProgressivePolicy(gates.alpha, config["progressive_policy"])
+        gates.progressive = new_policy(gates.alpha, config["progressive_policy"])
     kept = None if progressive else config["blocks"] * config["heads"] - args.removed_heads
     scores = None
     if args.arm == "energy":
@@ -422,7 +429,8 @@ def training_phase(study, current, args, deadline):
         else:
             source_arm = "energy" if args.arm == "energy_fresh" else "learned_joint"
             frozen_path = (
-                root / f"training/{source_arm}/replicate_{args.replicate_seed}/checkpoints/update_{selection_end:04d}.pt"
+                root
+                / f"training/{source_arm}/replicate_{args.replicate_seed}/checkpoints/update_{selection_end:04d}.pt"
             )
             frozen = checkpoints.load(frozen_path)
             if frozen["identity"]["study"] != study["identity"]:
@@ -536,9 +544,7 @@ def training_phase(study, current, args, deadline):
                 go.load_state_dict(previous["gate_optimizer"])
             checkpoints.restore_rng(previous["rng"])
         sources = {s["relative_dir"]: s for s in study["splits"]["learning"]}
-        end = (
-            (compact_end + 1000 if args.arm == "learned_sequential" else compact_end) if compact else selection_end
-        )
+        end = (compact_end + 1000 if args.arm == "learned_sequential" else compact_end) if compact else selection_end
         live = hooks.attach_head_provider(model, gates.provider) if not compact else hooks.MaskAttachments()
         if runtime and not runtime.uses_ddp:
             model = runtime.wrap(model, ap)
@@ -642,7 +648,14 @@ def training_phase(study, current, args, deadline):
                     regions = training_windows.slice_regions(regions, manifest.get("training_window"))
                     accumulation = 1 if runtime and runtime.uses_ddp else 2
                     loss, official, penalty = training(
-                        video, eps, capture, grid.tokens_per_latent_frame, update, phase, regions, accumulation,
+                        video,
+                        eps,
+                        capture,
+                        grid.tokens_per_latent_frame,
+                        update,
+                        phase,
+                        regions,
+                        accumulation,
                     )
                     (loss * (accumulation if runtime else 1)).backward()
                     scalars.append(
@@ -711,7 +724,12 @@ def training_phase(study, current, args, deadline):
                 )
                 if any(p._version != version for p, version in frozen_parameters):
                     raise ValueError("a frozen pretrained tensor changed during learning")
-                if not progressive and not compact and scores is None and (update % 100 == 0 or update in (soft_end, selection_end)):
+                if (
+                    not progressive
+                    and not compact
+                    and scores is None
+                    and (update % 100 == 0 or update in (soft_end, selection_end))
+                ):
                     gates.decision = select_legal(gates.alpha if scores is None else scores, kept, allowed).to(
                         current.device
                     )
@@ -734,18 +752,50 @@ def training_phase(study, current, args, deadline):
                 if runtime:
                     memory = [item for rank_memory in runtime.gather(memory) for item in rank_memory]
                     runtime.mask(gates)
-                rank_metrics = runtime.gather({
-                    "rank": runtime.rank, "sigma": local_scalars[0]["sigma"],
-                    "official": local_scalars[0]["official"], "penalty": local_scalars[0]["penalty"],
-                    "total_loss": local_scalars[0]["total_loss"],
-                    "seconds": time.monotonic() - started,
-                }) if runtime else []
+                rank_metrics = (
+                    runtime.gather(
+                        {
+                            "rank": runtime.rank,
+                            "sigma": local_scalars[0]["sigma"],
+                            "official": local_scalars[0]["official"],
+                            "penalty": local_scalars[0]["penalty"],
+                            "total_loss": local_scalars[0]["total_loss"],
+                            "seconds": time.monotonic() - started,
+                        }
+                    )
+                    if runtime
+                    else []
+                )
                 receipt = {
-                    **({"progressive": {"counts": gates.progressive.counts(),
-                        "selected_ids": event["selected_ids"] if event else [],
-                        **{key: event[key] if event else 0 for key in (
-                            "eligible_count", "requested_count", "selected_count", "shortfall")},
-                        "policy_sha256": checkpoints.digest(gates.progressive.state_dict())}} if progressive else {}),
+                    **(
+                        {
+                            "progressive": {
+                                "counts": gates.progressive.counts(),
+                                "selected_ids": event["selected_ids"] if event else [],
+                                **{
+                                    key: event[key] if event else 0
+                                    for key in ("eligible_count", "requested_count", "selected_count", "shortfall")
+                                },
+                                **(
+                                    {
+                                        key: event[key] if event else ([] if key.endswith("_ids") else 0)
+                                        for key in (
+                                            "one_selected_ids",
+                                            "one_eligible_count",
+                                            "one_requested_count",
+                                            "one_selected_count",
+                                            "one_shortfall",
+                                        )
+                                    }
+                                    if hasattr(gates.progressive, "one")
+                                    else {}
+                                ),
+                                "policy_sha256": checkpoints.digest(gates.progressive.state_dict()),
+                            }
+                        }
+                        if progressive
+                        else {}
+                    ),
                     "study": study["identity"],
                     "update": update,
                     "phase": phase,
@@ -785,7 +835,11 @@ def training_phase(study, current, args, deadline):
                 if gate_trace is not None and (runtime is None or runtime.primary):
                     # Rows: logits after the step, total gradient, sparsity gradient. Replays must match bytes.
                     checkpoints.publish_tensor(directory / f"gate_trace/{update:04d}.pt", gate_trace)
-                if update % (gates.progressive.interval if progressive else 100) == 0 or update in (soft_end, selection_end, compact_end):
+                if update % (gates.progressive.interval if progressive else 100) == 0 or update in (
+                    soft_end,
+                    selection_end,
+                    compact_end,
+                ):
                     save_checkpoint(
                         directory / f"checkpoints/update_{update:04d}.pt",
                         identity=identity,
@@ -934,7 +988,11 @@ def feasibility(study, current, deadline):
                         + "\n"
                     )
                     grid, video, c0, capture, eps, _, _ = input_case(
-                        study, current, source, 42 + update, study_sigmas(study)[(update - 1) % len(study_sigmas(study))]
+                        study,
+                        current,
+                        source,
+                        42 + update,
+                        study_sigmas(study)[(update - 1) % len(study_sigmas(study))],
                     )
                     # Parity is an inference control. Retaining its full-clip adapter
                     # graph defeats checkpointing before the actual backward test.
@@ -963,7 +1021,11 @@ def feasibility(study, current, deadline):
                         velocity, _ = ltx_adapter.velocity_forward(model, video)
                         terms = losses.velocity_mse(velocity, eps, capture, grid.tokens_per_latent_frame)
                         loss, _ = losses.phase_loss(
-                            terms, gate, update=update, phase=gates.phase, accumulation=2,
+                            terms,
+                            gate,
+                            update=update,
+                            phase=gates.phase,
+                            accumulation=2,
                             lambda_max=config["lambda_max"],
                             lambda_warmup=config.get("lambda_warmup", 300),
                             lambda_start_multiplier=config.get("lambda_start_multiplier", 0.0),
@@ -977,7 +1039,11 @@ def feasibility(study, current, deadline):
                         velocity, _ = ltx_adapter.velocity_forward(model, video)
                         terms = losses.velocity_mse(velocity, eps, capture, grid.tokens_per_latent_frame)
                         loss, _ = losses.phase_loss(
-                            terms, gate, update=update, phase=gates.phase, accumulation=2,
+                            terms,
+                            gate,
+                            update=update,
+                            phase=gates.phase,
+                            accumulation=2,
                             lambda_max=config["lambda_max"],
                             lambda_warmup=config.get("lambda_warmup", 300),
                             lambda_start_multiplier=config.get("lambda_start_multiplier", 0.0),
@@ -1233,7 +1299,11 @@ def _monitor(study, current, model, gates, arm, seed, update, kept, scores=None)
     original = gates.phase, gates.decision, gates.current
     rows = []
     progressive = gates.progressive is not None
-    final_mask = None if progressive else select_legal(gates.alpha if scores is None else scores, kept, gates.allowed).to(current.device)
+    final_mask = (
+        None
+        if progressive
+        else select_legal(gates.alpha if scores is None else scores, kept, gates.allowed).to(current.device)
+    )
     with torch.no_grad():
         for source in cases:
             for i in monitor_sigma_indices(study):
@@ -1244,7 +1314,7 @@ def _monitor(study, current, model, gates, arm, seed, update, kept, scores=None)
                 )
                 teacher = None if gt_only else cache.read(ref_id)
                 outputs = {}
-                for state in (("trained",) if progressive else ("trained", "hardened")):
+                for state in ("trained",) if progressive else ("trained", "hardened"):
                     gates.phase = original[0] if state == "trained" else "compact"
                     gates.decision = original[1] if state == "trained" else final_mask
                     gates.microbatch()
@@ -1297,8 +1367,13 @@ def _monitor(study, current, model, gates, arm, seed, update, kept, scores=None)
     if runtime is None or runtime.primary:
         checkpoints.publish_json(
             root / f"checks/{arm}/replicate_{seed}/monitor_{update:04d}.json",
-            {"study": study["identity"], "update": update, "rows": rows, "hardening_is_model_change": not progressive,
-             **({"progressive": gates.progressive.state_dict()} if progressive else {})},
+            {
+                "study": study["identity"],
+                "update": update,
+                "rows": rows,
+                "hardening_is_model_change": not progressive,
+                **({"progressive": gates.progressive.state_dict()} if progressive else {}),
+            },
         )
 
 
