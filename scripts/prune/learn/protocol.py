@@ -63,6 +63,14 @@ def phase_budget(config):
     soft, binary, compact = (config[k] for k in ("soft_updates", "binary_updates", "compact_updates"))
     progressive = config.get("progressive_policy") is not None
     if progressive:
+        clipped = config["progressive_policy"].get("method") == "clip01_ste3_reset_v1"
+        if clipped:
+            from scripts.prune.learn.clipped_reset import validate_config
+
+            policy = validate_config(config["progressive_policy"])
+            if (soft, binary, compact) != (policy["selection_updates"], 0, 0):
+                raise ValueError("clipped-reset budget differs from its selection cap")
+            return soft, soft, soft + policy["finalize_updates"]
         zero_one = "fixed_one_fraction" in config["progressive_policy"]
         if binary != 0 or compact != 0 or (not zero_one and soft != 500):
             raise ValueError(

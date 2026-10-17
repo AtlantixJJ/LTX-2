@@ -86,3 +86,9 @@ Zero/one receipts carry free-only distributions, cumulative fixed-one counts and
 Publish all available scalars. Omit null distributions when the free population is empty.
 `gates/selected_count` counts new zeros; `gates/one_selected_count` counts new ones.
 The legacy `train/legal_mask_changes` retains its binary-selector meaning.
+
+## Eligible-population continuation
+
+The explicit eligible policy selects each percentage from its own eligible branch, with a configured minimum count.
+See [eligible policy](eligible.md) for the terminal override and exact fixed-gate tail.
+Forced one counts and finalization start, end and remaining updates are logged separately.

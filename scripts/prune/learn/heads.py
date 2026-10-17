@@ -316,6 +316,7 @@ def training_phase(study, current, args, deadline):
     uniform_f18 = training_windows.enabled(config)
     draw_count = protocol.validate(config)
     progressive = args.arm == "learned_progressive"
+    clipped = config.get("progressive_policy", {}).get("method") == "clip01_ste3_reset_v1"
     if progressive != (config.get("progressive_policy") is not None):
         raise ValueError("progressive study runs only its single progressive arm")
     if config.get("foreground_preparation") == "deferred" and args.arm in (
@@ -344,6 +345,12 @@ def training_phase(study, current, args, deadline):
         raise ValueError("sustained learning requires passed native feasibility")
     if runtime and feasibility.get("method") != runtime.feasibility_method:
         raise ValueError("distributed learning requires the matching native execution gate")
+    if clipped and (
+        feasibility.get("clipped_reset_execution") is not True
+        or feasibility.get("clipped_reset_config_sha256") != checkpoints.digest(config["progressive_policy"])
+        or feasibility.get("world_size") != 4
+    ):
+        raise ValueError("clipped-reset training requires fresh four-rank acceptance for its exact policy")
     gt_monitor = config.get("monitor_reference") == "gt_capture"
     if not gt_monitor:
         teacher_completion = json.loads((root / "teacher/validation_completion.json").read_text())
@@ -367,7 +374,10 @@ def training_phase(study, current, args, deadline):
         0 if progressive or args.arm == "dense_fresh" else args.removed_heads,
         draw_record,
     )
-    gates = HeadGates(config["blocks"], config["heads"], allowed).to(current.device)
+    gates = HeadGates(
+        config["blocks"], config["heads"], allowed,
+        activation="clip01_v1" if clipped else "sigmoid_v1",
+    ).to(current.device)
     if progressive:
         from scripts.prune.learn.progressive import ProgressivePolicy, new_policy
 
@@ -544,7 +554,10 @@ def training_phase(study, current, args, deadline):
                 go.load_state_dict(previous["gate_optimizer"])
             checkpoints.restore_rng(previous["rng"])
         sources = {s["relative_dir"]: s for s in study["splits"]["learning"]}
-        end = (compact_end + 1000 if args.arm == "learned_sequential" else compact_end) if compact else selection_end
+        adaptive = progressive and config["progressive_policy"].get("selection_population") == "eligible"
+        end = (compact_end + 1000 if args.arm == "learned_sequential" else compact_end) if compact else (
+            compact_end if clipped else selection_end
+        )
         live = hooks.attach_head_provider(model, gates.provider) if not compact else hooks.MaskAttachments()
         if runtime and not runtime.uses_ddp:
             model = runtime.wrap(model, ap)
@@ -565,7 +578,7 @@ def training_phase(study, current, args, deadline):
                     path = directory / f"events/{event['update']:04d}.json"
                     if json.loads(path.read_text()) != event:
                         raise ValueError("saved progressive event differs from checkpoint")
-                if start and (start % gates.progressive.interval == 0 or start == selection_end):
+                if start and (adaptive or start % gates.progressive.interval == 0 or start == selection_end):
                     monitor(study, current, model, gates, args.arm, args.replicate_seed, start, kept, scores)
             if not previous and not fresh:
                 save_checkpoint(
@@ -578,6 +591,8 @@ def training_phase(study, current, args, deadline):
                     adapter_optimizer=ao,
                     gate_optimizer=go,
                 )
+            if adaptive and gates.progressive.final_update is not None:
+                end = gates.progressive.final_update
             for update in range(start + 1, end + 1):
                 previous_mask = gates.decision.detach().clone() if gates.decision is not None else None
                 requested_stop = stop[0] or time.monotonic() >= deadline
@@ -604,6 +619,8 @@ def training_phase(study, current, args, deadline):
                         else ("soft" if update <= soft_end or args.arm == "learned_soft_only" else "binary")
                     )
                 )
+                if clipped:
+                    phase = "recovery" if gates.progressive.recovering else "soft"
                 ramp = min(update / 300, 1.0)
                 if phase == "fixed":
                     ramp_removed = nearest_removed(args.removed_heads * ramp, allowed, heads=config["heads"])
@@ -703,14 +720,18 @@ def training_phase(study, current, args, deadline):
                     gates.progressive.mask_gradient(gates.alpha)
                 if args.arm != "learned_sequential" or compact:
                     ao.step()
-                if go:
+                if go and phase != "recovery":
                     go.step()
+                # The trace records the optimizer result before a reset changes scores.
+                pre_event_scores = gates.alpha.detach().clone() if clipped else None
                 event = None
                 if progressive:
                     if any(not torch.isfinite(p).all() for p in ap):
                         raise ValueError("nonfinite progressive adapter state")
                     gates.progressive.protect(gates.alpha, go)
                     event = gates.progressive.record(update, gates.alpha, go)
+                    if adaptive and gates.progressive.final_update is not None:
+                        end = gates.progressive.final_update
                     if event is not None:
                         gates.progressive.verify_ranks(current.device)
                         if runtime is None or runtime.primary:
@@ -718,7 +739,9 @@ def training_phase(study, current, args, deadline):
                         if runtime:
                             torch.distributed.barrier()
                 gate_trace = (
-                    torch.stack([gates.alpha.detach(), gate_grad, sparse_gradient.to(gate_grad)]).float().cpu()
+                    torch.stack([
+                        pre_event_scores if clipped else gates.alpha.detach(), gate_grad, sparse_gradient.to(gate_grad)
+                    ]).float().cpu()
                     if gate_grad is not None
                     else None
                 )
@@ -790,6 +813,33 @@ def training_phase(study, current, args, deadline):
                                     if hasattr(gates.progressive, "one")
                                     else {}
                                 ),
+                                **(
+                                    dict(
+                                        stage="finalization"
+                                        if gates.progressive.final_update is not None
+                                        else "selection",
+                                        finalization_start=gates.progressive.finalization_start,
+                                        final_update=gates.progressive.final_update,
+                                        finalization_remaining=(end - update)
+                                        if gates.progressive.final_update is not None
+                                        else None,
+                                        **(
+                                            dict(
+                                                gate_cycle=update // gates.progressive.interval,
+                                                gate_adam_step=float(go.state.get(gates.alpha, {}).get("step", 0)),
+                                                trace_scores="post_optimizer_pre_event",
+                                                checkpoint_scores="post_reset" if event else "current",
+                                                reset_delta=event["reset_delta"] if event else None,
+                                            ) if clipped else dict(
+                                                forced_one_selected_ids=event["forced_one_selected_ids"] if event else [],
+                                                forced_one_selected_count=event["forced_one_selected_count"] if event else 0,
+                                                new_fixed_one_count=event["new_fixed_one_count"] if event else 0,
+                                            )
+                                        ),
+                                    )
+                                    if adaptive
+                                    else {}
+                                ),
                                 "policy_sha256": checkpoints.digest(gates.progressive.state_dict()),
                             }
                         }
@@ -835,10 +885,15 @@ def training_phase(study, current, args, deadline):
                 if gate_trace is not None and (runtime is None or runtime.primary):
                     # Rows: logits after the step, total gradient, sparsity gradient. Replays must match bytes.
                     checkpoints.publish_tensor(directory / f"gate_trace/{update:04d}.pt", gate_trace)
-                if update % (gates.progressive.interval if progressive else 100) == 0 or update in (
-                    soft_end,
-                    selection_end,
-                    compact_end,
+                if (
+                    update == end
+                    or update % (gates.progressive.interval if progressive else 100) == 0
+                    or update
+                    in (
+                        soft_end,
+                        selection_end,
+                        compact_end,
+                    )
                 ):
                     save_checkpoint(
                         directory / f"checkpoints/update_{update:04d}.pt",
@@ -857,6 +912,8 @@ def training_phase(study, current, args, deadline):
                     f"{args.arm} update={update} phase={phase} velocity_mse={sum(r['official'] for r in scalars) / draw_count:.6g}",
                     flush=True,
                 )
+                if adaptive and update == end:
+                    break
                 if args.max_updates and update - start >= args.max_updates:
                     if progressive or update % 100:
                         save_checkpoint(
@@ -874,9 +931,26 @@ def training_phase(study, current, args, deadline):
         finally:
             signal.signal(signal.SIGTERM, old)
             live.detach_all()
+    if adaptive and (
+        gates.progressive.final_update is None or gates.progressive.update != gates.progressive.final_update
+    ):
+        raise RuntimeError("eligible selection exhausted its mathematical bound without exact finalization")
     if runtime is None or runtime.primary:
         checkpoints.publish_json(
-            directory / f"{args.phase}_completion.json", {"identity": identity, "update": end, "status": "complete"}
+            directory / f"{args.phase}_completion.json",
+            {
+                "identity": identity,
+                "update": end,
+                "status": "complete",
+                **(
+                    dict(
+                        finalization_start=gates.progressive.finalization_start,
+                        finalize_updates=config["progressive_policy"]["finalize_updates"],
+                    )
+                    if adaptive
+                    else {}
+                ),
+            },
         )
 
 

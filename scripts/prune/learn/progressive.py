@@ -13,9 +13,22 @@ DEFAULTS = dict(hardening_interval=50, removal_fraction=0.01, regret_threshold=0
 
 
 def validate_config(config):
+    if "method" in config:
+        from scripts.prune.learn.clipped_reset import validate_config as validate_clipped
+
+        return validate_clipped(config)
     extra = {"fixed_one_fraction", "fixed_one_regret_threshold"}
-    if set(config) not in (set(DEFAULTS), set(DEFAULTS) | extra):
+    adaptive = {"selection_population", "minimum_count", "finalize_updates"}
+    if set(config) not in (
+        set(DEFAULTS),
+        set(DEFAULTS) | extra,
+        set(DEFAULTS) | extra | adaptive,
+        set(DEFAULTS) | extra | adaptive | {"fixed_one_selection"},
+    ):
         raise ValueError("progressive policy requires interval, fraction and regret threshold only")
+    gate_only = config.get("fixed_one_selection") == "gate_only"
+    if "fixed_one_selection" in config and (not gate_only or config["fixed_one_regret_threshold"] is not None):
+        raise ValueError("gate-only policy requires an explicit null fixed-one regret threshold")
     interval, fraction, threshold = (config[k] for k in DEFAULTS)
     if type(interval) is not int or interval < 1:
         raise ValueError("hardening_interval must be a positive integer")
@@ -40,12 +53,22 @@ def validate_config(config):
             or not isinstance(fraction, (int, float))
             or not math.isfinite(fraction)
             or not 0 < fraction <= 1
-            or isinstance(high, bool)
-            or not isinstance(high, (int, float))
-            or not math.isfinite(high)
-            or not config["regret_threshold"] < high <= 1
+            or (
+                not gate_only
+                and (
+                    isinstance(high, bool)
+                    or not isinstance(high, (int, float))
+                    or not math.isfinite(high)
+                    or not config["regret_threshold"] < high <= 1
+                )
+            )
         ):
             raise ValueError("fixed-one fraction or disjoint high-regret threshold differs")
+    if adaptive <= set(config):
+        if config["selection_population"] != "eligible" or any(
+            type(config[k]) is not int or config[k] < 1 for k in ("minimum_count", "finalize_updates")
+        ):
+            raise ValueError("eligible policy requires positive minimum and finalization updates")
     return dict(config)
 
 
@@ -67,7 +90,8 @@ def selection(free, travel, decrease, regret, config):
         if travel[b, h] > 0 and decrease[b, h] > 0 and regret[b, h] <= config["regret_threshold"]
     ]
     candidates.sort(key=lambda c: (c["regret"], -c["decrease"], c["block"], c["head"]))
-    requested = math.ceil(config["removal_fraction"] * free.numel())
+    population = len(candidates) if config.get("selection_population") == "eligible" else free.numel()
+    requested = max(config.get("minimum_count", 0), math.ceil(config["removal_fraction"] * population))
     for rank, candidate in enumerate(candidates, 1):
         candidate.update(rank=rank, selected=rank <= requested)
     selected = [[c["block"], c["head"]] for c in candidates[:requested]]
@@ -160,6 +184,14 @@ class ProgressivePolicy:
 
     @classmethod
     def from_state(cls, state, expected_config=None):
+        if state.get("format") == "progressive_clip_reset_v1":
+            from scripts.prune.learn.clipped_reset import ClippedResetPolicy
+
+            return ClippedResetPolicy.from_state(state, expected_config)
+        if state.get("format") == "progressive_eligible_v1":
+            from scripts.prune.learn.eligible import EligiblePolicy
+
+            return EligiblePolicy.from_state(state, expected_config)
         if state.get("format") == "progressive_zero_one_v1":
             from scripts.prune.learn.zero_one import ZeroOnePolicy
 
@@ -226,6 +258,14 @@ class ProgressivePolicy:
 
 def new_policy(alpha, config):
     """Select the configured policy without changing legacy removal-only construction."""
+    if "method" in config:
+        from scripts.prune.learn.clipped_reset import ClippedResetPolicy
+
+        return ClippedResetPolicy(alpha, config)
+    if config.get("selection_population") == "eligible":
+        from scripts.prune.learn.eligible import EligiblePolicy
+
+        return EligiblePolicy(alpha, config)
     if "fixed_one_fraction" in config:
         from scripts.prune.learn.zero_one import ZeroOnePolicy
 

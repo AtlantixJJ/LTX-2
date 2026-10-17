@@ -61,3 +61,13 @@ For zero/one continuation, load parent and migrated step-500 states and require 
 The disposable checkpointed-backward fixture selects three zeros and two ones at the same event.
 Require exact execution, frozen gradients/moments and uninterrupted/resumed equality across the event.
 Record `fixed_one_execution`, `arbitrary_fixed_one_count` and `parent_migration_bit_identical` in fresh acceptance.
+
+## Eligible finalization acceptance
+
+The eligible study also forces all remaining free heads to one when zero eligibility is empty.
+One disposable native update requires zero gate gradients and nonzero adapter gradients with those fixed gates.
+Require restored terminal state and the eligible_finalization_execution receipt before training.
+
+A gate-only native tail uses the frozen gate-only mode, including constant or low-regret heads.
+Its terminal receipt must fix all heads through ordinary plus forced one decisions.
+Publish gate_only_execution only after the actual fixed-gate backward and terminal-state reload pass.

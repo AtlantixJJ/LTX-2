@@ -15,7 +15,6 @@ from scripts.prune.learn.distributed import Session
 from scripts.prune.learn.gates import HeadGates
 from scripts.prune.learn.progressive import ProgressivePolicy, new_policy
 from scripts.prune.learn.step import TrainingStep
-from scripts.prune.learn.zero_one import ZeroOnePolicy
 from scripts.prune.score import hooks
 
 
@@ -77,7 +76,8 @@ def main():
                     initial_adapters = adapters.state_dict(attached)
                     parent = checkpoints.load(study["zero_one_source"]["checkpoint"])
                     migrated = checkpoints.load(
-                        root / "training/learned_progressive/replicate_42/checkpoints/update_0500.pt"
+                        root
+                        / f"training/learned_progressive/replicate_42/checkpoints/update_{cfg.get('continuation_start_update', 500):04d}.pt"
                     )
                     adapters.load_state(attached, parent["adapters"])
                     gates.alpha.data.copy_(parent["alpha"])
@@ -142,7 +142,7 @@ def main():
                     }
                 )
 
-            def update(number):
+            def update(number, allow_zero_gate=False, policy_update=None):
                 phase = "soft" if progressive or number <= 3 else "binary"
                 gates.begin_update(phase, cfg["blocks"] * cfg["heads"] - 152 if phase == "binary" else None)
                 ao.zero_grad(set_to_none=True)
@@ -163,13 +163,15 @@ def main():
                         raise ValueError("fixed logit gradient is nonzero")
                 anorm = float(torch.nn.utils.clip_grad_norm_(ap, 1, error_if_nonfinite=True))
                 gnorm = float(torch.nn.utils.clip_grad_norm_([gates.alpha], 1, error_if_nonfinite=True))
-                if min(anorm, gnorm) <= 0:
+                if anorm <= 0 or (gnorm <= 0 and not allow_zero_gate) or (allow_zero_gate and gnorm != 0):
                     raise ValueError("missing native DDP gradients")
                 ao.step()
                 go.step()
                 if progressive:
                     gates.progressive.protect(gates.alpha, go)
-                    event = gates.progressive.record(number + 1, gates.alpha, go)
+                    event = gates.progressive.record(
+                        number + 1 if policy_update is None else policy_update, gates.alpha, go
+                    )
                     gates.progressive.verify_ranks(current.device)
                     if number == 2 and (event["selected_count"] != 3 or event["selected_count"] % 4 == 0):
                         raise ValueError("native acceptance must remove exactly three heads")
@@ -244,6 +246,30 @@ def main():
             ):
                 raise ValueError("native DDP post-event resumed update differs")
             rows += [second, resumed_third, update(4)]
+            eligible = cfg.get("progressive_policy", {}).get("selection_population") == "eligible"
+            if eligible:
+                probe = dict(
+                    cfg["progressive_policy"],
+                    hardening_interval=1,
+                    minimum_count=1,
+                    removal_fraction=1.0,
+                    fixed_one_fraction=1.0,
+                    finalize_updates=1,
+                )
+                gates.progressive = new_policy(gates.alpha, probe)
+                gates.alpha.data.add_(1)
+                terminal = gates.progressive.record(1, gates.alpha, go)
+                if (
+                    terminal["eligible_count"] != 0
+                    or terminal["new_fixed_one_count"] != gates.alpha.numel()
+                    or gates.progressive.final_update != 2
+                    or gates.progressive.free.any()
+                ):
+                    raise ValueError("native finalization trigger or force-one differs")
+                rows.append(update(5, allow_zero_gate=True, policy_update=2))
+                restored = ProgressivePolicy.from_state(gates.progressive.state_dict(), probe)
+                if restored.final_update != restored.update or restored.free.any():
+                    raise ValueError("native finalization checkpoint differs")
             controls = runtime.gather(control_record)
             updates = runtime.gather(rows)
             live.detach_all()
@@ -262,6 +288,9 @@ def main():
                         "progressive_execution": progressive,
                         "arbitrary_removal_count": 3 if progressive else None,
                         "fixed_one_execution": zero_one,
+                        "eligible_finalization_execution": eligible,
+                        "gate_only_execution": eligible
+                        and cfg["progressive_policy"].get("fixed_one_selection") == "gate_only",
                         "arbitrary_fixed_one_count": 2 if zero_one else None,
                         "parent_migration_bit_identical": zero_one
                         and all(c["parent_migration_bit_identical"] for c in controls),

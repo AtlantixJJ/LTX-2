@@ -120,9 +120,30 @@ def main():
         folder = root / f"training/{arm}/replicate_{args.replicate_seed}"
         _, selection_end, compact_end = protocol.phase_budget(study["config"])
         boundary = selection_end if phase == "selection" else compact_end
-        if (folder / f"checkpoints/update_{boundary:04d}.pt").exists() and (
-            not progressive
-            or (root / f"checks/{arm}/replicate_{args.replicate_seed}/monitor_{boundary:04d}.json").exists()
+        adaptive = study["config"].get("progressive_policy", {}).get("selection_population") == "eligible"
+        completion = folder / "selection_completion.json"
+        if adaptive and completion.exists():
+            receipt = json.loads(completion.read_text())
+            terminal = receipt["update"]
+            saved = checkpoints.load(folder / f"checkpoints/update_{terminal:04d}.pt")
+            from scripts.prune.learn.progressive import ProgressivePolicy
+
+            policy = ProgressivePolicy.from_state(saved["progressive"], study["config"]["progressive_policy"])
+            if (
+                receipt["identity"] != saved["identity"]
+                or policy.final_update != terminal
+                or terminal - policy.finalization_start != study["config"]["progressive_policy"]["finalize_updates"]
+                or not (root / f"checks/{arm}/replicate_{args.replicate_seed}/monitor_{terminal:04d}.json").exists()
+            ):
+                raise ValueError("eligible completion differs from terminal checkpoint or monitor")
+            return
+        if (
+            not adaptive
+            and (folder / f"checkpoints/update_{boundary:04d}.pt").exists()
+            and (
+                not progressive
+                or (root / f"checks/{arm}/replicate_{args.replicate_seed}/monitor_{boundary:04d}.json").exists()
+            )
         ):
             return
         for segment in range(12):
@@ -175,6 +196,14 @@ def main():
             or (ddp and acceptance.get("world_size") != world)
             or (progressive and acceptance.get("progressive_execution") is not True)
             or (progressive and acceptance.get("arbitrary_removal_count") != 3)
+            or (
+                study["config"].get("progressive_policy", {}).get("selection_population") == "eligible"
+                and not acceptance.get("eligible_finalization_execution")
+            )
+            or (
+                study["config"].get("progressive_policy", {}).get("fixed_one_selection") == "gate_only"
+                and not acceptance.get("gate_only_execution")
+            )
             or (
                 "fixed_one_fraction" in study["config"].get("progressive_policy", {})
                 and (

@@ -68,3 +68,10 @@ It performs no compact export, binary training or recovery. Read `progressive_tr
 Zero/one continuations use global soft budgets and require fresh fixed-one execution/migration acceptance.
 The owner can cross bounded twelve-hour segments by resuming its last canonical state without counter reset.
 It runs no binary refinement or compact recovery for this policy.
+
+## Eligible-population continuation
+
+The explicit eligible policy selects each percentage from its own eligible branch, with a configured minimum count.
+See [eligible policy](eligible.md) for the terminal override and exact fixed-gate tail.
+
+Gate-only studies additionally require gate_only_execution from fresh native acceptance.

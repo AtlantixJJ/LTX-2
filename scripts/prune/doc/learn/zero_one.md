@@ -49,3 +49,8 @@ The policy owns fixed masks; the legacy legal-width selector does not participat
 `test_zero_one_gates.py` checks threshold equality, tie order, disjoint states, original denominator,
 empty free populations, migration, tampered receipts, fixed moments, checkpointed gradients and exact resume.
 The fresh native gate verifies three zero and two one decisions and bit-identical parent/migrated predictions.
+
+## Eligible-population continuation
+
+The explicit eligible policy selects each percentage from its own eligible branch, with a configured minimum count.
+See [eligible policy](eligible.md) for the terminal override and exact fixed-gate tail.

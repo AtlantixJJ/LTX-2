@@ -156,3 +156,9 @@ Zero/one continuations restore the versioned policy from the saved global checkp
 Each update logs zero and one selection/eligibility/shortfall fields separately.
 The global update owns learning-rate and sparsity schedules; migration does not restart warmup.
 After the free set is empty, zero logit gradients remain valid and LoRA training continues.
+
+## Eligible-population continuation
+
+The explicit eligible policy selects each percentage from its own eligible branch, with a configured minimum count.
+See [eligible policy](eligible.md) for the terminal override and exact fixed-gate tail.
+The trainer stops at the saved dynamic final update. Completion at the draw envelope without a terminal event is an error.

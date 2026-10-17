@@ -74,8 +74,13 @@ def training_metrics(row, config):
             "one_requested_count",
             "one_selected_count",
             "one_shortfall",
+            "forced_one_selected_count",
+            "new_fixed_one_count",
+            "finalization_start",
+            "final_update",
+            "finalization_remaining",
         ):
-            if name in row["progressive"]:
+            if name in row["progressive"] and row["progressive"][name] is not None:
                 values["gates/" + name] = row["progressive"][name]
     for name, value in zip(
         ("min", "p10", "median", "p90", "max"), row["gates"]["quantiles"] or [None] * 5, strict=True

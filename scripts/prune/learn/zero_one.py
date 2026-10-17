@@ -18,7 +18,8 @@ def select_one(free, alpha, travel, regret, config):
         if travel[b, h] > 0 and regret[b, h] >= config["fixed_one_regret_threshold"]
     ]
     candidates.sort(key=lambda c: (-c["gate"], -c["regret"], c["block"], c["head"]))
-    requested = math.ceil(config["fixed_one_fraction"] * free.numel())
+    population = len(candidates) if config.get("selection_population") == "eligible" else free.numel()
+    requested = max(config.get("minimum_count", 0), math.ceil(config["fixed_one_fraction"] * population))
     for rank, item in enumerate(candidates, 1):
         item.update(rank=rank, selected=rank <= requested)
     return dict(

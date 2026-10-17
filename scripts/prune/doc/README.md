@@ -70,7 +70,7 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `checks/fsdp_small.py` | [design](checks/fsdp_small.md) | 162 |
 | `checks/learned_heads.py` | [design](checks/learned_heads.md) | 227 |
 | `checks/mobilewan_native.py` | [design](checks/mobilewan_native.md) | 118 |
-| `checks/ddp_native.py` | [design](checks/ddp_native.md) | 278 |
+| `checks/ddp_native.py` | [design](checks/ddp_native.md) | 307 |
 | `core/__init__.py` | package marker | 1 |
 | `core/artifacts.py` | [design](core/artifacts.md) | 40 |
 | `core/geometry.py` | [design](core/geometry.md) | 72 |
@@ -79,6 +79,7 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `core/preflight.py` | [design](core/preflight.md) | 136 |
 | `core/provenance.py` | [design](core/provenance.md) | 119 |
 | `core/session.py` | [design](core/session.md) | 117 |
+| `data/continue_eligible.py` | [design](data/continue_eligible.md) | 208 |
 | `data/progressive_head_study.py` | [design](data/progressive_head_study.md) | 151 |
 | `data/__init__.py` | package marker | 1 |
 | `data/foreground.py` | [design](data/foreground.md) | 140 |
@@ -95,6 +96,7 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `evaluate/decode.py` | [design](evaluate/decode.md) | 23 |
 | `evaluate/learned_head_media.py` | [design](evaluate/learned_head_media.md) | 290 |
 | `evaluate/learned_head_checkpoint_media.py.txt` | [pinned checkpoint media](evaluate/learned_head_checkpoint_media.md) | 721 |
+| `evaluate/eligible_checkpoint_media.py.txt` | [design](evaluate/eligible_checkpoint_media.md) | 706 |
 | `evaluate/zero_one_checkpoint_media.py.txt` | [design](evaluate/zero_one_checkpoint_media.md) | 706 |
 | `evaluate/progressive_checkpoint_media.py.txt` | [progressive checkpoint media](evaluate/progressive_checkpoint_media.md) | 725 |
 | `evaluate/learned_heads.py` | [design](evaluate/learned_heads.md) | 338 |
@@ -103,22 +105,23 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `evaluate/mobilewan_removal.py` | [design](evaluate/mobilewan_removal.md) | 215 |
 | `evaluate/whole_clip_baseline.py` | [design](evaluate/whole_clip_baseline.md) | 707 |
 | `evaluate/whole_clip_d0.py` | [design](evaluate/whole_clip_d0.md) | 245 |
-| `learn/zero_one.py` | [design](learn/zero_one.md) | 179 |
+| `learn/eligible.py` | [design](learn/eligible.md) | 195 |
+| `learn/zero_one.py` | [design](learn/zero_one.md) | 180 |
 | `data/continue_zero_one.py` | [design](data/continue_zero_one.md) | 187 |
-| `learn/progressive.py` | [design](learn/progressive.md) | 233 |
+| `learn/progressive.py` | [design](learn/progressive.md) | 261 |
 | `learn/adapters.py` | [design](learn/adapters.md) | 127 |
 | `learn/checkpoints.py` | [design](learn/checkpoints.md) | 235 |
 | `learn/distributed.py` | [design](learn/distributed.md) | 153 |
 | `learn/gates.py` | [design](learn/gates.md) | 141 |
-| `learn/heads.py` | [design](learn/heads.md) | 1485 |
+| `learn/heads.py` | [design](learn/heads.md) | 1531 |
 | `learn/losses.py` | [design](learn/losses.md) | 155 |
 | `learn/placement.py` | [design](learn/placement.md) | 107 |
-| `learn/run_full.py` | [design](learn/run_full.md) | 251 |
+| `learn/run_full.py` | [design](learn/run_full.md) | 280 |
 | `learn/teacher_references.py` | [design](learn/teacher_references.md) | 105 |
 | `learn/ddp.py` | [design](learn/ddp.md) | 51 |
 | `learn/protocol.py` | logic in module header | 77 |
 | `learn/step.py` | logic in module header | 44 |
-| `learn/wandb_logger.py` | [design](learn/wandb_logger.md) | 284 |
+| `learn/wandb_logger.py` | [design](learn/wandb_logger.md) | 289 |
 | `score/__init__.py` | package marker | 1 |
 | `score/estimators.py` | [design](score/estimators.md) | 48 |
 | `score/export_depth.py` | [design](score/export_depth.md) | 431 |

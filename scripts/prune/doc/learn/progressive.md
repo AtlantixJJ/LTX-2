@@ -62,3 +62,11 @@ The bounded native check verifies three removed heads with checkpointed backward
 `new_policy` selects the [zero/one owner](zero_one.md) when fixed-one settings are present.
 `from_state` dispatches its versioned payload without changing legacy removal-only checkpoints.
 Validate fractions in `(0,1]` and a high-regret threshold above the removal threshold.
+
+## Eligible-population continuation
+
+The explicit eligible policy selects each percentage from its own eligible branch, with a configured minimum count.
+See [eligible policy](eligible.md) for the terminal override and exact fixed-gate tail.
+
+The optional fixed_one_selection=gate_only setting requires the eligible policy and a null fixed-one regret threshold.
+The removal selector is unchanged. Old configurations retain their original validation and regret rule.

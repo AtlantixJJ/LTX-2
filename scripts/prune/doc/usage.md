@@ -652,3 +652,16 @@ setsid conda run --no-capture-output -n ltx python -u -m scripts.prune.learn.run
 Check GPUs 0–3 are free first. The owner runs fresh native acceptance, then resumes formal step 501.
 Use GPU 6 for serial reports every 100 updates. Manual progress checks are every 30 minutes.
 Reports contain text-link tables without embedded images. Exact video roles/schedules are defined in the study plan.
+
+## Eligible-population continuation
+
+Prepare the fresh study with [continue_eligible](data/continue_eligible.md).
+Launch the direct owner in ltx from LTX-2:
+
+```bash
+python -m scripts.prune.learn.run_full \
+  --study ../expr/refiner_prune/2.5/progressive_eligible2pct_min16_final300_20261016_from_u1357/configs/frozen_study.json \
+  --arms learned_progressive --replicate-seed 42
+```
+
+Fresh four-rank acceptance precedes sustained training. Use GPUs 0–3. The exact fixed-gate tail follows the terminal event.
