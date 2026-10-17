@@ -495,6 +495,8 @@ def training_phase(study, current, args, deadline):
         }
     start = previous["update"] if previous else (selection_end if fresh else 0)
     compact = args.phase == "compact_recovery"
+    if clipped and compact:
+        raise ValueError("clipped-reset adapter recovery remains inside its global selection owner")
     if compact and not fresh and (previous is None or start < selection_end):
         raise ValueError("compact recovery requires the completed selection checkpoint")
     model_path = (
@@ -578,7 +580,7 @@ def training_phase(study, current, args, deadline):
                     path = directory / f"events/{event['update']:04d}.json"
                     if json.loads(path.read_text()) != event:
                         raise ValueError("saved progressive event differs from checkpoint")
-                if start and (adaptive or start % gates.progressive.interval == 0 or start == selection_end):
+                if (start or clipped) and (adaptive or start % gates.progressive.interval == 0 or start == selection_end):
                     monitor(study, current, model, gates, args.arm, args.replicate_seed, start, kept, scores)
             if not previous and not fresh:
                 save_checkpoint(
@@ -729,6 +731,17 @@ def training_phase(study, current, args, deadline):
                     if any(not torch.isfinite(p).all() for p in ap):
                         raise ValueError("nonfinite progressive adapter state")
                     gates.progressive.protect(gates.alpha, go)
+                    if clipped and phase == "soft" and update % gates.progressive.interval == 0:
+                        rng = runtime.gather(checkpoints.rng_state([runtime.local_rank])) if runtime else None
+                        if runtime is None or runtime.primary:
+                            checkpoints.save_pre_event(
+                                directory / f"transactions/pre_event_{update:04d}.pt",
+                                identity=identity, update=update, gates=gates, adapters=attached,
+                                adapter_optimizer=ao, gate_optimizer=go,
+                                rng_override={"world_size": runtime.world, "ranks": rng} if runtime else None,
+                            )
+                        if runtime:
+                            torch.distributed.barrier()
                     event = gates.progressive.record(update, gates.alpha, go)
                     if adaptive and gates.progressive.final_update is not None:
                         end = gates.progressive.final_update

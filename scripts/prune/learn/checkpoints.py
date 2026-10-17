@@ -96,6 +96,46 @@ def restore_rng(state):
         torch.cuda.set_rng_state(state["cuda"], device=state.get("cuda_device", 0))
 
 
+def save_pre_event(path, *, identity, update, gates, adapters, adapter_optimizer, gate_optimizer, rng_override=None):
+    """Save a disposable transaction input separately from canonical checkpoints.
+
+    A restart replays from its last canonical checkpoint. It checks this input
+    before publishing the same event again. It never treats this file as a
+    completed update. Saving after the reset would lose gate Adam evidence.
+    """
+    from scripts.prune.data.resume_learned_heads import unchanged_state_hash
+    from scripts.prune.learn.adapters import state_dict
+
+    policy = gates.progressive
+    if policy.update != update - 1 or update % policy.interval or policy.recovering:
+        raise ValueError("pre-event publication requires a pending selection boundary")
+    state = dict(
+        format="clipped_reset_transaction_v1", stage="post_optimizer_pre_event",
+        identity=identity, update=update, draw_cursor=4 * update,
+        alpha=gates.alpha.detach().cpu().clone(),
+        pre_event_gates=policy.compose(gates.alpha).detach().cpu().clone(),
+        progressive=policy.state_dict(), adapters=state_dict(adapters),
+        adapter_optimizer=adapter_optimizer.state_dict(), gate_optimizer=gate_optimizer.state_dict(),
+        rng=rng_override if rng_override is not None else rng_state(),
+    )
+    if Path(path).exists():
+        sidecar = Path(path).with_suffix(".json")
+        if sidecar.exists() and json.loads(sidecar.read_text())["sha256"] != file_sha256(path):
+            raise ValueError("pre-event transaction bytes changed")
+        saved = torch.load(path, map_location="cpu", weights_only=False)
+        if unchanged_state_hash(saved) != unchanged_state_hash(state) or saved["identity"] != identity:
+            raise ValueError("replayed pre-event transaction differs")
+    else:
+        def write(p):
+            with p.open("wb") as stream:
+                torch.save(state, stream)
+
+        publish(path, write)
+    publish_json(Path(path).with_suffix(".json"), dict(
+        stage=state["stage"], update=update, sha256=file_sha256(path), state_sha256=unchanged_state_hash(state),
+    ))
+
+
 def save(
     path,
     *,
@@ -205,6 +245,22 @@ def load(path, identity=None):
             raise ValueError("checkpoint terminal logits changed")
         if policy.update != state["update"] or digest(state["progressive"]) != receipt.get("progressive_sha256"):
             raise ValueError("checkpoint progressive cursor or history changed")
+        if state["progressive"]["format"] == "progressive_clip_reset_v1":
+            optimizer = state["gate_optimizer"]
+            if optimizer is None:
+                raise ValueError("clipped-reset checkpoint lacks its gate optimizer")
+            local_step = 0 if policy.recovering else policy.update % policy.interval
+            values = list(optimizer["state"].values())
+            if local_step == 0:
+                if values:
+                    raise ValueError("clipped-reset gate Adam was not fully reset")
+            elif len(values) != 1 or float(values[0]["step"]) != local_step:
+                raise ValueError("clipped-reset gate Adam local cursor differs")
+            if any(
+                value.shape != state["alpha"].shape or not torch.isfinite(value).all() or value[fixed].any()
+                for item in values for key, value in item.items() if key != "step"
+            ):
+                raise ValueError("clipped-reset gate Adam moments or removed coordinates differ")
     return state
 
 

@@ -81,7 +81,9 @@ class ClippedResetPolicy(ProgressivePolicy):
     def protect(self, alpha, optimizer=None):
         fixed = torch.ones_like(self.free) if self.recovering else ~self.free
         mask = fixed.to(alpha.device)
-        expected = self.free.to(device=alpha.device, dtype=alpha.dtype) if self.recovering else self.frozen.to(alpha.device)
+        expected = (
+            self.free.to(device=alpha.device, dtype=alpha.dtype) if self.recovering else self.frozen.to(alpha.device)
+        )
         alpha[mask] = expected[mask]
         if optimizer is not None:
             for value in optimizer.state.get(alpha, {}).values():
@@ -92,7 +94,11 @@ class ClippedResetPolicy(ProgressivePolicy):
     def _validate_optimizer(alpha, optimizer):
         if optimizer is not None:
             parameters = [p for group in optimizer.param_groups for p in group["params"]]
-            if not isinstance(optimizer, (torch.optim.Adam, torch.optim.AdamW)) or len(parameters) != 1 or parameters[0] is not alpha:
+            if (
+                not isinstance(optimizer, (torch.optim.Adam, torch.optim.AdamW))
+                or len(parameters) != 1
+                or parameters[0] is not alpha
+            ):
                 raise ValueError("score reset requires a separate gate-only Adam optimizer")
 
     @torch.no_grad()
@@ -100,8 +106,11 @@ class ClippedResetPolicy(ProgressivePolicy):
         self._validate_optimizer(alpha, optimizer)
         value = alpha.detach().float().cpu().clone()
         if (
-            type(update) is not int or update != self.update + 1
-            or alpha.dtype != torch.float32 or value.shape != self.free.shape or not torch.isfinite(value).all()
+            type(update) is not int
+            or update != self.update + 1
+            or alpha.dtype != torch.float32
+            or value.shape != self.free.shape
+            or not torch.isfinite(value).all()
             or (self.final_update is not None and update > self.final_update)
             or not torch.equal(value[~self.free], self.frozen[~self.free])
         ):
@@ -134,15 +143,24 @@ class ClippedResetPolicy(ProgressivePolicy):
             self.final_update = update + self.config["finalize_updates"]
         reset = self.free.float()
         event = dict(
-            update=update, config=dict(self.config), stage="post_reset",
-            **choice, terminal_reason=reason,
-            finalization_start=self.finalization_start, final_update=self.final_update,
+            update=update,
+            config=dict(self.config),
+            stage="post_reset",
+            **choice,
+            terminal_reason=reason,
+            finalization_start=self.finalization_start,
+            final_update=self.final_update,
             trajectory=[v.tolist() for v in self.window],
-            travel=travel.tolist(), decrease=decrease.tolist(), rate=(decrease / self.interval).tolist(),
+            travel=travel.tolist(),
+            decrease=decrease.tolist(),
+            rate=(decrease / self.interval).tolist(),
             regret=[[float(v) if torch.isfinite(v) else None for v in row] for row in regret],
-            pre_event_scores=value.tolist(), pre_event_gates=clipped_gate(value, before_alive).tolist(),
-            post_reset_scores=reset.tolist(), reset_delta=(reset - value).tolist(),
-            gate_cycle=update // self.interval, gate_adam_step_after=0,
+            pre_event_scores=value.tolist(),
+            pre_event_gates=clipped_gate(value, before_alive).tolist(),
+            post_reset_scores=reset.tolist(),
+            reset_delta=(reset - value).tolist(),
+            gate_cycle=update // self.interval,
+            gate_adam_step_after=0,
             selected_fraction=choice["selected_count"] / choice["eligible_count"] if choice["eligible_count"] else 0.0,
             counts=self.counts(),
         )
@@ -160,13 +178,22 @@ class ClippedResetPolicy(ProgressivePolicy):
         return dict(alive=int(self.free.sum()), removed=int((~self.free).sum()))
 
     def state_dict(self):
-        return copy.deepcopy(dict(
-            format="progressive_clip_reset_v1", config=self.config, free=self.free.tolist(),
-            frozen=self.frozen.tolist(), window=[v.tolist() for v in self.window],
-            update=self.update, history=self.history,
-            finalization_start=self.finalization_start, final_update=self.final_update,
-            event_stage="post_reset" if self.history and self.history[-1]["update"] == self.update else "between_events",
-        ))
+        return copy.deepcopy(
+            dict(
+                format="progressive_clip_reset_v1",
+                config=self.config,
+                free=self.free.tolist(),
+                frozen=self.frozen.tolist(),
+                window=[v.tolist() for v in self.window],
+                update=self.update,
+                history=self.history,
+                finalization_start=self.finalization_start,
+                final_update=self.final_update,
+                event_stage="post_reset"
+                if self.history and self.history[-1]["update"] == self.update
+                else "between_events",
+            )
+        )
 
     @classmethod
     def from_state(cls, state, expected_config=None):

@@ -17,15 +17,17 @@ def config(**changes):
 
 
 def test_forward_surrogate_endpoints_and_unprojected_scores():
-    alpha = torch.tensor([[-4., -3., -1., 0., .5, 1., 2., 3., 4.]], requires_grad=True)
+    alpha = torch.tensor([[-4.0, -3.0, -1.0, 0.0, 0.5, 1.0, 2.0, 3.0, 4.0]], requires_grad=True)
     original = alpha.detach().clone()
     value = clipped_gate(alpha, torch.ones_like(alpha, dtype=torch.bool))
-    assert value.tolist() == [[0, 0, 0, 0, .5, 1, 1, 1, 1]]
+    assert value.tolist() == [[0, 0, 0, 0, 0.5, 1, 1, 1, 1]]
     value.sum().backward()
     assert alpha.grad.tolist() == [[0, 1, 1, 1, 1, 1, 1, 1, 0]]
     assert torch.equal(alpha, original)
     alpha.grad = None
-    checkpoint(lambda a: clipped_gate(a, torch.zeros_like(a, dtype=torch.bool)), alpha, use_reentrant=False).sum().backward()
+    checkpoint(
+        lambda a: clipped_gate(a, torch.zeros_like(a, dtype=torch.bool)), alpha, use_reentrant=False
+    ).sum().backward()
     assert not alpha.grad.any()
 
 
@@ -33,8 +35,8 @@ def test_initial_execution_and_separate_statistics():
     gates = HeadGates(1, 4, activation="clip01_v1")
     gates.progressive = new_policy(gates.alpha, config())
     assert torch.equal(gates.microbatch(), torch.ones(1, 4))
-    assert torch.equal(HeadGates(1, 4).alpha, torch.full((1, 4), 3.))
-    gates.alpha.data.copy_(torch.tensor([[-1., .5, 3., 0.]]))
+    assert torch.equal(HeadGates(1, 4).alpha, torch.full((1, 4), 3.0))
+    gates.alpha.data.copy_(torch.tensor([[-1.0, 0.5, 3.0, 0.0]]))
     snapshot = gates.snapshot()
     assert snapshot["counts"] == dict(alive=4, removed=0)
     assert snapshot["alive_clipped_zero"] == 2 and snapshot["alive_interior"] == snapshot["alive_clipped_one"] == 1
@@ -44,21 +46,21 @@ def test_initial_execution_and_separate_statistics():
 def test_reset_jump_is_outside_both_windows():
     alpha = torch.ones(1, 3)
     policy = ClippedResetPolicy(alpha, config())
-    policy.record(1, torch.tensor([[.8, .8, 1.2]]))
-    alpha.copy_(torch.tensor([[.6, .6, 1.4]]))
+    policy.record(1, torch.tensor([[0.8, 0.8, 1.2]]))
+    alpha.copy_(torch.tensor([[0.6, 0.6, 1.4]]))
     event = policy.record(2, alpha)
     assert event["selected_ids"] == [[0, 0]]
-    assert event["regret"] == [[0., 0., 0.]]
-    assert alpha.tolist() == [[0., 1., 1.]]
+    assert event["regret"] == [[0.0, 0.0, 0.0]]
+    assert alpha.tolist() == [[0.0, 1.0, 1.0]]
     assert len(policy.window) == 1 and torch.equal(policy.window[0], alpha)
-    assert event["pre_event_scores"][0][1] == pytest.approx(.6)
-    assert event["post_reset_scores"] == [[0., 1., 1.]]
-    _, _, regret = statistics([torch.tensor(1.), torch.tensor(.8), torch.tensor(.6), torch.tensor(1.)])
+    assert event["pre_event_scores"][0][1] == pytest.approx(0.6)
+    assert event["post_reset_scores"] == [[0.0, 1.0, 1.0]]
+    _, _, regret = statistics([torch.tensor(1.0), torch.tensor(0.8), torch.tensor(0.6), torch.tensor(1.0)])
     assert regret == 1
     assert ProgressivePolicy.from_state(policy.state_dict(), config()).state_dict() == policy.state_dict()
     # The survivor is still eligible at the next event.
-    policy.record(3, torch.tensor([[0., .8, 1.2]]))
-    event = policy.record(4, torch.tensor([[0., .6, 1.4]]))
+    policy.record(3, torch.tensor([[0.0, 0.8, 1.2]]))
+    event = policy.record(4, torch.tensor([[0.0, 0.6, 1.4]]))
     assert event["selected_ids"] == [[0, 1]] and event["terminal_reason"] == "pilot_cap"
 
 
@@ -66,7 +68,7 @@ def test_eligible_denominator_floor_and_arbitrary_counts():
     alpha = torch.ones(48, 32)
     policy = ClippedResetPolicy(alpha)
     for update in range(1, 51):
-        alpha.sub_(.001)
+        alpha.sub_(0.001)
         event = policy.record(update, alpha)
     assert event["eligible_count"] == 1536
     assert event["selected_count"] == 31
@@ -106,8 +108,8 @@ def test_all_removed_and_protection():
     cfg = dict(config(), minimum_count=16)
     alpha = torch.ones(1, 3)
     policy = ClippedResetPolicy(alpha, cfg)
-    policy.record(1, alpha - .2)
-    alpha.sub_(.4)
+    policy.record(1, alpha - 0.2)
+    alpha.sub_(0.4)
     event = policy.record(2, alpha)
     assert event["terminal_reason"] == "all_heads_removed" and not alpha.any()
     assert event["selected_count"] == 3 and event["shortfall"] == 13
@@ -119,13 +121,23 @@ def test_all_removed_and_protection():
 
 
 def test_raw_sparsity_and_fixed_denominator():
-    alpha = torch.tensor([[-4., -3., -1., 1., 4.]], requires_grad=True)
+    alpha = torch.tensor([[-4.0, -3.0, -1.0, 1.0, 4.0]], requires_grad=True)
     alive = torch.tensor([[True, True, True, False, True]])
     value = losses.sparsity_value(clipped_gate(alpha, alive), logits=alpha, kind="relu_logits", free_mask=alive)
-    coefficient = losses.sparsity_coefficient(50, "soft", lambda_max=.01, lambda_warmup=100, lambda_start_multiplier=.1)
+    coefficient = losses.sparsity_coefficient(
+        50, "soft", lambda_max=0.01, lambda_warmup=100, lambda_start_multiplier=0.1
+    )
     (coefficient * value).backward()
-    actual = losses.sparsity_gradient(alpha, update=50, phase="soft", kind="relu_logits", free_mask=alive,
-                                     lambda_max=.01, lambda_warmup=100, lambda_start_multiplier=.1)
+    actual = losses.sparsity_gradient(
+        alpha,
+        update=50,
+        phase="soft",
+        kind="relu_logits",
+        free_mask=alive,
+        lambda_max=0.01,
+        lambda_warmup=100,
+        lambda_start_multiplier=0.1,
+    )
     assert torch.equal(alpha.grad, actual)
     assert actual[0, 4] == pytest.approx(coefficient / 5)
     assert not losses.sparsity_gradient(alpha, update=500, phase="recovery").any()
@@ -135,8 +147,8 @@ def test_adam_reset_adapter_continuity_and_exact_resume():
     torch.manual_seed(42)
     alpha = torch.nn.Parameter(torch.ones(1, 4))
     adapter = torch.nn.Parameter(torch.ones(1, 4))
-    go = torch.optim.AdamW([alpha], lr=.05, weight_decay=0)
-    ao = torch.optim.AdamW([adapter], lr=.01, weight_decay=0)
+    go = torch.optim.AdamW([alpha], lr=0.05, weight_decay=0)
+    ao = torch.optim.AdamW([adapter], lr=0.01, weight_decay=0)
     policy = ClippedResetPolicy(alpha, config())
 
     def step():
@@ -156,7 +168,16 @@ def test_adam_reset_adapter_continuity_and_exact_resume():
         return copy.deepcopy((alpha.detach(), adapter.detach(), go.state_dict(), ao.state_dict(), policy.state_dict()))
 
     step()
-    saved = copy.deepcopy((alpha.detach(), adapter.detach(), go.state_dict(), ao.state_dict(), policy.state_dict(), checkpoints.rng_state()))
+    saved = copy.deepcopy(
+        (
+            alpha.detach(),
+            adapter.detach(),
+            go.state_dict(),
+            ao.state_dict(),
+            policy.state_dict(),
+            checkpoints.rng_state(),
+        )
+    )
     expected = [step() for _ in range(5)]  # Cross two events and enter recovery.
     alpha.data.copy_(saved[0])
     adapter.data.copy_(saved[1])
@@ -183,3 +204,53 @@ def test_shared_optimizer_rejected_before_mutation():
     with pytest.raises(ValueError, match="gate-only Adam"):
         policy.record(1, alpha, opt)
     assert before == policy.state_dict()
+
+
+def test_global_budget_separates_selection_and_recovery():
+    from scripts.prune.learn import protocol
+
+    cfg = dict(soft_updates=500, binary_updates=0, compact_updates=0, progressive_policy=dict(DEFAULTS))
+    assert protocol.phase_budget(cfg) == (500, 500, 800)
+    with pytest.raises(ValueError, match="budget differs"):
+        protocol.phase_budget(dict(cfg, soft_updates=800))
+
+
+def test_pre_event_transaction_and_canonical_checkpoint(tmp_path):
+    from scripts.prune.learn.adapters import ProjectionAdapter
+
+    gates = HeadGates(1, 3, activation="clip01_v1")
+    gates.progressive = new_policy(gates.alpha, config())
+    adapter = ProjectionAdapter(torch.nn.Linear(4, 4), 2)
+    ao = torch.optim.AdamW([adapter.A, adapter.B], lr=0.001)
+    go = torch.optim.AdamW([gates.alpha], lr=0.01, weight_decay=0)
+    identity = {"study": "tiny_clip_reset"}
+    attached = {"0.attn1.v": adapter}
+    for update in (1, 2):
+        go.zero_grad()
+        gates.microbatch().sum().backward()
+        go.step()
+        if update == 1:
+            gates.progressive.record(update, gates.alpha, go)
+            continue
+        transaction = tmp_path / "transactions/pre_event_0002.pt"
+        kwargs = dict(
+            identity=identity, update=2, gates=gates, adapters=attached, adapter_optimizer=ao, gate_optimizer=go
+        )
+        checkpoints.save_pre_event(transaction, **kwargs)
+        # Recover an interruption after atomic tensor publication, before sidecar.
+        transaction.with_suffix(".json").unlink()
+        checkpoints.save_pre_event(transaction, **kwargs)
+        assert transaction.with_suffix(".json").exists()
+        saved = torch.load(transaction, map_location="cpu", weights_only=False)
+        assert saved["stage"] == "post_optimizer_pre_event"
+        assert saved["gate_optimizer"]["state"][0]["step"] == 2
+        pre_scores = gates.alpha.detach().clone()
+        event = gates.progressive.record(update, gates.alpha, go)
+    assert torch.equal(saved["alpha"], pre_scores)
+    assert saved["alpha"].tolist() == event["pre_event_scores"]
+    path = tmp_path / "checkpoints/update_0002.pt"
+    checkpoints.save(path, phase="soft", draws_per_update=4, **kwargs)
+    canonical = checkpoints.load(path, identity)
+    assert canonical["alpha"].tolist() == event["post_reset_scores"]
+    assert canonical["draw_cursor"] == 8 and canonical["gate_optimizer"]["state"] == {}
+    assert canonical["progressive"]["event_stage"] == "post_reset"
