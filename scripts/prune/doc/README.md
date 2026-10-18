@@ -93,7 +93,8 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `data/foreground.py` | [design](data/foreground.md) | 140 |
 | `data/head_score_dataset.py` | [design](data/head_score_dataset.md) | 139 |
 | `data/learned_head_study.py` | [design](data/learned_head_study.md) | 551 |
-| `data/ffn_study.py` | [design](data/ffn_study.md) | 154 |
+| `data/native_gate_study.py` | [design](data/native_gate_study.md) | 214 |
+| `data/ffn_study.py` | [design](data/ffn_study.md) | 163 |
 | `data/prompt_cache.py` | [design](data/prompt_cache.md) | 111 |
 | `data/reuse_head_scores.py` | [design](data/reuse_head_scores.md) | 137 |
 | `data/resume_learned_heads.py` | [design](data/resume_learned_heads.md) | 211 |
@@ -108,6 +109,7 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `evaluate/eligible_checkpoint_media.py.txt` | [design](evaluate/eligible_checkpoint_media.md) | 706 |
 | `evaluate/zero_one_checkpoint_media.py.txt` | [design](evaluate/zero_one_checkpoint_media.md) | 706 |
 | `evaluate/progressive_checkpoint_media.py.txt` | [progressive checkpoint media](evaluate/progressive_checkpoint_media.md) | 725 |
+| `evaluate/ffn.py` | [design](evaluate/ffn.md) | 338 |
 | `evaluate/learned_heads.py` | [design](evaluate/learned_heads.md) | 338 |
 | `evaluate/metrics.py` | [design](evaluate/metrics.md) | 103 |
 | `evaluate/mobilewan_media.py` | [design](evaluate/mobilewan_media.md) | 218 |
@@ -124,8 +126,8 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `learn/distributed.py` | [design](learn/distributed.md) | 153 |
 | `learn/gates.py` | [design](learn/gates.md) | 171 |
 | `learn/heads.py` | [design](learn/heads.md) | 1592 |
-| `learn/ffn.py` | [design](learn/ffn.md) | 502 |
-| `learn/ffn_training.py` | [design](learn/ffn_training.md) | 251 |
+| `learn/ffn.py` | [design](learn/ffn.md) | 509 |
+| `learn/ffn_training.py` | [design](learn/ffn_training.md) | 256 |
 | `learn/losses.py` | [design](learn/losses.md) | 155 |
 | `learn/placement.py` | [design](learn/placement.md) | 107 |
 | `learn/run_full.py` | [design](learn/run_full.md) | 290 |
@@ -146,6 +148,10 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `score/mobilewan_dataset.py` | [design](score/mobilewan_dataset.md) | 212 |
 | `score/mobilewan_heads.py` | [design](score/mobilewan_heads.md) | 127 |
 | `score/mobilewan_records.py` | [design](score/mobilewan_records.md) | 134 |
+| `score/native_gate_accumulator.py` | [design](score/native_gate_accumulator.md) | 180 |
+| `score/native_gate_analysis.py` | [design](score/native_gate_analysis.md) | 684 |
+| `score/native_gate_observer.py` | [design](score/native_gate_observer.md) | 135 |
+| `score/native_head_gates.py` | [design](score/native_head_gates.md) | 472 |
 | `score/token_sampling.py` | [design](score/token_sampling.md) | 79 |
 | `score/whole_clip_d0_scores.py` | [design](score/whole_clip_d0_scores.md) | 164 |
 

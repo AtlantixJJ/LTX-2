@@ -718,3 +718,15 @@ Training rejects receipts without that execution and the exact policy config has
 Read `monitoring/status.json`, `training/learned_progressive/replicate_42/events/` and the active log.
 Do not launch this method with an eligible-continuation command or a historical acceptance receipt.
 Fixed-test scoring, reports, and binary export run after training on saved checkpoints.
+
+## Native head-gate statistics
+
+Use the [native gate owner](score/native_head_gates.md#usage) for complete preparation and launch commands.
+The diagnostic uses the r3 training stream, native dev weights and unchanged F18 input construction.
+It forwards only source noise indices `[1,4,7,9]`, closest to 0.94, 0.9, 0.76 and 0.48.
+Milestones retain original training step numbering: 100 steps contain 160 observed draws, 40 per selected sigma.
+The standalone owner uses physical GPUs 4–6; it does not need an avatar queue wrapper.
+Run CPU checks before GPU acceptance. Start the owner with `setsid` and retain its command and PID.
+Read `monitoring/status.json`, `monitoring/gpu_*.json`, `provenance/acceptance_gpu_*.json` and `REPORT.md`.
+The owner creates a report sketch after launch and updates scientific figures after each validated milestone.
+A report rebuild reads saved statistics only; missing evidence is an error, not a GPU regeneration request.

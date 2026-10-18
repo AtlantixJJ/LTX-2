@@ -100,7 +100,16 @@ def prepare(source, config, plan, output):
     publish_json(output / "configs/config.json", effective)
     study = {
         k: copy.deepcopy(parent[k])
-        for k in ("components", "splits", "files", "software", "text_context", "schedule", "scale_factors")
+        for k in (
+            "components",
+            "splits",
+            "files",
+            "software",
+            "text_context",
+            "schedule",
+            "scale_factors",
+            "perceptual_metric",
+        )
     }
     # Parent draw/config files are historical inputs. The new draw file is the only consumed draw authority.
     study.update(

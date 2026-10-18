@@ -172,10 +172,14 @@ def native(study, current, runtime, *, testing):
         if not torch.equal(original, control):
             raise ValueError("FFN all-one/zero-adapter native parity failed")
         del original, control
+        model.train()
         model.velocity_model.set_gradient_checkpointing(True)
-        frozen = [(p, p._version) for p in model.parameters() if not p.requires_grad]
         ao, go = ffn_training.optimizers(step)
         wrapped = runtime.wrap(step)
+        # DDP's initial broadcast writes replicas before the first optimizer step.
+        frozen = [(p, p._version) for p in model.parameters() if not p.requires_grad]
+        if runtime.primary:
+            print("FFN native: all-one parity passed; starting checkpointed backward", flush=True)
         torch.cuda.reset_peak_memory_stats(runtime.device)
         first = ffn_training.update(step, wrapped, case, 1, ao, go)
         if not first["adapter_gradient_norm"] > 0 or not first["ffn_gradient_norm"] > 0:
@@ -183,6 +187,8 @@ def native(study, current, runtime, *, testing):
         if cfg["arm"] == "joint_heads_ffn" and not first["head_gradient_norm"] > 0:
             raise ValueError("native joint head gradient is zero")
         save(step, ao, go, study, runtime, 1, directory / "update_0001.pt", "native")
+        if runtime.primary:
+            print("FFN native: first joint update saved; checking exact resume", flush=True)
         second = ffn_training.update(step, wrapped, case, 2, ao, go)
         uninterrupted = ffn_training.state(
             step,
@@ -245,6 +251,7 @@ def native(study, current, runtime, *, testing):
             )
         )
         if runtime.primary:
+            print("FFN native: exact resume and fixed recovery passed", flush=True)
             checkpoints.publish_json(
                 directory / "acceptance.json",
                 dict(

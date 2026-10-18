@@ -53,6 +53,7 @@ flowchart LR
 
 Native acceptance compares original velocity with all-one gates and zero adapters bit for bit.
 A disposable two-update selection exercises both mask families, exact serialized resume and fixed-mask recovery.
+Frozen tensor version checks start after DDP's initial parameter broadcast.
 Source assignments exercise native F18 and nonzero F18 crops from F28 sources.
 An additional full-source call checks inference memory and clean-frame equality.
 Three-rank test evidence cannot qualify the formal four-rank run.

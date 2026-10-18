@@ -105,13 +105,18 @@ def optimizers(step):
     kwargs = dict(betas=tuple(cfg["betas"]), eps=cfg["adam_epsilon"], weight_decay=0)
     return (
         torch.optim.AdamW(adapters.parameters(step.attached), lr=cfg["adapter_lr"], **kwargs),
-        torch.optim.AdamW([step.heads.alpha, step.ffn.alpha], lr=cfg["gate_lr"], **kwargs),
+        torch.optim.AdamW(
+            [step.heads.alpha, step.ffn.alpha] if cfg["arm"] == "joint_heads_ffn" else [step.ffn.alpha],
+            lr=cfg["gate_lr"],
+            **kwargs,
+        ),
     )
 
 
 def update(step, wrapped, case, number, adapter_optimizer, gate_optimizer):
     grid, video, _, capture, epsilon, _, _ = case
     step.configure(number)
+    step.heads.alpha.grad = None
     adapter_optimizer.zero_grad(set_to_none=True)
     gate_optimizer.zero_grad(set_to_none=True)
     for group in adapter_optimizer.param_groups:
