@@ -6,12 +6,16 @@ Freeze a fresh continuation study from the completed removal-only checkpoint at 
 
 ## Usage
 
+Historical study plans were consolidated in the [workspace history](../../../../../plans/history/README.md).
+For fresh preparation, replace `/path/to/reviewed-study-plan.md` with the actual reviewed specification.
+Retired reference pointers are not plan inputs, and retired source folders must not be recreated from these examples.
+
 Run the direct CPU preparation owner from LTX-2 in the ltx environment:
 
 ```bash
 conda run --no-capture-output -n ltx python -m scripts.prune.data.continue_zero_one \
   --previous ../expr/refiner_prune/2.5/progressive_head_gate_removal_f18_20261015/configs/frozen_study.json \
-  --plan ../plans/2026-10-16-progressive-zero-one-resume-from-step500.md \
+  --plan /path/to/reviewed-study-plan.md \
   --output ../expr/refiner_prune/2.5/progressive_zero_one_f18_from_u500_20261016 \
   --max-step 4000
 ```

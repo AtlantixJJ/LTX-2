@@ -57,3 +57,9 @@ It preserves that tensor's gradient graph and uses the same values during checkp
 The caller creates the graph before forward and removes hooks on exit.
 Text heads, native input-dependent gates and ordinary strict binary artifact readers retain their contracts.
 The provider fixture checks accumulated gate gradients, text exclusion and hook cleanup.
+
+`attach_ffn_provider` obtains live FP32 channel gates at `ff.net[2]`.
+It preserves the score graph through dtype conversion and checkpoint recomputation.
+The caller selects once per update and creates a fresh graph per forward.
+The static `attach_ffn_masks` helper still creates detached leaf masks for ordinary artifact interventions.
+`test_ffn_learning.py` checks the live boundary against an independent native GELU calculation.

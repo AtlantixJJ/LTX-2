@@ -245,7 +245,7 @@ def load(path, identity=None):
             raise ValueError("checkpoint terminal logits changed")
         if policy.update != state["update"] or digest(state["progressive"]) != receipt.get("progressive_sha256"):
             raise ValueError("checkpoint progressive cursor or history changed")
-        if state["progressive"]["format"] == "progressive_clip_reset_v1":
+        if state["progressive"]["format"] == "progressive_clip_reset_v2":
             optimizer = state["gate_optimizer"]
             if optimizer is None:
                 raise ValueError("clipped-reset checkpoint lacks its gate optimizer")

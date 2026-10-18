@@ -2,50 +2,136 @@
 
 Raw scores stay FP32 and are never projected between events. Each event consumes
 one complete window, then starts a new window from the binary reset snapshot.
-The reset jump belongs to neither trajectory. Historical sigmoid states cannot
-be migrated into this policy. See doc/learn/clipped_reset.md.
+The reset jump belongs to neither trajectory. A survivor's drop from one is the
+removal evidence: the regret-free drop selector removes heads that kept their
+drop and still fell at the window end. Historical sigmoid states cannot be
+migrated into this policy. See doc/learn/clipped_reset.md.
 """
 
 from __future__ import annotations
 
 import copy
+import math
+from fractions import Fraction
 
 import torch
 
-from scripts.prune.learn.progressive import ProgressivePolicy, selection, statistics
+from scripts.prune.learn.progressive import ProgressivePolicy, statistics
 
+METHOD = "clip01_ste3_reset_v2"
 DEFAULTS = dict(
-    method="clip01_ste3_reset_v1",
+    method=METHOD,
     activation="clip01_v1",
     surrogate="clamp_minus3_plus3_inclusive_v1",
     reset="survivors_one_removed_zero_v1",
     gate_optimizer_reset="all_adam_state_v1",
+    selector="regret_free_drop_v1",
     hardening_interval=50,
-    removal_fraction=0.02,
-    regret_threshold=0.10,
-    selection_population="eligible",
-    minimum_count=16,
+    full_speed_drop=0.5,
+    strong_fraction=0.5,
+    persistent_fraction=0.3,
+    giveback_limit=0.10,
+    late_updates=10,
+    cap_fraction=0.04,
+    empty_events_to_stop=3,
     selection_updates=500,
     finalize_updates=300,
 )
 
 
+# Optional stop rules. The default keeps selecting until empty events or the cap.
+STOP_RULES = ("empty_events", "no_strong_or_no_candidates")
+
+
+def is_clipped(config):
+    return (config or {}).get("method") == METHOD
+
+
+def _number(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
 def validate_config(config):
-    if set(config) != set(DEFAULTS):
+    if set(config) - {"stop_rule"} != set(DEFAULTS):
         raise ValueError("clipped-reset settings must have the complete versioned schema")
-    for key in ("method", "activation", "surrogate", "reset", "gate_optimizer_reset", "selection_population"):
+    if config.get("stop_rule", "empty_events") not in STOP_RULES:
+        raise ValueError("unsupported clipped-reset stop_rule")
+    for key in ("method", "activation", "surrogate", "reset", "gate_optimizer_reset", "selector"):
         if config[key] != DEFAULTS[key]:
             raise ValueError(f"unsupported clipped-reset {key}")
-    for key in ("hardening_interval", "minimum_count", "selection_updates", "finalize_updates"):
+    for key in ("hardening_interval", "late_updates", "empty_events_to_stop", "selection_updates", "finalize_updates"):
         if type(config[key]) is not int or config[key] < 1:
             raise ValueError(f"clipped-reset {key} must be a positive integer")
     if config["selection_updates"] % config["hardening_interval"]:
         raise ValueError("selection cap must end at an event")
-    for key, lower, inclusive in (("removal_fraction", 0, False), ("regret_threshold", 0, True)):
-        value = config[key]
-        if type(value) not in (int, float) or not (lower <= value <= 1 if inclusive else lower < value <= 1):
-            raise ValueError(f"invalid clipped-reset {key}")
+    if config["late_updates"] > config["hardening_interval"]:
+        raise ValueError("late updates must fit inside one window")
+    for key in ("full_speed_drop", "strong_fraction", "persistent_fraction"):
+        if not _number(config[key]) or config[key] <= 0:
+            raise ValueError(f"clipped-reset {key} must be positive")
+    if not _number(config["giveback_limit"]) or not 0 <= config["giveback_limit"] <= 1:
+        raise ValueError("invalid clipped-reset giveback_limit")
+    if not _number(config["cap_fraction"]) or not 0 < config["cap_fraction"] <= 1:
+        raise ValueError("invalid clipped-reset cap_fraction")
     return dict(config)
+
+
+def drop_statistics(window, late_updates):
+    """FP64 drop, give-back, late change, travel and recorded path regret for one window."""
+    values = torch.stack(window).double()
+    travel, drop, path_regret = statistics(window)
+    low = values.min(0).values
+    span = values[0] - low
+    giveback = torch.where(span > 0, (values[-1] - low) / span.clamp_min(1e-300), float("nan"))
+    late = values[-1] - values[-1 - late_updates]
+    return drop, giveback, late, travel, path_regret
+
+
+def drop_selection(free, persist, window, config):
+    """Strong or persistent regret-free drops, lowest score first, capped per event; no minimum."""
+    drop, giveback, late, travel, path_regret = drop_statistics(window, config["late_updates"])
+    clean = free & (giveback <= config["giveback_limit"]) & (late < 0)
+    strong = clean & (drop >= config["strong_fraction"] * config["full_speed_drop"])
+    qualified = clean & (drop >= config["persistent_fraction"] * config["full_speed_drop"])
+    persistent = qualified & persist
+    chosen = strong | persistent
+    candidates = [
+        dict(
+            block=b, head=h, tier="strong" if strong[b, h] else "persistent",
+            drop=float(drop[b, h]), giveback=float(giveback[b, h]), late_change=float(late[b, h]),
+            path_regret=float(path_regret[b, h]),
+        )
+        for b, h in chosen.nonzero().tolist()
+    ]
+    candidates.sort(
+        key=lambda c: (-c["drop"], c["giveback"], c["path_regret"] if math.isfinite(c["path_regret"]) else math.inf,
+                       c["block"], c["head"])
+    )
+    alive = int(free.sum())
+    cap = int(Fraction(str(config["cap_fraction"])) * alive)
+    for rank, candidate in enumerate(candidates, 1):
+        candidate.update(rank=rank, selected=rank <= cap)
+    selected = [[c["block"], c["head"]] for c in candidates[:cap]]
+    nulls = lambda t: [[float(v) if math.isfinite(v) else None for v in row] for row in t.tolist()]  # noqa: E731
+    return dict(
+        candidates=candidates,
+        selected_ids=selected,
+        eligible_count=len(candidates),
+        requested_count=len(candidates),
+        selected_count=len(selected),
+        shortfall=len(candidates) - len(selected),
+        alive_before=alive,
+        cap=cap,
+        cap_bound=len(candidates) > cap,
+        strong_count=int(strong.sum()),
+        persistent_count=int((persistent & ~strong).sum()),
+        qualified=qualified,
+        drop=drop.tolist(),
+        giveback=nulls(giveback),
+        late_change=late.tolist(),
+        travel=travel.tolist(),
+        path_regret=nulls(path_regret),
+    )
 
 
 def clipped_gate(alpha, alive):
@@ -65,6 +151,9 @@ class ClippedResetPolicy(ProgressivePolicy):
         self.window = [alpha.detach().cpu().clone()]
         self.update, self.history = 0, []
         self.finalization_start = self.final_update = None
+        # Persistence flags: regret-free drop >= persistent threshold in the previous window.
+        self.persist = torch.zeros_like(self.free)
+        self.empty_events = 0
 
     @property
     def recovering(self):
@@ -126,16 +215,26 @@ class ClippedResetPolicy(ProgressivePolicy):
             return None
         if len(self.window) != self.interval + 1:
             raise ValueError("clipped-reset event requires interval+1 snapshots")
-        travel, decrease, regret = statistics(self.window)
-        choice = selection(self.free, travel, decrease, regret, self.config)
+        choice = drop_selection(self.free, self.persist, self.window, self.config)
+        qualified = choice.pop("qualified")
+        incoming = self.persist.clone()
         before_alive = self.free.clone()
         for b, h in choice["selected_ids"]:
             self.free[b, h] = False
+        self.persist = qualified & self.free
+        # An event is empty only without candidates and without a new persistence flag.
+        evidence = choice["eligible_count"] or self.persist.any()
+        self.empty_events = 0 if evidence else self.empty_events + 1
         reason = None
         if not self.free.any():
             reason = "all_heads_removed"
-        elif choice["eligible_count"] == 0:
-            reason = "no_eligible_heads"
+        elif self.config.get("stop_rule") == "no_strong_or_no_candidates" and (
+            choice["eligible_count"] == 0 or choice["strong_count"] == 0
+        ):
+            # This event still commits its persistent candidates before the tail.
+            reason = "no_strong_or_no_candidates"
+        elif self.empty_events >= self.config["empty_events_to_stop"]:
+            reason = "evidence_exhausted"
         elif update == self.config["selection_updates"]:
             reason = "pilot_cap"
         if reason is not None:
@@ -147,21 +246,19 @@ class ClippedResetPolicy(ProgressivePolicy):
             config=dict(self.config),
             stage="post_reset",
             **choice,
+            incoming_persistence=incoming.tolist(),
+            outgoing_persistence=self.persist.tolist(),
+            empty_events=self.empty_events,
             terminal_reason=reason,
             finalization_start=self.finalization_start,
             final_update=self.final_update,
             trajectory=[v.tolist() for v in self.window],
-            travel=travel.tolist(),
-            decrease=decrease.tolist(),
-            rate=(decrease / self.interval).tolist(),
-            regret=[[float(v) if torch.isfinite(v) else None for v in row] for row in regret],
             pre_event_scores=value.tolist(),
             pre_event_gates=clipped_gate(value, before_alive).tolist(),
             post_reset_scores=reset.tolist(),
             reset_delta=(reset - value).tolist(),
             gate_cycle=update // self.interval,
             gate_adam_step_after=0,
-            selected_fraction=choice["selected_count"] / choice["eligible_count"] if choice["eligible_count"] else 0.0,
             counts=self.counts(),
         )
         alpha.copy_(reset.to(alpha.device))
@@ -180,7 +277,7 @@ class ClippedResetPolicy(ProgressivePolicy):
     def state_dict(self):
         return copy.deepcopy(
             dict(
-                format="progressive_clip_reset_v1",
+                format="progressive_clip_reset_v2",
                 config=self.config,
                 free=self.free.tolist(),
                 frozen=self.frozen.tolist(),
@@ -189,6 +286,8 @@ class ClippedResetPolicy(ProgressivePolicy):
                 history=self.history,
                 finalization_start=self.finalization_start,
                 final_update=self.final_update,
+                persist=self.persist.tolist(),
+                empty_events=self.empty_events,
                 event_stage="post_reset"
                 if self.history and self.history[-1]["update"] == self.update
                 else "between_events",
@@ -197,7 +296,7 @@ class ClippedResetPolicy(ProgressivePolicy):
 
     @classmethod
     def from_state(cls, state, expected_config=None):
-        if state.get("format") != "progressive_clip_reset_v1":
+        if state.get("format") != "progressive_clip_reset_v2":
             raise ValueError("unsupported clipped-reset state")
         config = validate_config(state["config"])
         if expected_config is not None and config != validate_config(expected_config):

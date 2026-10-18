@@ -7,13 +7,17 @@ Keep the source run immutable and record the loss boundary in a new frozen study
 
 ## Usage
 
+Historical study plans were consolidated in the [workspace history](../../../../../plans/history/README.md).
+For fresh preparation, replace `/path/to/reviewed-study-plan.md` with the actual reviewed specification.
+Retired reference pointers are not plan inputs, and retired source folders must not be recreated from these examples.
+
 Launch directly on CPU from `LTX-2` in conda environment `ltx`, after stopping all source workers.
 
 ```bash
 CUDA_VISIBLE_DEVICES='' conda run --no-capture-output -n ltx python -m scripts.prune.data.resume_learned_heads \
   --previous ../expr/refiner_prune/2.5/learned_heads_fsdp_gt_20261013_r6/configs/frozen_study.json \
   --checkpoint ../expr/refiner_prune/2.5/learned_heads_fsdp_gt_20261013_r6/training/learned_joint/replicate_42/checkpoints/update_0546.pt \
-  --plan ../plans/2026-10-12-learned-head-pruning-experiment.md \
+  --plan /path/to/reviewed-study-plan.md \
   --output ../expr/refiner_prune/2.5/learned_heads_fsdp_gt_20261013_r7_logit_l1
 ```
 

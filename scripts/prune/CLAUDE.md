@@ -96,6 +96,18 @@ Pool raw energy before normalization. Use only train membership for removal allo
 Full dataset execution and reviewed results are separate gates; helper tests do not prove them.
 The producer supports explicit direct dev and capture-only D0. Its restricted agent queue wrapper supports unmodified direct dev D0 at sigma <=0.95.
 
+## Learned FFN masks
+
+`data.ffn_study` freezes a separate versioned study from verified existing sources.
+`learn.ffn` trains individual binary channel masks alongside existing head gates, with one DDP gradient average.
+Its aligned preset retains 14,848 channels per video FFN. It uses rank-16 FFN up/down adapters.
+The joint arm preserves rank-128 attention V/output adapters and the established sigmoid/binary head recipe.
+Selection ends at 1000; fixed-mask adapter recovery ends at 1300.
+Tests use physical GPUs 4–6. Formal acceptance and training use physical GPUs 0–3.
+The three-rank test receipt cannot replace exact four-rank acceptance at formal startup.
+Use `score.export_learned_ffn` for the new combined recovered family; historical head-only readers remain strict.
+Native parity, decoded quality and timing retain independent evidence gates.
+
 ## Learned heads
 
 `learn/` owns FP32 scalar gates, V/output adapters, official velocity loss, immutable teacher references and bounded model phases.

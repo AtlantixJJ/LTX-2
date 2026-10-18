@@ -4,6 +4,7 @@ DDP sees every trainable parameter and both gate-gradient paths in this forward.
 The shared native velocity and loss owners retain all numerical decisions.
 Return detached monitoring scalars so the clean-output graph has no extra owner.
 Progressive gates mask sparsity to free logits while retaining the full-head denominator.
+Clipped gates retain the executed-gate gradient, including removed heads at zero, for logging only.
 """
 
 import torch
@@ -20,6 +21,8 @@ class TrainingStep(torch.nn.Module):
 
     def forward(self, video, epsilon, capture, prefix_tokens, update, phase, regions=None, accumulation=2):
         gates = self.gates.microbatch()
+        if self.gates.activation == "clip01_v1" and gates.requires_grad:
+            gates.retain_grad()
         velocity, _ = ltx_adapter.velocity_forward(self.model, video)
         terms = losses.velocity_mse(velocity, epsilon, capture, prefix_tokens, regions)
         cfg = self.config

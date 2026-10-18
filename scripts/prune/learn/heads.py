@@ -25,6 +25,7 @@ from scripts.prune.core import ltx_adapter, provenance, session
 from scripts.prune.data import foreground, training_windows, whole_clip
 from scripts.prune.data.learned_head_study import load_study, monitor_sigma_indices, study_sigmas
 from scripts.prune.learn import adapters, checkpoints, losses, protocol
+from scripts.prune.learn.clipped_reset import is_clipped
 from scripts.prune.learn.gates import HeadGates, nearest_removed, select_legal
 from scripts.prune.learn.teacher_references import TeacherReferences
 from scripts.prune.score import hooks, token_sampling
@@ -58,8 +59,9 @@ def numerical_policy():
     torch.backends.cuda.matmul.allow_tf32 = False
 
 
-def open_current(study, gpu_id):
-    if gpu_id not in study["config"]["gpu_ids"]:
+def open_current(study, gpu_id, *, serial=False):
+    allowed = [study.get("clipped_reset_protocol", {}).get("serial_gpu_id")] if serial else study["config"]["gpu_ids"]
+    if gpu_id not in allowed or (serial and gpu_id != 6):
         raise ValueError("GPU outside frozen allowed device list")
     software = study["software"]
     if (
@@ -316,7 +318,7 @@ def training_phase(study, current, args, deadline):
     uniform_f18 = training_windows.enabled(config)
     draw_count = protocol.validate(config)
     progressive = args.arm == "learned_progressive"
-    clipped = config.get("progressive_policy", {}).get("method") == "clip01_ste3_reset_v1"
+    clipped = is_clipped(config.get("progressive_policy"))
     if progressive != (config.get("progressive_policy") is not None):
         raise ValueError("progressive study runs only its single progressive arm")
     if config.get("foreground_preparation") == "deferred" and args.arm in (
@@ -556,7 +558,7 @@ def training_phase(study, current, args, deadline):
                 go.load_state_dict(previous["gate_optimizer"])
             checkpoints.restore_rng(previous["rng"])
         sources = {s["relative_dir"]: s for s in study["splits"]["learning"]}
-        adaptive = progressive and config["progressive_policy"].get("selection_population") == "eligible"
+        adaptive = progressive and (clipped or config["progressive_policy"].get("selection_population") == "eligible")
         end = (compact_end + 1000 if args.arm == "learned_sequential" else compact_end) if compact else (
             compact_end if clipped else selection_end
         )
@@ -696,6 +698,16 @@ def training_phase(study, current, args, deadline):
                     runtime.reduce_gradients(ap + ([gates.alpha] if go else []))
                     scalars = runtime.draws(scalars)
                 anorm = float(torch.nn.utils.clip_grad_norm_(ap, 1.0, error_if_nonfinite=True))
+                executed_gradient = None
+                if clipped:
+                    # Task gradient on each executed gate, removed heads included at zero. Logging only.
+                    if gates.current is None or gates.current.grad is None:
+                        raise ValueError("missing executed-gate gradient")
+                    executed_gradient = gates.current.grad.detach().float().clone()
+                    if runtime:
+                        torch.distributed.all_reduce(executed_gradient)
+                        executed_gradient /= runtime.world
+                    executed_gradient = executed_gradient.cpu()
                 sparse_gradient = torch.zeros_like(gates.alpha)
                 if phase == "soft" and args.arm != "learned_no_sparsity":
                     sparse_gradient = losses.sparsity_gradient(
@@ -843,6 +855,11 @@ def training_phase(study, current, args, deadline):
                                                 trace_scores="post_optimizer_pre_event",
                                                 checkpoint_scores="post_reset" if event else "current",
                                                 reset_delta=event["reset_delta"] if event else None,
+                                                cap=event["cap"] if event else None,
+                                                cap_bound=event["cap_bound"] if event else None,
+                                                strong_count=event["strong_count"] if event else 0,
+                                                persistent_count=event["persistent_count"] if event else 0,
+                                                empty_events=gates.progressive.empty_events,
                                             ) if clipped else dict(
                                                 forced_one_selected_ids=event["forced_one_selected_ids"] if event else [],
                                                 forced_one_selected_count=event["forced_one_selected_count"] if event else 0,
@@ -898,6 +915,9 @@ def training_phase(study, current, args, deadline):
                 if gate_trace is not None and (runtime is None or runtime.primary):
                     # Rows: logits after the step, total gradient, sparsity gradient. Replays must match bytes.
                     checkpoints.publish_tensor(directory / f"gate_trace/{update:04d}.pt", gate_trace)
+                if executed_gradient is not None and (runtime is None or runtime.primary):
+                    # Removed-head regret evidence: negative values ask a removed gate to increase.
+                    checkpoints.publish_tensor(directory / f"executed_gate_gradient/{update:04d}.pt", executed_gradient)
                 if (
                     update == end
                     or update % (gates.progressive.interval if progressive else 100) == 0

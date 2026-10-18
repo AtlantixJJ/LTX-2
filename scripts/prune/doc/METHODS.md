@@ -1334,25 +1334,17 @@ and fails functional-mask parity; combined pruning changes held-out content.
 This rejects the present mask/export as a speed optimization, not structural
 pruning generally. Coverage is one held-out actor/view, one seed, three sigmas.
 
-The subsequent [method screen](../../../../expr/refiner_prune/2.5/method_screen_20261001/REPORT.md)
-adds separated rankings, allocation, compensation and block-bypass experiments,
-then 27 blind actor/seed/sigma cases per finalist. None passes all gates.
-Four-block bypass reaches about 1.090× forward speedup but fails quality and
-retains the source checkpoint tensors. An aligned FFN reduction reaches
-1.056–1.057× but fails functional/export parity; the exact one-head export is
-slower. The subsequent [CPU depth export proof](../../../../expr/refiner_prune/2.5/depth_export_20261004/README.md)
-physically removes original blocks `[3,7,8,15]`, leaving 44 blocks. All 4,013
-retained tensor payloads match the source bytes. Resident-video elements fall
-from 13,123,337,344 to 12,048,169,856 (8.19%); checkpoint payload falls 7.36%,
-and full-file bytes fall from 42,018,190,584 to 38,923,958,248. This deletion set
-failed its earlier functional quality gate and remains unqualified. Native BF16
-export parity, decoded quality, measured timing and recovery training remain
-pending; CPU payload fidelity does not establish them.
+The retired October screen and depth-export observations are preserved in the
+[historical record](../../../plans/HISTORY.md#october-compression-and-conditioning-record).
+The source reports and native receipts are unavailable at their original paths.
+The October roadmap later records native depth parity passing, superseding its
+earlier pending status. That dated observation does not qualify quality, recovery
+or speed; the deletion set retained its failed functional quality gate.
 
-The [October 4 roadmap](../../../plans/2026-10-04-prune-finetune-causal-avatar.md)
-prioritizes recoverable compact depth, an aligned-FFN backup and explicit motion
-conditioning before cached avatar integration. It separates preserving D0 from
-learning the deployment task, whose future capture frames are unavailable.
+The [dormant research backlog](../../../plans/RESEARCH_BACKLOG.md) retains compact
+depth recovery, aligned-FFN reconstruction and explicit motion conditioning as
+alternatives. It defines no current execution priority. Preserving D0 remains
+separate from learning the deployment task, whose future capture is unavailable.
 
 
 ## 7. Methods we plan to test
@@ -1382,14 +1374,10 @@ The current head study uses **dev** weights and complete 18- or 28-frame clips.
 Its earlier quality and timing results motivate controls; they are not measured
 outcomes for the current dev task.
 
-The [archived 1 October experiment plan](../../../../plans/history/2026-10-08-superseded/2026-10-01-prune-method-comparison.md)
-executes a bounded training-free comparison of rankings, compensation,
-allocation and static block removal using isolated calibration, validation and
-blind-test actors. Its study helpers live under ignored `expr/`; they do not
-change the production workflow. Gradient learning and recovery remain follow-on
-studies, conditional on those results. The [method-comparison report](../../../../expr/refiner_prune/2.5/method_screen_20261001/REPORT.md)
-records the fresh measured outcomes, frozen blind split, export parity and
-same-GPU timing checks. These experiment helpers do not add production CLI modes.
+The retired 1 October method-comparison plan covered rankings, compensation,
+allocation and static block removal with isolated calibration, validation and blind actors.
+Its source attribution is in the [workspace history](../../../../plans/history/README.md#dormant-proposals).
+The former report is unavailable at its original path; this historical agenda does not establish current measured outcomes.
 
 ### 7.1. First establish executable dense savings
 
@@ -1527,12 +1515,11 @@ Soft training gates are not an inference speed result.
 
 #### 7.5.1. Recommended next experiment: sparse head gates with bounded recovery
 
-**Status: proposed; not run yet.** The package has functional mask hooks,
-native input reconstruction, export and matched evaluation. It has no production
-entrypoint for this learning experiment.
-
-The [self-contained experiment plan](../../../../plans/2026-10-12-learned-head-pruning-experiment.md)
-defines exact gate/loss/adapter defaults, source changes, controls and report figures.
+**Status: historical proposal.** Learned-head training owners are implemented;
+their current contracts and limits are in the run guide and validation docs.
+The [workspace history](../../../../plans/history/README.md#stopped-learned-head-lineages)
+records the retired experiment plan and its distinct stopped lineages.
+Use a new reviewed study specification for fresh preparation, not this historical agenda's defaults.
 
 **Question.** Can learned head choices preserve people better than energy choices
 at the same executable budget and recovery cost?
@@ -1717,9 +1704,13 @@ larger head-mask speed study.
 
 #### 7.5.2. FFN recommendation: individual choices, aligned widths and bounded recovery
 
-**Status: proposed; not run yet.** This is a separate FFN experiment, rather than
-an expansion of the head-only plan. The first comparison retains every attention
-head, block, residual dimension and conditioning path.
+**Implementation status, 18 October 2026:** individual binary FFN masks,
+joint head/FFN training, resumable state and coupled export are implemented.
+Use the [FFN plan](../../../../plans/2026-10-18-learned-ffn-gate-mask-pruning.md)
+and [entrypoint design](learn/ffn.md) for the executable recipe.
+The first formal preset adds FFN masks alongside the established head recipe.
+The separate FFN-only comparison below keeps every attention head.
+Native acceptance, trained quality and speed require their own saved evidence.
 
 **Question.** Can learned channel choices preserve people better at the same FFN width?
 
@@ -1833,16 +1824,15 @@ Slice up-projection $B$ rows and down-projection $A$ columns for compact recover
 merge adapters before timing. No runtime gather or full-width reconstruction
 is needed for these static FFNs.
 
-`score/hooks.py:attach_ffn_masks` already provides the correct boundary, but it
-detaches supplied tensors and is not a complete logit learner. Its planned gate
-provider must preserve gradients, as required for heads in §7.5.1.
-For this later FFN study, extend the planned `learn/gates.py` with a separate
-per-channel hard-forward mode; keep the head pilot's soft policy fixed.
-Reuse the planned `learn/adapters.py`, `learn/losses.py` and `learn/checkpoints.py`;
-add a separate proposed `learn/ffn.py` entrypoint and FFN study config.
-Extend recovery/export validation for FFN adapter slicing and
-original-index provenance, with mirrored design docs. These learning modules
-are proposed files, not available commands.
+`score/hooks.py:attach_ffn_masks` provides the static boundary and detaches supplied tensors.
+The live `attach_ffn_provider` preserves the surrogate graph during checkpoint recomputation.
+`learn/ffn_gates.py` owns individual hard-forward decisions and aligned counts.
+`learn/ffn_training.py` reuses the head gates, official loss and projection adapters.
+`data/ffn_study.py` and `learn/ffn.py` provide separate frozen preparation and execution.
+`score/export_learned_ffn.py` validates both original-ID families and merges sliced adapters.
+The explicit joint preset uses 1000 selection updates and 300 fixed-mask adapter updates.
+It uses 50 initially dense FFN updates and a count ramp ending at update 300.
+Mirrored designs document current ownership; scientific comparisons below remain distinct from implementation checks.
 
 `score/export_pruned.py:_slice_ffn` already handles arbitrary retained channels.
 Use that surgery after adapter fusion. The existing feed-forward implementation
@@ -1939,7 +1929,7 @@ implemented or matched LTX evidence changes the priorities.
 
 ### Learned-head implementation status, 12 October 2026
 
-The [learned-head experiment plan](../../../../plans/2026-10-12-learned-head-pruning-experiment.md) now has executable source owners.
+The initial learned-head implementation is attributed in the [workspace history](../../../../plans/history/README.md#stopped-learned-head-lineages).
 See the [phase run guide](usage.md#learned-head-phases) and [CPU/native controls](VALIDATION.md#learned-head-controls).
 Implemented: +3 sigmoid gates, legal binary STE refinement, official velocity loss, rank-16 V/output adapters,
 original-ID moment transfer, shared teacher records, frozen preparation, execution probes, recovered export and paired evaluation.

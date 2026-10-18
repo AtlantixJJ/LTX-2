@@ -11,6 +11,7 @@ from pathlib import Path
 
 from scripts.prune.data.learned_head_study import load_study
 from scripts.prune.learn import checkpoints, protocol
+from scripts.prune.learn.clipped_reset import is_clipped
 
 
 def main():
@@ -27,6 +28,7 @@ def main():
         raise ValueError("direct full run requires a frozen GT distributed preset")
     protocol.validate(study["config"])
     progressive = study["config"].get("progressive_policy") is not None
+    clipped = is_clipped(study["config"].get("progressive_policy"))
     if progressive and (args.arms != ["learned_progressive"] or args.replicate_seed != 42):
         raise ValueError("progressive study has one arm and seed 42")
     devices = ",".join(str(gpu) for gpu in study["config"]["gpu_ids"])
@@ -120,7 +122,7 @@ def main():
         folder = root / f"training/{arm}/replicate_{args.replicate_seed}"
         _, selection_end, compact_end = protocol.phase_budget(study["config"])
         boundary = selection_end if phase == "selection" else compact_end
-        adaptive = study["config"].get("progressive_policy", {}).get("selection_population") == "eligible"
+        adaptive = clipped or study["config"].get("progressive_policy", {}).get("selection_population") == "eligible"
         completion = folder / "selection_completion.json"
         if adaptive and completion.exists():
             receipt = json.loads(completion.read_text())
@@ -196,6 +198,14 @@ def main():
             or (ddp and acceptance.get("world_size") != world)
             or (progressive and acceptance.get("progressive_execution") is not True)
             or (progressive and acceptance.get("arbitrary_removal_count") != 3)
+            or (
+                clipped
+                and (
+                    acceptance.get("clipped_reset_execution") is not True
+                    or acceptance.get("clipped_reset_config_sha256")
+                    != checkpoints.digest(study["config"]["progressive_policy"])
+                )
+            )
             or (
                 study["config"].get("progressive_policy", {}).get("selection_population") == "eligible"
                 and not acceptance.get("eligible_finalization_execution")

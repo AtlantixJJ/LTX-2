@@ -12,6 +12,11 @@
 The [literature and method agenda](METHODS.md) supplies research context.
 It does not replace implementation contracts or current native evidence.
 
+The learned FFN extension has separate [preparation](data/ffn_study.md),
+[training](learn/ffn.md), [numerical state](learn/ffn_training.md) and
+[export](score/export_learned_ffn.md) owners.
+The small `learn/ffn_gates.py` and CPU `learn/ffn_logger.py` modules explain their logic in their headers.
+
 ## Documentation rules
 
 Use the [avatar documentation reference](../../onestep_avatar/doc/README.md#documentation-rules).
@@ -70,7 +75,7 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `checks/fsdp_small.py` | [design](checks/fsdp_small.md) | 162 |
 | `checks/learned_heads.py` | [design](checks/learned_heads.md) | 227 |
 | `checks/mobilewan_native.py` | [design](checks/mobilewan_native.md) | 118 |
-| `checks/ddp_native.py` | [design](checks/ddp_native.md) | 307 |
+| `checks/ddp_native.py` | [design](checks/ddp_native.md) | 400 |
 | `core/__init__.py` | package marker | 1 |
 | `core/artifacts.py` | [design](core/artifacts.md) | 40 |
 | `core/geometry.py` | [design](core/geometry.md) | 72 |
@@ -79,17 +84,21 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `core/preflight.py` | [design](core/preflight.md) | 136 |
 | `core/provenance.py` | [design](core/provenance.md) | 119 |
 | `core/session.py` | [design](core/session.md) | 117 |
+| `data/checkpoint_pairs.py` | [design](data/checkpoint_pairs.md) | 169 |
+| `data/clipped_reset_study.py` | [design](data/clipped_reset_study.md) | 196 |
+| `data/fixed_test_inputs.py` | [design](data/fixed_test_inputs.md) | 188 |
 | `data/continue_eligible.py` | [design](data/continue_eligible.md) | 208 |
 | `data/progressive_head_study.py` | [design](data/progressive_head_study.md) | 151 |
 | `data/__init__.py` | package marker | 1 |
 | `data/foreground.py` | [design](data/foreground.md) | 140 |
 | `data/head_score_dataset.py` | [design](data/head_score_dataset.md) | 139 |
 | `data/learned_head_study.py` | [design](data/learned_head_study.md) | 551 |
+| `data/ffn_study.py` | [design](data/ffn_study.md) | 154 |
 | `data/prompt_cache.py` | [design](data/prompt_cache.md) | 111 |
 | `data/reuse_head_scores.py` | [design](data/reuse_head_scores.md) | 137 |
 | `data/resume_learned_heads.py` | [design](data/resume_learned_heads.md) | 211 |
 | `data/extend_learned_heads.py` | [design](data/extend_learned_heads.md) | 226 |
-| `data/whole_clip.py` | [design](data/whole_clip.md) | 353 |
+| `data/whole_clip.py` | [design](data/whole_clip.md) | 360 |
 | `data/training_windows.py` | [design](data/training_windows.md) | 104 |
 | `evaluate/__init__.py` | package marker | 1 |
 | `evaluate/bench_whole_clip_d0.py` | [design](evaluate/bench_whole_clip_d0.md) | 193 |
@@ -105,30 +114,34 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `evaluate/mobilewan_removal.py` | [design](evaluate/mobilewan_removal.md) | 215 |
 | `evaluate/whole_clip_baseline.py` | [design](evaluate/whole_clip_baseline.md) | 707 |
 | `evaluate/whole_clip_d0.py` | [design](evaluate/whole_clip_d0.md) | 245 |
+| `learn/clipped_reset.py` | [design](learn/clipped_reset.md) | 337 |
 | `learn/eligible.py` | [design](learn/eligible.md) | 195 |
 | `learn/zero_one.py` | [design](learn/zero_one.md) | 180 |
 | `data/continue_zero_one.py` | [design](data/continue_zero_one.md) | 187 |
-| `learn/progressive.py` | [design](learn/progressive.md) | 261 |
-| `learn/adapters.py` | [design](learn/adapters.md) | 127 |
-| `learn/checkpoints.py` | [design](learn/checkpoints.md) | 235 |
+| `learn/progressive.py` | [design](learn/progressive.md) | 273 |
+| `learn/adapters.py` | [design](learn/adapters.md) | 177 |
+| `learn/checkpoints.py` | [design](learn/checkpoints.md) | 291 |
 | `learn/distributed.py` | [design](learn/distributed.md) | 153 |
-| `learn/gates.py` | [design](learn/gates.md) | 141 |
-| `learn/heads.py` | [design](learn/heads.md) | 1531 |
+| `learn/gates.py` | [design](learn/gates.md) | 171 |
+| `learn/heads.py` | [design](learn/heads.md) | 1592 |
+| `learn/ffn.py` | [design](learn/ffn.md) | 502 |
+| `learn/ffn_training.py` | [design](learn/ffn_training.md) | 251 |
 | `learn/losses.py` | [design](learn/losses.md) | 155 |
 | `learn/placement.py` | [design](learn/placement.md) | 107 |
-| `learn/run_full.py` | [design](learn/run_full.md) | 280 |
+| `learn/run_full.py` | [design](learn/run_full.md) | 290 |
 | `learn/teacher_references.py` | [design](learn/teacher_references.md) | 105 |
 | `learn/ddp.py` | [design](learn/ddp.md) | 51 |
-| `learn/protocol.py` | logic in module header | 77 |
-| `learn/step.py` | logic in module header | 44 |
-| `learn/wandb_logger.py` | [design](learn/wandb_logger.md) | 289 |
+| `learn/protocol.py` | logic in module header | 95 |
+| `learn/step.py` | logic in module header | 47 |
+| `learn/wandb_logger.py` | [design](learn/wandb_logger.md) | 297 |
 | `score/__init__.py` | package marker | 1 |
 | `score/estimators.py` | [design](score/estimators.md) | 48 |
 | `score/export_depth.py` | [design](score/export_depth.md) | 431 |
 | `score/export_learned_heads.py` | [design](score/export_learned_heads.md) | 269 |
+| `score/export_learned_ffn.py` | [design](score/export_learned_ffn.md) | 275 |
 | `score/export_pruned.py` | [design](score/export_pruned.md) | 205 |
 | `score/ffn_reconstruction.py` | [design](score/ffn_reconstruction.md) | 261 |
-| `score/hooks.py` | [design](score/hooks.md) | 264 |
+| `score/hooks.py` | [design](score/hooks.md) | 286 |
 | `score/mobilewan_aggregate.py` | [design](score/mobilewan_aggregate.md) | 241 |
 | `score/mobilewan_dataset.py` | [design](score/mobilewan_dataset.md) | 212 |
 | `score/mobilewan_heads.py` | [design](score/mobilewan_heads.md) | 127 |
@@ -145,6 +158,8 @@ Run modules from `LTX-2` in `ltx`. Each link goes to its Usage section.
 
 | Module | Purpose | Started by |
 |---|---|---|
+| [`data.clipped_reset_study`](data/clipped_reset_study.md#usage) | Freeze fresh r13-zero initialization and exact-step checkpoint pairs | direct CPU CLI |
+| [`data.fixed_test_inputs`](data/fixed_test_inputs.md#usage) | Freeze twelve complete test sources and saved noise without inference | direct CLI on GPU 6 |
 | [`core.preflight`](core/preflight.md#usage) | Check components and GPU memory | direct CLI |
 | [`data.prompt_cache`](data/prompt_cache.md#usage) | Build or verify default text context | direct CLI |
 | [`evaluate.whole_clip_baseline`](evaluate/whole_clip_baseline.md#usage) | Save source or candidate rollouts | human CLI; agent baseline through avatar queue |

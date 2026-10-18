@@ -4,7 +4,13 @@ DDP uses one independent draw per rank, one local backward and one automatic
 gradient average. Older presets keep their two-draw schedules unchanged.
 Progressive studies use soft updates only; zero/one continuations retain global update numbering.
 They validate configurable hardening interval, original-head fraction and regret threshold.
+The versioned clipped-reset policy has a separate selection cap and total bound.
+Its default boundaries are selection 500 and recovery endpoint at most 800.
+An earlier terminal event shortens only the total bound; global draws remain consecutive.
+Its full-speed drop must equal gate LR times the event interval.
 """
+
+import math
 
 DDP_METHOD = "ddp_full_replicas"
 FSDP_METHOD = "fsdp_frozen_replicated_adapters"
@@ -63,13 +69,17 @@ def phase_budget(config):
     soft, binary, compact = (config[k] for k in ("soft_updates", "binary_updates", "compact_updates"))
     progressive = config.get("progressive_policy") is not None
     if progressive:
-        clipped = config["progressive_policy"].get("method") == "clip01_ste3_reset_v1"
-        if clipped:
-            from scripts.prune.learn.clipped_reset import validate_config
+        from scripts.prune.learn.clipped_reset import is_clipped, validate_config
 
+        if is_clipped(config["progressive_policy"]):
             policy = validate_config(config["progressive_policy"])
             if (soft, binary, compact) != (policy["selection_updates"], 0, 0):
                 raise ValueError("clipped-reset budget differs from its selection cap")
+            # Drop thresholds are fractions of the full-speed drop, gate LR x interval.
+            if "gate_lr" in config and not math.isclose(
+                policy["full_speed_drop"], config["gate_lr"] * policy["hardening_interval"], rel_tol=1e-9
+            ):
+                raise ValueError("clipped-reset full-speed drop differs from gate LR x interval")
             return soft, soft, soft + policy["finalize_updates"]
         zero_one = "fixed_one_fraction" in config["progressive_policy"]
         if binary != 0 or compact != 0 or (not zero_one and soft != 500):

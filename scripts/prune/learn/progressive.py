@@ -184,7 +184,7 @@ class ProgressivePolicy:
 
     @classmethod
     def from_state(cls, state, expected_config=None):
-        if state.get("format") == "progressive_clip_reset_v1":
+        if state.get("format") == "progressive_clip_reset_v2":
             from scripts.prune.learn.clipped_reset import ClippedResetPolicy
 
             return ClippedResetPolicy.from_state(state, expected_config)

@@ -1,5 +1,30 @@
 # Pruning run guide
 
+Historical study plans were consolidated in the [workspace history](../../../../plans/history/README.md).
+For fresh preparation, replace `/path/to/reviewed-study-plan.md` with the actual reviewed specification.
+Retired reference pointers are not plan inputs, and retired source folders must not be recreated from these examples.
+
+
+## Learned FFN masks
+
+Read the [study preparation](data/ffn_study.md), [training entrypoint](learn/ffn.md)
+and [export design](score/export_learned_ffn.md) for complete commands and arguments.
+Run CPU preparation first. The explicit preset supports FFN-only and joint head/FFN arms.
+The first formal preset learns joint masks with 1000 selection updates and 300 fixed-mask adapter updates.
+It retains 14,848 FFN channels per block and 1384 video self-attention heads overall.
+
+Use physical GPUs 4–6 for the three-rank disposable native check.
+Use physical GPUs 0–3 for the formal owner, which first runs its own four-rank native acceptance.
+The device lists and rank counts are enforced. Test acceptance does not substitute for formal acceptance.
+Resume formal work with `--phase train`, using the unchanged frozen study and canonical checkpoints.
+Checkpoints and monitors retain source, noise, crop and original-ID evidence.
+
+Start the CPU W&B reader with `python -m scripts.prune.learn.ffn_logger --study <frozen_study.json>`.
+It follows saved optimizer and monitor receipts and never opens a CUDA model.
+Read `monitoring/status.json`, `monitoring/owner.json`, `monitoring/failure.json` and the launch log for local status.
+Final compact export requires the exact completed recovery checkpoint.
+`--probe` exports remain disposable and never qualify as final candidates.
+
 ## Launch and output rules
 
 Run from the `LTX-2` root in the `ltx` conda environment.
@@ -368,7 +393,7 @@ Fork a completed soft checkpoint into a new study with a longer budget, after th
 CUDA_VISIBLE_DEVICES='' python -m scripts.prune.data.extend_learned_heads \
   --previous $SRC/configs/frozen_study.json \
   --checkpoint $SRC/training/learned_joint/replicate_42/checkpoints/update_0700.pt \
-  --plan ../plans/2026-10-12-learned-head-pruning-experiment.md --output $NEW \
+  --plan /path/to/reviewed-study-plan.md --output $NEW \
   --soft-updates 2000 --binary-updates 0 --compact-updates 500
 ```
 
@@ -407,7 +432,7 @@ Use a new empty output directory and freeze the current plan/code/config before 
 conda activate ltx
 CUDA_VISIBLE_DEVICES= CUBLAS_WORKSPACE_CONFIG=:4096:8 python -m scripts.prune.data.learned_head_study \
   --config scripts/prune/configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json \
-  --plan ../plans/2026-10-12-learned-head-pruning-experiment.md \
+  --plan /path/to/reviewed-study-plan.md \
   --output ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_new
 
 CUDA_VISIBLE_DEVICES= CUBLAS_WORKSPACE_CONFIG=:4096:8 setsid python -u -m scripts.prune.learn.run_full \
@@ -445,7 +470,7 @@ Prepare into a new empty output directory when code changes.
 ```bash
 conda run --no-capture-output -n ltx python -m scripts.prune.data.learned_head_study \
   --config scripts/prune/configs/learned_heads_dev8.json \
-  --plan ../plans/2026-10-12-learned-head-pruning-experiment.md \
+  --plan /path/to/reviewed-study-plan.md \
   --output ../expr/refiner_prune/2.5/learned_heads_dev8_new
 ```
 
@@ -582,7 +607,7 @@ Read each exact sigma from the frozen study. Historical energy rankings retain t
 
 ```bash
 conda activate ltx
-CUDA_VISIBLE_DEVICES= CUBLAS_WORKSPACE_CONFIG=:4096:8 python -m scripts.prune.data.learned_head_study --config scripts/prune/configs/learned_heads_dev7_fsdp_gt_logit_l1.json --plan ../plans/2026-10-12-learned-head-pruning-experiment.md --output ../expr/refiner_prune/2.5/learned_heads_fsdp_gt_20261014_r8_fresh_logit_l1_dev7
+CUDA_VISIBLE_DEVICES= CUBLAS_WORKSPACE_CONFIG=:4096:8 python -m scripts.prune.data.learned_head_study --config scripts/prune/configs/learned_heads_dev7_fsdp_gt_logit_l1.json --plan /path/to/reviewed-study-plan.md --output ../expr/refiner_prune/2.5/learned_heads_fsdp_gt_20261014_r8_fresh_logit_l1_dev7
 CUDA_VISIBLE_DEVICES=0,1,2,3 CUBLAS_WORKSPACE_CONFIG=:4096:8 python -u -m scripts.prune.learn.run_full --study ../expr/refiner_prune/2.5/learned_heads_fsdp_gt_20261014_r8_fresh_logit_l1_dev7/configs/frozen_study.json
 ```
 
@@ -665,3 +690,31 @@ python -m scripts.prune.learn.run_full \
 ```
 
 Fresh four-rank acceptance precedes sustained training. Use GPUs 0–3. The exact fixed-gate tail follows the terminal event.
+
+## Clipped scores with survivor resets
+
+The [clipped-reset policy](learn/clipped_reset.md) has CPU controls and training-loop integration.
+Run the focused controls from `LTX-2` in `ltx`:
+
+```bash
+CUDA_VISIBLE_DEVICES='' python -m pytest scripts/prune/tests/test_clipped_reset.py -q
+```
+
+The clipped policy uses a separate activation and checkpoint format. Existing sigmoid commands cannot initialize this experiment.
+The [preparation CLI](data/clipped_reset_study.md#usage) verifies r13 initialization and all 17 exact-step references.
+The [fixed-test input CLI](data/fixed_test_inputs.md#usage) freezes the full-source noise and input manifest on GPU six.
+Freeze the formal study after model-code implementation is complete. Its code identity rejects later model-code changes.
+Check GPUs 0–3 with `nvidia-smi`, then start the direct owner from `LTX-2` with the ltx python:
+
+```bash
+R=../expr/refiner_prune/2.5/progressive_clip01_ste3_reset50_20261017_from_r13u0
+setsid /home/jianjinx/data2/miniconda3/envs/ltx/bin/python -u -m scripts.prune.learn.run_full \
+  --study $R/configs/frozen_study.json --arms learned_progressive --replicate-seed 42 \
+  > $R/logs/owner.log 2>&1 < /dev/null &
+```
+
+The owner first runs `checks.ddp_native`, the fresh four-rank clipped-reset acceptance.
+Training rejects receipts without that execution and the exact policy config hash.
+Read `monitoring/status.json`, `training/learned_progressive/replicate_42/events/` and the active log.
+Do not launch this method with an eligible-continuation command or a historical acceptance receipt.
+Fixed-test scoring, reports, and binary export run after training on saved checkpoints.

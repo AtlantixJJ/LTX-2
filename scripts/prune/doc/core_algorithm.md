@@ -118,6 +118,20 @@ Actor-cluster bootstrap draws retain all views and sigmas, and recompute normali
 Global allocation uses ascending pooled train scores, original block/head ties and one retained head per block.
 This helper supplies no native execution evidence yet.
 
+## Learned FFN binary masks
+
+Each original video FFN channel has one FP32 score.
+Stable descending score order selects each block's declared retained count.
+Equal scores keep lower original channel IDs. The preset retains 14,848 of 16,384 channels.
+The count ramps in multiples of 128 after 50 dense updates and reaches its final value at update 300.
+Multiply post-GELU activations by `binary_mask + (sigmoid(score) - stopgrad(sigmoid(score)))`.
+The grouped subtraction keeps the forward exactly binary.
+Keep one decision per update and a fresh surrogate graph per forward.
+There is no FFN sparsity term; the exact count already defines the budget.
+Freeze original IDs after update 1000, then train adapters for 300 further updates.
+The joint arm uses existing head sigmoid learning and legal binary refinement alongside these FFN masks.
+The [training design](learn/ffn_training.md) owns state and numerical details.
+
 ## Learned head velocity path
 
 Use native velocity from `core.ltx_adapter.velocity_forward` for learning.

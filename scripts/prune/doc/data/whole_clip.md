@@ -46,6 +46,9 @@ It requires different transformer fingerprints.
 Width candidates require the pinned mask and complete native family checks.
 Depth candidates require the pinned artifact, mappings, retained inventory, sliced config and parameter accounting.
 Unknown families raise.
+The `width_head_ffn_recovered` family validates the new learned head/FFN envelope through a deferred import.
+It checks final masks, consumed inputs, original actor scope and every merged tensor hash.
+Disposable probe envelopes fail candidate qualification. Numerical and decoded checks remain separate.
 
 Worked example: three latent frames at height and width two produce 12 tokens.
 Tokens 0–3 are c0. The saved block plan is `[[0,3]]`.

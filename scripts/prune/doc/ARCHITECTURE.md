@@ -129,6 +129,15 @@ Its envelope pins original IDs, both geometry wrappers, components, training sta
 Stored compact widths preserve full original Q/K normalization and RoPE identities.
 Native structural, transfer, fusion and merged-reload checks remain separate from decoded quality.
 
+## Learned FFN masks
+
+`data.ffn_study` freezes reused inputs under a new code and config identity.
+`learn.ffn_gates` owns aligned binary channel decisions and fresh surrogate graphs.
+`learn.ffn_training` registers head and FFN gates with the native model for one DDP reduction.
+`learn.ffn` owns standalone native checks, training, full-source monitoring and exact resume.
+`score.export_learned_ffn` owns coupled export, fusion and the new recovered envelope.
+Existing head entrypoints and historical checkpoint formats retain their behavior.
+
 ## Progressive gate removal
 
 `learn/progressive.py` owns trajectory statistics, terminal gate decisions, frozen Adam coordinates and policy serialization.

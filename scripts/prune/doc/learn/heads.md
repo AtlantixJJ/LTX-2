@@ -1,5 +1,22 @@
 # learn/heads
 
+## Clipped-reset execution
+
+The explicit clipped-reset method constructs all-one raw scores with `clip01_v1` activation.
+Sustained training requires a fresh four-rank acceptance receipt bound to the exact policy config hash.
+The selection owner keeps global updates through the adapter-only recovery tail; compact recovery is a separate workflow and is rejected here.
+The gate optimizer stops stepping during recovery. Adapter warmup and moments retain their global counters.
+The task graph keeps a masked zero-gradient gate path so DDP continues to see its registered parameters.
+
+At each selection boundary, publish `transactions/pre_event_NNNN.pt` before the reset.
+It holds pre-event scores, adapters, both optimizer states, rank RNG, and the pending policy.
+Publish the event receipt after reset, then the canonical checkpoint and actual-state monitor.
+A restart replays from its last canonical checkpoint and verifies any already-published transaction or receipt.
+Pre-event transaction files never match the canonical `checkpoints/update_*.pt` search.
+Trace row zero contains post-optimizer scores before the event reset. Canonical boundary checkpoints contain post-reset scores.
+Receipts label both representations and keep gate Adam local steps separate from global updates.
+Initial checkpoint-zero monitoring uses the actual all-one gates.
+
 ## Objective
 
 Run bounded resident-model phases for the learned-head experiment.

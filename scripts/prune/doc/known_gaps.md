@@ -1,5 +1,13 @@
 # Current pruning limits
 
+## Learned FFN evidence
+
+Individual binary FFN masks, joint head/FFN training, exact state and compact fusion/export are implemented.
+The FFN CPU controls establish numerical and distributed helper behavior.
+Fresh native test, four-rank training, decoded quality and speed are separate saved-evidence gates.
+The initial aligned width and straight-through estimator are experimental choices, not accepted compression results.
+Existing historical head-only receipts do not qualify the new mask family.
+
 ## Task coverage
 
 Native consumers accept white-capture, unguided, BF16, one-step whole-clip D0 inputs.

@@ -6,13 +6,17 @@ Freeze a new progressive study from the verified r13 study and its saved checkpo
 
 ## Usage
 
+Historical study plans were consolidated in the [workspace history](../../../../../plans/history/README.md).
+For fresh preparation, replace `/path/to/reviewed-study-plan.md` with the actual reviewed specification.
+Retired reference pointers are not plan inputs, and retired source folders must not be recreated from these examples.
+
 The direct CPU owner runs from LTX-2 in the ltx conda environment:
 
 ```bash
 conda run -n ltx python -m scripts.prune.data.progressive_head_study \
   --previous ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_20261014_r13_rank128_gate001_sparse001_dev10/configs/frozen_study.json \
   --config scripts/prune/configs/learned_heads_progressive_removal_f18.json \
-  --plan ../plans/2026-10-15-progressive-head-gate-removal.md \
+  --plan /path/to/reviewed-study-plan.md \
   --output ../expr/refiner_prune/2.5/progressive_head_gate_removal_f18_20261015
 ```
 

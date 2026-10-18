@@ -18,6 +18,31 @@ For documentation changes, check source coverage, required headings, local links
 Render and inspect changed Mermaid diagrams.
 Documentation verification does not require expensive GPU work.
 
+The clipped-reset CPU controls are in `tests/test_clipped_reset.py`.
+They verify clipping and surrogate endpoints, reset-free regret windows, gate Adam resets, adapter continuity, and transaction replay.
+They also verify the global 500+300 bound and pre-event versus canonical checkpoint representations.
+These controls do not qualify native clipped-reset execution. Training rejects an acceptance receipt without its exact policy hash.
+Preparation, fixed-test evaluation, media, and binary export need their own evidence before this experiment is complete.
+
+`test_clipped_preparation.py` verifies initial-state replacement, untrained source rejection, and exact-step guards at zero, 500, 550, and 800.
+`test_fixed_test_inputs.py` rejects changed frozen noise, targets, schedules, context, incomplete cases, and historical four-actor monitor data.
+The saved historical preflight verifies all 17 checkpoint bytes, initial adapters, ordered draw prefixes, and permanent-mask sanity counts.
+These CPU checks do not validate historical prediction reproduction or qualify new model predictions.
+
+## Learned FFN controls
+
+`tests/test_ffn_learning.py` checks aligned counts, stable ties and binary surrogate gradients.
+It compares the live post-GELU boundary with independent native FFN algebra.
+It verifies frozen base weights, exact resumed updates across freezing, original-ID Adam transfer and FP32 fusion.
+Four real CPU DDP ranks compare joint gradients with independent serial four-draw accumulation.
+
+`learn.ffn --phase native --testing` uses GPUs 4–6 for disposable native tests.
+The formal owner requires a separate four-rank receipt on GPUs 0–3 before its first training update.
+Both checks exercise all-one parity, checkpointed gradients, exact serialized resume and fixed-mask recovery.
+F18 and cropped-F28 inputs and full-source inference retain separate memory evidence.
+`score.export_learned_ffn --probe --parity-gpu-id 4` records split/fused/compact native parity separately.
+Preserve parity failures with the unchanged 0.02 tolerance. Training success does not qualify compact execution or speed.
+
 ## Report verification
 
 Apply the [report and wording contract](reporting.md).

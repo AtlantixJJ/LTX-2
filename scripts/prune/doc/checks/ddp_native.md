@@ -71,3 +71,14 @@ Require restored terminal state and the eligible_finalization_execution receipt 
 A gate-only native tail uses the frozen gate-only mode, including constant or low-regret heads.
 Its terminal receipt must fix all heads through ordinary plus forced one decisions.
 Publish gate_only_execution only after the actual fixed-gate backward and terminal-state reload pass.
+
+## Clipped-reset acceptance
+
+For a `clip01_ste3_reset_v2` study the gate also proves the clipped path before sustained training.
+Fresh all-one scores must reproduce the native all-one prediction bit for bit.
+A disposable two-update window starts three heads below zero and two above one. It checks clipped execution, nonzero surrogate gradients and exactly three removals.
+The event must reset survivors to one, removed heads to zero, and clear the gate Adam state; the next step restarts at one.
+Resume from update one replays the event and the next update exactly.
+Removed heads must carry nonzero executed-gate gradients.
+A terminal cap probe removes two strong drops and runs one recovery update: adapter gradients are positive and gate gradients are zero.
+The receipt records `clipped_reset_execution` and `clipped_reset_config_sha256`; training rejects any other policy hash.

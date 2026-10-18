@@ -1,5 +1,18 @@
 # learn/checkpoints
 
+## Clipped-reset transactions
+
+`save_pre_event` publishes `clipped_reset_transaction_v1` files outside the canonical checkpoint directory.
+These files preserve post-optimizer scores, gate values, adapters, optimizer states, rank RNG, and the pending policy.
+The stage is `post_optimizer_pre_event`. The canonical checkpoint uses the completed post-reset policy instead.
+Replay verifies the complete saved state and existing sidecar hash. It can finish a missing sidecar after interruption.
+Transactions are evidence for deterministic replay; they are not completed checkpoints and cannot advance the training cursor.
+
+Loading a canonical clipped-reset checkpoint checks its policy replay and gate Adam local cursor.
+At an event or during recovery, the complete gate Adam state must be empty.
+Within a window, its local step must equal the global update modulo the window interval.
+Moments must be finite, have the raw-score shape, and remain zero on removed coordinates.
+
 ## Objective
 
 Publish immutable records and restore exact learning state.

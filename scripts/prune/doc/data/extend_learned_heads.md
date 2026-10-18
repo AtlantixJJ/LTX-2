@@ -7,13 +7,17 @@ Keep the source run immutable. Only `soft_updates`, `binary_updates` and `compac
 
 ## Usage
 
+Historical study plans were consolidated in the [workspace history](../../../../../plans/history/README.md).
+For fresh preparation, replace `/path/to/reviewed-study-plan.md` with the actual reviewed specification.
+Retired reference pointers are not plan inputs, and retired source folders must not be recreated from these examples.
+
 Launch directly on CPU from `LTX-2` in conda environment `ltx`, after the source owner has stopped.
 
 ```bash
 CUDA_VISIBLE_DEVICES='' python -m scripts.prune.data.extend_learned_heads \
   --previous ../expr/refiner_prune/2.5/<source>/configs/frozen_study.json \
   --checkpoint ../expr/refiner_prune/2.5/<source>/training/learned_joint/replicate_42/checkpoints/update_0700.pt \
-  --plan ../plans/2026-10-12-learned-head-pruning-experiment.md \
+  --plan /path/to/reviewed-study-plan.md \
   --output ../expr/refiner_prune/2.5/<new study> \
   --soft-updates 2000 --binary-updates 0 --compact-updates 500
 ```

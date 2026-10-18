@@ -6,12 +6,16 @@ Freeze a continuation from a stopped checkpoint without resetting training state
 
 ## Usage
 
+Historical study plans were consolidated in the [workspace history](../../../../../plans/history/README.md).
+For fresh preparation, replace `/path/to/reviewed-study-plan.md` with the actual reviewed specification.
+Retired reference pointers are not plan inputs, and retired source folders must not be recreated from these examples.
+
 Run in ltx from LTX-2 after the source owner stops:
 
 ```bash
 python -m scripts.prune.data.continue_eligible \
   --previous ../expr/refiner_prune/2.5/progressive_zero_one_f18_from_u500_20261016/configs/frozen_study.json \
-  --plan ../plans/2026-10-16-eligible-two-percent-zero-stop-final300.md \
+  --plan /path/to/reviewed-study-plan.md \
   --output ../expr/refiner_prune/2.5/progressive_eligible2pct_min16_final300_20261016_from_u1357 \
   --resume-update 1357
 ```
@@ -60,7 +64,7 @@ Example from LTX-2 in ltx:
 ```bash
 python -m scripts.prune.data.continue_eligible \
   --previous ../expr/refiner_prune/2.5/progressive_eligible2pct_min16_final300_20261016_from_u1357/configs/frozen_study.json \
-  --plan ../plans/2026-10-16-gate-value-only-fixed-one-final300.md \
+  --plan /path/to/reviewed-study-plan.md \
   --output ../expr/refiner_prune/2.5/progressive_gate_only2pct_min16_final300_20261016_from_u1668 \
   --resume-update 1668 --gate-only
 ```

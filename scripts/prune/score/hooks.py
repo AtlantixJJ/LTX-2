@@ -244,6 +244,28 @@ def attach_head_provider(model: torch.nn.Module, provider: Callable[[str], torch
     return attached
 
 
+def attach_ffn_provider(model: torch.nn.Module, provider: Callable[[str], torch.Tensor]) -> MaskAttachments:
+    """Apply live channel decisions before the FFN down projection.
+
+    The caller owns one decision per update and a fresh graph per forward.
+    Keep that graph alive through checkpointed backward recomputation.
+    This provider does not change the binary artifact reader or detach scores.
+    """
+    attached = MaskAttachments()
+    for name, ff in iter_video_ffn(model):
+        width = ff.net[2].weight.shape[1]
+
+        def hook(_mod, args, *, name=name, width=width):
+            (x,) = args
+            gate = provider(name)
+            if gate.shape != (width,) or gate.dtype != torch.float32 or x.shape[-1] != width:
+                raise ValueError(f"{name}: invalid live FFN gate or activation width")
+            return (x * gate.to(device=x.device, dtype=x.dtype).view(1, 1, -1),)
+
+        attached.handles.append(ff.net[2].register_forward_pre_hook(hook))
+    return attached
+
+
 def collect_activations(
     model: torch.nn.Module, which: str, callback: Callable[[str, torch.Tensor, torch.nn.Module], None]
 ) -> MaskAttachments:

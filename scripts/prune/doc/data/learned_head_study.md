@@ -6,10 +6,14 @@ Freeze source identity, disjoint actors and paired optimization draws.
 
 ## Usage
 
+Historical study plans were consolidated in the [workspace history](../../../../../plans/history/README.md).
+For fresh preparation, replace `/path/to/reviewed-study-plan.md` with the actual reviewed specification.
+Retired reference pointers are not plan inputs, and retired source folders must not be recreated from these examples.
+
 Started by: a direct human or agent CLI. Run from `LTX-2` in conda environment `ltx`.
 
 ```bash
-CUDA_VISIBLE_DEVICES= python -m scripts.prune.data.learned_head_study --config scripts/prune/configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json --plan ../plans/2026-10-12-learned-head-pruning-experiment.md --output ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_new
+CUDA_VISIBLE_DEVICES= python -m scripts.prune.data.learned_head_study --config scripts/prune/configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json --plan /path/to/reviewed-study-plan.md --output ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_new
 ```
 
 `--seen-actors` adds audited exclusions. `--region-tracks` accepts reviewed GT box records.

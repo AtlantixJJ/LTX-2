@@ -70,3 +70,10 @@ See [eligible policy](eligible.md) for the terminal override and exact fixed-gat
 
 The optional fixed_one_selection=gate_only setting requires the eligible policy and a null fixed-one regret threshold.
 The removal selector is unchanged. Old configurations retain their original validation and regret rule.
+
+## Clipped scores and survivor resets
+
+The explicit `method=clip01_ste3_reset_v1` dispatches to [clipped_reset](clipped_reset.md) before eligible sigmoid dispatch.
+Its distinct state format prevents accidental migration from historical sigmoid masks or fixed-one decisions.
+The shared selector retains regret-first ordering and uses the eligible population and configured minimum.
+The new owner handles its own score resets, optimizer cycles, terminal rules, and recovery cursor.
