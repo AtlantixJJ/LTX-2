@@ -120,7 +120,21 @@ class PytorchGatedAttention(GatedAttentionCallable):
         attn_out: torch.Tensor,
         attn_module: nn.Module,
     ) -> torch.Tensor:
-        gate_logits = attn_module.to_gate_logits(x)  # (B, T, H)
+        if attn_module.qk_heads != attn_module.heads:
+            # Preserve the native small-N gate GEMM. BF16 kernels can round
+            # differently for e.g. 31 versus 32 outputs, even when every retained
+            # row is identical. Padding this tiny projection does not restore
+            # removed value projections, attention heads or output columns.
+            indices = torch.tensor(attn_module.rope_head_indices, device=x.device, dtype=torch.long)
+            projection = attn_module.to_gate_logits
+            weight = projection.weight.new_zeros(attn_module.qk_heads, projection.weight.shape[1])
+            weight = weight.index_copy(0, indices, projection.weight)
+            bias = projection.bias
+            if bias is not None:
+                bias = bias.new_zeros(attn_module.qk_heads).index_copy(0, indices, bias)
+            gate_logits = torch.nn.functional.linear(x, weight, bias).index_select(-1, indices)
+        else:
+            gate_logits = attn_module.to_gate_logits(x)  # (B, T, H)
         b, t, _ = attn_out.shape
         out = attn_out.view(b, t, attn_module.heads, attn_module.dim_head)
         gates = 2.0 * torch.sigmoid(gate_logits)  # (B, T, H)

@@ -14,6 +14,8 @@ Read the predecessor's statistics for convergence and the frozen masks/events fo
 Save numerical analysis, all plotted data and PNG/PDF figures under the milestone.
 Build the current report from the latest complete numerical analysis and the narrative config.
 Preserve all older milestone snapshots.
+For a real frozen study, reject a missing declared PNG, PDF or plotted-data companion before publication.
+The optional `build_report(root, destination=path)` API writes a preview without replacing the live report or its validation record.
 
 ## Organization logic
 
@@ -45,6 +47,12 @@ Pruning distributions use per-head means on x and empirical cumulative head frac
 Pruning-agreement curves use source steps on x and separately labeled AUC/AP/recall/Jaccard panels.
 All scientific plots save PNG, PDF and plotted-data JSON.
 Each report figure names its current milestone and links its data.
+The report omits a duplicate current-only distribution figure when frozen-head overlays already show it.
+Practical-stability curves start at step 400. The reader preserves the original collector figures and saves this presentation in `report_figures/`.
+Before step 400, the report states that stability labels are unavailable; it does not present zero as an observed stable fraction.
+The opening defines the score metrics and reports scheduled, observed and skipped counts separately.
+The optional narrative `main_findings` list supplies the opening findings after observations exist; otherwise saved-data defaults apply.
+The appendix lists acceptance receipts, source identities, comparison recipes and original-head records.
 
 ## Invariants
 
@@ -68,3 +76,4 @@ Repeated views and tokens do not provide independent subject counts.
 Focused tests compare exact ties, perfect/reversed ranks, known distances and model-free sketches.
 The full milestone fixture exercises all figure builders and step-200 convergence from saved synthetic test data.
 Synthetic fixtures remain in temporary test directories, outside experiment outputs.
+`tests/test_native_gate_report.py` checks missing declared figures, incomplete prefixes, independent preview publication and stability eligibility.

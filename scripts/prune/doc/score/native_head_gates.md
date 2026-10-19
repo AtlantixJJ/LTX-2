@@ -49,6 +49,7 @@ Each worker writes a milestone shard. The supervisor merges only complete retain
 
 The session uses explicit dev components and the saved context, without a text-encoder fallback.
 Each worker checks observed versus ordinary native output before sustained collection.
+All workers wait for matching E0 acceptance on all three GPUs before collection starts.
 The acceptance draw has the requested noise level near 0.9 and a nonzero-start F18 crop.
 Full weight hashes and input hashes must stay unchanged; forward outputs must be bit-identical.
 Parameter-version checks guard every later draw.
@@ -66,6 +67,8 @@ A report sketch appears immediately after worker launch, before the first milest
 - Existing training receipts must match the reconstructed crop and saved input manifest.
 - Checkpoints atomically bind unfinished arrays to consumed draw receipts.
 - Immutable completed worker shards retain content hashes.
+- An exact NPZ can finish a missing sidecar on resume, without model replay.
+- Resume rejects changed draw IDs or a conflicting sidecar; it never replaces completed evidence.
 - Model code covered by the frozen identity cannot change during execution.
 
 ## Gotchas

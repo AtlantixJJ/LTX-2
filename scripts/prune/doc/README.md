@@ -17,6 +17,12 @@ The learned FFN extension has separate [preparation](data/ffn_study.md),
 [export](score/export_learned_ffn.md) owners.
 The small `learn/ffn_gates.py` and CPU `learn/ffn_logger.py` modules explain their logic in their headers.
 
+The joint V3 extension has [family rules](learn/readmission.md), [numerical state](learn/joint_training.md),
+[training](learn/joint.md), [preparation](data/joint_study.md), [preflight checks](checks/joint_preflight.md),
+[export isolation](checks/joint_export.md), [fault diagnosis](checks/joint_faults.md),
+[native split replay](checks/joint_split_parity.md) and [terminal split export](score/export_joint_split.md).
+The [merged export](score/export_joint.md) requires separate qualification.
+
 ## Documentation rules
 
 Use the [avatar documentation reference](../../onestep_avatar/doc/README.md#documentation-rules).
@@ -67,6 +73,18 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 
 | Source | Design | Physical lines |
 |---|---|---:|
+| `checks/joint_faults.py` | [checks/joint_faults.md](checks/joint_faults.md) | 166 |
+| `checks/joint_split_parity.py` | [checks/joint_split_parity.md](checks/joint_split_parity.md) | 190 |
+| `score/export_joint_split.py` | [score/export_joint_split.md](score/export_joint_split.md) | 227 |
+| `checks/joint_review.py` | inline header | 97 |
+| `learn/joint_logger.py` | inline header | 88 |
+| `data/joint_study.py` | [data/joint_study.md](data/joint_study.md) | 164 |
+| `checks/joint_export.py` | [checks/joint_export.md](checks/joint_export.md) | 235 |
+| `checks/joint_preflight.py` | [checks/joint_preflight.md](checks/joint_preflight.md) | 255 |
+| `learn/joint.py` | [learn/joint.md](learn/joint.md) | 665 |
+| `learn/readmission.py` | [learn/readmission.md](learn/readmission.md) | 357 |
+| `learn/joint_training.py` | [learn/joint_training.md](learn/joint_training.md) | 387 |
+| `score/export_joint.py` | [score/export_joint.md](score/export_joint.md) | 126 |
 | `checks/__init__.py` | package marker | 1 |
 | `checks/export_parity.py` | [design](checks/export_parity.md) | 147 |
 | `checks/four_gpu_feasibility.py` | [design](checks/four_gpu_feasibility.md) | 85 |
@@ -93,7 +111,7 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `data/foreground.py` | [design](data/foreground.md) | 140 |
 | `data/head_score_dataset.py` | [design](data/head_score_dataset.md) | 139 |
 | `data/learned_head_study.py` | [design](data/learned_head_study.md) | 551 |
-| `data/native_gate_study.py` | [design](data/native_gate_study.md) | 214 |
+| `data/native_gate_study.py` | [design](data/native_gate_study.md) | 225 |
 | `data/ffn_study.py` | [design](data/ffn_study.md) | 163 |
 | `data/prompt_cache.py` | [design](data/prompt_cache.md) | 111 |
 | `data/reuse_head_scores.py` | [design](data/reuse_head_scores.md) | 137 |
@@ -148,10 +166,13 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `score/mobilewan_dataset.py` | [design](score/mobilewan_dataset.md) | 212 |
 | `score/mobilewan_heads.py` | [design](score/mobilewan_heads.md) | 127 |
 | `score/mobilewan_records.py` | [design](score/mobilewan_records.md) | 134 |
+| `score/native_gate_audit.py` | [design](score/native_gate_audit.md) | 227 |
 | `score/native_gate_accumulator.py` | [design](score/native_gate_accumulator.md) | 180 |
-| `score/native_gate_analysis.py` | [design](score/native_gate_analysis.md) | 684 |
+| `score/native_gate_analysis.py` | [design](score/native_gate_analysis.md) | 826 |
 | `score/native_gate_observer.py` | [design](score/native_gate_observer.md) | 135 |
-| `score/native_head_gates.py` | [design](score/native_head_gates.md) | 472 |
+| `score/native_gate_records.py` | [design](score/native_gate_records.md) | 189 |
+| `score/native_gate_review.py` | [design](score/native_gate_review.md) | 338 |
+| `score/native_head_gates.py` | [design](score/native_head_gates.md) | 485 |
 | `score/token_sampling.py` | [design](score/token_sampling.md) | 79 |
 | `score/whole_clip_d0_scores.py` | [design](score/whole_clip_d0_scores.md) | 164 |
 
@@ -166,6 +187,7 @@ Run modules from `LTX-2` in `ltx`. Each link goes to its Usage section.
 |---|---|---|
 | [`data.clipped_reset_study`](data/clipped_reset_study.md#usage) | Freeze fresh r13-zero initialization and exact-step checkpoint pairs | direct CPU CLI |
 | [`data.fixed_test_inputs`](data/fixed_test_inputs.md#usage) | Freeze twelve complete test sources and saved noise without inference | direct CLI on GPU 6 |
+| [`score.native_gate_audit`](score/native_gate_audit.md#usage) | Audit saved native-gate source prefixes and exact shard merges | direct CPU CLI |
 | [`core.preflight`](core/preflight.md#usage) | Check components and GPU memory | direct CLI |
 | [`data.prompt_cache`](data/prompt_cache.md#usage) | Build or verify default text context | direct CLI |
 | [`evaluate.whole_clip_baseline`](evaluate/whole_clip_baseline.md#usage) | Save source or candidate rollouts | human CLI; agent baseline through avatar queue |

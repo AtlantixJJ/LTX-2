@@ -26,6 +26,18 @@ def verified(path: Path, expected: str) -> dict:
     return {"path": str(path.resolve()), "sha256": actual}
 
 
+def freeze_context(record: dict, root: Path) -> dict:
+    """Source bytes_sha256 hashes raw tensor bytes, not the torch archive."""
+    path = root / "configs/context.pt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(record["path"], path)
+    context = torch.load(path, map_location="cpu", weights_only=True)
+    raw = hashlib.sha256(context.contiguous().view(torch.uint8).numpy().tobytes()).hexdigest()
+    if raw != record["bytes_sha256"] or tensor_hash(context) != record["tensor_sha256"]:
+        raise ValueError("frozen context tensor changed")
+    return record | {"path": str(path.resolve()), "file_sha256": file_sha256(path)}
+
+
 def mask_references(combined: Path, output: Path, source: dict) -> None:  # noqa: PLR0915
     # Keep the primary lineage reconstruction adjacent to its canonical checkpoint validation.
     """Bind original IDs to receipts, canonical checkpoints and unsuperseded events."""
@@ -122,6 +134,8 @@ def prepare(source_path: Path, combined: Path, plan: Path, output: Path, steps: 
     identity = payload.pop("identity")
     if digest(payload) != identity:
         raise ValueError("training source identity changed")
+    if identity != "d08091face66b6fe97c4c6f4c5f5ba1f8af697b4e0f68d43cc8792fee928a49d":
+        raise ValueError("training source differs from the plan's pinned study")
     draws_path = Path(source["draws"]["path"])
     verified(draws_path, source["draws"]["sha256"])
     draws = json.loads(draws_path.read_text())
@@ -136,10 +150,7 @@ def prepare(source_path: Path, combined: Path, plan: Path, output: Path, steps: 
         raise ValueError("frozen training membership differs")
     for component in source["components"].values():
         verified(Path(component["path"]), component["file_sha256"])
-    verified(Path(source["text_context"]["path"]), source["text_context"]["bytes_sha256"])
-    context = torch.load(source["text_context"]["path"], map_location="cpu", weights_only=True)
-    if tensor_hash(context) != source["text_context"]["tensor_sha256"]:
-        raise ValueError("frozen context tensor changed")
+    context_pin = freeze_context(source["text_context"], output)
     for member in members.values():
         verified(Path(member["capture"]), member["capture_latent_sha256"])
     mask_references(combined, output, source)
@@ -171,7 +182,7 @@ def prepare(source_path: Path, combined: Path, plan: Path, output: Path, steps: 
         "sigmas": [source["config"]["sigmas"][i] for i in (1, 4, 7, 9)],
         "selected_draw_indices": [i for i, d in enumerate(draws[: steps * 4]) if d["sigma_index"] in (1, 4, 7, 9)],
         "components": source["components"],
-        "context": source["text_context"],
+        "context": context_pin,
         "plan": {"path": str(plan_copy), "sha256": file_sha256(plan_copy)},
         "code": code_identity(),
         "files": {

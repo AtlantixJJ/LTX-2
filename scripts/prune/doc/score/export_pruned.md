@@ -41,6 +41,9 @@ Apply coupled slicing or record active indices, update transformer metadata, the
 
 Q/K RMSNorm spans the original heads. Keep full Q/K projections and normalization weights.
 Compact attention slices V rows, output-projection columns and optional gate rows.
+At execution, the native gate pads its rows to the original head count before its GEMM, then selects retained logits.
+For example, a 31-head compact layer executes its native gate projection with 32 outputs.
+This preserves BF16 gate rounding while V, attention and the output projection remain compact.
 Compact FFN slices input-projection rows and bias, then output-projection columns.
 Residual widths and output biases stay unchanged.
 

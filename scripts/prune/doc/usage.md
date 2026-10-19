@@ -727,6 +727,54 @@ It forwards only source noise indices `[1,4,7,9]`, closest to 0.94, 0.9, 0.76 an
 Milestones retain original training step numbering: 100 steps contain 160 observed draws, 40 per selected sigma.
 The standalone owner uses physical GPUs 4–6; it does not need an avatar queue wrapper.
 Run CPU checks before GPU acceptance. Start the owner with `setsid` and retain its command and PID.
+All three GPUs must pass E0 before any worker starts sustained observation.
+Use a separate source snapshot when concurrent work changes the shared pruning package.
+Keep its package paths in `PYTHONPATH` and run from its `LTX-2` root.
+Pin the snapshot during preparation; retain the exact environment and launch receipt.
 Read `monitoring/status.json`, `monitoring/gpu_*.json`, `provenance/acceptance_gpu_*.json` and `REPORT.md`.
 The owner creates a report sketch after launch and updates scientific figures after each validated milestone.
 A report rebuild reads saved statistics only; missing evidence is an error, not a GPU regeneration request.
+
+The independent [saved milestone audit](score/native_gate_audit.md#usage) verifies complete prefixes without model loading:
+
+```bash
+python -m scripts.prune.score.native_gate_audit \
+  --root ../expr/refiner_prune/2.5/native_head_gate_stats_20261018_exec_isolated --step 100
+```
+
+Run it after each published milestone. It verifies input receipts, worker assignments, histogram counts and exact cumulative reconstruction.
+
+
+## Joint clipped gates with re-admission
+
+Use [joint study preparation](data/joint_study.md#usage) to freeze r3 inputs and all 6800 paired draws.
+The [V3 owner](learn/joint.md#usage) tests on physical GPUs 4–6 and requires separate four-rank acceptance on 0–3.
+The [optimizer and contribution checks](checks/joint_preflight.md#usage) and [export isolation](checks/joint_export.md#usage) retain independent receipts.
+The [V3 exporter](score/export_joint.md#usage) requires terminal alignment and the declared recovery endpoint.
+Historical V2 and learned-FFN studies remain separate.
+A three-rank pilot uses `--phase pilot --testing --max-updates 50`; it never initializes A.
+Final training uses `--phase formal` on GPUs 0–3 after preflight acceptance.
+Do not start model work on an occupied device.
+
+The model-free [report supplement](score/native_gate_review.md) adds frozen-head density overlays, per-sigma identity/drop figures and original-ID records.
+It runs after the saved-prefix audit and updates the saved narrative atomically.
+
+The [comparison record index](score/native_gate_records.md#usage) materializes original-ID disagreements and physical worker receipts:
+
+```bash
+python -m scripts.prune.score.native_gate_records \
+  --root ../expr/refiner_prune/2.5/native_head_gate_stats_20261018_exec_isolated --through-step 400
+```
+
+This CPU reader requires every requested prefix to pass its independent audit/review.
+
+
+### Joint export fault isolation and split bundles
+
+The [operation diagnostic](checks/joint_faults.md#usage) locates compact attention differences on identical inputs.
+The [split bundle exporter](score/export_joint_split.md#usage) preserves the two adapter GEMMs instead of merging BF16 weights.
+Load bundles through `score.export_joint_split.open_bundle`; the base checkpoint alone omits the adapters.
+The [native matrix](checks/joint_split_parity.md#usage) checks every representation against the masked trained computation.
+The native gate projection preserves its original output width. V, attention, output and FFN up paths remain compact.
+The default split bundle preserves original FFN down reduction coordinates. Its actual cost must include that full-width GEMM.
+Timing requires a separate qualified benchmark. A merged BF16 export failure remains visible.

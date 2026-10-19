@@ -54,7 +54,7 @@ def current_for(study: dict, gpu: int) -> session.Session:
     )
     if not model.caps.apply_gated_attention or (model.caps.num_layers, model.caps.num_heads) != (48, 32):
         raise ValueError("native gate model metadata differs")
-    if file_sha256(study["context"]["path"]) != study["context"]["bytes_sha256"]:
+    if file_sha256(study["context"]["path"]) != study["context"]["file_sha256"]:
         raise ValueError("native context bytes changed")
     context = torch.load(study["context"]["path"], map_location="cpu", weights_only=True)
     if tensor_hash(context) != study["context"]["tensor_sha256"]:
@@ -179,6 +179,21 @@ def acceptance(
     )
 
 
+def publish_shard_receipt(path: Path, identity: str, expected: list[int], gpu: int, step: int) -> None:
+    """Finish publication after a crash between the atomic NPZ and its sidecar.
+
+    Reuse only an exact validated shard. Immutable publication rejects a conflicting
+    sidecar, so recovery cannot silently replace a different completed artifact.
+    """
+    saved = Accumulator.load(path, identity)
+    if [r["draw_index"] for r in saved.receipts] != expected:
+        raise ValueError("completed worker shard draw identities differ")
+    publish_json(
+        path.with_suffix(".json"),
+        {"study": identity, "sha256": file_sha256(path), "indices": expected, "step": step, "gpu": gpu},
+    )
+
+
 def worker(study: dict, gpu: int) -> None:  # noqa: PLR0912, PLR0915
     # The checkpoint transaction retains input, observation and publication in one ordered owner.
     root = Path(study["root"])
@@ -193,6 +208,15 @@ def worker(study: dict, gpu: int) -> None:  # noqa: PLR0912, PLR0915
         with NativeGateObserver(model) as observer:
             if not (root / f"provenance/acceptance_gpu_{gpu}.json").exists():
                 acceptance(study, current, model, observer, draws)
+            atomic_json(
+                status, {"status": "waiting_for_acceptance", "gpu": gpu, "pid": os.getpid(), "updated": time.time()}
+            )
+            while not all((root / f"provenance/acceptance_gpu_{g}.json").exists() for g in study["gpus"]):
+                time.sleep(1)
+            for device in study["gpus"]:
+                accepted = json.loads((root / f"provenance/acceptance_gpu_{device}.json").read_text())
+                if accepted["study"] != study["identity"] or not accepted["passed"]:
+                    raise ValueError("collection requires matching E0 acceptance on every GPU")
             for step in range(100, study["steps"] + 1, 100):
                 final = root / f"workers/gpu_{gpu}/step_{step:04d}.npz"
                 expected = [
@@ -201,9 +225,7 @@ def worker(study: dict, gpu: int) -> None:  # noqa: PLR0912, PLR0915
                     if i % len(study["gpus"]) == slot and draws[i]["sigma_index"] in study["source_sigma_indices"]
                 ]
                 if final.exists():
-                    saved = Accumulator.load(final, study["identity"])
-                    if [r["draw_index"] for r in saved.receipts] != expected:
-                        raise ValueError("completed worker shard draw identities differ")
+                    publish_shard_receipt(final, study["identity"], expected, gpu, step)
                     continue
                 partial = final.with_name(f"step_{step:04d}.partial.npz")
                 acc = (
@@ -252,17 +274,8 @@ def worker(study: dict, gpu: int) -> None:  # noqa: PLR0912, PLR0915
                         print(json.dumps(progress), flush=True)
                         del case, grid, video, velocity, clean, values
                     acc.save(final)
+                    publish_shard_receipt(final, study["identity"], expected, gpu, step)
                     partial.unlink(missing_ok=True)
-                    publish_json(
-                        final.with_suffix(".json"),
-                        {
-                            "study": study["identity"],
-                            "sha256": file_sha256(final),
-                            "indices": expected,
-                            "step": step,
-                            "gpu": gpu,
-                        },
-                    )
                 except BaseException:
                     if acc.receipts:
                         acc.save(partial)

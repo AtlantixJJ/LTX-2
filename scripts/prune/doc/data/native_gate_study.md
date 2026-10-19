@@ -8,10 +8,12 @@ The [entrypoint](../score/native_head_gates.md#usage) exposes preparation on CPU
 
 ## Data flow
 
-Read the r3 frozen study and its complete 5,200-record draw list.
+Read the plan-pinned r3 frozen study and its complete 5,200-record draw list.
+Reject another internally valid study whose identity differs from the plan.
 Verify source identity, components, saved context and learning captures.
 Reconstruct the primary pruning lineage and pin binary masks to canonical checkpoints.
 Save an immutable plan copy, source study, original draw stream, comparison masks and event records.
+Copy the verified prompt context into the new run and pin its archive hash separately from its raw tensor-byte hash.
 Freeze current executable code separately from the historical training code identity.
 
 ## Organization logic

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -11,10 +12,13 @@ import torch
 from torch import nn
 
 from ltx_core.model.transformer.attention import Attention
+from scripts.prune.data.native_gate_study import freeze_context
+from scripts.prune.learn.checkpoints import tensor_hash
 from scripts.prune.score import native_gate_analysis as analysis
 from scripts.prune.score.native_gate_accumulator import Accumulator, atomic_json, distribution_distance, save_arrays
 from scripts.prune.score.native_gate_analysis import agreement, build_report
 from scripts.prune.score.native_gate_observer import NativeGateObserver, summarize
+from scripts.prune.score.native_head_gates import publish_shard_receipt
 
 
 def sample(value: float = 1.0) -> dict[str, np.ndarray]:
@@ -144,6 +148,19 @@ def test_distances_and_ranking_ties() -> None:
     assert agreement((~kept).astype(float), kept)["roc_auc"] == 0
 
 
+def test_original_head_permutation_preserves_agreement_and_selected_ids() -> None:
+    scores = np.array([[0.2, 0.8, 0.1, 1.9], [0.7, 1.1, 0.3, 1.5]])
+    kept = np.array([[False, True, False, True], [True, True, False, True]])
+    permutation = [2, 0, 3, 1]
+    original = agreement(scores, kept)
+    permuted = agreement(scores[:, permutation], kept[:, permutation])
+    for key in ("roc_auc", "average_precision", "intersection", "recall", "jaccard", "within_block_intersection"):
+        assert original[key] == permuted[key]
+    original_ids = np.arange(scores.size).reshape(scores.shape)[:, permutation].ravel()
+    for key in ("selected", "within_block_selected"):
+        np.testing.assert_array_equal(np.sort(original_ids[permuted[key]]), original[key])
+
+
 def test_model_free_report_sketch(tmp_path: Path) -> None:
     for directory in ("configs", "comparison", "provenance"):
         (tmp_path / directory).mkdir()
@@ -220,3 +237,37 @@ def test_full_milestone_analysis_without_model(tmp_path: Path, monkeypatch: pyte
             assert result["convergence"]["stable_fraction"] == [0] * 4
     assert "E2a_mean_stability" in seen
     assert "E4d_event_drops" in seen
+
+
+def test_context_byte_hash_is_not_archive_hash(tmp_path: Path) -> None:
+    original = tmp_path / "context.pt"
+    context = torch.arange(16, dtype=torch.bfloat16).reshape(1, 4, 4)
+    torch.save(context, original)
+    raw = hashlib.sha256(context.contiguous().view(torch.uint8).numpy().tobytes()).hexdigest()
+    record = {"path": str(original), "bytes_sha256": raw, "tensor_sha256": tensor_hash(context)}
+    frozen = freeze_context(record, tmp_path / "new_run")
+    assert frozen["file_sha256"] != raw
+    assert frozen["bytes_sha256"] == raw
+    assert frozen["path"] != str(original)
+    torch.save(context + 1, original)
+    with pytest.raises(ValueError, match="context tensor changed"):
+        freeze_context(record, tmp_path / "bad_run")
+
+
+def test_resume_finishes_missing_shard_receipt_without_replaying_draws(tmp_path: Path) -> None:
+    path = tmp_path / "step_0100.npz"
+    acc = Accumulator(2, "frozen")
+    acc.add(1, 0, sample(), receipt(1))
+    acc.save(path)
+    original = path.read_bytes()
+    publish_shard_receipt(path, "frozen", [1], 4, 100)
+    pin_path = path.with_suffix(".json")
+    pin = pin_path.read_bytes()
+    publish_shard_receipt(path, "frozen", [1], 4, 100)
+    assert pin_path.read_bytes() == pin
+    assert path.read_bytes() == original
+    with pytest.raises(ValueError, match="draw identities differ"):
+        publish_shard_receipt(path, "frozen", [1, 2], 4, 100)
+    pin_path.write_text("{}")
+    with pytest.raises(ValueError, match="completed artifact differs"):
+        publish_shard_receipt(path, "frozen", [1], 4, 100)

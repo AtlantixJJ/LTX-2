@@ -514,14 +514,87 @@ def figures(root: Path, step: int, summary: dict, output: dict, references: list
     del arrays, probs
 
 
-def build_report(root: Path) -> None:  # noqa: PLR0912, PLR0915
+def validate_report_inputs(root: Path, study: dict, step: int) -> None:
+    """Require the declared scientific figures before publishing a real milestone."""
+    if not step or study.get("format") != "native_gate_training_stream_v1":
+        return
+    directory = root / f"milestones/step_{step:04d}"
+    complete = json.loads((directory / "complete.json").read_text())
+    if complete["study"] != study["identity"] or complete["step"] != step:
+        raise ValueError("report milestone identity differs")
+    if complete["draws"] != step * 8 // 5 or complete["per_sigma"] != [step * 2 // 5] * 4:
+        raise ValueError("report requires the complete balanced source prefix")
+    references = json.loads((root / "comparison/masks.json").read_text())["references"]
+    required = [
+        "E1a_mean_gates",
+        "E1b_distributions",
+        "E3a_noise_response",
+        "E3b_rank_agreement",
+        "coverage",
+        "E4d_event_drops",
+    ]
+    if json.loads((root / "configs/examples.json").read_text())["brief_activation"]:
+        required.append("E1c_brief_activation")
+    if step >= 200:
+        required.extend(("E2a_mean_stability", "E2b_distribution_stability", "E2c_new_sample_check"))
+    if step >= 400:
+        required.extend(("E2d_stable_coverage", "E2d_unstable_heads"))
+    required.extend(f"E4{letter}_{ref['name']}" for ref in references for letter in ("a", "b", "c"))
+    for name in required:
+        for suffix in (".png", ".pdf", ".data.json"):
+            path = directory / f"figures/{name}{suffix}"
+            if not path.is_file():
+                raise ValueError(f"required scientific figure missing: {path}")
+
+
+def eligible_stability_figure(root: Path, step: int, sigmas: list) -> Path:
+    """Plot stability only when three adjacent comparisons actually exist.
+
+    Keep the collection snapshot's original figures unchanged. This corrected
+    presentation has its own saved-data companions under report_figures/.
+    """
+    history = [
+        json.loads((root / f"milestones/step_{s:04d}/analysis.json").read_text()) for s in range(400, step + 1, 100)
+    ]
+    directory = root / f"milestones/step_{step:04d}/report_figures"
+    fig, axis = plt.subplots(figsize=(10, 4), layout="constrained")
+    for j, sigma in enumerate(sigmas):
+        axis.plot(
+            [h["step"] for h in history],
+            [h["convergence"]["stable_fraction"][j] for h in history],
+            marker=".",
+            label=f"{sigma:.3f}",
+        )
+    axis.set(
+        xlabel="Completed source steps (eligible from 400)",
+        ylabel="Fraction of practically stable heads",
+        ylim=(-0.02, 1.02),
+    )
+    axis.legend(title="sigma")
+    save_figure(
+        fig,
+        directory,
+        "E2d_eligible_stable_coverage",
+        {
+            "history": [{"step": h["step"], "stable": h["convergence"]["stable_fraction"]} for h in history],
+            "sigmas": sigmas,
+            "first_eligible_step": 400,
+        },
+    )
+    return directory / "E2d_eligible_stable_coverage.png"
+
+
+def build_report(root: Path, *, destination: Path | None = None) -> None:  # noqa: PLR0912, PLR0915
     # One document assembly keeps availability branches beside their scientific claims.
     """Create a sketch after launch; rebuild current sections from completed evidence."""
     study = json.loads((root / "configs/frozen_study.json").read_text())
     narrative = json.loads((root / "configs/narrative.json").read_text())
+    if not (root / "comparison/masks.json").is_file():
+        raise ValueError("report links missing saved evidence: comparison/masks.json")
     milestones = sorted((root / "milestones").glob("step_*/analysis.json"))
     latest = json.loads(milestones[-1].read_text()) if milestones else None
     step = latest["step"] if latest else 0
+    validate_report_inputs(root, study, step)
     acceptance = [json.loads(p.read_text()) for p in sorted((root / "provenance").glob("acceptance_gpu_*.json"))]
     status_path = root / "monitoring/status.json"
     status = (
@@ -539,25 +612,43 @@ def build_report(root: Path) -> None:  # noqa: PLR0912, PLR0915
         "**Terms**",
         "",
         "- **Native gate:** the frozen dev model's token-dependent `2 * sigmoid(logit)` multiplier, in native units from zero to two.",
+        "- **Original head ID:** a block/head pair in the original 48 by 32 layout. Native statistics and saved masks use this same order.",
+        "- **Draw:** a scheduled training record with its original view, noise seed and source sigma index.",
+        "- **F18 crop:** 18 continuous latent frames with local positions. The first frame is clean; the other 17 frames supply the primary statistics.",
         "- **Step:** four scheduled training records; only selected-noise records receive F18 native forwards. Weights stay fixed.",
         "- **Milestone:** another 100 source steps: 400 scheduled records, 160 observed draws, and 40 per selected sigma.",
         "- **Sigma:** the draw's saved noise level; the four selected levels remain separate.",
         "- **Distribution distance:** binned Wasserstein-1 distance, the area between cumulative histograms in native gate units.",
-        "- **Practical stability:** three consecutive mean/distribution/threshold-fraction changes within the saved tolerances; first eligible at step 400.",
+        "- **Mean gate score:** the generated-token mean within each draw, averaged equally over draws at one sigma. The aggregate weights the four sigmas equally.",
+        "- **Cumulative/window distribution:** all retained draws through a milestone, or only its latest disjoint 100-step window. Histograms use 2,048 fixed bins; quantiles have a 1/1024-bin approximation.",
+        "- **Threshold fractions:** generated-token fractions below 0.1 and 0.5, and above 1.5 and 1.9, separately by sigma.",
+        "- **Practical stability:** for three consecutive comparisons, mean change is at most 0.01, distribution distance at most 0.02, and each threshold-fraction change at most 0.01. First eligible at step 400.",
         "- **Pruned reference:** a saved binary head mask, joined by original block/head IDs; agreement does not establish safe removal.",
+        "- **Clipped-reset reference:** the primary head-only update-600 mask, with 292 removed and 1,244 kept heads. Its recovery mask is unchanged.",
+        "- **Joint r3 reference:** the additional saved head mask from joint head/FFN training. Its checkpoint update, phase and counts are listed in the appendix.",
+        "- **ROC AUC:** the fraction of removed/kept pairs with a smaller native score for the removed head, with half-credit for ties. Chance is 0.5.",
+        "- **Average precision:** precision averaged over recall increments at distinct score thresholds. Removal is positive; removal prevalence is its chance reference.",
+        "- **Removal prevalence:** the number of removed heads divided by all 1,536 heads in a reference mask.",
+        "- **Matched-count list:** the lowest native scores, matching the saved removal count globally or separately within each block. Ties use original IDs. These lists are not executed masks.",
+        "- **Matched-count recall/precision:** the intersection divided by the matched removal count. They are equal here; Jaccard divides the intersection by the union.",
+        "- **Historical drop:** one minus the learned pruning score immediately before an event reset. Only that event's eligible heads enter its comparison.",
+        "- **Spearman correlation:** agreement between two head rankings, from minus one to one. It does not measure removal cost.",
         "",
         "**Shared setup:** fixed BF16 LTX-2.5 dev, empty text, 256 training views / 93 actors, original draw order filtered to four sigmas, F18 crops, one direct `[sigma,0]` call per draw, GPUs 4-6.",
         "",
         "**Progress**",
         "",
         f"Status: {status['status']}. Validated prefix: **{step} / {study['steps']} steps**, **{step * 160 // 100} observed draws** out of **{4 * step} scheduled records**.",
+        f"Skipped scheduled records: **{step * 12 // 5}**. They advance the source step counter and receive no observation forward.",
         f"Cumulative draws per noise level: **{int(step * 0.4)}**. Latest validated milestone: **{step if step else 'not available yet'}**.",
         "Noise levels: " + ", ".join(f"`{s}`" for s in study["sigmas"]) + ".",
         "",
         "**Main findings**",
         "",
     ]
-    if latest:
+    if latest and narrative.get("main_findings"):
+        lines.extend(f"{i}. {finding}" for i, finding in enumerate(narrative["main_findings"], 1))
+    elif latest:
         metrics = latest["agreement"]["clipped_reset_u600"]["aggregate"]
         lines.extend(
             [
@@ -578,10 +669,9 @@ def build_report(root: Path) -> None:  # noqa: PLR0912, PLR0915
             "",
         ]
     )
-    for row in acceptance:
-        gpu = row["gpu"]
+    if acceptance:
         lines.append(
-            f"GPU {gpu}: maximum output difference `{row['max_abs']}`, {row['modules']} blocks / {row['heads']} heads; [receipt](provenance/acceptance_gpu_{gpu}.json)."
+            "The worker acceptance receipts and source identities are in the [verification appendix](#verification-and-source-appendix)."
         )
     for number, question in enumerate(QUESTIONS, 1):
         lines.extend(["", f"## {question}", ""])
@@ -591,8 +681,13 @@ def build_report(root: Path) -> None:  # noqa: PLR0912, PLR0915
             )
         elif latest and number == 2 and step >= 200:
             conv = latest["convergence"]
+            stability = (
+                f"Practically stable head fractions range from {min(conv['stable_fraction']):.1%} to {max(conv['stable_fraction']):.1%}."
+                if step >= 400
+                else "Practical-stability labels are not available before step 400."
+            )
             lines.append(
-                f"**Short answer:** Median cumulative distribution changes range from {min(conv['distribution_change']['median']):.5f} to {max(conv['distribution_change']['median']):.5f} across noise levels. Practically stable head fractions range from {min(conv['stable_fraction']):.1%} to {max(conv['stable_fraction']):.1%}; this does not prove a limit distribution."
+                f"**Short answer:** Median cumulative distribution changes range from {min(conv['distribution_change']['median']):.5f} to {max(conv['distribution_change']['median']):.5f} across noise levels. {stability} This does not prove a limit distribution."
             )
         elif latest and number == 3:
             matrix = np.array(latest["sigma_rank_correlation"], dtype=float)
@@ -617,6 +712,16 @@ def build_report(root: Path) -> None:  # noqa: PLR0912, PLR0915
         available = []
         if latest:
             available = sorted((root / f"milestones/step_{step:04d}/figures").glob(f"E{number}*.png"))
+            if number == 1 and "E1b_prefix_overlays" in narrative["sections"][1]["design"]:
+                available = [p for p in available if p.stem != "E1b_distributions"]
+            if number == 2:
+                available = [
+                    p
+                    for p in available
+                    if p.stem != "E2d_stable_coverage" and (step >= 400 or not p.stem.startswith("E2d"))
+                ]
+                if step >= 400:
+                    available.append(eligible_stability_figure(root, step, study["sigmas"]))
         if available:
             for path in available:
                 relative = str(path.relative_to(root))
@@ -626,7 +731,7 @@ def build_report(root: Path) -> None:  # noqa: PLR0912, PLR0915
                         f"![{title}; real evidence through step {step}.]({relative})",
                         "",
                         f"*{title}, through {step} steps. Figure axes and its purpose are specified above.* "
-                        f"[PDF]({relative[:-4]}.pdf) · [Plotted data]({relative[:-4]}.data.json)",
+                        f"[Full-size PNG]({relative}) · [PDF]({relative[:-4]}.pdf) · [Plotted data]({relative[:-4]}.data.json)",
                         "",
                     ]
                 )
@@ -660,6 +765,42 @@ def build_report(root: Path) -> None:  # noqa: PLR0912, PLR0915
             "",
         ]
     )
+    lines.extend(["", "## Verification and source appendix", ""])
+    for row in acceptance:
+        gpu = row["gpu"]
+        lines.append(
+            f"GPU {gpu}: maximum output difference `{row['max_abs']}`, {row['modules']} blocks / {row['heads']} heads; [receipt](provenance/acceptance_gpu_{gpu}.json)."
+        )
+    mask_references = json.loads((root / "comparison/masks.json").read_text()).get("references", [])
+    for reference in mask_references:
+        mask = np.asarray(reference["kept"], dtype=bool)
+        recipe = "joint head/FFN recipe" if reference["name"].startswith("r3_") else "head-only clipped-reset recipe"
+        lines.append(
+            f"**{reference['name']}:** {recipe}, saved update {reference['update']}; "
+            f"{int((~mask).sum())} removed and {int(mask.sum())} kept heads. "
+            f"Saved phase: {reference.get('phase', 'selection-end mask, unchanged during recovery')}."
+        )
+    for label, relative in [
+        ("Full source manifest", "configs/source_study.json"),
+        ("Original ordered draw stream", "configs/draws.json"),
+        ("Component, weighting and threshold contract", "provenance/collection_contract.json"),
+        ("Collection launch and frozen source snapshot", "provenance/launch.json"),
+        ("Saved-reader code pins", "provenance/audit_code.json"),
+        ("Comparison record index", "comparison/index.json"),
+    ]:
+        if (root / relative).is_file():
+            lines.append(f"[{label}]({relative}).")
+    if step:
+        for label, relative in [
+            ("Exact-prefix audit", f"monitoring/audits/step_{step:04d}.json"),
+            ("Original-head comparison records", f"milestones/step_{step:04d}/review/head_records.json"),
+            ("Historical event correlations and coverage", f"milestones/step_{step:04d}/review/review.json"),
+            ("Head disagreements by sigma and matching method", f"comparison/step_{step:04d}/disagreements.json"),
+            ("Physical draw workers and source receipt hashes", f"comparison/step_{step:04d}/draw_workers.json"),
+            ("Historical event correlations by sigma", f"comparison/step_{step:04d}/event_correlations.json"),
+        ]:
+            if (root / relative).is_file():
+                lines.append(f"[{label}]({relative}).")
     text = "\n".join(lines)
     # Validate links and scientific figure companions after every rebuild.
 
@@ -675,10 +816,11 @@ def build_report(root: Path) -> None:  # noqa: PLR0912, PLR0915
         for suffix in (".pdf", ".data.json"):
             if not path.with_suffix(suffix).is_file():
                 raise ValueError(f"scientific figure companion missing: {path}")
-    temporary = root / f".REPORT.{os.getpid()}.md.tmp"
+    target = destination or root / "REPORT.md"
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     temporary.write_text(text)
-    temporary.replace(root / "REPORT.md")
+    temporary.replace(target)
     atomic_json(
-        root / "monitoring/report_validation.json",
+        target.with_suffix(".validation.json") if destination else root / "monitoring/report_validation.json",
         {"passed": True, "step": step, "local_links_checked": True, "synthetic_result_curves": False},
     )
