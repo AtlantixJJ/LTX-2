@@ -779,6 +779,13 @@ The native gate projection preserves its original output width. V, attention, ou
 The default split bundle preserves original FFN down reduction coordinates. Its actual cost must include that full-width GEMM.
 Timing requires a separate qualified benchmark. A merged BF16 export failure remains visible.
 
+## Completed joint V3 evaluation
+
+Use [joint_final](evaluate/joint_final.md#usage) for fixed selection/final held-out predictions and final split-bundle parity/timing.
+Use [joint_media](evaluate/joint_media.md#usage) for 36 synchronized held-out comparisons and fixed-region metrics.
+Run these direct CLIs in ltx on free GPUs 4–6. They preserve historical studies and record separate execution identities.
+Keep B/C training on their independently accepted four-GPU group. Never share a GPU with another model worker.
+
 ## Deck comparison
 
 The [deck comparison executor](evaluate/deck_comparison.md#usage) renders native dev, old step 3300 and new step 800.

@@ -22,6 +22,8 @@ The joint V3 extension has [family rules](learn/readmission.md), [numerical stat
 [export isolation](checks/joint_export.md), [fault diagnosis](checks/joint_faults.md),
 [native split replay](checks/joint_split_parity.md) and [terminal split export](score/export_joint_split.md).
 The [merged export](score/export_joint.md) requires separate qualification.
+Completed V3 studies use [held-out inference and deployment](evaluate/joint_final.md)
+and [matched decoded comparisons](evaluate/joint_media.md). These owners do not resume training.
 
 ## Documentation rules
 
@@ -73,6 +75,8 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 
 | Source | Design | Physical lines |
 |---|---|---:|
+| `evaluate/joint_final.py` | [evaluate/joint_final.md](evaluate/joint_final.md) | 215 |
+| `evaluate/joint_media.py` | [evaluate/joint_media.md](evaluate/joint_media.md) | 121 |
 | `checks/joint_faults.py` | [checks/joint_faults.md](checks/joint_faults.md) | 166 |
 | `checks/joint_split_parity.py` | [checks/joint_split_parity.md](checks/joint_split_parity.md) | 190 |
 | `score/export_joint_split.py` | [score/export_joint_split.md](score/export_joint_split.md) | 227 |
