@@ -18,6 +18,9 @@ The final update in the export example is the maximum-length case. Use the actua
 
 ## Data flow
 
+The base width export uses the bounded per-tensor streaming writer.
+Split adapters remain a separate FP32 payload and retain their original two-GEMM arithmetic.
+
 The frozen study pins the source checkpoint and training identity.
 The terminal training checkpoint supplies binary masks, original unit IDs and FP32 adapters.
 The exporter saves two tensor payloads and an envelope with their content hashes.

@@ -51,6 +51,9 @@ Deployment timing includes the full-width FFN down projection and split adapters
 
 ## Gotchas
 
+Deployment waits at most 24 hours for each matching final reference.
+`core.waits` records each ready, timed-out or failed wait under `evaluation/waits/`; reruns preserve earlier receipts.
+
 The six test actors were scored in earlier studies. They are held-out from training, but are not a new blind population.
 One timing source does not establish a hardware-wide or length-wide speed result.
 Historical training code can differ from the evaluation owner. Both identities remain explicit.

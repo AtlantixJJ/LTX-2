@@ -17,19 +17,12 @@ from pathlib import Path
 
 import torch
 
-from scripts.prune.core import numerics, provenance, records
+from scripts.prune.core import numerics, provenance, records, waits
 from scripts.prune.evaluate import ffn, joint_final
 
 
 def read(path):
     return json.loads(Path(path).read_text())
-
-
-def wait_until(ready, deadline, what):
-    while not ready():
-        if time.monotonic() > deadline:
-            raise TimeoutError(f"waited too long for {what}")
-        time.sleep(20)
 
 
 def gpu_idle(gpu):
@@ -47,12 +40,13 @@ def run(study, gpu, shard_index=0, shard_count=1, wait_hours=24.0):
         raise ValueError("invalid disjoint media shard")
     root = Path(study["root"])
     deadline = time.monotonic() + wait_hours * 3600
-    wait_until(
+    waits.until(
         lambda: all((root / f"evaluation/test/{arm}/results.json").exists() for arm in ("selection", "final")),
         deadline,
         "fixed endpoint inference results",
+        receipts=root / "media/waits",
     )
-    wait_until(lambda: gpu_idle(gpu), deadline, f"an idle GPU {gpu}")
+    waits.until(lambda: gpu_idle(gpu), deadline, f"an idle GPU {gpu}", receipts=root / "media/waits")
     current = ffn.current_for(study, gpu)
     parent = Path(study["parent"]["input_root"])
     old = read(parent / "configs/frozen_study.json")

@@ -23,6 +23,9 @@ Read a completed frozen checkpoint. Validate original masks against source tenso
 Slice head and FFN adapters at their original retained IDs.
 Use existing coupled structural surgery, then merge each effective weight in FP32 and round once.
 The new envelope pins study, components, recovery checkpoint, complete masks and merged tensor inventory.
+`stream_merge` plans shapes without loading the full source dictionary, then transforms one tensor at a time.
+FFN recovery slices first and merges compact adapters afterward. V3 requests merge-first arithmetic through the same owner.
+`adapter_targets` validates every FP32 A/B pair against the coordinates where its merge will run.
 
 ## Organization logic
 
@@ -36,6 +39,8 @@ Native parity separates split adapters versus fused masked weights from fused ma
 Each comparison keeps the same source, context, noise and direct schedule.
 Each maximum absolute latent difference must be at most 0.02.
 The command records failed parity without claiming an accepted candidate.
+The writer hashes payloads as it writes them. Its final header binds the envelope after that inventory exists.
+Whole-file hashes remain provenance; exact payloads and parsed metadata define export-content acceptance.
 
 ## Invariants
 
@@ -53,4 +58,5 @@ Payload correctness does not prove decoded quality or reduced latency.
 ## Tests
 
 `test_ffn_learning.py` checks independent merge algebra, bias preservation and original-channel adapter/moment transfer.
+`test_safetensors_stream.py` checks both slice/merge orders and the envelope binding against in-memory controls.
 Native tests separately measure functional, fusion and compact discrepancies.

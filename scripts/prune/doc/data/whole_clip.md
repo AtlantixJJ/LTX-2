@@ -22,12 +22,17 @@ The prompt text hash and actual context-byte hash must match.
 Mix capture and saved epsilon, insert clean c0, then assemble the modality.
 Use `attention_mask=None`, float32 global sigma and float32 token timesteps.
 Return the grid, modality, clean first-frame tokens and manifest row.
+`load_case` verifies each small capture/noise file buffer and deserializes that same buffer once.
+It returns the reconstructed modality and those verified capture/noise tensors to learning and evaluation callers.
+Both public paths use `_reconstruct_input`; no second noising or conditioning implementation exists.
+`source_grid` verifies a capture and builds its grid for media without creating noise or a model input.
 
 ## Organization logic
 
 `records` indexes rows by view and sigma.
 `latent_path` requires one matching D0 artifact and verifies its full file hash.
 `load_epsilon` verifies the noise file before loading.
+The bytes in its verified buffer are the bytes passed to `torch.load`, even if the source path changes afterward.
 `verify_saved_noise` compares actual epsilon tensors after independently checking both hashes.
 
 `native_provenance` pins the calibration manifest SHA-256 and selected distribution.
@@ -81,6 +86,7 @@ Use export parity for no-prune controls because paired quality analysis requires
 
 `tests/test_whole_clip_d0.py` checks manifest, noise and cross-task refusals.
 `tests/test_actor_holdout.py` checks actor identities and aliases.
+`tests/test_input_loading.py` checks one load per tensor, exact modality fields, grid-only media and replacement after a verified read.
 Depth-export tests check candidate-family dispatch.
 A real baseline forward verifies the reconstructed model input after numerical changes.
 
@@ -92,8 +98,9 @@ It uses the public corpus reader and the common seeded epsilon helper.
 It saves epsilon once and publishes a capture-only input manifest atomically.
 A completed input manifest reuses its pinned epsilon. Orphan files without a manifest fail for diagnosis.
 
-Every sigma still passes through `build_input`, which remains the sole reconstruction calculation.
+Every sigma uses `_reconstruct_input` through `build_input` or the validated `load_case` path.
 The input manifest declares `whole_clip_d0_inputs_v1`; it does not claim saved rollout completion.
+Shared task and guidance fields come from `core.native_manifest.fields(input_only=True)`.
 The tiny dataset-worker tests verify exact saved-noise reuse and first-frame conditioning across sigmas.
 
 ## Recovered width candidates

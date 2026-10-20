@@ -21,6 +21,8 @@ Outputs are the checkpoint, an envelope with the tensor inventory, and a hash si
 
 The frozen study supplies source weights, saved context, source noise and exact schedules.
 The checkpoint reader binds policy state, binary masks and adapters to that study.
+The shared `export_learned_ffn.stream_merge` owner merges each original-width tensor before applying its structural slice.
+It holds one transformed tensor and the adapter state, without materializing the complete transformer dictionary.
 
 ## Organization logic
 
@@ -45,3 +47,6 @@ The FP32 control tests an arithmetic explanation; a failed full-model check alon
 
 Run the CPU suite and native acceptance separately.
 Use staged saved transition receipts before a deployment claim.
+`test_safetensors_stream.py` checks merge-before-slice arithmetic and payload/envelope identity on CPU.
+Saved-checkpoint export acceptance compares exact payloads and parsed metadata, and records peak host RSS.
+Raw file hashes remain provenance because the previous serializer randomizes metadata key order.

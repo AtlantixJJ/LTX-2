@@ -29,6 +29,8 @@ Separate seed-42 legacy wrappers retain each clip geometry. The recovered envelo
 GT training can reuse historical energy without creating these wrappers' inputs.
 Save only missing inputs with the shared native input producer after selection. Preserve the complete learning-view scope and original seed-42 contract.
 Fusion computes W0 plus B@A in FP32, then rounds once. The checkpoint pins its envelope; the envelope pins the merged tensor inventory.
+Fusion delegates to the shared streaming merge owner with attention-only adapter targets.
+Its legacy tensor inventory keeps the original shape/hash schema, without adding a dtype field.
 
 ## Invariants
 

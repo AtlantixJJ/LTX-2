@@ -15,7 +15,7 @@ from pathlib import Path
 import torch
 
 from scripts.onestep_avatar.model import common
-from scripts.prune.core import ltx_adapter, numerics, provenance, records
+from scripts.prune.core import ltx_adapter, numerics, provenance, records, waits
 from scripts.prune.data import study_io
 from scripts.prune.data.study_io import code_identity
 from scripts.prune.evaluate import ffn, timing
@@ -142,10 +142,13 @@ def deployment(study, gpu):
             receipt_path = root / f"evaluation/test/final/{ffn.key(src, seed, sigma)}/case.json"
             # The functional reference comes from a concurrent `--stage infer --arm final` owner.
             deadline = time.monotonic() + 24 * 3600
-            while not receipt_path.exists():
-                if time.monotonic() > deadline:
-                    raise TimeoutError(f"final functional reference never appeared: {receipt_path}")
-                time.sleep(10)
+            waits.until(
+                receipt_path.exists,
+                deadline,
+                f"final functional reference {receipt_path}",
+                receipts=root / "evaluation/waits",
+                poll_seconds=10,
+            )
             case = input_case(study, current, src, seed, sigma)
             _, clean = ltx_adapter.velocity_forward(model, case[1])
             clean = common.with_clean_prefix(clean, case[2]).cpu()

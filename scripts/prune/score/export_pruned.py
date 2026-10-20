@@ -5,14 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import resource
+from functools import partial
 from pathlib import Path
 
 import torch
 from safetensors import safe_open
-from safetensors.torch import save_file
 
 from scripts.prune.core import model_registry, preflight, provenance
-from scripts.prune.score import hooks
+from scripts.prune.score import hooks, safetensors_stream
 
 PREFIX = "model.diffusion_model.transformer_blocks"
 
@@ -84,10 +84,18 @@ def export(
     mode: str = "masked_full",
 ) -> Path:
     """Perform checkpoint-space surgery; masks are keyed ``'0.attn1'`` / ``'0.ff'``."""
-    source, output = Path(source), Path(output)
-    sd, metadata = load(source)
+    tensors, metadata, transforms = stream_plan(
+        source, masks, model_key=model_key, provenance_block=provenance_block, mode=mode
+    )
+    safetensors_stream.write(source, output, tensors, metadata, transforms=transforms)
+    return Path(output)
+
+
+def stream_plan(source, masks, *, model_key, provenance_block=None, mode="masked_full"):
+    """Use the existing surgery on meta tensors; build independent per-tensor slices."""
+    tensors, metadata = safetensors_stream.inspect(source)
     export_tensors(
-        sd,
+        tensors,
         metadata,
         masks,
         widths=checkpoint_mask_widths(source),
@@ -95,9 +103,30 @@ def export(
         provenance_block=provenance_block,
         mode=mode,
     )
-    output.parent.mkdir(parents=True, exist_ok=True)
-    save_file(sd, str(output), metadata=metadata)
-    return output
+    transforms = {}
+    if mode in ("compact", "compact_faithful"):
+        d = json.loads(metadata["config"])["transformer"].get("attention_head_dim", 128)
+        for name, values in masks.items():
+            block, kind = name.split(".")
+            keep = _keep(values, name)
+            if len(keep) == len(values):
+                continue
+            prefix = f"{PREFIX}.{block}.{kind}"
+            if kind == "ff":
+                indices = torch.tensor(keep, dtype=torch.long)
+                axes = {"net.0.proj.weight": 0, "net.0.proj.bias": 0, "net.2.weight": 1}
+            else:
+                indices = _indices(keep, d)
+                axes = {"to_v.weight": 0, "to_v.bias": 0, "to_out.0.weight": 1}
+                for suffix in ("weight", "bias"):
+                    key = f"{prefix}.to_gate_logits.{suffix}"
+                    if key in tensors:
+                        transforms[key] = partial(torch.index_select, dim=0, index=torch.tensor(keep))
+            for suffix, axis in axes.items():
+                key = f"{prefix}.{suffix}"
+                if key in tensors:
+                    transforms[key] = partial(torch.index_select, dim=axis, index=indices)
+    return tensors, metadata, transforms
 
 
 def load(source):

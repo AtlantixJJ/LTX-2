@@ -258,6 +258,8 @@ Final compact export requires the exact completed recovery checkpoint.
 ## Learned head phases
 
 Head-only training remains supported with the uniform-F18 DDP preset below.
+Fresh study preparation requires `--evidence-list` with an explicit pinned list of prior inspected evidence.
+Use completed immutable evidence; the preparer no longer scans experiment trees to choose actor exclusions.
 Use the [head owner](learn/heads.md), [checkpoint checks](checks/learned_heads.md),
 [paired evaluation](evaluate/learned_heads.md) and [media owner](evaluate/learned_head_media.md) for bounded phase commands.
 Code maintenance never restarts a stopped study.

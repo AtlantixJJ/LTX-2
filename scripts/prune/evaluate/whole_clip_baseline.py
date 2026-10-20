@@ -21,7 +21,7 @@ from scripts.onestep_avatar.corpus.dataset import load_training_master
 from scripts.onestep_avatar.model import backbone, common
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.model import sampling as model_sampling
-from scripts.prune.core import provenance
+from scripts.prune.core import native_manifest, provenance
 from scripts.prune.core.session import (
     DEFAULT_PROMPT,
     DTYPE,
@@ -121,22 +121,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     elif args.dev_denoising_steps is not None:
         parser.error("--dev-denoising-steps is dev only")
     return args
-
-
-def guidance_record(cfg: float, stg: float, stg_blocks: list[int], rescale: float, negative_prompt: str | None) -> dict:
-    """The saved guidance block; the completion reader rebuilds the unguided form from it."""
-    return {
-        "cfg": cfg,
-        "stg": stg,
-        "stg_blocks": list(stg_blocks) if stg != 0.0 else [],
-        "rescale": rescale,
-        "negative_prompt": negative_prompt,
-        "negative_prompt_sha256": None
-        if negative_prompt is None
-        else hashlib.sha256(negative_prompt.encode("utf-8")).hexdigest(),
-        "passes_per_step": 1 + (cfg != 1.0) + (stg != 0.0),
-        "execution": "sequential passes",
-    }
 
 
 def suffix(args: argparse.Namespace) -> str:
@@ -334,14 +318,13 @@ def _inspect_completion(args: argparse.Namespace, root: Path) -> list[Path]:  # 
     if len(set(seeds)) != len(seeds) or len({view.resolve() for view in args.view}) != len(args.view):
         raise ValueError("duplicate baseline view or seed")
     fixed = {
+        **native_manifest.fields(),
         "kind": "d1_paired_source_probe",
         "checkpoint": None,
         "objective": args.objective,
         "sigmas": list(args.sigmas),
         "seed": args.seed,
         "seeds": seeds,
-        "whole_clip": True,
-        "trajectory_only": False,
         "teacher_forcing": False,
         "history_policy": "none_single_block",
         "history_mode": "recompute",
@@ -349,8 +332,6 @@ def _inspect_completion(args: argparse.Namespace, root: Path) -> list[Path]:  # 
         "steps": args.steps,
         "denoising_steps_requested": None,
         "schedule_policy": ("direct_ltx2_scheduler" if args.variant == "dev" else "distilled_grid"),
-        "attention": "full_bidirectional",
-        "latent_dtype": str(DTYPE),
         "max_blocks": None,
         "raw_only": True,
         "arms": list(args.arms),
@@ -360,7 +341,6 @@ def _inspect_completion(args: argparse.Namespace, root: Path) -> list[Path]:  # 
             "scheme": "one global epsilon tensor per view, sliced by latent-frame block",
             "shared_across_arms_sigmas_and_block_geometries": True,
         },
-        "guidance": guidance_record(1.0, 0.0, [28], 0.0, None),
     }
     if any(manifest.get(key) != value for key, value in fixed.items()):
         raise ValueError("baseline scientific settings differ")
@@ -552,11 +532,17 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
     model_stamp["checkpoint"] = None
     passes_per_step = 1 + (args.cfg != 1.0) + (args.stg != 0.0)
     manifest = {
+        **native_manifest.fields(
+            cfg=args.cfg,
+            stg=args.stg,
+            stg_blocks=args.stg_blocks,
+            rescale=args.rescale,
+            negative_prompt=negative_prompt,
+        ),
         "kind": "d1_paired_source_probe",
         "checkpoint": None,
         "objective": args.objective,
         "sigmas": list(sigmas),
-        "trajectory_only": False,
         "seed": args.seed,
         "seeds": seeds,
         "teacher_forcing": False,
@@ -577,18 +563,14 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
         },
         "model": model_stamp,
         "capabilities": asdict(session.model.caps),
-        "whole_clip": True,
         "model_variant": args.variant,
         "steps": args.steps,
         "denoising_steps_requested": args.dev_denoising_steps,
         "schedule_policy": f"{args.dev_schedule}_ltx2_scheduler" if args.variant == "dev" else "distilled_grid",
-        "guidance": guidance_record(args.cfg, args.stg, args.stg_blocks, args.rescale, negative_prompt),
-        "attention": "full_bidirectional",
         "attention_backend": {
             "self": attention_label(DEFAULT_TRANSFORMER_OPS.attention_ops.attention_function),
             "masked": attention_label(DEFAULT_TRANSFORMER_OPS.attention_ops.masked_attention_function),
         },
-        "latent_dtype": str(DTYPE),
         "max_blocks": None,
         "raw_only": args.raw_only,
         "arms": list(args.arms),

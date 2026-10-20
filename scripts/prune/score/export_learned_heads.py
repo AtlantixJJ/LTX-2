@@ -93,12 +93,18 @@ def geometry_wrappers(study, masks, destination):
 
 def merge(source, state, output, *, metadata=None, scaling=1.0, envelope=None, envelope_path=None):
     """Merge V/output adapters in FP32 and round once to the compact base dtype."""
-    from scripts.prune.score.export_learned_ffn import finalize, merge_adapters  # noqa: PLC0415
+    from scripts.prune.score.export_learned_ffn import stream_merge  # noqa: PLC0415
 
-    tensors, meta = export_pruned.load(source)
-    merge_adapters(tensors, state, kinds=("attn1",), scaling=scaling)
-    return finalize(
-        tensors, meta, output, pruning=metadata, envelope=envelope, envelope_path=envelope_path, inventory_dtype=False
+    return stream_merge(
+        source,
+        state,
+        output,
+        kinds=("attn1",),
+        scaling=scaling,
+        pruning=metadata,
+        envelope=envelope,
+        envelope_path=envelope_path,
+        inventory_dtype=False,
     )
 
 

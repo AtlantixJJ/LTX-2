@@ -31,13 +31,15 @@ See [run guide](../usage.md#width-export-and-parity).
 ## Data flow
 
 Read source tensor shapes and validate the mask.
-Load the source tensor dictionary on CPU.
-Apply coupled slicing or record active indices, update transformer metadata, then save the checkpoint.
+Plan coupled slicing on meta tensors, or record full-width active indices.
+Update transformer metadata and stream one tensor at a time through `safetensors_stream`.
 
 ## Organization logic
 
 `checkpoint_mask_widths` probes per-layer Q and FFN shapes without loading payload tensors.
 `export` uses source-order retained indices.
+`stream_plan` uses the existing surgery on meta tensors and returns final shapes and independent per-tensor slices.
+The retained `load`/`export_tensors` helpers also support explicit in-memory callers and baseline controls.
 
 Q/K RMSNorm spans the original heads. Keep full Q/K projections and normalization weights.
 Compact attention slices V rows, output-projection columns and optional gate rows.
@@ -70,12 +72,13 @@ Q/K normalization still sees the original width.
 
 BF16 GEMM rounding can change with compact shapes.
 `compact_faithful` improves storage without promising reduced GEMM work.
-The exporter loads the full tensor dictionary; it is not the bounded streaming depth exporter.
-`save_file` can replace an output. Select a fresh path.
+The writer holds one changed tensor and a bounded copy buffer; the depth exporter separately owns block renaming.
+Atomic publication permits an identical replay but rejects different bytes at an existing output. Select a fresh path.
 The direct Python `export` function does not perform all CLI provenance checks.
 
 ## Tests
 
 `tests/test_export_pruned.py` checks coupled slicing and real tiny-model export behavior.
 `tests/test_mask_artifact.py` checks native artifact validation.
+`tests/test_safetensors_stream.py` compares all four modes with the earlier in-memory serializer.
 Run [native export parity](../checks/export_parity.md) before interpreting quality or timing.

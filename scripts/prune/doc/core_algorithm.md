@@ -109,14 +109,11 @@ Use green for tensors, blue for operations and purple for outputs.
 This follows the [avatar legend](../../onestep_avatar/doc/core_algorithm.md#7-end-to-end-data-flow).
 Diagrams explain data flow. Saved hashes and numerical checks establish evidence.
 
-## MobileWan squared projected energy
+## Squared projected energy
 
-The optional `mobilewan_heads` helper uses executed gated head vectors and head-local projection Gram matrices.
-It computes mean squared projected vector norm over declared generated tokens.
-Average raw energies over sigmas and equal-weight views before dividing by the cohort block mean.
-Actor-cluster bootstrap draws retain all views and sigmas, and recompute normalization in each replicate.
-Global allocation uses ascending pooled train scores, original block/head ties and one retained head per block.
-This helper supplies no native execution evidence yet.
+`score.estimators.projected_energy` measures each head's mean squared projected vector norm on selected query tokens.
+It uses FP32 head-local Gram matrices, bounded token chunks and FP64 sums.
+The helper supplies numerical scores. It does not own a dataset runner, actor split, bootstrap report or accepted pruning candidate.
 
 ## Learned FFN binary masks
 
@@ -153,7 +150,7 @@ An exact block/count dynamic program selects retained original heads.
 A fixed decision serves all draws and backward recomputation within an update.
 Full-replica DDP uses one complete local loss per rank and one averaged gradient update.
 Four ranks consume four independently scheduled F18 windows. No second gradient reduction occurs.
-Legacy serial/FSDP two-draw studies retain their declared accumulation semantics.
+The current learner uses the frozen DDP draw contract.
 
 At update 1,000, freeze the binary IDs and transfer adapters at their frozen rank and Adam moments by channel identity.
 The compact network then receives 500 adapter updates, with retained pruning amplitudes one.

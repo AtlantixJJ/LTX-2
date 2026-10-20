@@ -13,10 +13,11 @@ Retired reference pointers are not plan inputs, and retired source folders must 
 Started by: a direct human or agent CLI. Run from `LTX-2` in conda environment `ltx`.
 
 ```bash
-CUDA_VISIBLE_DEVICES= python -m scripts.prune.data.learned_head_study --config scripts/prune/configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json --plan /path/to/reviewed-study-plan.md --output ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_new
+CUDA_VISIBLE_DEVICES= python -m scripts.prune.data.learned_head_study --config scripts/prune/configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json --plan /path/to/reviewed-study-plan.md --evidence-list /path/to/seen-evidence.json --output ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_new
 ```
 
 `--seen-actors` adds audited exclusions. `--region-tracks` accepts reviewed GT box records.
+`--evidence-list` is required for fresh preparation. It declares prior evidence explicitly, instead of scanning experiment trees.
 The default config is the ten-level uniform-F18 rank128 DDP preset.
 `--uniform-f18` explicitly adds the crop option to another compatible preset and saves its effective config.
 
@@ -31,6 +32,11 @@ Pinned membership supplies views. GT-only replay supplies motion and area. Split
 
 Validation uses twenty hashed train actors. Learning uses actor rounds until 256 views are selected. Later rounds prefer an unused clip length.
 Blind selection excludes known inspected actors and actors cited in earlier evidence.
+The JSON declaration has `format="prune_seen_evidence_v1"` and a `files` list of `{path, sha256}` records.
+Relative paths resolve beside the declaration. Markdown actor mentions and JSON `rows`/`cases` supply exclusions.
+The declaration and every declared evidence file enter the frozen file pins. Duplicate or unsupported paths fail.
+An explicitly empty list declares no additional prior files; existing known/seen actor exclusions still apply.
+Choose completed immutable evidence. A later change to any declared input invalidates that new study.
 Each seed has `1500*global_unique_clips` named draws: 6,000 for four-rank DDP, 3,000 for legacy two-draw studies.
 The frozen config selects exact, distinct, descending levels from the official 30-step dev scheduler, with no latent argument.
 Only positive values at most 0.95 are accepted. Historical seven/eight-level configs remain supported.
@@ -57,6 +63,7 @@ Balanced sampling requires six nonempty buckets. Small-region arms require separ
 ## Tests
 
 Run `test_learned_head_study.py` with CUDA hidden. Native BF16 checks remain separate scientific gates.
+`test_declared_evidence.py` verifies exclusions, ignored undeclared files and refusal of changed content.
 
 ## Preparation workers and report tools
 

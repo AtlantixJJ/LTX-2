@@ -12,7 +12,7 @@ import torch
 from scripts.onestep_avatar import media
 from scripts.prune.core import numerics, provenance
 from scripts.prune.core.records import publish_json
-from scripts.prune.data import foreground
+from scripts.prune.data import foreground, whole_clip
 from scripts.prune.data.learned_head_study import load_study
 from scripts.prune.evaluate.learned_heads import actor_bootstrap, saved_case
 from scripts.prune.evaluate.media_common import (
@@ -74,7 +74,7 @@ def main():
         for group in matched.values()
     ):
         raise ValueError("comparison arms do not share every teacher/input/noise case")
-    from scripts.prune.learn.heads import input_case, open_current
+    from scripts.prune.learn.heads import open_current
 
     numerics.deterministic_policy()
     current = open_current(study, args.gpu_id)
@@ -94,11 +94,8 @@ def main():
                 teacher_record = json.loads((teacher_root / "manifest.json").read_text())
                 if provenance.file_sha256(teacher_root / "clean.pt") != teacher_record["clean"]["file_sha256"]:
                     raise ValueError("teacher media reference changed")
-            from scripts.onestep_avatar.corpus.dataset import load_training_master
-
-            capture, _ = load_training_master(Path(source["capture"]))
-            # Input geometry remains owned by the native reconstruction path.
-            grid, _, _, _, _, _, _ = input_case(study, current, source, noise_seed, sigma)
+            # Media needs the native capture grid, not another noised input case.
+            grid, capture = whole_clip.source_grid(source, current)
             if not gt_only:
                 teacher_tokens = torch.load(teacher_root / "clean.pt", map_location="cpu", weights_only=True)
                 teacher_latent = grid.unpatchify_block(teacher_tokens.to(current.device), grid.latent_frames)

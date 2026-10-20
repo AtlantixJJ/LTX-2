@@ -89,33 +89,35 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `core/geometry.py` | [core/geometry.md](core/geometry.md) | 50 |
 | `core/ltx_adapter.py` | [core/ltx_adapter.md](core/ltx_adapter.md) | 59 |
 | `core/model_registry.py` | [core/model_registry.md](core/model_registry.md) | 179 |
+| `core/native_manifest.py` | inline header | 35 |
 | `core/numerics.py` | inline header | 23 |
 | `core/preflight.py` | [core/preflight.md](core/preflight.md) | 136 |
 | `core/provenance.py` | [core/provenance.md](core/provenance.md) | 154 |
 | `core/records.py` | [core/records.md](core/records.md) | 136 |
 | `core/session.py` | [core/session.md](core/session.md) | 159 |
+| `core/waits.py` | inline header | 45 |
 | `data/__init__.py` | inline header | 1 |
 | `data/corpus_pins.py` | inline header | 56 |
 | `data/ffn_study.py` | [data/ffn_study.md](data/ffn_study.md) | 148 |
 | `data/foreground.py` | [data/foreground.md](data/foreground.md) | 120 |
 | `data/joint_study.py` | [data/joint_study.md](data/joint_study.md) | 157 |
-| `data/learned_head_study.py` | [data/learned_head_study.md](data/learned_head_study.md) | 550 |
+| `data/learned_head_study.py` | [data/learned_head_study.md](data/learned_head_study.md) | 564 |
 | `data/prompt_cache.py` | [data/prompt_cache.md](data/prompt_cache.md) | 111 |
 | `data/study_io.py` | inline header | 47 |
 | `data/training_windows.py` | [data/training_windows.md](data/training_windows.md) | 155 |
-| `data/whole_clip.py` | [data/whole_clip.md](data/whole_clip.md) | 437 |
+| `data/whole_clip.py` | [data/whole_clip.md](data/whole_clip.md) | 490 |
 | `evaluate/__init__.py` | inline header | 1 |
 | `evaluate/bench_whole_clip_d0.py` | [evaluate/bench_whole_clip_d0.md](evaluate/bench_whole_clip_d0.md) | 129 |
 | `evaluate/decode.py` | [evaluate/decode.md](evaluate/decode.md) | 21 |
 | `evaluate/ffn.py` | [evaluate/ffn.md](evaluate/ffn.md) | 381 |
-| `evaluate/joint_final.py` | [evaluate/joint_final.md](evaluate/joint_final.md) | 242 |
-| `evaluate/joint_media.py` | [evaluate/joint_media.md](evaluate/joint_media.md) | 162 |
-| `evaluate/learned_head_media.py` | [evaluate/learned_head_media.md](evaluate/learned_head_media.md) | 234 |
+| `evaluate/joint_final.py` | [evaluate/joint_final.md](evaluate/joint_final.md) | 245 |
+| `evaluate/joint_media.py` | [evaluate/joint_media.md](evaluate/joint_media.md) | 156 |
+| `evaluate/learned_head_media.py` | [evaluate/learned_head_media.md](evaluate/learned_head_media.md) | 231 |
 | `evaluate/learned_heads.py` | [evaluate/learned_heads.md](evaluate/learned_heads.md) | 339 |
 | `evaluate/media_common.py` | [evaluate/media_common.md](evaluate/media_common.md) | 148 |
 | `evaluate/metrics.py` | [evaluate/metrics.md](evaluate/metrics.md) | 76 |
 | `evaluate/timing.py` | [evaluate/timing.md](evaluate/timing.md) | 110 |
-| `evaluate/whole_clip_baseline.py` | [evaluate/whole_clip_baseline.md](evaluate/whole_clip_baseline.md) | 703 |
+| `evaluate/whole_clip_baseline.py` | [evaluate/whole_clip_baseline.md](evaluate/whole_clip_baseline.md) | 685 |
 | `evaluate/whole_clip_d0.py` | [evaluate/whole_clip_d0.md](evaluate/whole_clip_d0.md) | 309 |
 | `learn/adapters.py` | [learn/adapters.md](learn/adapters.md) | 162 |
 | `learn/checkpoints.py` | [learn/checkpoints.md](learn/checkpoints.md) | 209 |
@@ -125,7 +127,7 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `learn/ffn_gates.py` | inline header | 79 |
 | `learn/ffn_training.py` | [learn/ffn_training.md](learn/ffn_training.md) | 213 |
 | `learn/gates.py` | [learn/gates.md](learn/gates.md) | 123 |
-| `learn/heads.py` | [learn/heads.md](learn/heads.md) | 1344 |
+| `learn/heads.py` | [learn/heads.md](learn/heads.md) | 1336 |
 | `learn/joint.py` | [learn/joint.md](learn/joint.md) | 228 |
 | `learn/joint_training.py` | [learn/joint_training.md](learn/joint_training.md) | 338 |
 | `learn/losses.py` | [learn/losses.md](learn/losses.md) | 153 |
@@ -139,12 +141,13 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `score/__init__.py` | inline header | 1 |
 | `score/estimators.py` | [score/estimators.md](score/estimators.md) | 81 |
 | `score/export_depth.py` | [score/export_depth.md](score/export_depth.md) | 524 |
-| `score/export_joint.py` | [score/export_joint.md](score/export_joint.md) | 132 |
+| `score/export_joint.py` | [score/export_joint.md](score/export_joint.md) | 127 |
 | `score/export_joint_split.py` | [score/export_joint_split.md](score/export_joint_split.md) | 227 |
-| `score/export_learned_ffn.py` | [score/export_learned_ffn.md](score/export_learned_ffn.md) | 292 |
-| `score/export_learned_heads.py` | [score/export_learned_heads.md](score/export_learned_heads.md) | 230 |
-| `score/export_pruned.py` | [score/export_pruned.md](score/export_pruned.md) | 225 |
+| `score/export_learned_ffn.py` | [score/export_learned_ffn.md](score/export_learned_ffn.md) | 328 |
+| `score/export_learned_heads.py` | [score/export_learned_heads.md](score/export_learned_heads.md) | 236 |
+| `score/export_pruned.py` | [score/export_pruned.md](score/export_pruned.md) | 254 |
 | `score/hooks.py` | [score/hooks.md](score/hooks.md) | 286 |
+| `score/safetensors_stream.py` | [score/safetensors_stream.md](score/safetensors_stream.md) | 168 |
 | `score/token_sampling.py` | [score/token_sampling.md](score/token_sampling.md) | 97 |
 | `score/whole_clip_d0_scores.py` | [score/whole_clip_d0_scores.md](score/whole_clip_d0_scores.md) | 209 |
 

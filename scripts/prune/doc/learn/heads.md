@@ -21,6 +21,8 @@ See the [run guide](../usage.md#learned-head-phases).
 
 The frozen study selects explicit dev components and draws. The shared input owner constructs every complete native D0 input.
 `training_input_case` applies the frozen F18 crop only to optimizer inputs.
+`input_case` delegates to `whole_clip.load_case`, which reconstructs from the exact capture/noise buffers it verified.
+Each case loads each tensor once. Full-source monitoring and F18 cropping retain the same calculations and schedules.
 The current default uses full-replica DDP with one draw per rank and native gradient checkpointing.
 Four ranks consume four distinct draw indices; no rank duplication occurs.
 

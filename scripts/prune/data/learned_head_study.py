@@ -7,7 +7,6 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
-import os
 import platform
 import random
 import re
@@ -225,14 +224,33 @@ def draw_list(sources, seed, *, buckets=None, updates=1500, sigma_indices=None, 
     return draws
 
 
-def delivered_reports(root):
-    """Every REPORT.md under the experiment root, skipping source snapshots and per-draw inputs."""
-    found = []
-    for directory, folders, files in os.walk(root):
-        folders[:] = sorted(f for f in folders if f not in ("LTX-2", "inputs"))
-        if "REPORT.md" in files:
-            found.append(Path(directory) / "REPORT.md")
-    return sorted(found)
+def declared_evidence(path):
+    """Read only explicitly declared, content-pinned prior evidence for actor exclusions."""
+    path = Path(path).resolve()
+    declaration_bytes = path.read_bytes()
+    declaration = json.loads(declaration_bytes)
+    if declaration.get("format") != "prune_seen_evidence_v1" or not isinstance(declaration.get("files"), list):
+        raise ValueError("expected a declared prune_seen_evidence_v1 file list")
+    actors, pins, seen = [], [{"path": str(path), "sha256": hashlib.sha256(declaration_bytes).hexdigest()}], set()
+    for item in declaration["files"]:
+        source = (path.parent / item["path"]).resolve()
+        if source in seen or source.suffix not in (".md", ".json"):
+            raise ValueError("duplicate or unsupported declared evidence")
+        raw = source.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != item["sha256"]:
+            raise ValueError(f"frozen input changed: {source}")
+        seen.add(source)
+        if source.suffix == ".json":
+            value = json.loads(raw)
+            rows = [*value.get("rows", []), *value.get("cases", [])]
+            actors += [normalized_actor(row["actor"]) for row in rows if "actor" in row]
+        else:
+            text = raw.decode("utf-8")
+            found = re.findall(r"Part_\d+/0*(\d+)_\d+/views/", text)
+            found += re.findall(r'(?i)\bactor\s*[:=]\s*["\x27]?(\d+)', text)
+            actors += [normalized_actor(actor) for actor in found]
+        pins.append({"path": str(source), "sha256": item["sha256"]})
+    return sorted(set(actors)), pins
 
 
 def load_study(path, *, verify_components=True):
@@ -323,7 +341,10 @@ def prepare_view(args):
     return result
 
 
-def prepare(config_path, plan, output, seen_path=None, region_path=None, *, uniform_f18=False):
+def prepare(config_path, plan, output, seen_path=None, region_path=None, *, uniform_f18=False, evidence_list=None):
+    if evidence_list is None:
+        raise ValueError("fresh preparation requires an explicit --evidence-list; no experiment-tree scan")
+    prior_actors, evidence_pins = declared_evidence(evidence_list)
     config = json.loads(config_path.read_text())
     if uniform_f18:
         config["uniform_f18"] = True
@@ -363,27 +384,9 @@ def prepare(config_path, plan, output, seen_path=None, region_path=None, *, unif
         region_tracks = json.loads(region_path.read_text())
         if region_tracks.get("status") != "verified" or not region_tracks.get("views"):
             raise ValueError("region input requires reviewed GT tracks for the selected views")
-    # Reserve conservatively: every actor named by previous delivered experiment evidence is seen.
-    inspected = []
-    for p in workspace.glob("expr/refiner_prune/2.5/*/evaluation/**/metrics.json"):
-        old = json.loads(p.read_text())
-        seen["actors"] += [normalized_actor(row["actor"]) for row in old.get("rows", []) if "actor" in row]
-        inspected.append({"path": str(p), "sha256": file_sha256(p)})
-    for p in workspace.glob("expr/refiner_prune/2.5/*/evaluation/results.json"):
-        old = json.loads(p.read_text())
-        for case in old.get("cases", []):
-            if "actor" in case:
-                seen["actors"].append(normalized_actor(case["actor"]))
-        inspected.append({"path": str(p), "sha256": file_sha256(p)})
-    for p in delivered_reports(workspace / "expr/refiner_prune/2.5"):
-        text = p.read_text()
-        found = re.findall(r"Part_\d+/0*(\d+)_\d+/views/", text)
-        found += re.findall(r'(?i)\bactor\s*[:=]\s*["\x27]?(\d+)', text)
-        if found:
-            seen["actors"] += [normalized_actor(a) for a in found]
-            inspected.append({"path": str(p), "sha256": file_sha256(p)})
+    seen["actors"] += prior_actors
     seen["actors"] = sorted(set(seen["actors"]))
-    seen["evidence"] += inspected
+    seen["evidence"] += evidence_pins
     splits = select_splits(
         membership["sources"],
         seen["actors"],
@@ -404,7 +407,7 @@ def prepare(config_path, plan, output, seen_path=None, region_path=None, *, unif
     publish_json(output / "provenance/splits.json", splits)
     from concurrent.futures import ProcessPoolExecutor
 
-    stats, verified, files = {}, {}, []
+    stats, verified, files = {}, {}, list(evidence_pins)
     if uniform_f18:
         files.append({"path": str(effective_config), "sha256": file_sha256(effective_config)})
     selected = splits["learning"] + splits["validation"] + splits["test"]
@@ -530,6 +533,9 @@ def main():
     p.add_argument("--plan", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--seen-actors", type=Path)
+    p.add_argument(
+        "--evidence-list", type=Path, required=True, help="Pinned JSON list of previously inspected evidence."
+    )
     p.add_argument("--region-tracks", type=Path)
     p.add_argument(
         "--uniform-f18", action="store_true", help="Train on continuous 18-latent windows from full sources."
@@ -537,7 +543,15 @@ def main():
     args = p.parse_args()
     torch.set_num_threads(4)
     try:
-        prepare(args.config, args.plan, args.output, args.seen_actors, args.region_tracks, uniform_f18=args.uniform_f18)
+        prepare(
+            args.config,
+            args.plan,
+            args.output,
+            args.seen_actors,
+            args.region_tracks,
+            uniform_f18=args.uniform_f18,
+            evidence_list=args.evidence_list,
+        )
     except Exception as exc:
         publish_json(
             args.output / "logs/preparation.failure.json",

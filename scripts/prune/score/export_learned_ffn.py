@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import argparse
 import json
+from functools import partial
 from pathlib import Path
 
 import torch
 from safetensors import safe_open
-from safetensors.torch import save_file
 
 from scripts.prune.core import numerics, provenance, records
 from scripts.prune.data import ffn_study
 from scripts.prune.learn import adapters, ffn_training
-from scripts.prune.score import export_pruned
+from scripts.prune.score import export_pruned, safetensors_stream
 
 FORMAT = "whole_clip_d0_learned_head_ffn_v1"
 FAMILY = "width_head_ffn_recovered"
@@ -57,9 +57,9 @@ TARGETS = {
 }
 
 
-def merge_adapters(tensors, state, *, kinds=("attn1", "ff"), scaling=1.0):
-    """Add FP32 low-rank deltas to loaded base weights in place, rounding once to the base dtype."""
-    expected = set()
+def adapter_targets(tensors, state, *, kinds=("attn1", "ff")):
+    """Validate complete FP32 adapter pairs against the declared merge-coordinate shapes."""
+    expected, targets = set(), {}
     for name in state:
         if not name.endswith(".A"):
             continue
@@ -81,38 +81,81 @@ def merge_adapters(tensors, state, *, kinds=("attn1", "ff"), scaling=1.0):
             raise ValueError("compact adapter shape or dtype differs")
         if not torch.isfinite(a).all() or not torch.isfinite(b).all():
             raise ValueError("nonfinite compact adapter")
-        tensors[key] = (base.float() + scaling * b @ a).to(base.dtype).contiguous()
+        targets[key] = (a, b)
         expected.update((name, prefix + ".B"))
     if set(state) != expected:
         raise ValueError("incomplete adapter fusion inventory")
+    return targets
 
 
-def finalize(tensors, meta, output, *, pruning=None, envelope=None, envelope_path=None, inventory_dtype=True):
-    """Hash the final tensors once, bind them in the envelope and publish the checkpoint once."""
-    inventory = {
-        key: dict(
-            shape=list(v.shape), **({"dtype": str(v.dtype)} if inventory_dtype else {}), sha256=records.tensor_hash(v)
+def _transform(value, *, fusion, selection, merge_first, scaling):
+    if selection is not None and not merge_first:
+        value = selection(value)
+    if fusion is not None:
+        a, b = fusion
+        value = (value.float() + scaling * b @ a).to(value.dtype).contiguous()
+    return selection(value) if selection is not None and merge_first else value
+
+
+def stream_merge(
+    source,
+    state,
+    output,
+    *,
+    masks=None,
+    merge_first=False,
+    kinds=("attn1", "ff"),
+    scaling=1.0,
+    pruning=None,
+    envelope=None,
+    envelope_path=None,
+    inventory_dtype=True,
+):
+    """Fuse and slice one tensor at a time, preserving each family's arithmetic order."""
+    original, meta = safetensors_stream.inspect(source)
+    tensors, selections = original, {}
+    if masks is not None:
+        tensors, meta, selections = export_pruned.stream_plan(
+            source, masks, model_key="2.5", mode="compact", provenance_block=pruning
         )
-        for key, v in tensors.items()
+    targets = adapter_targets(original if merge_first else tensors, state, kinds=kinds)
+    transforms = {
+        key: partial(
+            _transform, fusion=targets.get(key), selection=selections.get(key), merge_first=merge_first, scaling=scaling
+        )
+        for key in targets.keys() | selections.keys()
     }
-    if envelope is not None:
+    original_config = meta.get("config", "{}")
+
+    def metadata(artifact_hash=None):
+        binding = dict(pruning or {})
+        if envelope is not None:
+            binding.update(artifact=str(envelope_path), artifact_sha256=artifact_hash)
+        if binding:
+            config = json.loads(original_config)
+            config["transformer"].setdefault("pruning", {}).update(binding)
+            meta["config"] = json.dumps(config)
+        return meta
+
+    def bind(inventory):
         envelope["tensor_inventory"] = inventory
         records.publish_json(envelope_path, envelope)
-        pruning = dict(
-            pruning or {}, artifact=str(envelope_path), artifact_sha256=provenance.file_sha256(envelope_path)
-        )
-    if pruning:
-        config = json.loads(meta["config"])
-        config["transformer"].setdefault("pruning", {}).update(pruning)
-        meta["config"] = json.dumps(config)
-    records.publish(output, lambda p: save_file(tensors, str(p), metadata=meta))
-    return inventory
+        return metadata(provenance.file_sha256(envelope_path))
+
+    return safetensors_stream.write(
+        source,
+        output,
+        tensors,
+        metadata("0" * 64),
+        transforms=transforms,
+        inventory=True,
+        inventory_dtype=inventory_dtype,
+        on_inventory=bind if envelope is not None else None,
+    )
 
 
 def merge(source, state, output, *, pruning=None, envelope=None, envelope_path=None):
-    tensors, meta = export_pruned.load(source)
-    merge_adapters(tensors, state)
-    return finalize(tensors, meta, output, pruning=pruning, envelope=envelope, envelope_path=envelope_path)
+    return stream_merge(source, state, output, pruning=pruning, envelope=envelope, envelope_path=envelope_path)
 
 
 def run_export(study, checkpoint, output, *, probe=False):
@@ -148,22 +191,15 @@ def run_export(study, checkpoint, output, *, probe=False):
         source_transformer_fingerprint=provenance.checkpoint_fingerprint(source),
     )
     output.parent.mkdir(parents=True, exist_ok=True)
-    # One read, in-memory compact surgery and adapter fusion, then one write.
-    tensors, meta = export_pruned.load(source)
-    export_pruned.export_tensors(
-        tensors,
-        meta,
-        masks,
-        widths=export_pruned.checkpoint_mask_widths(source),
-        model_key="2.5",
-        mode="compact",
-        provenance_block=pruning,
+    stream_merge(
+        source,
+        compact,
+        output,
+        masks=masks,
+        pruning=pruning,
+        envelope=envelope,
+        envelope_path=output.with_suffix(".envelope.json"),
     )
-    merge_adapters(tensors, compact)
-    finalize(
-        tensors, meta, output, pruning=pruning, envelope=envelope, envelope_path=output.with_suffix(".envelope.json")
-    )
-    del tensors
     records.publish_json(output.with_suffix(".json"), dict(path=str(output), sha256=provenance.file_sha256(output)))
     return output
 

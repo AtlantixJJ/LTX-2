@@ -44,6 +44,10 @@ Outputs are `manifest.json`, saved epsilon, per-arm latent tensors and optional 
 
 ## Data flow
 
+The producer and completion reader obtain their task, dtype and guidance fields from `core.native_manifest.fields`.
+The input-only writer uses the same owner with its narrower historical guidance field set.
+This helper changes no schedule, model call or saved source identity.
+
 1. **Inputs.** Each `--view` is a corpus view directory. Read the capture and
    guide masters for `--objective` (default `white`) with
    `corpus.dataset.load_training_master`. Capture and guide must have equal

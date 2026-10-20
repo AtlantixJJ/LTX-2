@@ -19,6 +19,9 @@ See the [run guide](../usage.md#learned-head-phases).
 
 ## Data flow
 
+Media obtains a verified capture and its native grid through `whole_clip.source_grid`.
+This path creates no epsilon file and constructs no unused noised model input.
+
 Checked saved predictions, original RGB, VAE GT, teacher and fixed GT regions enter the public media renderer.
 
 ## Organization logic

@@ -13,6 +13,7 @@ CUBLAS_WORKSPACE_CONFIG=:4096:8 python -m scripts.prune.evaluate.joint_media --s
 ```
 
 The owner waits for completed selection/final inference and an idle assigned device.
+`--wait-hours` bounds both waits. `core.waits` records readiness, timeout or failure under `media/waits/` with unique receipt names.
 It never starts or stops training. See the [run guide](../usage.md).
 Use `--shard-index I --shard-count N` to assign disjoint source-view indices modulo N.
 Each shard writes its own result index. An external CPU reader verifies all 36 cases before publishing the combined index.

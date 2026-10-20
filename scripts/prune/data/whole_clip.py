@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import io
 import json
 import math
 import re
@@ -16,7 +17,7 @@ from ltx_core.model.transformer.modality import Modality
 from scripts.onestep_avatar.corpus.dataset import load_training_master
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.model import common
-from scripts.prune.core import provenance, session
+from scripts.prune.core import native_manifest, provenance, session
 
 TASK = "whole_clip_d0"
 # Export families with a pinned artifact; each validator is imported only when used.
@@ -259,12 +260,18 @@ def verify_candidate(base: dict, candidate: dict) -> dict:
 
 def load_epsilon(root: Path, row: dict) -> torch.Tensor:
     path = root / row["artifacts"]["epsilon"]
-    if provenance.verified_sha256(path) != row["artifacts"]["epsilon_sha256"]:
-        raise ValueError("saved epsilon content changed")
-    tensor = torch.load(path, map_location="cpu", weights_only=True)
+    tensor = _load_verified(path, row["artifacts"]["epsilon_sha256"], "saved epsilon content changed")
     if not isinstance(tensor, torch.Tensor) or tensor.dtype != session.DTYPE or not torch.isfinite(tensor).all():
         raise ValueError("saved epsilon must be a finite BF16 tensor")
     return tensor
+
+
+def _load_verified(path, expected, failure):
+    """Deserialize the same small input-file bytes whose full hash was checked."""
+    raw = Path(path).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected:
+        raise ValueError(failure)
+    return torch.load(io.BytesIO(raw), map_location="cpu", weights_only=True)
 
 
 def verify_saved_noise(base_root: Path, candidate_root: Path, base_row: dict, candidate_row: dict) -> None:
@@ -279,21 +286,20 @@ def build_input(
     validate_manifest(manifest)
     row = records(manifest)[(view, sigma)]
     capture_path = Path(row["artifacts"]["capture"])
-    if provenance.verified_sha256(capture_path) != row["artifacts"]["capture_sha256"]:
-        raise ValueError("capture changed since saved baseline rollout")
-    capture, fps = load_training_master(capture_path)
-    if capture.dtype != session.DTYPE or capture.ndim != 4 or not torch.isfinite(capture).all():
-        raise ValueError("capture must be a finite BF16 C,T,H,W latent")
-    if provenance.checkpoint_fingerprint(current.model.paths.video_vae()) != manifest["model"]["video_vae_fingerprint"]:
-        raise ValueError("session VAE differs from saved baseline")
-    if fps != row["artifacts"]["fps"]:
-        raise ValueError("capture fps changed since saved rollout")
+    bundle = _load_verified(
+        capture_path, row["artifacts"]["capture_sha256"], "capture changed since saved baseline rollout"
+    )
+    capture, fps = load_training_master(capture_path, bundle=bundle)
     epsilon = load_epsilon(root, row)
+    return _reconstruct_input(manifest, row, capture, fps, epsilon, sigma=sigma, current=current)[:4]
+
+
+def _grid(capture, fps, current, context_latent_frames):
     _, latent_frames, height, width = capture.shape
     geometry = causal_core.deployed_geometry(
         current.model.scale_factors,
         block_latent_frames=latent_frames - 1,
-        context_latent_frames=manifest["geometry"]["context_latent_frames"],
+        context_latent_frames=context_latent_frames,
     )
     grid = common.ClipGrid.build(
         latent_frames,
@@ -305,6 +311,35 @@ def build_input(
         dtype=session.DTYPE,
         latent_channels=current.model.caps.latent_channels,
     )
+    return geometry, grid
+
+
+def source_grid(source, current):
+    """Validate the source capture and return its native grid without noise or a model input."""
+    path = Path(source["capture"])
+    bundle = _load_verified(path, source["capture_latent_sha256"], "capture differs from audited membership")
+    capture, fps = load_training_master(path, bundle=bundle)
+    if (
+        list(capture.shape) != source["shape"]
+        or fps != source["fps"]
+        or capture.dtype != session.DTYPE
+        or not torch.isfinite(capture).all()
+        or any(bundle.get(k) != v for k, v in source["capture_encode_record"].items())
+    ):
+        raise ValueError("capture encoding differs from audited membership")
+    return _grid(capture, fps, current, 8)[1], capture
+
+
+def _reconstruct_input(manifest, row, capture, fps, epsilon, *, sigma, current):
+    """The single input calculation, shared by baseline reconstruction and validated case loading."""
+    if capture.dtype != session.DTYPE or capture.ndim != 4 or not torch.isfinite(capture).all():
+        raise ValueError("capture must be a finite BF16 C,T,H,W latent")
+    if provenance.checkpoint_fingerprint(current.model.paths.video_vae()) != manifest["model"]["video_vae_fingerprint"]:
+        raise ValueError("session VAE differs from saved baseline")
+    if fps != row["artifacts"]["fps"]:
+        raise ValueError("capture fps changed since saved rollout")
+    latent_frames = capture.shape[1]
+    geometry, grid = _grid(capture, fps, current, manifest["geometry"]["context_latent_frames"])
     if geometry.as_dict() != manifest["geometry"] or geometry.plan(latent_frames) != [(0, latent_frames)]:
         raise ValueError("geometry does not match the saved whole-clip run")
     if row["artifacts"]["blocks"] != [[0, latent_frames]]:
@@ -332,12 +367,34 @@ def build_input(
         clean_prefix_tokens=grid.tokens_per_latent_frame,
         sigma_dtype=torch.float32,
     )
-    return grid, modality, c0, row
+    return grid, modality, c0, row, source
 
 
 def prepare_score_inputs(
     root: Path, source_record: dict, *, current: session.Session, sigmas: list[float], seed: int = 42
 ) -> dict:
+    """Publish or verify saved input evidence; retain the manifest-only public interface."""
+    return _prepare_score_inputs(root, source_record, current=current, sigmas=sigmas, seed=seed)[0]
+
+
+def load_case(root, source_record, *, current, sigmas, seed, sigma):
+    """Reconstruct from the capture and epsilon verified by this same load operation."""
+    manifest, capture, fps, epsilon = _prepare_score_inputs(
+        root, source_record, current=current, sigmas=sigmas, seed=seed
+    )
+    row = records(manifest)[(source_record["resolved_dir"], sigma)]
+    if (
+        row["artifacts"] != manifest["videos"][0]["artifacts"]
+        or Path(row["artifacts"]["capture"]).resolve() != Path(source_record["capture"]).resolve()
+    ):
+        raise ValueError("saved scoring input source or noise differs between schedules")
+    grid, video, c0, _, capture_tokens = _reconstruct_input(
+        manifest, row, capture, fps, epsilon, sigma=sigma, current=current
+    )
+    return grid, video, c0, capture_tokens, epsilon.to(current.device), root, manifest
+
+
+def _prepare_score_inputs(root, source_record, *, current, sigmas, seed):
     """Save capture-only D0 input evidence, without producing rollout predictions.
 
     Noising and conditioning remain in build_input. A completed input manifest
@@ -352,9 +409,9 @@ def prepare_score_inputs(
     ):
         if field in source_record and provenance.verified_sha256(path) != source_record[field]:
             raise ValueError(f"{field}: source differs from audited membership")
-    if provenance.verified_sha256(capture_path) != source_record["capture_latent_sha256"]:
-        raise ValueError("capture differs from audited membership")
-    bundle = torch.load(capture_path, map_location="cpu", weights_only=True)
+    bundle = _load_verified(
+        capture_path, source_record["capture_latent_sha256"], "capture differs from audited membership"
+    )
     capture, fps = load_training_master(capture_path, bundle=bundle)
     if (
         list(capture.shape) != source_record["shape"]
@@ -372,8 +429,8 @@ def prepare_score_inputs(
             or saved["videos"][0]["artifacts"]["capture_sha256"] != source_record["capture_latent_sha256"]
         ):
             raise ValueError("saved scoring input settings differ")
-        load_epsilon(root, saved["videos"][0])
-        return saved
+        epsilon = load_epsilon(root, saved["videos"][0])
+        return saved, capture, fps, epsilon
     if root.exists() and any(root.iterdir()):
         raise ValueError("orphan scoring inputs without manifest; preserve for diagnosis")
     frames, height, width = capture.shape[1:]
@@ -408,13 +465,9 @@ def prepare_score_inputs(
         "blocks": [[0, frames]],
     }
     manifest = {
+        **native_manifest.fields(input_only=True),
         "kind": "whole_clip_d0_inputs_v1",
-        "whole_clip": True,
-        "trajectory_only": False,
-        "attention": "full_bidirectional",
         "objective": "white",
-        "latent_dtype": str(session.DTYPE),
-        "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1, "negative_prompt": None, "stg_blocks": []},
         "checkpoint": None,
         "seed": seed,
         "sigmas": sigmas,
@@ -434,4 +487,4 @@ def prepare_score_inputs(
     temp = root / f"manifest.{os.getpid()}.tmp"
     temp.write_text(json.dumps(manifest, allow_nan=False, indent=2) + "\n")
     temp.replace(root / "manifest.json")
-    return manifest
+    return manifest, capture, fps, epsilon

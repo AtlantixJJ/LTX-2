@@ -64,22 +64,17 @@ def run_export(study, checkpoint, output, *, probe=False):
         source_transformer_fingerprint=provenance.checkpoint_fingerprint(source),
     )
     output.parent.mkdir(parents=True, exist_ok=True)
-    # Merge FP32 deltas into full-width weights, slice the coupled projections, then write once.
-    tensors, meta = export_pruned.load(source)
-    export_learned_ffn.merge_adapters(tensors, state["adapters"])
-    export_pruned.export_tensors(
-        tensors,
-        meta,
-        masks,
-        widths=export_pruned.checkpoint_mask_widths(source),
-        model_key="2.5",
-        mode="compact",
-        provenance_block=pruning,
+    # V3 merges in full original coordinates before slicing; FFN recovery uses the reverse order.
+    export_learned_ffn.stream_merge(
+        source,
+        state["adapters"],
+        output,
+        masks=masks,
+        merge_first=True,
+        pruning=pruning,
+        envelope=envelope,
+        envelope_path=output.with_suffix(".envelope.json"),
     )
-    export_learned_ffn.finalize(
-        tensors, meta, output, pruning=pruning, envelope=envelope, envelope_path=output.with_suffix(".envelope.json")
-    )
-    del tensors
     records.publish_json(output.with_suffix(".json"), dict(path=str(output), sha256=provenance.file_sha256(output)))
     return output
 

@@ -18,7 +18,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from scripts.onestep_avatar.corpus.dataset import load_training_master
 from scripts.onestep_avatar.model import common
 from scripts.prune.core import ltx_adapter, numerics, provenance, records, session
 from scripts.prune.data import foreground, training_windows, whole_clip
@@ -93,14 +92,7 @@ def input_case(study, current, source, seed, sigma):
     root.parent.mkdir(parents=True, exist_ok=True)
     with (root.parent / f"{root.name}.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        manifest = whole_clip.prepare_score_inputs(root, source, current=current, sigmas=study_sigmas(study), seed=seed)
-    grid, video, c0, row = whole_clip.build_input(
-        root, manifest, view=source["resolved_dir"], sigma=sigma, current=current
-    )
-    capture, _ = load_training_master(Path(source["capture"]))
-    clean = grid.patchify(capture.unsqueeze(0).to(current.device))
-    epsilon = whole_clip.load_epsilon(root, row).to(current.device)
-    return grid, video, c0, clean, epsilon, root, manifest
+        return whole_clip.load_case(root, source, current=current, sigmas=study_sigmas(study), seed=seed, sigma=sigma)
 
 
 def training_input_case(study, current, source, seed, sigma):
