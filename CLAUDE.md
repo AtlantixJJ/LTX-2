@@ -77,18 +77,19 @@ Ad-hoc analysis scripts under top-level `scripts/`:
 conda run -n ltx python3 scripts/<name>.py
 ```
 
-Lint / format (repo-wide ruff config in root `pyproject.toml`: `py311` target, 120 line length). `ruff`/`pytest`/`pre-commit` are not installed in the `ltx` conda env -- these still go through `uv run`:
+Lint / format (repo-wide ruff config in root `pyproject.toml`: `py311` target, 120 line length). `ruff` and `pytest` are installed in the `ltx` conda env. Run them through that environment.
+Use the repository dev setup for `pre-commit` when needed:
 
 ```bash
-uv run ruff check .
-uv run ruff format .
+conda run -n ltx ruff check .
+conda run -n ltx ruff format .
 uv run pre-commit run --all-files
 ```
 
 Tests (pytest is a root dev dependency; run from within the package under test, e.g. `packages/ltx-trainer`):
 
 ```bash
-cd packages/ltx-trainer && uv run pytest
+cd packages/ltx-trainer && conda run -n ltx python -m pytest
 ```
 
 Training:

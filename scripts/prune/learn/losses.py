@@ -52,17 +52,14 @@ def velocity_mse(velocity, epsilon, capture, prefix_tokens, regions=None):
     return result
 
 
-def sparsity_value(gates, *, logits=None, kind="mean_sigmoid", logit_offset=3.0, free_mask=None):
+def sparsity_value(gates, *, logits=None, kind="mean_sigmoid", logit_offset=3.0):
     if kind == "mean_sigmoid":
         return gates.float().mean()
     if kind != "relu_logits" or logits is None or logits.shape != gates.shape:
         raise ValueError("logit sparsity requires raw logits with the gate shape")
     if not torch.isfinite(logits).all() or not torch.isfinite(torch.tensor(logit_offset)):
         raise ValueError("invalid raw logits or sparsity offset")
-    values = torch.relu(logits.float() + logit_offset)
-    if free_mask is not None:
-        values = values * free_mask.to(values.device)
-    return values.mean()
+    return torch.relu(logits.float() + logit_offset).mean()
 
 
 def sparsity_coefficient(update, phase, *, lambda_max=0.001, lambda_warmup=300, lambda_start_multiplier=0.0):
@@ -93,11 +90,13 @@ def sparsity_gradient(
     lambda_start_multiplier=0.0,
     kind="mean_sigmoid",
     logit_offset=3.0,
-    free_mask=None,
 ):
     """Unclipped analytic logit gradient of the complete per-update penalty."""
     coefficient = sparsity_coefficient(
-        update, phase, lambda_max=lambda_max, lambda_warmup=lambda_warmup,
+        update,
+        phase,
+        lambda_max=lambda_max,
+        lambda_warmup=lambda_warmup,
         lambda_start_multiplier=lambda_start_multiplier,
     )
     if phase != "soft":
@@ -110,8 +109,6 @@ def sparsity_gradient(
         derivative = (alpha + logit_offset > 0).float()
     else:
         raise ValueError("unknown sparsity penalty form")
-    if free_mask is not None:
-        derivative = derivative * free_mask.to(alpha.device)
     return coefficient * derivative / alpha.numel()
 
 
@@ -130,7 +127,6 @@ def phase_loss(
     logits=None,
     sparsity_kind="mean_sigmoid",
     logit_offset=3.0,
-    free_mask=None,
 ):
     if update < 1 or accumulation < 1 or min(lambda_max, person, small_region) < 0:
         raise ValueError("invalid loss coefficients or update")
@@ -143,12 +139,14 @@ def phase_loss(
     if small_region:
         regional = regional + small_region * (terms.get("face", official * 0) + terms["hands"])
     coefficient = sparsity_coefficient(
-        update, phase, lambda_max=lambda_max, lambda_warmup=lambda_warmup,
+        update,
+        phase,
+        lambda_max=lambda_max,
+        lambda_warmup=lambda_warmup,
         lambda_start_multiplier=lambda_start_multiplier,
     )
     penalty = (
-        coefficient
-        * sparsity_value(gates, logits=logits, kind=sparsity_kind, logit_offset=logit_offset, free_mask=free_mask)
+        coefficient * sparsity_value(gates, logits=logits, kind=sparsity_kind, logit_offset=logit_offset)
         if phase == "soft"
         else official * 0
     )

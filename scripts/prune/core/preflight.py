@@ -42,7 +42,7 @@ def check(
     """Resolve *key* to a :class:`RefinerModel`, asserting the distilled sigma
     schedule and a usable GPU exist. Raises ``SystemExit`` with an actionable
     message (missing file, busy or nonexistent device) rather than a bare
-    traceback. Call this at the top of every scripts/prune/* entry point.
+    traceback. Session openers call it before any model load.
 
     When *gpu_id* is given it is checked directly -- a caller that passes
     ``--gpu-id 3`` cares whether device 3 is free, not whether *some* device is,
@@ -91,7 +91,7 @@ def check(
 
 
 def dump_caps(model: RefinerModel) -> Path:
-    """Write ``expr/refiner_prune/<key>/caps.json`` (plan §5 gate)."""
+    """Write ``expr/refiner_prune/<key>/caps.json`` with the probed capabilities."""
     path = artifacts.gate(model.key, "caps")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(

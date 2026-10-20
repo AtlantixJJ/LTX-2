@@ -72,9 +72,10 @@ ruff check --select F,I scripts/prune
 
 The [verification guide](doc/VALIDATION.md#cpu-gate) explains test coverage and native gates.
 
-MobileWan numerical helpers and a capture-only membership audit are available.
-See [audit usage](doc/usage.md#mobilewan-capture-audit).
-Native dev dataset execution and the final removal study remain in development.
+V3 joint head/FFN selection uses the [shared DDP owner](doc/learn/ddp_owner.md).
+Start with [V3 preparation and training](doc/usage.md#joint-clipped-gates-with-re-admission), then use
+[completed-study evaluation](doc/usage.md#completed-joint-v3-evaluation).
+Completed lineage executors are retained in the workspace cleanup archive.
 
 Learned head pruning with bounded LoRA recovery is implemented under [`learn/`](learn/).
 Start with [CPU study preparation](doc/data/learned_head_study.md), then follow the [phase run guide](doc/usage.md#learned-head-phases).

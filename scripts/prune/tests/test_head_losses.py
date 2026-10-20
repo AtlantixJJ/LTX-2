@@ -95,8 +95,13 @@ def test_nonzero_start_ramp_matches_accumulated_autograd(update, expected):
     alpha = torch.tensor([-4.0, -3.0, -2.0, 0.0, 3.0], requires_grad=True)
     for _ in range(2):
         loss, penalty = phase_loss(
-            {"official": torch.tensor(0.0), "coverage": {}}, alpha.sigmoid(),
-            update=update, phase="soft", logits=alpha, sparsity_kind="relu_logits", **schedule,
+            {"official": torch.tensor(0.0), "coverage": {}},
+            alpha.sigmoid(),
+            update=update,
+            phase="soft",
+            logits=alpha,
+            sparsity_kind="relu_logits",
+            **schedule,
         )
         loss.backward()
     assert float(penalty.detach()) == pytest.approx(2 * expected)
@@ -108,11 +113,17 @@ def test_nonzero_start_ramp_matches_accumulated_autograd(update, expected):
         assert sparsity_coefficient(update, phase, **schedule) == 0
 
 
-@pytest.mark.parametrize("bad", [
-    {"lambda_max": float("nan")}, {"lambda_max": float("inf")},
-    {"lambda_warmup": 0}, {"lambda_warmup": -1},
-    {"lambda_start_multiplier": -0.1}, {"lambda_start_multiplier": 1.1},
-])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"lambda_max": float("nan")},
+        {"lambda_max": float("inf")},
+        {"lambda_warmup": 0},
+        {"lambda_warmup": -1},
+        {"lambda_start_multiplier": -0.1},
+        {"lambda_start_multiplier": 1.1},
+    ],
+)
 def test_invalid_sparsity_ramps_fail(bad):
     with pytest.raises(ValueError, match="ramp"):
         sparsity_coefficient(1, "soft", **bad)

@@ -46,7 +46,7 @@ def training_metrics(row, config):
         "train/velocity_mse": official,
         "train/sparsity_loss": penalty,
         "train/lambda": row["sparsity_lambda"],
-        "train/phase_code": {"soft": 0, "binary": 1, "compact": 2, "fixed": 3, "recovery": 4}[phase],
+        "train/phase_code": {"soft": 0, "binary": 1, "compact": 2, "fixed": 3}[phase],
         "train/update_s": max((r["seconds"] for r in rank_rows), default=row["seconds"]),
         "train/lr_adapters": config["adapter_lr"] * min((step - phase_start) / config["warmup_updates"], 1),
         "train/lr_gates": config["gate_lr"] if phase in ("soft", "binary") else 0,
@@ -59,39 +59,11 @@ def training_metrics(row, config):
         "sparsity_logit_gradient_norm",
     ):
         values["train/" + name] = row[name]
-    # Clipped-score snapshots report raw scores and executed gates separately.
-    for name in (
-        "mean", "le_0_1", "lt_0_5", "ge_0_9", "raw_score_mean", "executed_gate_mean",
-        "alive_clipped_zero", "alive_interior", "alive_clipped_one",
-    ):
+    for name in ("mean", "le_0_1", "lt_0_5", "ge_0_9"):
         if row["gates"].get(name) is not None:
             values["gates/" + name] = row["gates"][name]
-    if "progressive" in row:
-        for name, count in row["progressive"]["counts"].items():
-            values["gates/" + name] = count
-        for name in (
-            "eligible_count",
-            "requested_count",
-            "selected_count",
-            "shortfall",
-            "one_eligible_count",
-            "one_requested_count",
-            "one_selected_count",
-            "one_shortfall",
-            "forced_one_selected_count",
-            "new_fixed_one_count",
-            "finalization_start",
-            "final_update",
-            "finalization_remaining",
-            "cap",
-            "strong_count",
-            "persistent_count",
-            "empty_events",
-        ):
-            if name in row["progressive"] and row["progressive"][name] is not None:
-                values["gates/" + name] = row["progressive"][name]
     for name, value in zip(
-        ("min", "p10", "median", "p90", "max"), row["gates"].get("quantiles", row["gates"].get("executed_gate_quantiles")) or [None] * 5, strict=True
+        ("min", "p10", "median", "p90", "max"), row["gates"].get("quantiles") or [None] * 5, strict=True
     ):
         if value is not None:
             values["gates/" + name] = value
@@ -112,7 +84,7 @@ def validation_metrics(monitor):
     if not rows:
         raise ValueError("empty validation monitor")
     values = {"validation/update": monitor["update"], "validation/cases": len(rows)}
-    for state in ("trained",) if "progressive" in monitor else ("trained", "hardened"):
+    for state in ("trained", "hardened"):
         values[f"validation/{state}_gt_latent_mse"] = sum(
             r["states"][state]["metrics"]["capture_mse"] for r in rows
         ) / len(rows)
@@ -272,7 +244,6 @@ def main():
                 "failed",
                 "stopped",
                 "paired_training_complete_GT_validation_pending",
-                "progressive_training_complete",
             ):
                 metadata["status"] = status
                 break

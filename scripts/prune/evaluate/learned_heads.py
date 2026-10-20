@@ -13,10 +13,10 @@ import torch
 
 from scripts.onestep_avatar.model import common
 from scripts.prune.checks.learned_heads import compare, validate_envelope
-from scripts.prune.core import ltx_adapter, provenance
+from scripts.prune.core import ltx_adapter, numerics, provenance, records
 from scripts.prune.data.learned_head_study import load_study, study_sigmas
-from scripts.prune.learn import adapters, checkpoints, losses
-from scripts.prune.learn.heads import input_case, numerical_policy, open_current, reference_identity
+from scripts.prune.learn import adapters, checkpoints, losses, protocol
+from scripts.prune.learn.heads import input_case, open_current, reference_identity
 from scripts.prune.learn.teacher_references import TeacherReferences
 from scripts.prune.score import hooks
 
@@ -91,7 +91,7 @@ def saved_case(path, identity):
         if provenance.file_sha256(p) != item["sha256"]:
             raise ValueError("completed evaluation tensor changed")
         value = torch.load(p, map_location="cpu", weights_only=True)
-        if checkpoints.tensor_hash(value) != item["tensor_sha256"] or not torch.isfinite(value).all():
+        if records.tensor_hash(value) != item["tensor_sha256"] or not torch.isfinite(value).all():
             raise ValueError("evaluation tensor content differs")
         values[role] = value
     return record, values
@@ -112,7 +112,7 @@ def evaluate(study, arm, seed, split, gpu_id):
         "arm": arm,
         "replicate_seed": seed,
     }
-    numerical_policy()
+    numerics.deterministic_policy()
     current = open_current(study, gpu_id)
     gt_only = study["config"].get("monitor_reference") == "gt_capture"
     cache = None if gt_only else TeacherReferences(root / "teacher/references")
@@ -197,15 +197,15 @@ def evaluate(study, arm, seed, split, gpu_id):
                             ("latent", grid.unpatchify_block(clean, grid.latent_frames)),
                         ):
                             p = out.parent / f"sigma_{index}_{role}.pt"
-                            checkpoints.publish_tensor(p, value)
+                            records.publish_tensor(p, value)
                             tensors[role] = {
                                 "path": str(p),
                                 "sha256": provenance.file_sha256(p),
-                                "tensor_sha256": checkpoints.tensor_hash(value),
+                                "tensor_sha256": records.tensor_hash(value),
                             }
                         record = {
                             "identity": case_id,
-                            "teacher_key": None if gt_only else checkpoints.digest(ref_id),
+                            "teacher_key": None if gt_only else records.digest(ref_id),
                             "input_manifest_sha256": provenance.file_sha256(inputs / "manifest.json"),
                             "reference": "gt_capture" if gt_only else "original_teacher",
                             "tensors": tensors,
@@ -215,7 +215,7 @@ def evaluate(study, arm, seed, split, gpu_id):
                             "quality_pass": None,
                             "missing": ["decoded region LPIPS", "GT region coverage", "video review"],
                         }
-                        checkpoints.publish_json(out, record)
+                        records.publish_json(out, record)
                     rows.append({"actor": source["actor"], **metrics, "record": str(out)})
     summary = {
         "identity": identity,
@@ -233,17 +233,18 @@ def evaluate(study, arm, seed, split, gpu_id):
         },
         "limitation": "native agreement and capture errors do not establish human quality",
     }
-    checkpoints.publish_json(root / f"evaluation/{split}/{arm}/replicate_{seed}/metrics.json", summary)
+    records.publish_json(root / f"evaluation/{split}/{arm}/replicate_{seed}/metrics.json", summary)
     return summary
 
 
 def native_checks(study, arm, seed, gpu_id):
-    numerical_policy()
+    numerics.deterministic_policy()
     current = open_current(study, gpu_id)
     root = Path(study["root"])
     directory = root / f"training/{arm}/replicate_{seed}/checkpoints"
-    final_step = 2500 if arm == "learned_sequential" else 1500
-    selection, final = [checkpoints.load(directory / f"update_{i}.pt") for i in (1000, final_step)]
+    _, selection_end, _ = protocol.phase_budget(study["config"])
+    final_step = protocol.recovery_end(study["config"], arm)
+    selection, final = [checkpoints.load(directory / f"update_{i:04d}.pt") for i in (selection_end, final_step)]
     selection_source_state = (
         adapters.fresh_source_state(seed, rank=study["config"]["rank"])
         if arm.endswith("_fresh")
@@ -317,7 +318,7 @@ def native_checks(study, arm, seed, gpu_id):
                         ),
                     }
                 )
-        checkpoints.publish_json(
+        records.publish_json(
             root / f"checks/{arm}/replicate_{seed}/{name}.json",
             {"study": study["identity"], "results": results, "passed": all(r["passed"] for r in results)},
         )

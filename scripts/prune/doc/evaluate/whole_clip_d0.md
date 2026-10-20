@@ -88,7 +88,7 @@ The saved comparison visits all rows, including calibration rows when present.
 Identify held-out rows explicitly when making a final quality claim.
 The selected baseline must include the pinned calibration rows.
 Functional mode enforces actor separation and calibrated sigmas.
-It currently opens a 2.5 session and requires 44 GiB free.
+It opens a 2.5 session with the default 4 GB preflight threshold. This threshold does not establish model capacity.
 A functional mask does not establish export parity or faster execution.
 The direct-baseline guard uses a threshold comparison; inspect finite differences before acceptance.
 

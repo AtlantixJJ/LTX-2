@@ -18,17 +18,6 @@ For documentation changes, check source coverage, required headings, local links
 Render and inspect changed Mermaid diagrams.
 Documentation verification does not require expensive GPU work.
 
-The clipped-reset CPU controls are in `tests/test_clipped_reset.py`.
-They verify clipping and surrogate endpoints, reset-free regret windows, gate Adam resets, adapter continuity, and transaction replay.
-They also verify the global 500+300 bound and pre-event versus canonical checkpoint representations.
-These controls do not qualify native clipped-reset execution. Training rejects an acceptance receipt without its exact policy hash.
-Preparation, fixed-test evaluation, media, and binary export need their own evidence before this experiment is complete.
-
-`test_clipped_preparation.py` verifies initial-state replacement, untrained source rejection, and exact-step guards at zero, 500, 550, and 800.
-`test_fixed_test_inputs.py` rejects changed frozen noise, targets, schedules, context, incomplete cases, and historical four-actor monitor data.
-The saved historical preflight verifies all 17 checkpoint bytes, initial adapters, ordered draw prefixes, and permanent-mask sanity counts.
-These CPU checks do not validate historical prediction reproduction or qualify new model predictions.
-
 ## Learned FFN controls
 
 `tests/test_ffn_learning.py` checks aligned counts, stable ties and binary surrogate gradients.
@@ -139,24 +128,11 @@ See [benchmark logic](evaluate/bench_whole_clip_d0.md).
 
 The [module index](README.md) links each production owner and its Tests section.
 Depth tests use real small video/AV models, strict reload, cache comparisons and backward gradients.
-Reconstruction tests compare dual ridge with an independent primal solve.
 Saved-baseline tests exercise a tiny real transformer and model-free completion refusals.
 
 Those CPU results establish focused correctness.
 Native BF16 baseline, export, quality and timing evidence are independent acceptance gates.
 Do not label a candidate accepted while a required gate remains unrun.
-
-## MobileWan helper checks
-
-The focused CPU controls compare exact projected energy with independent direct projection.
-They verify channel cancellation, both full token spans, equal-view pooling and actor-cluster intervals.
-They also verify exact official-grid preservation and nested global allocation with stable ties.
-The source audit rejects changed membership pins and records all row failures.
-Native dev direct-call parity, hook transparency, full dataset scoring and held-out media remain unverified.
-
-Direct dev CPU producer checks verify one call, exact sigma, missing-guide independence and saved completion.
-Per-view score tests reject missing blocks, heads, sigmas, nonfinite energy and changed noise identities.
-Native queue acceptance and full-span dev parity remain separate gates.
 
 ## Learned head controls
 
@@ -193,14 +169,11 @@ The saved acceptance must match the study, DDP method and configured world size 
 Two-rank full-F18 memory evidence does not establish four-rank crop execution or full-source validation memory.
 Keep those native checks pending when the user has stopped GPU training.
 
-## Progressive gate removal
+## Shared DDP owner
 
-Before sustained progressive training, require all-free parity, exact removed-zero execution and zero frozen gradients and Adam moments.
-Require legal irreversible decisions and exact resumed native updates across a decision, including checkpoint recomputation.
-CPU checks alone cannot satisfy this gate. Save the native `progressive_execution` acceptance flag under the new study identity.
-Every 50 formal updates, inspect events, losses and actual-state capture MSE. Few eligible removals limit the evidence.
-Latent MSE does not establish decoded video quality.
-
-Zero/one continuation additionally requires bit-identical parent/migrated native predictions,
-exact one execution and zero fixed-one logit gradients/moments. The disposable event must
-select three zeros and two ones. Resume must reproduce the event and next update exactly.
+`test_ddp_owner_families.py` checks family hooks and checkpoint/monitor boundaries.
+`test_import_boundaries.py` prevents new upward dependencies.
+`test_doc_contract.py` checks source inventory, designs, entrypoints, commands and local links.
+Shared-owner CPU coverage does not establish native gradient parity against the pre-refactor snapshot.
+Require matched disposable three-rank native receipts before qualifying this refactor for a new training study.
+Do not resume an existing study with changed source identity.

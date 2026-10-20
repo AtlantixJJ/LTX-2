@@ -48,7 +48,7 @@ Worked example: a requested device with 3 GB free fails the default 4 GB thresho
 ## Gotchas
 
 The default 4 GB threshold does not establish capacity for a 22B whole-clip forward.
-Scoring, ablation and benchmarking use a separate 44 GiB check.
+Scoring and benchmarking use a separate 44 GiB check. Functional ablation uses the default 4 GB preflight threshold.
 This command's decimal GB differ from GiB.
 Check `nvidia-smi` before GPU work. Hidden devices use visible CUDA indices.
 

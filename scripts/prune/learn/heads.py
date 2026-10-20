@@ -8,7 +8,6 @@ import importlib.metadata
 import importlib.util
 import json
 import os
-import platform
 import random
 import signal
 import subprocess
@@ -21,18 +20,17 @@ import torch
 
 from scripts.onestep_avatar.corpus.dataset import load_training_master
 from scripts.onestep_avatar.model import common
-from scripts.prune.core import ltx_adapter, provenance, session
+from scripts.prune.core import ltx_adapter, numerics, provenance, records, session
 from scripts.prune.data import foreground, training_windows, whole_clip
 from scripts.prune.data.learned_head_study import load_study, monitor_sigma_indices, study_sigmas
+from scripts.prune.evaluate import timing
 from scripts.prune.learn import adapters, checkpoints, losses, protocol
-from scripts.prune.learn.clipped_reset import is_clipped
 from scripts.prune.learn.gates import HeadGates, nearest_removed, select_legal
 from scripts.prune.learn.teacher_references import TeacherReferences
 from scripts.prune.score import hooks, token_sampling
-from scripts.prune.score.mobilewan_heads import projected_energy
+from scripts.prune.score.estimators import projected_energy
 
 ARMS = (
-    "learned_progressive",
     "learned_joint",
     "learned_soft_only",
     "energy",
@@ -49,43 +47,11 @@ ARMS = (
 )
 
 
-def numerical_policy():
-    if torch.cuda.is_initialized() and os.environ.get("CUBLAS_WORKSPACE_CONFIG") != ":4096:8":
-        raise ValueError("cuBLAS policy must be set before CUDA initialization")
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-    torch.use_deterministic_algorithms(True)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cuda.matmul.allow_tf32 = False
-
-
-def open_current(study, gpu_id, *, serial=False):
-    allowed = [study.get("clipped_reset_protocol", {}).get("serial_gpu_id")] if serial else study["config"]["gpu_ids"]
-    if gpu_id not in allowed or (serial and gpu_id != 6):
+def open_current(study, gpu_id):
+    if gpu_id not in study["config"]["gpu_ids"]:
         raise ValueError("GPU outside frozen allowed device list")
-    software = study["software"]
-    if (
-        software["torch"] != str(torch.__version__)
-        or software["cuda"] != torch.version.cuda
-        or software["python"] != platform.python_version()
-    ):
-        raise ValueError("runtime software differs from frozen study")
     subprocess.run(["nvidia-smi", "-i", str(gpu_id), "--query-gpu=index,memory.free", "--format=csv"], check=True)
-    current = session.open_session(
-        argparse.Namespace(model="2.5", gpu_id=gpu_id, seed=42),
-        script="prune.learn.heads",
-        prompt="",
-        transformer_path=Path(study["components"]["transformer"]["path"]),
-    )
-    if checkpoints.tensor_hash(current.context) != study["text_context"]["tensor_sha256"]:
-        raise ValueError("actual empty context differs from frozen study")
-    for role, path in (
-        ("transformer", current.model.paths.transformer()),
-        ("text_encoder", current.model.paths.text_encoder()),
-        ("video_vae", current.model.paths.video_vae()),
-    ):
-        if Path(path).resolve() != Path(study["components"][role]["path"]).resolve():
-            raise ValueError("resolved component differs from frozen study")
+    current = session.open_frozen(study, gpu_id, script="prune.learn.heads")
     from ltx_core.model.transformer.attention import attention_label, automatic_attention
 
     packages = {}
@@ -98,7 +64,7 @@ def open_current(study, gpu_id, *, serial=False):
             }
             packages[name] = {
                 "version": importlib.metadata.version(name),
-                "code_sha256": checkpoints.digest(package_files),
+                "code_sha256": records.digest(package_files),
             }
     environment = {
         "software": study["software"],
@@ -115,7 +81,7 @@ def open_current(study, gpu_id, *, serial=False):
             text=True,
         ).stdout.strip(),
     }
-    checkpoints.publish_json(Path(study["root"]) / "provenance/environment.json", environment)
+    records.publish_json(Path(study["root"]) / "provenance/environment.json", environment)
     return current
 
 
@@ -148,9 +114,9 @@ def reference_identity(study, current, grid, video, epsilon, root, manifest, sig
         "components": study["components"],
         "input": {
             "manifest": provenance.file_sha256(root / "manifest.json"),
-            "tokens": checkpoints.tensor_hash(video.latent),
+            "tokens": records.tensor_hash(video.latent),
         },
-        "epsilon": checkpoints.tensor_hash(epsilon),
+        "epsilon": records.tensor_hash(epsilon),
         "context": study["text_context"],
         "geometry": manifest["geometry"],
         "sigma": sigma,
@@ -171,7 +137,7 @@ def teacher_phase(study, current, split, deadline):
         study["config"]["teacher_hot_cap"],
     )
     cache.budget([(1, s["n_latent_frames"] * 1024, 128) for s in sources for _ in range(24)])
-    records = []
+    saved_records = []
     complete = (Path(study["root"]) / f"teacher/{split}_completion.json").is_file()
     resident = nullcontext(None) if complete else current.transformer(Path(study["components"]["transformer"]["path"]))
     with resident as model:
@@ -184,7 +150,7 @@ def teacher_phase(study, current, split, deadline):
                     identity = reference_identity(study, current, grid, video, eps, root, manifest, sigma)
                     if complete:
                         cache.read(identity)
-                        records.append(checkpoints.digest(identity))
+                        saved_records.append(records.digest(identity))
                         continue
 
                     def forward(video=video, c0=c0):
@@ -192,17 +158,17 @@ def teacher_phase(study, current, split, deadline):
                         return velocity, common.with_clean_prefix(clean, c0)
 
                     cache.produce(identity, forward)
-                    records.append(checkpoints.digest(identity))
-    checkpoints.publish_json(
+                    saved_records.append(records.digest(identity))
+    records.publish_json(
         Path(study["root"]) / f"teacher/{split}_completion.json",
-        {"study": study["identity"], "split": split, "keys": records, "status": "complete"},
+        {"study": study["identity"], "split": split, "keys": saved_records, "status": "complete"},
     )
 
 
 def energy_phase(study, current, deadline):
     root = Path(study["root"])
     widths = {f"{b}.attn1": 32 for b in range(48)}
-    records = []
+    saved_records = []
     with current.transformer(Path(study["components"]["transformer"]["path"])) as model:
         for source in study["splits"]["learning"]:
             key = hashlib.sha256(source["relative_dir"].encode()).hexdigest()
@@ -222,7 +188,7 @@ def energy_phase(study, current, deadline):
                 record = json.loads(path.read_text())
                 if record["identity"] != identity:
                     raise ValueError("energy input identity differs")
-                records.append(record)
+                saved_records.append(record)
                 continue
             observations = []
             for j, sigma in enumerate(study_sigmas(study)):
@@ -251,18 +217,22 @@ def energy_phase(study, current, deadline):
                     output, _ = model(video=video, audio=None, perturbations=None)
                 if set(energies) != set(widths) or not torch.isfinite(output).all():
                     raise ValueError("energy coverage or native output failed")
-                checkpoints.publish_json(partial, {"identity": identity, "sigma": sigma, "energies": energies})
+                records.publish_json(partial, {"identity": identity, "sigma": sigma, "energies": energies})
                 observations.append(energies)
             record = {"identity": identity, "sigmas": study_sigmas(study), "energies": observations}
-            checkpoints.publish_json(path, record)
-            records.append(record)
+            records.publish_json(path, record)
+            saved_records.append(record)
     raw = torch.tensor(
-        [[r["energies"][i][f"{b}.attn1"] for b in range(48)] for r in records for i in range(len(study_sigmas(study)))],
+        [
+            [r["energies"][i][f"{b}.attn1"] for b in range(48)]
+            for r in saved_records
+            for i in range(len(study_sigmas(study)))
+        ],
         dtype=torch.float64,
     ).mean(0)
     if not torch.isfinite(raw).all() or (raw.mean(1) <= 0).any():
         raise ValueError("invalid pooled raw energy")
-    checkpoints.publish_json(
+    records.publish_json(
         root / "calibration/ranking.json",
         {
             "study": study["identity"],
@@ -289,7 +259,7 @@ def train_identity(study, arm, seed, removed, draws):
     prefix_config = {
         k: v for k, v in study["config"].items() if k not in ("removed_heads", "test_actors", "gpu_ids", "gates")
     }
-    prefix = checkpoints.digest(
+    prefix = records.digest(
         {
             "seed": seed,
             "draws": draws["sha256"],
@@ -317,10 +287,6 @@ def training_phase(study, current, args, deadline):
     soft_end, selection_end, compact_end = protocol.phase_budget(config)
     uniform_f18 = training_windows.enabled(config)
     draw_count = protocol.validate(config)
-    progressive = args.arm == "learned_progressive"
-    clipped = is_clipped(config.get("progressive_policy"))
-    if progressive != (config.get("progressive_policy") is not None):
-        raise ValueError("progressive study runs only its single progressive arm")
     if config.get("foreground_preparation") == "deferred" and args.arm in (
         "learned_balanced",
         "learned_person",
@@ -333,7 +299,7 @@ def training_phase(study, current, args, deadline):
     if args.arm == "learned_small_regions" and study["region_tracks"]["status"] != "verified":
         raise ValueError("regional runs require verified canonical coverage and reviewed GT region records")
     allowed = [config["allowed_counts"] for _ in range(config["blocks"])]
-    if not progressive and (
+    if (
         args.removed_heads not in config["removed_heads"]
         or nearest_removed(args.removed_heads, allowed, heads=config["heads"]) != args.removed_heads
     ):
@@ -347,12 +313,6 @@ def training_phase(study, current, args, deadline):
         raise ValueError("sustained learning requires passed native feasibility")
     if runtime and feasibility.get("method") != runtime.feasibility_method:
         raise ValueError("distributed learning requires the matching native execution gate")
-    if clipped and (
-        feasibility.get("clipped_reset_execution") is not True
-        or feasibility.get("clipped_reset_config_sha256") != checkpoints.digest(config["progressive_policy"])
-        or feasibility.get("world_size") != 4
-    ):
-        raise ValueError("clipped-reset training requires fresh four-rank acceptance for its exact policy")
     gt_monitor = config.get("monitor_reference") == "gt_capture"
     if not gt_monitor:
         teacher_completion = json.loads((root / "teacher/validation_completion.json").read_text())
@@ -373,18 +333,11 @@ def training_phase(study, current, args, deadline):
         study,
         args.arm,
         args.replicate_seed,
-        0 if progressive or args.arm == "dense_fresh" else args.removed_heads,
+        0 if args.arm == "dense_fresh" else args.removed_heads,
         draw_record,
     )
-    gates = HeadGates(
-        config["blocks"], config["heads"], allowed,
-        activation="clip01_v1" if clipped else "sigmoid_v1",
-    ).to(current.device)
-    if progressive:
-        from scripts.prune.learn.progressive import ProgressivePolicy, new_policy
-
-        gates.progressive = new_policy(gates.alpha, config["progressive_policy"])
-    kept = None if progressive else config["blocks"] * config["heads"] - args.removed_heads
+    gates = HeadGates(config["blocks"], config["heads"], allowed).to(current.device)
+    kept = config["blocks"] * config["heads"] - args.removed_heads
     scores = None
     if args.arm == "energy":
         ranking = json.loads((root / "calibration/ranking.json").read_text())
@@ -418,20 +371,22 @@ def training_phase(study, current, args, deadline):
     if previous:
         if previous.get("draws_per_update", 2) != draw_count:
             raise ValueError("checkpoint draw count differs from frozen batch")
+        consumed = []
         for receipt_path in sorted((directory / "updates").glob("*.json")):
             receipt = json.loads(receipt_path.read_text())
-            if receipt["update"] > previous["update"]:
-                continue
-            for draw in receipt["draws"]:
-                input_path = Path(draw["input_manifest"])
-                if provenance.file_sha256(input_path) != draw["input_manifest_sha256"]:
-                    raise ValueError("consumed training input changed since checkpoint")
-                native = whole_clip.load_manifest(input_path.parent)
-                whole_clip.load_epsilon(input_path.parent, native["videos"][0])
-                if uniform_f18:
-                    if "training_window" not in draw:
-                        raise ValueError("uniform F18 resume requires saved window evidence")
-                    training_windows.validate_saved_window(input_path.parent, draw["training_window"])
+            if receipt["update"] <= previous["update"]:
+                consumed += receipt["draws"]
+        if uniform_f18 and any("training_window" not in draw for draw in consumed):
+            raise ValueError("uniform F18 resume requires saved window evidence")
+        # Each rank checks a disjoint share; any failure stops every rank.
+        share = consumed[runtime.rank :: runtime.world] if runtime else consumed
+        failure = None
+        try:
+            training_windows.verify_consumed_inputs(share, manifest_key="input_manifest_sha256", windows=uniform_f18)
+        except ValueError as error:
+            failure = error
+        if runtime.any(failure is not None) if runtime else failure is not None:
+            raise failure or ValueError("another rank found a changed consumed training input")
     lineage = previous["lineage"] if previous else {}
     if fresh and previous is None:
         from scripts.prune.score import export_pruned
@@ -458,7 +413,7 @@ def training_phase(study, current, args, deadline):
         source_path = Path(study["components"]["transformer"]["path"])
         model_path = root / f"exports/{args.arm}/replicate_{args.replicate_seed}/compact_base.safetensors"
         if not model_path.exists() and (runtime is None or runtime.primary):
-            checkpoints.publish(
+            records.publish(
                 model_path,
                 lambda p: export_pruned.export(
                     source_path,
@@ -497,8 +452,6 @@ def training_phase(study, current, args, deadline):
         }
     start = previous["update"] if previous else (selection_end if fresh else 0)
     compact = args.phase == "compact_recovery"
-    if clipped and compact:
-        raise ValueError("clipped-reset adapter recovery remains inside its global selection owner")
     if compact and not fresh and (previous is None or start < selection_end):
         raise ValueError("compact recovery requires the completed selection checkpoint")
     model_path = (
@@ -506,7 +459,7 @@ def training_phase(study, current, args, deadline):
         if compact
         else Path(study["components"]["transformer"]["path"])
     )
-    if not compact and start >= selection_end and not progressive:
+    if not compact and start >= selection_end:
         return
     with current.transformer(model_path) as model, torch.enable_grad():
         model.train().requires_grad_(False)
@@ -548,42 +501,25 @@ def training_phase(study, current, args, deadline):
             adapters.load_state(attached, state)
             ao.load_state_dict(opt_state)
             gates.alpha.data.copy_(previous["alpha"])
-            if progressive:
-                if previous.get("progressive") is None:
-                    raise ValueError("progressive resume lacks policy state")
-                gates.progressive = ProgressivePolicy.from_state(previous["progressive"], config["progressive_policy"])
-                gates.progressive.verify_ranks(current.device)
             gates.decision = previous["mask"].to(current.device) if previous["mask"] is not None else None
             if go and previous["gate_optimizer"]:
                 go.load_state_dict(previous["gate_optimizer"])
             checkpoints.restore_rng(previous["rng"])
         sources = {s["relative_dir"]: s for s in study["splits"]["learning"]}
-        adaptive = progressive and (clipped or config["progressive_policy"].get("selection_population") == "eligible")
-        end = (compact_end + 1000 if args.arm == "learned_sequential" else compact_end) if compact else (
-            compact_end if clipped else selection_end
-        )
+        end = (compact_end + 1000 if args.arm == "learned_sequential" else compact_end) if compact else selection_end
         live = hooks.attach_head_provider(model, gates.provider) if not compact else hooks.MaskAttachments()
-        if runtime and not runtime.uses_ddp:
-            model = runtime.wrap(model, ap)
         from scripts.prune.learn.step import TrainingStep
 
-        if runtime and runtime.uses_ddp:
+        if runtime:
             gates.alpha.requires_grad_(go is not None)
         training = TrainingStep(model, gates, config, args.arm)
-        if runtime and runtime.uses_ddp:
+        if runtime:
             training = runtime.wrap_step(training)
         frozen_parameters = [(p, p._version) for p in model.parameters() if not p.requires_grad]
         stop = [False]
         old = signal.signal(signal.SIGTERM, lambda *_: stop.__setitem__(0, True))
         phase = previous["phase"] if previous else "soft"
         try:
-            if progressive and previous:
-                for event in gates.progressive.history:
-                    path = directory / f"events/{event['update']:04d}.json"
-                    if json.loads(path.read_text()) != event:
-                        raise ValueError("saved progressive event differs from checkpoint")
-                if (start or clipped) and (adaptive or start % gates.progressive.interval == 0 or start == selection_end):
-                    monitor(study, current, model, gates, args.arm, args.replicate_seed, start, kept, scores)
             if not previous and not fresh:
                 save_checkpoint(
                     directory / "checkpoints/update_0000.pt",
@@ -595,8 +531,6 @@ def training_phase(study, current, args, deadline):
                     adapter_optimizer=ao,
                     gate_optimizer=go,
                 )
-            if adaptive and gates.progressive.final_update is not None:
-                end = gates.progressive.final_update
             for update in range(start + 1, end + 1):
                 previous_mask = gates.decision.detach().clone() if gates.decision is not None else None
                 requested_stop = stop[0] or time.monotonic() >= deadline
@@ -623,8 +557,6 @@ def training_phase(study, current, args, deadline):
                         else ("soft" if update <= soft_end or args.arm == "learned_soft_only" else "binary")
                     )
                 )
-                if clipped:
-                    phase = "recovery" if gates.progressive.recovering else "soft"
                 ramp = min(update / 300, 1.0)
                 if phase == "fixed":
                     ramp_removed = nearest_removed(args.removed_heads * ramp, allowed, heads=config["heads"])
@@ -647,6 +579,7 @@ def training_phase(study, current, args, deadline):
                 selected = protocol.update_draws(draws, draw_update, config, runtime.rank if runtime else None)
                 if runtime:
                     runtime.mask(gates)
+                accumulation = 1 if runtime else len(selected)
                 for draw in selected:
                     sigma = study_sigmas(study)[draw["sigma_index"]]
                     grid, video, c0, capture, eps, inputs, manifest = training_input_case(
@@ -667,7 +600,6 @@ def training_phase(study, current, args, deadline):
                                 )
                                 regions[name] = region_grid.reshape(1, -1).to(current.device)
                     regions = training_windows.slice_regions(regions, manifest.get("training_window"))
-                    accumulation = 1 if runtime and runtime.uses_ddp else 2
                     loss, official, penalty = training(
                         video,
                         eps,
@@ -678,7 +610,7 @@ def training_phase(study, current, args, deadline):
                         regions,
                         accumulation,
                     )
-                    (loss * (accumulation if runtime else 1)).backward()
+                    loss.backward()
                     scalars.append(
                         {
                             "official": float(official),
@@ -698,16 +630,6 @@ def training_phase(study, current, args, deadline):
                     runtime.reduce_gradients(ap + ([gates.alpha] if go else []))
                     scalars = runtime.draws(scalars)
                 anorm = float(torch.nn.utils.clip_grad_norm_(ap, 1.0, error_if_nonfinite=True))
-                executed_gradient = None
-                if clipped:
-                    # Task gradient on each executed gate, removed heads included at zero. Logging only.
-                    if gates.current is None or gates.current.grad is None:
-                        raise ValueError("missing executed-gate gradient")
-                    executed_gradient = gates.current.grad.detach().float().clone()
-                    if runtime:
-                        torch.distributed.all_reduce(executed_gradient)
-                        executed_gradient /= runtime.world
-                    executed_gradient = executed_gradient.cpu()
                 sparse_gradient = torch.zeros_like(gates.alpha)
                 if phase == "soft" and args.arm != "learned_no_sparsity":
                     sparse_gradient = losses.sparsity_gradient(
@@ -719,7 +641,6 @@ def training_phase(study, current, args, deadline):
                         lambda_start_multiplier=config.get("lambda_start_multiplier", 0.0),
                         kind=config.get("sparsity_penalty", "mean_sigmoid"),
                         logit_offset=config.get("sparsity_logit_offset", 3.0),
-                        free_mask=gates.progressive.free if progressive else None,
                     )
                 sparse_norm = float(sparse_gradient.norm())
                 velocity_norm = (
@@ -730,57 +651,19 @@ def training_phase(study, current, args, deadline):
                 gnorm = (
                     float(torch.nn.utils.clip_grad_norm_([gates.alpha], 1.0, error_if_nonfinite=True)) if go else 0.0
                 )
-                if progressive:
-                    gates.progressive.mask_gradient(gates.alpha)
                 if args.arm != "learned_sequential" or compact:
                     ao.step()
-                if go and phase != "recovery":
+                if go:
                     go.step()
-                # The trace records the optimizer result before a reset changes scores.
-                pre_event_scores = gates.alpha.detach().clone() if clipped else None
-                event = None
-                if progressive:
-                    if any(not torch.isfinite(p).all() for p in ap):
-                        raise ValueError("nonfinite progressive adapter state")
-                    gates.progressive.protect(gates.alpha, go)
-                    if clipped and phase == "soft" and update % gates.progressive.interval == 0:
-                        rng = runtime.gather(checkpoints.rng_state([runtime.local_rank])) if runtime else None
-                        if runtime is None or runtime.primary:
-                            checkpoints.save_pre_event(
-                                directory / f"transactions/pre_event_{update:04d}.pt",
-                                identity=identity, update=update, gates=gates, adapters=attached,
-                                adapter_optimizer=ao, gate_optimizer=go,
-                                rng_override={"world_size": runtime.world, "ranks": rng} if runtime else None,
-                            )
-                        if runtime:
-                            torch.distributed.barrier()
-                    event = gates.progressive.record(update, gates.alpha, go)
-                    if adaptive and gates.progressive.final_update is not None:
-                        end = gates.progressive.final_update
-                    if event is not None:
-                        gates.progressive.verify_ranks(current.device)
-                        if runtime is None or runtime.primary:
-                            checkpoints.publish_json(directory / f"events/{update:04d}.json", event)
-                        if runtime:
-                            torch.distributed.barrier()
                 gate_trace = (
-                    torch.stack([
-                        pre_event_scores if clipped else gates.alpha.detach(), gate_grad, sparse_gradient.to(gate_grad)
-                    ]).float().cpu()
+                    torch.stack([gates.alpha.detach(), gate_grad, sparse_gradient.to(gate_grad)]).float().cpu()
                     if gate_grad is not None
                     else None
                 )
                 if any(p._version != version for p, version in frozen_parameters):
                     raise ValueError("a frozen pretrained tensor changed during learning")
-                if (
-                    not progressive
-                    and not compact
-                    and scores is None
-                    and (update % 100 == 0 or update in (soft_end, selection_end))
-                ):
-                    gates.decision = select_legal(gates.alpha if scores is None else scores, kept, allowed).to(
-                        current.device
-                    )
+                if not compact and scores is None and (update % 100 == 0 or update in (soft_end, selection_end)):
+                    gates.decision = select_legal(gates.alpha, kept, allowed).to(current.device)
                 memory = []
                 for device in devices:
                     if device.type != "cuda":
@@ -815,67 +698,6 @@ def training_phase(study, current, args, deadline):
                     else []
                 )
                 receipt = {
-                    **(
-                        {
-                            "progressive": {
-                                "counts": gates.progressive.counts(),
-                                "selected_ids": event["selected_ids"] if event else [],
-                                **{
-                                    key: event[key] if event else 0
-                                    for key in ("eligible_count", "requested_count", "selected_count", "shortfall")
-                                },
-                                **(
-                                    {
-                                        key: event[key] if event else ([] if key.endswith("_ids") else 0)
-                                        for key in (
-                                            "one_selected_ids",
-                                            "one_eligible_count",
-                                            "one_requested_count",
-                                            "one_selected_count",
-                                            "one_shortfall",
-                                        )
-                                    }
-                                    if hasattr(gates.progressive, "one")
-                                    else {}
-                                ),
-                                **(
-                                    dict(
-                                        stage="finalization"
-                                        if gates.progressive.final_update is not None
-                                        else "selection",
-                                        finalization_start=gates.progressive.finalization_start,
-                                        final_update=gates.progressive.final_update,
-                                        finalization_remaining=(end - update)
-                                        if gates.progressive.final_update is not None
-                                        else None,
-                                        **(
-                                            dict(
-                                                gate_cycle=update // gates.progressive.interval,
-                                                gate_adam_step=float(go.state.get(gates.alpha, {}).get("step", 0)),
-                                                trace_scores="post_optimizer_pre_event",
-                                                checkpoint_scores="post_reset" if event else "current",
-                                                reset_delta=event["reset_delta"] if event else None,
-                                                cap=event["cap"] if event else None,
-                                                cap_bound=event["cap_bound"] if event else None,
-                                                strong_count=event["strong_count"] if event else 0,
-                                                persistent_count=event["persistent_count"] if event else 0,
-                                                empty_events=gates.progressive.empty_events,
-                                            ) if clipped else dict(
-                                                forced_one_selected_ids=event["forced_one_selected_ids"] if event else [],
-                                                forced_one_selected_count=event["forced_one_selected_count"] if event else 0,
-                                                new_fixed_one_count=event["new_fixed_one_count"] if event else 0,
-                                            )
-                                        ),
-                                    )
-                                    if adaptive
-                                    else {}
-                                ),
-                                "policy_sha256": checkpoints.digest(gates.progressive.state_dict()),
-                            }
-                        }
-                        if progressive
-                        else {}
-                    ),
                     "study": study["identity"],
                     "update": update,
                     "phase": phase,
@@ -911,23 +733,11 @@ def training_phase(study, current, args, deadline):
                     if any(old_receipt.get(k) != receipt[k] for k in fixed):
                         raise ValueError("replayed update differs from immutable progress evidence")
                 elif runtime is None or runtime.primary:
-                    checkpoints.publish_json(receipt_path, receipt)
+                    records.publish_json(receipt_path, receipt)
                 if gate_trace is not None and (runtime is None or runtime.primary):
                     # Rows: logits after the step, total gradient, sparsity gradient. Replays must match bytes.
-                    checkpoints.publish_tensor(directory / f"gate_trace/{update:04d}.pt", gate_trace)
-                if executed_gradient is not None and (runtime is None or runtime.primary):
-                    # Removed-head regret evidence: negative values ask a removed gate to increase.
-                    checkpoints.publish_tensor(directory / f"executed_gate_gradient/{update:04d}.pt", executed_gradient)
-                if (
-                    update == end
-                    or update % (gates.progressive.interval if progressive else 100) == 0
-                    or update
-                    in (
-                        soft_end,
-                        selection_end,
-                        compact_end,
-                    )
-                ):
+                    records.publish_tensor(directory / f"gate_trace/{update:04d}.pt", gate_trace)
+                if update == end or update % 100 == 0 or update in (soft_end, selection_end, compact_end):
                     save_checkpoint(
                         directory / f"checkpoints/update_{update:04d}.pt",
                         identity=identity,
@@ -945,10 +755,8 @@ def training_phase(study, current, args, deadline):
                     f"{args.arm} update={update} phase={phase} velocity_mse={sum(r['official'] for r in scalars) / draw_count:.6g}",
                     flush=True,
                 )
-                if adaptive and update == end:
-                    break
                 if args.max_updates and update - start >= args.max_updates:
-                    if progressive or update % 100:
+                    if update % 100:
                         save_checkpoint(
                             directory / f"checkpoints/update_{update:04d}.pt",
                             identity=identity,
@@ -964,26 +772,10 @@ def training_phase(study, current, args, deadline):
         finally:
             signal.signal(signal.SIGTERM, old)
             live.detach_all()
-    if adaptive and (
-        gates.progressive.final_update is None or gates.progressive.update != gates.progressive.final_update
-    ):
-        raise RuntimeError("eligible selection exhausted its mathematical bound without exact finalization")
     if runtime is None or runtime.primary:
-        checkpoints.publish_json(
+        records.publish_json(
             directory / f"{args.phase}_completion.json",
-            {
-                "identity": identity,
-                "update": end,
-                "status": "complete",
-                **(
-                    dict(
-                        finalization_start=gates.progressive.finalization_start,
-                        finalize_updates=config["progressive_policy"]["finalize_updates"],
-                    )
-                    if adaptive
-                    else {}
-                ),
-            },
+            {"identity": identity, "update": end, "status": "complete"},
         )
 
 
@@ -1008,25 +800,6 @@ def feasibility(study, current, deadline):
                 velocity, clean = ltx_adapter.velocity_forward(model, video)
                 if not torch.equal(clean, native):
                     raise ValueError("native velocity conversion differs from ordinary wrapper")
-                reference_root = getattr(current, "reference_root", None)
-                if reference_root is not None:
-                    reference_dir = (
-                        reference_root
-                        / "checks/feasibility"
-                        / f"F{source['n_latent_frames']}"
-                        / f"sigma_{study_sigmas(study).index(sigma)}"
-                    )
-                    reference_velocity = torch.load(
-                        reference_dir / "native_velocity.pt", map_location="cpu", weights_only=True
-                    )
-                    reference_clean = torch.load(
-                        reference_dir / "native_clean.pt", map_location="cpu", weights_only=True
-                    )
-                    if not torch.equal(velocity.cpu(), reference_velocity) or not torch.equal(
-                        common.with_clean_prefix(clean, c0).cpu(), reference_clean
-                    ):
-                        raise ValueError("partitioned native output differs from single-GPU reference")
-                    del reference_velocity, reference_clean
                 gates = HeadGates().to(current.device)
                 gates.begin_update("all_one")
                 gates.microbatch()
@@ -1041,14 +814,14 @@ def feasibility(study, current, deadline):
                     / f"F{source['n_latent_frames']}"
                     / f"sigma_{study_sigmas(study).index(sigma)}"
                 )
-                checkpoints.publish_tensor(destination / "native_velocity.pt", velocity)
-                checkpoints.publish_tensor(destination / "native_clean.pt", common.with_clean_prefix(clean, c0))
+                records.publish_tensor(destination / "native_velocity.pt", velocity)
+                records.publish_tensor(destination / "native_clean.pt", common.with_clean_prefix(clean, c0))
                 gates.begin_update("soft")
                 gates.microbatch()
                 with hooks.attach_head_provider(model, gates.provider):
                     near_velocity, near_clean = ltx_adapter.velocity_forward(model, video)
                 near_difference = float((near_clean.float() - clean.float()).abs().max())
-                checkpoints.publish_tensor(
+                records.publish_tensor(
                     destination / "initialized_soft_clean.pt", common.with_clean_prefix(near_clean, c0)
                 )
                 rows.append(
@@ -1063,7 +836,7 @@ def feasibility(study, current, deadline):
                     }
                 )
             results.append({"frames": source["n_latent_frames"], "rows": rows})
-            checkpoints.publish_json(
+            records.publish_json(
                 root / f"checks/feasibility/F{source['n_latent_frames']}/controls.json",
                 {"study": study["identity"], "rows": rows},
             )
@@ -1103,19 +876,19 @@ def feasibility(study, current, deadline):
                     )
                     # Parity is an inference control. Retaining its full-clip adapter
                     # graph defeats checkpointing before the actual backward test.
-                    with torch.no_grad():
-                        model.eval()
-                        for module in attached.values():
-                            module.enabled = False
-                        baseline_v, baseline_z = ltx_adapter.velocity_forward(model, video)
-                        for module in attached.values():
-                            module.enabled = True
-                        if update == 1:
+                    # Only the first update has zero adapter deltas, so only it runs the control.
+                    if update == 1:
+                        with torch.no_grad():
+                            model.eval()
+                            for module in attached.values():
+                                module.enabled = False
+                            baseline_v, baseline_z = ltx_adapter.velocity_forward(model, video)
+                            for module in attached.values():
+                                module.enabled = True
                             adapter_v, adapter_z = ltx_adapter.velocity_forward(model, video)
                             if not torch.equal(adapter_v, baseline_v) or not torch.equal(adapter_z, baseline_z):
                                 raise ValueError("zero-adapter native control failed")
-                            del adapter_v, adapter_z
-                        del baseline_v, baseline_z
+                            del adapter_v, adapter_z, baseline_v, baseline_z
                     model.train()
                     gates.begin_update("soft" if update <= 5 else "binary", 1384)
                     gate = gates.microbatch()
@@ -1195,7 +968,7 @@ def feasibility(study, current, deadline):
                             "gate_gradient_norm": gate_norm,
                         }
                     )
-                    checkpoints.publish_json(
+                    records.publish_json(
                         root / f"checks/feasibility/F{source['n_latent_frames']}/update_{update:02d}.json",
                         {"study": study["identity"], **results[-1]},
                     )
@@ -1209,7 +982,7 @@ def feasibility(study, current, deadline):
             gates.alpha.data.fill_(3.0)
             ao = optimizer(ap, config["adapter_lr"], config)
             go = optimizer([gates.alpha], config["gate_lr"], config)
-    checkpoints.publish_json(
+    records.publish_json(
         Path(study["root"]) / "checks/feasibility.json",
         {
             "study": study["identity"],
@@ -1245,23 +1018,19 @@ def probe_layouts(config):
 
 
 def timing_decision(arms, order):
-    outside = abs(arms[2]["median_ms"] - arms[0]["median_ms"])
-    base = sum(a["median_ms"] for a, k in zip(arms, order, strict=True) if k == "A") / order.count("A")
-    candidate = sum(a["median_ms"] for a, k in zip(arms, order, strict=True) if k == "B") / order.count("B")
-    drift = outside / arms[0]["median_ms"]
+    summary = timing.bracket(arms, order, "median_ms")
     return {
-        "speedup": base / candidate,
-        "outside_drift_ms": outside,
-        "drift_fraction": drift,
-        "saving_ms": base - candidate,
-        "passed": base / candidate >= 1.05 and base - candidate > 2 * outside,
+        "speedup": summary["speedup"],
+        "outside_drift_ms": summary["outside_drift"],
+        "drift_fraction": summary["drift_fraction"],
+        "saving_ms": summary["saving"],
+        "passed": summary["speedup"] >= 1.05 and summary["saving"] > 2 * summary["outside_drift"],
     }
 
 
 def execution_probes(study, current, deadline):
     from safetensors import safe_open
 
-    from scripts.prune.evaluate.bench_whole_clip_d0 import _one_arm
     from scripts.prune.score import export_pruned
 
     root, config = Path(study["root"]), study["config"]
@@ -1272,7 +1041,7 @@ def execution_probes(study, current, deadline):
     for label, masks in probe_layouts(config).items():
         output = root / f"exports/execution_probes/{label}.safetensors"
         if not output.exists():
-            checkpoints.publish(
+            records.publish(
                 output, lambda p: export_pruned.export(source_path, masks, p, model_key="2.5", mode="compact")
             )
         with safe_open(output, framework="pt", device="cpu") as handle:
@@ -1286,7 +1055,7 @@ def execution_probes(study, current, deadline):
                 if not tensor_path.exists():
                     with current.transformer(path) as model:
                         prediction, _ = model(video=video, audio=None, perturbations=None)
-                        checkpoints.publish_tensor(
+                        records.publish_tensor(
                             tensor_path,
                             grid.unpatchify_block(common.with_clean_prefix(prediction, c0), grid.latent_frames),
                         )
@@ -1303,7 +1072,7 @@ def execution_probes(study, current, deadline):
                         hooks.attach_ffn_masks(model, tensors, requires_grad=False),
                     ):
                         prediction, _ = model(video=video, audio=None, perturbations=None)
-                    checkpoints.publish_tensor(
+                    records.publish_tensor(
                         functional_path,
                         grid.unpatchify_block(common.with_clean_prefix(prediction, c0), grid.latent_frames),
                     )
@@ -1334,7 +1103,7 @@ def execution_probes(study, current, deadline):
                             raise TimeoutError("execution probe bound reached")
                         path = source_path if arm == "A" else output
                         times.append(
-                            _one_arm(
+                            timing.measure_arm(
                                 current,
                                 path,
                                 expected[arm],
@@ -1361,7 +1130,7 @@ def execution_probes(study, current, deadline):
                     "parity": parity,
                     **result,
                 }
-                checkpoints.publish_json(result_path, saved)
+                records.publish_json(result_path, saved)
                 rows.append(saved)
         evidence[label] = {
             "rows": rows,
@@ -1369,7 +1138,7 @@ def execution_probes(study, current, deadline):
             "total_parameters": params,
             "passed_both_lengths_orders": all(r["passed"] for r in rows),
         }
-    checkpoints.publish_json(
+    records.publish_json(
         root / "checks/execution_probes.json",
         {
             "study": study["identity"],
@@ -1405,12 +1174,7 @@ def _monitor(study, current, model, gates, arm, seed, update, kept, scores=None)
         cases = [source for index, source in enumerate(cases) if index % runtime.world == runtime.rank]
     original = gates.phase, gates.decision, gates.current
     rows = []
-    progressive = gates.progressive is not None
-    final_mask = (
-        None
-        if progressive
-        else select_legal(gates.alpha if scores is None else scores, kept, gates.allowed).to(current.device)
-    )
+    final_mask = select_legal(gates.alpha if scores is None else scores, kept, gates.allowed).to(current.device)
     with torch.no_grad():
         for source in cases:
             for i in monitor_sigma_indices(study):
@@ -1421,7 +1185,7 @@ def _monitor(study, current, model, gates, arm, seed, update, kept, scores=None)
                 )
                 teacher = None if gt_only else cache.read(ref_id)
                 outputs = {}
-                for state in ("trained",) if progressive else ("trained", "hardened"):
+                for state in ("trained", "hardened"):
                     gates.phase = original[0] if state == "trained" else "compact"
                     gates.decision = original[1] if state == "trained" else final_mask
                     gates.microbatch()
@@ -1449,7 +1213,7 @@ def _monitor(study, current, model, gates, arm, seed, update, kept, scores=None)
                         )
                     path = directory / f"sigma_{i}_{state}.pt"
                     if runtime is None or runtime.primary or ddp:
-                        checkpoints.publish_tensor(path, grid.unpatchify_block(clean, grid.latent_frames))
+                        records.publish_tensor(path, grid.unpatchify_block(clean, grid.latent_frames))
                     if runtime and not ddp:
                         torch.distributed.barrier()
                     outputs[state] = {"metrics": checks, "path": str(path), "sha256": provenance.file_sha256(path)}
@@ -1464,7 +1228,7 @@ def _monitor(study, current, model, gates, arm, seed, update, kept, scores=None)
                         "context_sha256": study["text_context"]["tensor_sha256"],
                         "source": source,
                         "reference": "gt_capture" if gt_only else "original_teacher",
-                        "teacher_key": None if gt_only else checkpoints.digest(ref_id),
+                        "teacher_key": None if gt_only else records.digest(ref_id),
                         **({"rank": runtime.rank} if ddp else {}),
                     }
                 )
@@ -1472,14 +1236,13 @@ def _monitor(study, current, model, gates, arm, seed, update, kept, scores=None)
     if ddp:
         rows = [row for rank_rows in runtime.gather(rows) for row in rank_rows]
     if runtime is None or runtime.primary:
-        checkpoints.publish_json(
+        records.publish_json(
             root / f"checks/{arm}/replicate_{seed}/monitor_{update:04d}.json",
             {
                 "study": study["identity"],
                 "update": update,
                 "rows": rows,
-                "hardening_is_model_change": not progressive,
-                **({"progressive": gates.progressive.state_dict()} if progressive else {}),
+                "hardening_is_model_change": True,
             },
         )
 
@@ -1510,32 +1273,21 @@ def main():
         "--quality-research", action="store_true", help="Explicit quality pilot if timing has not established speed."
     )
     args = p.parse_args()
-    numerical_policy()
+    numerics.deterministic_policy()
     torch.set_num_threads(4)
-    study = load_study(args.study)
+    # Ranks share the pinned component files; one full hash per launch is enough.
+    study = load_study(args.study, verify_components=int(os.environ.get("RANK", "0")) == 0)
     if args.replicate_seed not in study["config"]["replicate_seeds"]:
         p.error("replicate seed is not frozen")
     distributed = None
-    if study["config"].get("distributed_training") in (protocol.FSDP_METHOD, protocol.DDP_METHOD) and args.phase in (
-        "selection",
-        "compact_recovery",
-    ):
-        from scripts.prune.learn.distributed import Runtime, Session
+    if protocol.is_ddp(study["config"]) and args.phase in ("selection", "compact_recovery"):
+        from scripts.prune.learn.ddp import DDPRuntime, Session
 
-        if protocol.is_ddp(study["config"]):
-            from scripts.prune.learn.ddp import DDPRuntime
-
-            distributed = DDPRuntime(study["config"])
-        else:
-            distributed = Runtime()
+        distributed = DDPRuntime(study["config"])
         args.gpu_id = distributed.local_rank
     current = open_current(study, args.gpu_id)
     if distributed:
         current = Session(current, distributed)
-    if args.phase in ("feasibility", "selection", "compact_recovery") and "native_placement" in study["config"]:
-        from scripts.prune.learn.placement import PlacedSession
-
-        current = PlacedSession(current, study["config"]["native_placement"]["logical_devices"])
     deadline = time.monotonic() + study["config"]["wall_time_hours"] * 3600
     random.seed(args.replicate_seed)
     np.random.seed(args.replicate_seed)
@@ -1552,7 +1304,7 @@ def main():
             teacher_phase(study, current, args.split, deadline)
         else:
             training_phase(study, current, args, deadline)
-        checkpoints.publish_json(
+        records.publish_json(
             Path(study["root"])
             / f"provenance/phase_receipts/{args.phase}_rank{args.gpu_id}_{provenance.run_id()}.json",
             {
@@ -1571,7 +1323,7 @@ def main():
             },
         )
     except Exception as exc:
-        checkpoints.publish_json(
+        records.publish_json(
             Path(study["root"]) / f"logs/{args.phase}_{provenance.run_id()}.failure.json",
             {
                 "study": study["identity"],

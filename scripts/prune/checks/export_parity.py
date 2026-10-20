@@ -23,8 +23,11 @@ def _difference(a: torch.Tensor, b: torch.Tensor) -> dict:
     if a.shape != b.shape:
         return {"shape_match": False, "source_shape": list(a.shape), "export_shape": list(b.shape)}
     delta = a.float() - b.float()
-    return {"shape_match": True, "max_abs": float(delta.abs().max()),
-            "rel_l2": float(delta.square().sum().sqrt() / a.float().square().sum().sqrt().clamp_min(1e-12))}
+    return {
+        "shape_match": True,
+        "max_abs": float(delta.abs().max()),
+        "rel_l2": float(delta.square().sum().sqrt() / a.float().square().sum().sqrt().clamp_min(1e-12)),
+    }
 
 
 def _forward(model, grid: common.ClipGrid, modality: Modality, c0: torch.Tensor) -> torch.Tensor:  # noqa: ANN001
@@ -65,37 +68,56 @@ def main() -> int:  # noqa: PLR0912, PLR0915
     if args.depth_artifact:
         inspected = export_depth.inspect_checkpoint(source_path)
         depth, candidate_sha = export_depth.read_artifact(
-            candidate_path, model_key=baseline["model"]["model_key"], fingerprint=source_fingerprint,
-            num_layers=inspected["source_num_layers"], baseline=baseline,
+            candidate_path,
+            model_key=baseline["model"]["model_key"],
+            fingerprint=source_fingerprint,
+            num_layers=inspected["source_num_layers"],
+            baseline=baseline,
         )
         export_depth.verify_export(source_path, candidate_path, args.exported_checkpoint, baseline=baseline)
     else:
         masks, candidate_sha = hooks.read_mask_artifact(
-            candidate_path, model_key=baseline["model"]["model_key"], fingerprint=source_fingerprint,
-            widths=export_pruned.checkpoint_mask_widths(source_path), expected_task=whole_clip.TASK, baseline=baseline,
+            candidate_path,
+            model_key=baseline["model"]["model_key"],
+            fingerprint=source_fingerprint,
+            widths=export_pruned.checkpoint_mask_widths(source_path),
+            expected_task=whole_clip.TASK,
+            baseline=baseline,
         )
     hooks.require_native_heldout_scope(candidate_path, view=args.view, sigmas=args.sigmas, baseline=baseline)
     with safe_open(args.exported_checkpoint, framework="pt", device="cpu") as handle:
         metadata = json.loads((handle.metadata() or {}).get("config", "{}"))
     pruning = metadata.get("transformer", {}).get("pruning", {})
-    if depth is None and (pruning.get("mask_sha256") != candidate_sha or
-            pruning.get("source_transformer_fingerprint") != source_fingerprint or
-            pruning.get("task") != whole_clip.TASK or pruning.get("family", "width") != "width"):
+    if depth is None and (
+        pruning.get("mask_sha256") != candidate_sha
+        or pruning.get("source_transformer_fingerprint") != source_fingerprint
+        or pruning.get("task") != whole_clip.TASK
+        or pruning.get("family", "width") != "width"
+    ):
         raise ValueError("exported checkpoint does not carry this native D0 mask and source")
-    model_args = argparse.Namespace(model=baseline["model"]["model_key"], gpu_id=args.gpu_id, seed=baseline["seed"])
-    source = session.open_session(model_args, script="export_parity_d0",
-                                  transformer_path=source_path,
-                                  prompt=baseline["text_context"]["prompt"])
-    exported = session.open_session(model_args, script="export_parity_d0",
-                                    transformer_path=args.exported_checkpoint,
-                                    prompt=baseline["text_context"]["prompt"])
-    if source.stamp()["transformer_fingerprint"] != source_fingerprint:
-        raise ValueError("baseline checkpoint changed since saved D0 rollout")
+    source = session.open_model(
+        baseline["model"]["model_key"],
+        args.gpu_id,
+        script="export_parity_d0",
+        transformer_path=source_path,
+        prompt=baseline["text_context"]["prompt"],
+    )
+    exported = session.open_model(
+        baseline["model"]["model_key"],
+        args.gpu_id,
+        script="export_parity_d0",
+        transformer_path=args.exported_checkpoint,
+        prompt=baseline["text_context"]["prompt"],
+    )
     with source.transformer() as model:
-        heads = {name: torch.tensor(values, device=source.device) for name, values in masks.items()
-                 if not name.endswith(".ff")}
-        ffns = {name: torch.tensor(values, device=source.device) for name, values in masks.items()
-                if name.endswith(".ff")}
+        heads = {
+            name: torch.tensor(values, device=source.device)
+            for name, values in masks.items()
+            if not name.endswith(".ff")
+        }
+        ffns = {
+            name: torch.tensor(values, device=source.device) for name, values in masks.items() if name.endswith(".ff")
+        }
         functional = {}
         torch.cuda.reset_peak_memory_stats(source.device)
         with ExitStack() as stack:
@@ -107,7 +129,11 @@ def main() -> int:  # noqa: PLR0912, PLR0915
                 stack.enter_context(hooks.attach_ffn_masks(model, ffns, requires_grad=False))
             for sigma in args.sigmas:
                 grid, modality, c0, _ = whole_clip.build_input(
-                    args.baseline, baseline, view=args.view, sigma=sigma, current=source,
+                    args.baseline,
+                    baseline,
+                    view=args.view,
+                    sigma=sigma,
+                    current=source,
                 )
                 functional[sigma] = _forward(model, grid, modality, c0)
                 del grid, modality, c0
@@ -117,7 +143,11 @@ def main() -> int:  # noqa: PLR0912, PLR0915
         torch.cuda.reset_peak_memory_stats(exported.device)
         for sigma in args.sigmas:
             grid, modality, c0, _ = whole_clip.build_input(
-                args.baseline, baseline, view=args.view, sigma=sigma, current=exported,
+                args.baseline,
+                baseline,
+                view=args.view,
+                sigma=sigma,
+                current=exported,
             )
             measured = _forward(model, grid, modality, c0)
             comparisons.append({"sigma": sigma, **_difference(functional[sigma], measured)})
@@ -125,17 +155,25 @@ def main() -> int:  # noqa: PLR0912, PLR0915
         export_peak = torch.cuda.max_memory_allocated(exported.device) / 2**30
     passed = all(row.get("shape_match") and row["max_abs"] <= args.max_abs for row in comparisons)
     out = artifacts.run_dir(source.key, "d0-export-parity", script="export_parity", argv=sys.argv[1:])
-    result = {"task": whole_clip.TASK, "provenance": source.stamp(),
-              "baseline_manifest": str((args.baseline / "manifest.json").resolve()),
-              "exported_fingerprint": exported.stamp()["transformer_fingerprint"],
-              "family": "depth" if depth is not None else "width",
-              "view": args.view, "sigmas": args.sigmas,
-              "max_abs_tolerance": args.max_abs, "comparisons": comparisons,
-              "functional_peak_allocated_gib": source_peak,
-              "export_peak_allocated_gib": export_peak, "pass": passed}
+    result = {
+        "task": whole_clip.TASK,
+        "provenance": source.stamp(),
+        "baseline_manifest": str((args.baseline / "manifest.json").resolve()),
+        "exported_fingerprint": provenance.checkpoint_fingerprint(args.exported_checkpoint),
+        "family": "depth" if depth is not None else "width",
+        "view": args.view,
+        "sigmas": args.sigmas,
+        "max_abs_tolerance": args.max_abs,
+        "comparisons": comparisons,
+        "functional_peak_allocated_gib": source_peak,
+        "export_peak_allocated_gib": export_peak,
+        "pass": passed,
+    }
     if depth is not None:
-        result.update(depth_artifact_sha256=candidate_sha,
-                      reference="in-memory ordered retained blocks; quality relative to teacher is separate")
+        result.update(
+            depth_artifact_sha256=candidate_sha,
+            reference="in-memory ordered retained blocks; quality relative to teacher is separate",
+        )
     else:
         result["mask_sha256"] = candidate_sha
     (out / "export_parity.json").write_text(json.dumps(result, indent=2) + "\n")

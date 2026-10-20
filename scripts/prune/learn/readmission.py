@@ -1,7 +1,7 @@
 """V3 family-local clipped gates and bounded joint selection.
 
 Summaries use O(units), not O(window * units), memory. All decisions use the
-pre-event state. Original IDs are row-major. V2 remains in clipped_reset.py.
+pre-event state. Original IDs are row-major.
 See doc/learn/readmission.md for the state and transaction contract.
 """
 
@@ -13,9 +13,14 @@ from fractions import Fraction
 
 import torch
 
-from scripts.prune.learn.clipped_reset import clipped_gate
-
 FORMAT = "joint_clip_reset_v3"
+
+
+def clipped_gate(alpha, alive):
+    """Clamp forward to [0,1]; use PyTorch's inclusive [-3,3] derivative."""
+    surrogate = alpha.clamp(-3.0, 3.0)
+    gate = alpha.clamp(0.0, 1.0).detach() + (surrogate - surrogate.detach())
+    return alive.to(alpha.device) * gate
 
 
 def cap(fraction, count):

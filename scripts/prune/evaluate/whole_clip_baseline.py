@@ -123,6 +123,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def guidance_record(cfg: float, stg: float, stg_blocks: list[int], rescale: float, negative_prompt: str | None) -> dict:
+    """The saved guidance block; the completion reader rebuilds the unguided form from it."""
+    return {
+        "cfg": cfg,
+        "stg": stg,
+        "stg_blocks": list(stg_blocks) if stg != 0.0 else [],
+        "rescale": rescale,
+        "negative_prompt": negative_prompt,
+        "negative_prompt_sha256": None
+        if negative_prompt is None
+        else hashlib.sha256(negative_prompt.encode("utf-8")).hexdigest(),
+        "passes_per_step": 1 + (cfg != 1.0) + (stg != 0.0),
+        "execution": "sequential passes",
+    }
+
+
 def suffix(args: argparse.Namespace) -> str:
     """The latent/MP4 file-name suffix that names the schedule family."""
     if args.variant == "dev":
@@ -344,16 +360,7 @@ def _inspect_completion(args: argparse.Namespace, root: Path) -> list[Path]:  # 
             "scheme": "one global epsilon tensor per view, sliced by latent-frame block",
             "shared_across_arms_sigmas_and_block_geometries": True,
         },
-        "guidance": {
-            "cfg": 1.0,
-            "stg": 0.0,
-            "stg_blocks": [],
-            "rescale": 0.0,
-            "negative_prompt": None,
-            "negative_prompt_sha256": None,
-            "passes_per_step": 1,
-            "execution": "sequential passes",
-        },
+        "guidance": guidance_record(1.0, 0.0, [28], 0.0, None),
     }
     if any(manifest.get(key) != value for key, value in fixed.items()):
         raise ValueError("baseline scientific settings differ")
@@ -575,18 +582,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 -- one
         "steps": args.steps,
         "denoising_steps_requested": args.dev_denoising_steps,
         "schedule_policy": f"{args.dev_schedule}_ltx2_scheduler" if args.variant == "dev" else "distilled_grid",
-        "guidance": {
-            "cfg": args.cfg,
-            "stg": args.stg,
-            "stg_blocks": list(args.stg_blocks) if args.stg != 0.0 else [],
-            "rescale": args.rescale,
-            "negative_prompt": negative_prompt,
-            "negative_prompt_sha256": None
-            if negative_prompt is None
-            else hashlib.sha256(negative_prompt.encode("utf-8")).hexdigest(),
-            "passes_per_step": passes_per_step,
-            "execution": "sequential passes",
-        },
+        "guidance": guidance_record(args.cfg, args.stg, args.stg_blocks, args.rescale, negative_prompt),
         "attention": "full_bidirectional",
         "attention_backend": {
             "self": attention_label(DEFAULT_TRANSFORMER_OPS.attention_ops.attention_function),

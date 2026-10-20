@@ -75,20 +75,3 @@ It checks constant gate LR, missing rank/batch evidence and hidden temporary-fil
 Use an offline writer smoke check for cursor, lifecycle and chart publication.
 
 Phase-relative steps use the frozen budget through `protocol.phase_budget`. A config without budget keys uses the 700/300/500 preset.
-
-## Progressive gate removal
-
-Progressive update receipts add free/removed counts, eligible/selected counts and threshold shortfalls.
-Validation logs actual mixed-state capture MSE, including each saved sigma. No globally hardened state is fabricated.
-The CPU writer exits when the owner publishes `progressive_training_complete`.
-
-Zero/one receipts carry free-only distributions, cumulative fixed-one counts and per-branch event fields.
-Publish all available scalars. Omit null distributions when the free population is empty.
-`gates/selected_count` counts new zeros; `gates/one_selected_count` counts new ones.
-The legacy `train/legal_mask_changes` retains its binary-selector meaning.
-
-## Eligible-population continuation
-
-The explicit eligible policy selects each percentage from its own eligible branch, with a configured minimum count.
-See [eligible policy](eligible.md) for the terminal override and exact fixed-gate tail.
-Forced one counts and finalization start, end and remaining updates are logged separately.

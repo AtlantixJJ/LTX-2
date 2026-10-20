@@ -20,7 +20,8 @@ and [run guide](usage.md) after this page.
 | `data/` | Text context cache, saved inputs, paired identities and actor identities |
 | `score/` | Activation observations, scores, masks, width/depth export and bounded local fitting |
 | `evaluate/` | Baseline production, saved comparison, decoding, pixel metrics and timing |
-| `checks/` | In-memory intervention versus exported checkpoint parity |
+| `learn/` | Gate policies, adapters, shared DDP execution, checkpoints and receipt logging |
+| `checks/` | Native acceptance, preflight, fault diagnosis, review and export parity |
 
 `evaluate.whole_clip_baseline` is the only saved rollout producer.
 `data.whole_clip` is the shared native-input validator and reconstructor.
@@ -78,10 +79,6 @@ Depth artifacts use `whole_clip_d0_depth_v1`.
 They keep complete blocks in original order and map them to contiguous new indices.
 The CPU exporter streams payload bytes and checks exact parameter accounting.
 
-`ffn_reconstruction` supplies local CPU ridge fitting and cache validation.
-It does not supply a native collector or fitted-checkpoint exporter.
-Changed fitted weights require a new reference intervention.
-
 ## Worked ownership check
 
 A changed capture file fails its full hash before reconstruction.
@@ -91,21 +88,6 @@ Passing those checks still requires a numerical export-parity run.
 
 The [module index](README.md) describes every current production owner.
 
-## MobileWan dataset statistics
-
-`data.head_score_dataset` owns complete membership audit and deterministic held-out case selection.
-`score.mobilewan_heads` owns squared projected energy, actor-cluster statistics and nested global allocation.
-These owners do not load the transformer or publish a completed experiment.
-The dataset runner must use shared native inputs and model lifetime, and freeze train masks before held-out inspection.
-
-`score.mobilewan_records` owns atomic view records and strict resume identities.
-The rollout producer supports explicit direct dev and capture-only D0 through its existing shared rollout.
-The restricted queue wrapper accepts unmodified direct dev D0 at sigma <=0.95.
-
-`score.mobilewan_aggregate` owns complete coverage checks, train-only mask freezing and final cohort statistics.
-It reads saved worker records and never opens a GPU model.
-Final statistics retain original head indices and exact pooled/per-sigma conditions.
-
 ## Learned head recovery
 
 `learn/` owns scalar pruning gates, FP32 adapters, official velocity loss and bounded phase execution.
@@ -114,7 +96,7 @@ Final statistics retain original head indices and exact pooled/per-sigma conditi
 `learn.teacher_references` is the only producer of shared original-teacher evidence.
 `core.ltx_adapter.velocity_forward` accesses the supported X0 wrapper's underlying velocity model once.
 
-Learning imports core, data and score boundaries. It does not import avatar training or execution.
+Learning imports core, data and score boundaries. It does not import avatar training or execution. Timing and paired metrics are explicit deferred upward dependencies.
 Recovered export calls existing coupled structural surgery and merges only compact V/output adapters.
 Recovered validation enters `data.whole_clip.verify_candidate` through a deferred checks import.
 Frozen evaluation can import learning's numerical and input helpers; it performs no optimization.
@@ -134,12 +116,21 @@ Native structural, transfer, fusion and merged-reload checks remain separate fro
 `data.ffn_study` freezes reused inputs under a new code and config identity.
 `learn.ffn_gates` owns aligned binary channel decisions and fresh surrogate graphs.
 `learn.ffn_training` registers head and FFN gates with the native model for one DDP reduction.
-`learn.ffn` owns standalone native checks, training, full-source monitoring and exact resume.
+`learn.ffn` supplies the FFN hooks to the shared DDP owner.
 `score.export_learned_ffn` owns coupled export, fusion and the new recovered envelope.
 Existing head entrypoints and historical checkpoint formats retain their behavior.
 
-## Progressive gate removal
+## Shared training ownership
 
-`learn/progressive.py` owns trajectory statistics, terminal gate decisions, frozen Adam coordinates and policy serialization.
-`data/progressive_head_study.py` owns verified checkpoint-zero reuse and the exact r13 draw prefix.
-The existing learner owns optimizer execution, event publication, checkpoint ordering and actual-state monitors.
+`learn.ddp_owner` owns the runtime, native acceptance, input reuse, monitor and update loop.
+`learn.ffn` and `learn.joint` supply family hooks and numerical state owners.
+`core.records` owns immutable evidence publication and durable status replacement.
+`core.numerics` owns the strict numerical policy.
+`data.study_io` owns frozen identities and distinct pinned-file checks.
+`data.corpus_pins` owns membership pins and official dev schedule reconstruction.
+`evaluate.media_common` owns shared pixel metrics, source RGB and media verification.
+`evaluate.timing` owns synchronized timing and ABA/BAB bracket statistics.
+`learn.receipt_logger` follows FFN or V3 receipts without loading a model.
+
+Retired study executors and their designs are preserved in the workspace cleanup archive.
+Current consumers do not import those executors. The source index lists supported modules.

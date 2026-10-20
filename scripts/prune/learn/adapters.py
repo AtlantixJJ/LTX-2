@@ -160,18 +160,3 @@ def transfer_ffn(state, mask):
         name: slice_ffn_tensor(value, name, torch.where(mask[int(name.split(".")[0])] == 1)[0].tolist())
         for name, value in state.items()
     }
-
-
-def transfer_ffn_optimizer(optimizer_state, names, mask):
-    import copy
-
-    result = copy.deepcopy(optimizer_state)
-    ids = [pid for group in result["param_groups"] for pid in group["params"]]
-    if len(ids) != len(names):
-        raise ValueError("FFN optimizer parameter inventory differs")
-    for pid, name in zip(ids, names, strict=True):
-        indices = torch.where(mask[int(name.split(".")[0])] == 1)[0].tolist()
-        for key, value in result["state"].get(pid, {}).items():
-            if isinstance(value, torch.Tensor) and value.ndim > 0:
-                result["state"][pid][key] = slice_ffn_tensor(value, name, indices)
-    return result

@@ -5,78 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
-import time
 from pathlib import Path
 
 import torch
 
-from ltx_core.model.transformer.modality import Modality
-from scripts.onestep_avatar.model import common
-from scripts.prune.core import provenance, session
+from scripts.prune.core import numerics, provenance, session
 from scripts.prune.data import whole_clip
-
-
-def _one_arm(
-    current: session.Session,
-    path: Path,
-    expected: Path,
-    grid: common.ClipGrid,
-    modality: Modality,
-    c0: torch.Tensor,
-    *,
-    warmup: int,
-    repeats: int,
-    label: str,
-) -> dict:
-    times = []
-    with current.transformer(path) as transformer:
-        resident_parameters = sum(p.numel() for p in transformer.parameters())
-
-        def forward() -> torch.Tensor:
-            prediction, _ = transformer(video=modality, audio=None, perturbations=None)
-            return common.with_clean_prefix(prediction, c0)
-
-        with torch.no_grad():
-            output = forward()
-            torch.cuda.synchronize(current.device)
-            recorded = torch.load(expected, map_location="cpu", weights_only=True)
-            measured = grid.unpatchify_block(output, grid.latent_frames).cpu()
-            if not torch.isfinite(recorded).all() or not torch.isfinite(measured).all():
-                raise ValueError(f"{label}: nonfinite recorded or measured output")
-            difference = (recorded.float() - measured.float()).abs()
-            if not torch.isfinite(difference).all():
-                raise ValueError(f"{label}: nonfinite forward difference")
-            max_abs = float(difference.max())
-            rel_l2 = float(
-                torch.linalg.vector_norm(difference) / torch.linalg.vector_norm(recorded.float()).clamp_min(1e-8)
-            )
-            if max_abs > 0.02:
-                raise ValueError(f"{label} forward differs from saved rollout: max_abs={max_abs:.5f}")
-            del output, recorded, measured, difference
-            torch.cuda.reset_peak_memory_stats(current.device)
-            for index in range(warmup + repeats):
-                torch.cuda.synchronize(current.device)
-                start = time.perf_counter()
-                output = forward()
-                torch.cuda.synchronize(current.device)
-                if index >= warmup:
-                    times.append((time.perf_counter() - start) * 1000)
-                del output
-            peak = torch.cuda.max_memory_allocated(current.device)
-    return {
-        "arm": label,
-        "checkpoint": str(path.resolve()),
-        "checkpoint_fingerprint": provenance.checkpoint_fingerprint(path),
-        "saved_rollout_max_abs": max_abs,
-        "saved_rollout_relative_l2": rel_l2,
-        "times_ms": times,
-        "median_ms": statistics.median(times),
-        "mean_ms": statistics.mean(times),
-        "min_ms": min(times),
-        "max_ms": max(times),
-        "peak_cuda_memory_bytes": peak,
-        "resident_video_parameters": resident_parameters,
-    }
+from scripts.prune.evaluate import timing
 
 
 def main() -> None:  # noqa: PLR0915 -- preserve the ordered bracket and conditional drift retry
@@ -96,9 +31,8 @@ def main() -> None:  # noqa: PLR0915 -- preserve the ordered bracket and conditi
     )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    from scripts.prune.learn.heads import numerical_policy  # noqa: PLC0415
 
-    numerical_policy()
+    numerics.deterministic_policy()
     if args.warmup < 1 or args.repeats < 3:
         parser.error("use at least one warmup and three timed repetitions")
     base = whole_clip.load_manifest(args.baseline)
@@ -112,9 +46,9 @@ def main() -> None:  # noqa: PLR0915 -- preserve the ordered bracket and conditi
     torch.cuda.set_device(device)
     if torch.cuda.mem_get_info(device)[0] < 44 * 2**30:
         parser.error(f"GPU {args.gpu_id} needs at least 44 GiB free for the 1024px whole clip")
-    model_args = argparse.Namespace(model="2.5", gpu_id=args.gpu_id, seed=base["seed"])
-    current = session.open_session(
-        model_args,
+    current = session.open_model(
+        "2.5",
+        args.gpu_id,
         script="prune.evaluate.bench_whole_clip_d0",
         transformer_path=Path(base["model"]["transformer_path"]),
         prompt=base["text_context"]["prompt"],
@@ -141,7 +75,7 @@ def main() -> None:  # noqa: PLR0915 -- preserve the ordered bracket and conditi
     for index, code in enumerate(args.order):
         path, expected = arm_inputs[code]
         label = f"{'baseline' if code == 'A' else 'candidate'}_{index + 1}"
-        row = _one_arm(
+        row = timing.measure_arm(
             current, path, expected, grid, modality, c0, warmup=args.warmup, repeats=args.repeats, label=label
         )
         arms.append(row)
@@ -154,7 +88,9 @@ def main() -> None:  # noqa: PLR0915 -- preserve the ordered bracket and conditi
             path, expected = arm_inputs[code]
             label = f"{'baseline' if code == 'A' else 'candidate'}_{index + 1}"
             arms.append(
-                _one_arm(current, path, expected, grid, modality, c0, warmup=args.warmup, repeats=20, label=label)
+                timing.measure_arm(
+                    current, path, expected, grid, modality, c0, warmup=args.warmup, repeats=20, label=label
+                )
             )
     baseline_ms = statistics.mean(row["median_ms"] for row in arms if row["arm"].startswith("baseline"))
     candidate_ms = statistics.mean(row["median_ms"] for row in arms if row["arm"].startswith("candidate"))

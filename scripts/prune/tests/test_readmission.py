@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from ltx_core.model.transformer.model import X0Model
-from scripts.prune.data.resume_learned_heads import unchanged_state_hash
+from scripts.prune.core.records import unchanged_state_hash
 from scripts.prune.learn import checkpoints, joint_training
 from scripts.prune.learn.readmission import Family, JointPolicy, budget_projection
 from scripts.prune.tests.test_ffn_learning import Velocity, case, config
@@ -269,3 +269,22 @@ def test_c_exact_resume_with_projected_masks(tmp_path):
     assert unchanged_state_hash(expected) == unchanged_state_hash(actual)
     assert step.projection["spent"] <= 708
     step.close()
+
+
+def test_clipped_gate_forward_surrogate_endpoints():
+    from torch.utils.checkpoint import checkpoint
+
+    from scripts.prune.learn.readmission import clipped_gate
+
+    alpha = torch.tensor([[-4.0, -3.0, -1.0, 0.0, 0.5, 1.0, 2.0, 3.0, 4.0]], requires_grad=True)
+    original = alpha.detach().clone()
+    value = clipped_gate(alpha, torch.ones_like(alpha, dtype=torch.bool))
+    assert value.tolist() == [[0, 0, 0, 0, 0.5, 1, 1, 1, 1]]
+    value.sum().backward()
+    assert alpha.grad.tolist() == [[0, 1, 1, 1, 1, 1, 1, 1, 0]]
+    assert torch.equal(alpha, original)
+    alpha.grad = None
+    checkpoint(
+        lambda a: clipped_gate(a, torch.zeros_like(a, dtype=torch.bool)), alpha, use_reentrant=False
+    ).sum().backward()
+    assert not alpha.grad.any()

@@ -19,20 +19,13 @@ from scripts.prune.data import whole_clip
 from scripts.prune.score import export_pruned, hooks
 
 
-def _records(manifest: dict) -> dict[tuple[str, float], dict]:
-    return whole_clip.records(manifest)
-
-
-def _latent_path(root: Path, row: dict) -> Path:
-    return whole_clip.latent_path(root, row)
-
-
-def _verify_pair(base: dict, candidate: dict) -> None:
-    whole_clip.verify_pair(base, candidate)
-
-
-def _direction_metrics(base_latent: torch.Tensor, candidate_latent: torch.Tensor, capture: torch.Tensor,
-                       epsilon: torch.Tensor, sigma: float) -> dict[str, float]:
+def _direction_metrics(
+    base_latent: torch.Tensor,
+    candidate_latent: torch.Tensor,
+    capture: torch.Tensor,
+    epsilon: torch.Tensor,
+    sigma: float,
+) -> dict[str, float]:
     """Noise-facing velocity ``(x_sigma - x0_hat)/sigma`` on generated frames only.
 
     The first latent frame is the clean conditioning frame, not a model prediction. Epsilon
@@ -69,8 +62,21 @@ def _comparison_video(base_video: Path, candidate_video: Path, output: Path) -> 
     labels = ("GT capture (VAE)", "Baseline D0 (VAE)", "Pruned D0 (VAE)")
     # Both source videos have GT|D0|D1 panels at equal sizes and matching frame rates.
     probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
-         "-of", "json", str(base_video)], capture_output=True, text=True, check=True,
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "json",
+            str(base_video),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     width = json.loads(probe.stdout)["streams"][0]["width"]
     panel_width = width // 3
@@ -91,9 +97,33 @@ def _comparison_video(base_video: Path, candidate_video: Path, output: Path) -> 
         "[stack][2:v]overlay=0:0:shortest=1[v]"
     )
     subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(base_video), "-i", str(candidate_video),
-         "-loop", "1", "-i", str(title_path), "-filter_complex", filters, "-map", "[v]", "-an",
-         "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-shortest", str(output)],
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            str(base_video),
+            "-i",
+            str(candidate_video),
+            "-loop",
+            "1",
+            "-i",
+            str(title_path),
+            "-filter_complex",
+            filters,
+            "-map",
+            "[v]",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-shortest",
+            str(output),
+        ],
         check=True,
     )
 
@@ -102,23 +132,21 @@ def compare(baseline: Path, candidate: Path, output: Path) -> dict:
     base = whole_clip.load_manifest(baseline)
     pruned = whole_clip.load_manifest(candidate)
     whole_clip.verify_candidate(base, pruned)
-    base_rows, candidate_rows = _records(base), _records(pruned)
+    base_rows, candidate_rows = whole_clip.records(base), whole_clip.records(pruned)
     output.mkdir(parents=True, exist_ok=True)
     rows = []
     for key, b in sorted(base_rows.items()):
+        # verify_candidate already matched capture, fps, blocks and the exact [sigma, 0] schedules.
         p = candidate_rows[key]
-        for field in ("capture_sha256", "fps", "blocks"):
-            if b["artifacts"][field] != p["artifacts"][field]:
-                raise ValueError(f"unmatched {field} for {key}")
-        if b["schedule"] != [key[1], 0.0] or p["schedule"] != b["schedule"]:
-            raise ValueError(f"not the same one-step schedule for {key}")
         capture, _ = load_training_master(Path(b["artifacts"]["capture"]))
         if provenance.file_sha256(b["artifacts"]["capture"]) != b["artifacts"]["capture_sha256"]:
             raise ValueError(f"capture changed since baseline: {key}")
-        whole_clip.verify_saved_noise(baseline, candidate, b, p)
         epsilon = whole_clip.load_epsilon(baseline, b)
-        base_latent = torch.load(_latent_path(baseline, b), map_location="cpu", weights_only=True)
-        candidate_latent = torch.load(_latent_path(candidate, p), map_location="cpu", weights_only=True)
+        if not torch.equal(epsilon, whole_clip.load_epsilon(candidate, p)):
+            raise ValueError(f"saved noise tensors differ for {key[0]} sigma={key[1]}")
+        base_path, candidate_path = whole_clip.latent_path(baseline, b), whole_clip.latent_path(candidate, p)
+        base_latent = torch.load(base_path, map_location="cpu", weights_only=True)
+        candidate_latent = torch.load(candidate_path, map_location="cpu", weights_only=True)
         metrics = _direction_metrics(
             base_latent, candidate_latent, capture.unsqueeze(0).to(base_latent.dtype), epsilon, key[1]
         )
@@ -126,23 +154,39 @@ def compare(baseline: Path, candidate: Path, output: Path) -> dict:
         if b["output"] and p["output"]:
             video = output / f"{Path(key[0]).parent.parent.name}_sigma_{key[1]:.6f}_gt_base_pruned.mp4"
             _comparison_video(Path(b["output"]), Path(p["output"]), video)
-        rows.append({"view": key[0], "sigma": key[1], **metrics,
-                     "baseline_latent": str(_latent_path(baseline, b)),
-                     "candidate_latent": str(_latent_path(candidate, p)),
-                     "comparison_video": str(video) if video else None})
-    result = {"baseline": str(baseline), "candidate": str(candidate),
-              "task": whole_clip.TASK,
-              "baseline_fingerprint": base["model"]["transformer_fingerprint"],
-              "candidate_fingerprint": pruned["model"]["transformer_fingerprint"],
-              "noise": "matched saved epsilon; same capture, prompt, seed, geometry, and schedule",
-              "direction": "(x_sigma - predicted_x0) / sigma; generated latent frames 1..T-1",
-              "rows": rows}
+        rows.append(
+            {
+                "view": key[0],
+                "sigma": key[1],
+                **metrics,
+                "baseline_latent": str(base_path),
+                "candidate_latent": str(candidate_path),
+                "comparison_video": str(video) if video else None,
+            }
+        )
+    result = {
+        "baseline": str(baseline),
+        "candidate": str(candidate),
+        "task": whole_clip.TASK,
+        "baseline_fingerprint": base["model"]["transformer_fingerprint"],
+        "candidate_fingerprint": pruned["model"]["transformer_fingerprint"],
+        "noise": "matched saved epsilon; same capture, prompt, seed, geometry, and schedule",
+        "direction": "(x_sigma - predicted_x0) / sigma; generated latent frames 1..T-1",
+        "rows": rows,
+    }
     (output / "comparison.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
 
-def functional_ablation(baseline: Path, masks_path: Path, output: Path, *, view: str,  # noqa: PLR0915
-                        sigmas: list[float], gpu_id: int) -> dict:
+def functional_ablation(
+    baseline: Path,
+    masks_path: Path,
+    output: Path,
+    *,
+    view: str,  # noqa: PLR0915
+    sigmas: list[float],
+    gpu_id: int,
+) -> dict:
     """Measure head-only, FFN-only and combined native masks on saved D0 inputs."""
     base = whole_clip.load_manifest(baseline)
     if not sigmas or any((view, sigma) not in whole_clip.records(base) for sigma in sigmas):
@@ -152,24 +196,38 @@ def functional_ablation(baseline: Path, masks_path: Path, output: Path, *, view:
     if provenance.checkpoint_fingerprint(checkpoint) != fingerprint:
         raise ValueError("baseline checkpoint changed since saved rollout")
     masks, digest = hooks.read_mask_artifact(
-        masks_path, model_key=base["model"]["model_key"], fingerprint=fingerprint,
-        widths=export_pruned.checkpoint_mask_widths(checkpoint), expected_task=whole_clip.TASK, baseline=base,
+        masks_path,
+        model_key=base["model"]["model_key"],
+        fingerprint=fingerprint,
+        widths=export_pruned.checkpoint_mask_widths(checkpoint),
+        expected_task=whole_clip.TASK,
+        baseline=base,
     )
     hooks.require_native_heldout_scope(masks_path, view=view, sigmas=sigmas, baseline=base)
-    args = argparse.Namespace(model="2.5", gpu_id=gpu_id, seed=base["seed"])
-    current = session.open_session(args, script="prune.evaluate.whole_clip_d0.functional_ablation",
-                                   prompt=base["text_context"]["prompt"])
-    if current.stamp()["transformer_fingerprint"] != base["model"]["transformer_fingerprint"]:
-        raise ValueError("baseline checkpoint changed since saved rollout")
+    if gpu_id >= torch.cuda.device_count():
+        raise ValueError(f"GPU {gpu_id} does not exist")
+    if torch.cuda.mem_get_info(gpu_id)[0] < 44 * 2**30:
+        raise ValueError(f"GPU {gpu_id} needs at least 44 GiB free for the whole-clip ablation")
+    current = session.open_model(
+        "2.5", gpu_id, script="prune.evaluate.whole_clip_d0.functional_ablation", prompt=base["text_context"]["prompt"]
+    )
     rows = []
     with current.transformer(checkpoint) as model:
-        head_values = {name: torch.tensor(value, device=current.device) for name, value in masks.items()
-                       if not name.endswith(".ff")}
-        ffn_values = {name: torch.tensor(value, device=current.device) for name, value in masks.items()
-                      if name.endswith(".ff")}
+        head_values = {
+            name: torch.tensor(value, device=current.device)
+            for name, value in masks.items()
+            if not name.endswith(".ff")
+        }
+        ffn_values = {
+            name: torch.tensor(value, device=current.device) for name, value in masks.items() if name.endswith(".ff")
+        }
         for sigma in sigmas:
             grid, modality, c0, row = whole_clip.build_input(
-                baseline, base, view=view, sigma=sigma, current=current,
+                baseline,
+                base,
+                view=view,
+                sigma=sigma,
+                current=current,
             )
             capture, _ = load_training_master(Path(row["artifacts"]["capture"]))
             capture = capture.unsqueeze(0)
@@ -179,8 +237,7 @@ def functional_ablation(baseline: Path, masks_path: Path, output: Path, *, view:
             def forward(grid: common.ClipGrid, modality: Modality, c0: torch.Tensor) -> torch.Tensor:
                 with torch.no_grad():
                     prediction, _ = model(video=modality, audio=None, perturbations=None)
-                    return grid.unpatchify_block(common.with_clean_prefix(prediction, c0),
-                                                 grid.latent_frames).cpu()
+                    return grid.unpatchify_block(common.with_clean_prefix(prediction, c0), grid.latent_frames).cpu()
 
             direct = forward(grid, modality, c0)
             max_abs = float((recorded.float() - direct.float()).abs().max())
@@ -208,10 +265,15 @@ def functional_ablation(baseline: Path, masks_path: Path, output: Path, *, view:
             rows.append(result)
             del grid, modality, c0, capture, epsilon, recorded, direct
             torch.cuda.empty_cache()
-    report = {"task": whole_clip.TASK, "baseline": str(baseline), "mask": str(masks_path),
-              "mask_sha256": digest, "baseline_fingerprint": base["model"]["transformer_fingerprint"],
-              "method": "functional mask on the baseline; diagnostic, not compact-export quality or speed",
-              "rows": rows}
+    report = {
+        "task": whole_clip.TASK,
+        "baseline": str(baseline),
+        "mask": str(masks_path),
+        "mask_sha256": digest,
+        "baseline_fingerprint": base["model"]["transformer_fingerprint"],
+        "method": "functional mask on the baseline; diagnostic, not compact-export quality or speed",
+        "rows": rows,
+    }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2) + "\n")
     return report
@@ -221,8 +283,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--candidate", type=Path)
-    parser.add_argument("--functional-mask", type=Path,
-                        help="Run head-only, FFN-only and combined diagnostics on a native mask")
+    parser.add_argument(
+        "--functional-mask", type=Path, help="Run head-only, FFN-only and combined diagnostics on a native mask"
+    )
     parser.add_argument("--view", help="Capture view for --functional-mask")
     parser.add_argument("--sigmas", type=float, nargs="+", help="Sigma levels for --functional-mask")
     parser.add_argument("--gpu-id", type=int, help="GPU for --functional-mask")
@@ -231,8 +294,9 @@ def main() -> None:
     if args.functional_mask:
         if args.candidate or args.view is None or not args.sigmas or args.gpu_id is None:
             parser.error("--functional-mask needs --view, --sigmas and --gpu-id, without --candidate")
-        result = functional_ablation(args.baseline, args.functional_mask, args.output,
-                                     view=args.view, sigmas=args.sigmas, gpu_id=args.gpu_id)
+        result = functional_ablation(
+            args.baseline, args.functional_mask, args.output, view=args.view, sigmas=args.sigmas, gpu_id=args.gpu_id
+        )
         print(json.dumps({"output": str(args.output), "rows": len(result["rows"])}, indent=2))
         return
     if args.candidate is None:

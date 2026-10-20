@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import tempfile
 from pathlib import Path
 
 from safetensors import safe_open
 
-from scripts.prune.core import provenance
+from scripts.prune.core import provenance, records
 from scripts.prune.data import joint_study
-from scripts.prune.learn import checkpoints, joint_training
+from scripts.prune.learn import joint_training
 from scripts.prune.score import export_learned_ffn, export_pruned
 
 FORMAT = "whole_clip_d0_joint_readmission_v3"
@@ -65,16 +64,23 @@ def run_export(study, checkpoint, output, *, probe=False):
         source_transformer_fingerprint=provenance.checkpoint_fingerprint(source),
     )
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="joint-export-", dir=output.parent) as temporary:
-        merged = Path(temporary) / "merged_full.safetensors"
-        export_learned_ffn.merge(source, state["adapters"], merged)
-        # Write the compact payload first, then bind its exact tensor inventory.
-        compact = Path(temporary) / "compact.safetensors"
-        export_pruned.export(merged, masks, compact, model_key="2.5", mode="compact", provenance_block=pruning)
-        export_learned_ffn.merge(
-            compact, {}, output, pruning=pruning, envelope=envelope, envelope_path=output.with_suffix(".envelope.json")
-        )
-    checkpoints.publish_json(output.with_suffix(".json"), dict(path=str(output), sha256=provenance.file_sha256(output)))
+    # Merge FP32 deltas into full-width weights, slice the coupled projections, then write once.
+    tensors, meta = export_pruned.load(source)
+    export_learned_ffn.merge_adapters(tensors, state["adapters"])
+    export_pruned.export_tensors(
+        tensors,
+        meta,
+        masks,
+        widths=export_pruned.checkpoint_mask_widths(source),
+        model_key="2.5",
+        mode="compact",
+        provenance_block=pruning,
+    )
+    export_learned_ffn.finalize(
+        tensors, meta, output, pruning=pruning, envelope=envelope, envelope_path=output.with_suffix(".envelope.json")
+    )
+    del tensors
+    records.publish_json(output.with_suffix(".json"), dict(path=str(output), sha256=provenance.file_sha256(output)))
     return output
 
 
@@ -92,7 +98,7 @@ def validate_envelope(path, *, base, candidate):
     if export_learned_ffn.masks_from_state(state, export_pruned.checkpoint_mask_widths(source)) != envelope["masks"]:
         raise ValueError("joint original IDs differ")
     from scripts.prune.data.whole_clip import actor_identity
-    from scripts.prune.learn.joint import verify_consumed
+    from scripts.prune.learn.ddp_owner import verify_consumed
 
     verify_consumed(study, state["update"], state["input_chain"])
     if provenance.checkpoint_fingerprint(source) != base["model"]["transformer_fingerprint"]:
@@ -107,7 +113,7 @@ def validate_envelope(path, *, base, candidate):
             if (
                 list(tensor.shape) != record["shape"]
                 or str(tensor.dtype) != record["dtype"]
-                or checkpoints.tensor_hash(tensor) != record["sha256"]
+                or records.tensor_hash(tensor) != record["sha256"]
             ):
                 raise ValueError("joint merged tensor differs")
     return envelope

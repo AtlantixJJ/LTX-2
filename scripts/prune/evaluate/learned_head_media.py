@@ -10,56 +10,19 @@ import numpy as np
 import torch
 
 from scripts.onestep_avatar import media
-from scripts.onestep_avatar.metrics import lpips_distance
-from scripts.prune.core import provenance
+from scripts.prune.core import numerics, provenance
+from scripts.prune.core.records import publish_json
 from scripts.prune.data import foreground
 from scripts.prune.data.learned_head_study import load_study
 from scripts.prune.evaluate.learned_heads import actor_bootstrap, saved_case
-from scripts.prune.evaluate.mobilewan_media import preserve_source, saved_video, source_pixels, verify_comparison
-from scripts.prune.learn.checkpoints import publish_json
-
-
-def region_lpips(model, student, reference, weights, device, *, boxes=None, valid=None):
-    """Use GT coverage and boxes only. Exclude c0 and invalid small regions."""
-    if student.shape != reference.shape or weights.shape != (len(student), *student.shape[-2:]):
-        raise ValueError("LPIPS fixed region geometry differs")
-    left, right, frame_ids = [], [], []
-    for f in range(1, len(student)):
-        if valid is not None and not valid[f]:
-            continue
-        w = weights[f]
-        if boxes is None:
-            ys, xs = torch.where(w > 0)
-            if not len(xs):
-                continue
-            x0, y0, x1, y1 = int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
-        else:
-            x0, y0, x1, y1 = [int(v) for v in boxes[f]]
-        if min(x1 - x0, y1 - y0) < 32:
-            continue
-        for value, dest in ((student, left), (reference, right)):
-            pixels = value[f].float() / 255
-            masked = pixels * w[None] + (1 - w[None])
-            crop = masked[:, y0:y1, x0:x1].unsqueeze(0)
-            if crop.numel() == 0:
-                raise ValueError("reviewed GT box lies outside pixel grid")
-            resized = torch.nn.functional.interpolate(
-                crop, (256, 256), mode="bilinear", align_corners=False, antialias=True
-            )
-            # FP32 interpolation can overshoot white by a few ulps. Preserve the
-            # metric's strict RGB contract, and reject larger input errors.
-            if not torch.isfinite(resized).all() or resized.min() < -1e-6 or resized.max() > 1 + 1e-6:
-                raise ValueError("RGB resize exceeds bounded interpolation roundoff")
-            dest.append(resized[0].clamp(0, 1))
-        frame_ids.append(f)
-    if not left:
-        return {"lpips": None, "valid_frames": 0, "frame_ids": [], "status": "missing_coverage"}
-    return {
-        "lpips": lpips_distance(model, torch.stack(left), torch.stack(right), device, batch=8),
-        "valid_frames": len(frame_ids),
-        "frame_ids": frame_ids,
-        "status": "scored",
-    }
+from scripts.prune.evaluate.media_common import (
+    pixel_metrics,
+    preserve_source,
+    region_lpips,
+    saved_video,
+    source_pixels,
+    verify_comparison,
+)
 
 
 def panels(recorded, vae_gt, teacher, candidates):
@@ -75,28 +38,6 @@ def panels(recorded, vae_gt, teacher, candidates):
     return [
         media.Panel(role, title, pixels, tuple(range(len(pixels))), value=label) for role, title, pixels, label in rows
     ]
-
-
-def pixel_metrics(student, reference, weights):
-    if student.shape != reference.shape or student.ndim != 4 or weights.shape != (len(student), *student.shape[-2:]):
-        raise ValueError("region pixels and fixed GT coverage differ")
-    if not torch.isfinite(student).all() or not torch.isfinite(reference).all() or not torch.isfinite(weights).all():
-        raise ValueError("nonfinite pixel input")
-    s, r, w = student[1:].float() / 255, reference[1:].float() / 255, weights[1:].float()
-    mass = w.sum()
-    if mass <= 0:
-        raise ValueError("required decoded region coverage is empty")
-    mse = float(((s - r).square() * w[:, None]).sum() / (3 * mass))
-    union = torch.maximum(w[1:], w[:-1])
-    motion = float(((s[1:] - s[:-1]).abs() * union[:, None]).sum() / (3 * union.sum())) if len(s) > 1 else None
-    return {
-        "mse": mse,
-        "psnr": float(-10 * np.log10(mse)) if mse else None,
-        "motion_amount": motion,
-        "lpips": None,
-        "lpips_status": "requires_pinned_metric_and_valid_GT_face_hand_tracks",
-        "valid_frames": int((w.sum((1, 2)) > 0).sum()),
-    }
 
 
 def main():
@@ -133,16 +74,16 @@ def main():
         for group in matched.values()
     ):
         raise ValueError("comparison arms do not share every teacher/input/noise case")
-    from scripts.prune.learn.heads import input_case, numerical_policy, open_current
+    from scripts.prune.learn.heads import input_case, open_current
 
-    numerical_policy()
+    numerics.deterministic_policy()
     current = open_current(study, args.gpu_id)
     perceptual = None
     if study["perceptual_metric"]["status"] == "pinned":
         import lpips
 
         perceptual = lpips.LPIPS(net="alex", verbose=False).to(current.device).eval()
-    records = []
+    saved_records = []
     with current.decoder() as decoder:
         for key, group in matched.items():
             view, noise_seed, sigma = key
@@ -238,7 +179,7 @@ def main():
                 poster_frame=min(30, len(recorded) - 1),
                 common_settings={"sigma": sigma, "seed": noise_seed, "source": view, "schedule": [sigma, 0.0]},
             )
-            from scripts.prune.learn.checkpoints import digest
+            from scripts.prune.core.records import digest
 
             case_key = digest(list(key)) if gt_only else first["teacher_key"]
             destination = root / "media" / f"replicate_{args.replicate_seed}" / case_key
@@ -255,7 +196,7 @@ def main():
             rendering = verify_comparison(media.save_render(combined, rendering, destination))
             publish_json(destination / "rendering.json", rendering)
             publish_json(destination / "pixel_metrics.json", errors)
-            records.append(
+            saved_records.append(
                 {
                     "case": list(key),
                     "actor": source["actor"],
@@ -272,7 +213,7 @@ def main():
                     "actor": r["actor"],
                     "increase": r["errors"][arm].get(region, {}).get("lpips" if gt_only else "paired_increase"),
                 }
-                for r in records
+                for r in saved_records
             ]
             valid_rows = [r for r in rows if r["increase"] is not None]
             uncertainty[arm][region] = (
@@ -281,7 +222,7 @@ def main():
     publish_json(
         root / "media" / f"{args.split}_replicate_{args.replicate_seed}.json",
         {
-            "records": records,
+            "records": saved_records,
             "quality_pass": None,
             "uncertainty": uncertainty,
             "missing": "complete region coverage and reviewed videos are required before quality acceptance",

@@ -36,7 +36,7 @@ def test_dp_against_bruteforce_and_infeasible():
     assert torch.equal(
         select_legal(torch.ones_like(scores), 6, allowed), select_legal(torch.ones_like(scores), 6, allowed)
     )
-    assert select_legal(torch.ones_like(scores), 6, allowed).sum(1).tolist() == [4., 1., 1.]
+    assert select_legal(torch.ones_like(scores), 6, allowed).sum(1).tolist() == [4.0, 1.0, 1.0]
     assert nearest_removed(2, [[2, 4]] * 2, heads=4) == 2
     assert nearest_removed(1, [[2, 4]] * 2, heads=4) == 0
 

@@ -60,7 +60,7 @@ def probe_caps(transformer_path: str) -> ModelCaps:
         num_heads=num_heads,
         head_dim=head_dim,
         cross_attention_dim=cfg.get("cross_attention_dim", 4096),
-        ff_inner_dim=4 * dim,  # FeedForward hardcodes mult=4; no config key exists yet (§10.1).
+        ff_inner_dim=4 * dim,  # FeedForward hardcodes mult=4; no config key exists yet.
         ff_bias=cfg.get("ff_bias", True),
         apply_gated_attention=cfg.get("apply_gated_attention", False),
         cross_attention_adaln=cfg.get("cross_attention_adaln", False),
@@ -80,7 +80,7 @@ class RefinerModel:
     sigmas: list[float]
     caps: ModelCaps
     # Probed from the VAE block list, never the literal (8, 32, 32) -- see
-    # scripts/prune/geometry.py and plan §4 decision 2. Pass to every
+    # core/geometry.py. Pass to every
     # DiffusionStage.from_checkpoint / VideoLatentShape.from_pixel_shape call so
     # the state builder and the stage cannot silently disagree about the grid.
     scale_factors: SpatioTemporalScaleFactors

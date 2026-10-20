@@ -49,6 +49,10 @@ flowchart LR
   class O out;
 ```
 
+The [shared DDP owner](ddp_owner.md) owns the runtime, input reuse, native acceptance, monitor and update loop.
+This module supplies FFN family hooks and its numerical state owner.
+The frozen world size determines the draw stride, including smaller disposable pilots.
+
 ## Organization logic
 
 Native acceptance compares original velocity with all-one gates and zero adapters bit for bit.
@@ -69,7 +73,7 @@ Per-update replay compares scientific fields while retaining original timing and
 Honor exact physical device lists and frozen software. Keep at least two GiB of device headroom.
 Keep pretrained weights unchanged. Save complete rank RNG and `draw_cursor = world_size * update`.
 SIGTERM requests a checkpoint after the current global update; it does not restart a stopped study.
-The CPU logger reads receipts through `learn.ffn_logger` and opens no model.
+The CPU logger reads receipts through `learn.receipt_logger` and opens no model.
 
 ## Gotchas
 

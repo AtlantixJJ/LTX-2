@@ -61,7 +61,7 @@ def test_balanced_bucket_sigma_coverage():
 
 
 def test_seven_sigma_draws_keep_views_and_noise_but_exclude_lowest_level():
-    from scripts.prune.data.head_score_dataset import SIGMAS
+    from scripts.prune.data.corpus_pins import SIGMAS
     from scripts.prune.data.learned_head_study import study_sigmas
 
     pool = sources()
@@ -90,7 +90,7 @@ def test_ten_level_preset_covers_high_dev_tail_without_changing_noise_or_validat
     from pathlib import Path
 
     from ltx_core.components.schedulers import LTX2Scheduler
-    from scripts.prune.data.head_score_dataset import SIGMAS
+    from scripts.prune.data.corpus_pins import SIGMAS
     from scripts.prune.data.learned_head_study import monitor_sigma_indices, validate_sigma_grid
 
     path = Path(__file__).resolve().parents[1] / "configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json"
@@ -113,7 +113,7 @@ def test_sigma_validation_rejects_nonstock_levels_and_invalid_monitor_indices():
 
     import pytest
 
-    from scripts.prune.data.head_score_dataset import SIGMAS
+    from scripts.prune.data.corpus_pins import SIGMAS
     from scripts.prune.data.learned_head_study import monitor_sigma_indices, validate_sigma_grid
 
     cfg = {"sigmas": SIGMAS[:-1], "sigma_indices_cycle": [0, 6, 1, 5, 2, 4, 3]}

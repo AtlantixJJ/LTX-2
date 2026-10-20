@@ -2,33 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import cv2
 import numpy as np
 import torch
 
 from scripts.onestep_avatar.corpus import dataset, geometry, mask_video
 from scripts.prune.core.provenance import file_sha256
-from scripts.prune.learn.checkpoints import tensor_hash
-
-
-def repair_canonical_mask(view, record, corpus_root):
-    """Create a missing capture-only matte through the existing corpus producer."""
-    from scripts.onestep_avatar.corpus import precompute
-
-    view, corpus_root = Path(view), Path(corpus_root)
-    authority = dataset.CaptureManifest.load(corpus_root)
-    if list(authority.box_for(view)) != record["box_xyxy"]:
-        raise ValueError("mask repair requires the original recorded capture crop")
-    output = view / dataset.CAPTURE_MASK_CROP_NAME
-    if output.exists():
-        return output
-    pixels = precompute.read_cropped_capture_masks(view / dataset.CAPTURE_MASK_NAME, tuple(record["box_xyxy"]))
-    if len(pixels) < record["pixel_frames"]:
-        raise ValueError("mask repair source has incomplete capture coverage")
-    mask_video.write_mask_video(pixels, output, fps=int(record["fps"]))
-    return output
+from scripts.prune.core.records import tensor_hash
 
 
 def person_coverage(view, record, *, scale_factors=(8, 32, 32), replay=True):

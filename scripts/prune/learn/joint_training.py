@@ -13,7 +13,7 @@ import copy
 import torch
 from torch import nn
 
-from scripts.prune.core import ltx_adapter
+from scripts.prune.core import ltx_adapter, records
 from scripts.prune.learn import adapters, checkpoints, losses
 from scripts.prune.learn.readmission import JointPolicy, budget_projection
 from scripts.prune.score import hooks
@@ -54,13 +54,13 @@ class ClipGates(nn.Module):
             return dict(
                 retained_per_block=mask.sum(1).tolist(),
                 counts=dict(kept=int(mask.sum()), removed=int((~mask).sum()), permanent=0, returned=0),
-                mask_sha256=checkpoints.tensor_hash(mask),
+                mask_sha256=records.tensor_hash(mask),
                 fixed=False,
             )
         return dict(
             retained_per_block=self.family.kept.sum(1).tolist(),
             counts=self.family.counts(),
-            mask_sha256=checkpoints.tensor_hash(self.family.kept),
+            mask_sha256=records.tensor_hash(self.family.kept),
             fixed=self.fixed,
         )
 
@@ -294,26 +294,9 @@ def state(step, ao, go, *, study, update, world_size, rng, input_chain):
 
 
 def read(path, *, study=None, world_size=None):
-    import json
-    from pathlib import Path
-
-    from scripts.prune.core.provenance import file_sha256
-    from scripts.prune.data.resume_learned_heads import unchanged_state_hash
-
-    path = Path(path)
-    receipt = json.loads(path.with_suffix(".json").read_text())
-    if file_sha256(path) != receipt["sha256"]:
-        raise ValueError("joint checkpoint bytes changed")
-    payload = torch.load(path, map_location="cpu", weights_only=False)
-    if payload["format"] != "joint_learning_state_v3" or unchanged_state_hash(payload) != receipt["state_sha256"]:
-        raise ValueError("joint checkpoint state changed")
-    if study is not None and payload["study"] != study:
-        raise ValueError("joint checkpoint study differs")
-    if world_size is not None and payload["world_size"] != world_size:
-        raise ValueError("joint checkpoint world size differs")
-    if payload["draw_cursor"] != 4 * payload["update"] or len(payload["rng"]) != payload["world_size"]:
-        raise ValueError("joint checkpoint rank coverage differs")
-    return payload
+    return checkpoints.read_state(
+        path, format="joint_learning_state_v3", label="joint", study=study, world_size=world_size, draw_stride=4
+    )
 
 
 def restore(step, ao, go, payload, *, rank=0, restore_rng=True):
@@ -348,40 +331,8 @@ def restore(step, ao, go, payload, *, rank=0, restore_rng=True):
 
 
 def publish_record(path, payload):
-    from pathlib import Path
-
-    from scripts.prune.data.resume_learned_heads import unchanged_state_hash
-
-    path = Path(path)
-    if path.exists():
-        if unchanged_state_hash(torch.load(path, map_location="cpu", weights_only=False)) != unchanged_state_hash(
-            payload
-        ):
-            raise ValueError(f"replayed joint artifact differs: {path}")
-        return
-
-    def write(p):
-        with p.open("wb") as stream:
-            torch.save(payload, stream)
-
-    checkpoints.publish(path, write)
+    records.publish_payload(path, payload)
 
 
 def save(path, payload):
-    from pathlib import Path
-
-    from scripts.prune.core.provenance import file_sha256
-    from scripts.prune.data.resume_learned_heads import unchanged_state_hash
-
-    publish_record(path, payload)
-    checkpoints.publish_json(
-        Path(path).with_suffix(".json"),
-        dict(
-            format=payload["format"],
-            study=payload["study"],
-            update=payload["update"],
-            sha256=file_sha256(path),
-            state_sha256=unchanged_state_hash(payload),
-            draw_cursor=payload["draw_cursor"],
-        ),
-    )
+    return checkpoints.publish_state(path, payload)

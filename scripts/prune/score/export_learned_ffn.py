@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import tempfile
 from pathlib import Path
 
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-from scripts.prune.core import provenance
+from scripts.prune.core import numerics, provenance, records
 from scripts.prune.data import ffn_study
-from scripts.prune.learn import adapters, checkpoints, ffn_training
+from scripts.prune.learn import adapters, ffn_training
 from scripts.prune.score import export_pruned
 
 FORMAT = "whole_clip_d0_learned_head_ffn_v1"
@@ -50,26 +49,26 @@ def compact_adapter_state(state, head_mask, ffn_mask, *, head_dim=128):
     return {**adapters.transfer(head, head_mask, head_dim), **adapters.transfer_ffn(ffn, ffn_mask)}
 
 
-def merge(source, state, output, *, pruning=None, envelope=None, envelope_path=None):
-    with safe_open(source, framework="pt", device="cpu") as handle:
-        meta = dict(handle.metadata() or {})
-        tensors = {key: handle.get_tensor(key) for key in handle.keys()}
+TARGETS = {
+    ("attn1", "v"): "attn1.to_v.weight",
+    ("attn1", "out"): "attn1.to_out.0.weight",
+    ("ff", "up"): "ff.net.0.proj.weight",
+    ("ff", "down"): "ff.net.2.weight",
+}
+
+
+def merge_adapters(tensors, state, *, kinds=("attn1", "ff"), scaling=1.0):
+    """Add FP32 low-rank deltas to loaded base weights in place, rounding once to the base dtype."""
     expected = set()
-    targets = {
-        ("attn1", "v"): "attn1.to_v.weight",
-        ("attn1", "out"): "attn1.to_out.0.weight",
-        ("ff", "up"): "ff.net.0.proj.weight",
-        ("ff", "down"): "ff.net.2.weight",
-    }
     for name in state:
         if not name.endswith(".A"):
             continue
         prefix = name[:-2]
         block, kind, projection = prefix.split(".")
-        if (kind, projection) not in targets or prefix + ".B" not in state:
-            raise ValueError("unsupported or incomplete head/FFN adapter target")
+        if kind not in kinds or (kind, projection) not in TARGETS or prefix + ".B" not in state:
+            raise ValueError("unsupported or incomplete adapter target")
         a, b = state[name], state[prefix + ".B"]
-        key = f"{export_pruned.PREFIX}.{block}.{targets[kind, projection]}"
+        key = f"{export_pruned.PREFIX}.{block}.{TARGETS[kind, projection]}"
         base = tensors[key]
         if (
             a.ndim != 2
@@ -79,20 +78,26 @@ def merge(source, state, output, *, pruning=None, envelope=None, envelope_path=N
             or b.shape[1] != a.shape[0]
             or (b.shape[0], a.shape[1]) != base.shape
         ):
-            raise ValueError("compact FFN adapter shape or dtype differs")
+            raise ValueError("compact adapter shape or dtype differs")
         if not torch.isfinite(a).all() or not torch.isfinite(b).all():
             raise ValueError("nonfinite compact adapter")
-        tensors[key] = (base.float() + b @ a).to(base.dtype).contiguous()
+        tensors[key] = (base.float() + scaling * b @ a).to(base.dtype).contiguous()
         expected.update((name, prefix + ".B"))
     if set(state) != expected:
-        raise ValueError("incomplete learned head/FFN adapter inventory")
+        raise ValueError("incomplete adapter fusion inventory")
+
+
+def finalize(tensors, meta, output, *, pruning=None, envelope=None, envelope_path=None, inventory_dtype=True):
+    """Hash the final tensors once, bind them in the envelope and publish the checkpoint once."""
     inventory = {
-        key: dict(shape=list(v.shape), dtype=str(v.dtype), sha256=checkpoints.tensor_hash(v))
+        key: dict(
+            shape=list(v.shape), **({"dtype": str(v.dtype)} if inventory_dtype else {}), sha256=records.tensor_hash(v)
+        )
         for key, v in tensors.items()
     }
     if envelope is not None:
         envelope["tensor_inventory"] = inventory
-        checkpoints.publish_json(envelope_path, envelope)
+        records.publish_json(envelope_path, envelope)
         pruning = dict(
             pruning or {}, artifact=str(envelope_path), artifact_sha256=provenance.file_sha256(envelope_path)
         )
@@ -100,8 +105,14 @@ def merge(source, state, output, *, pruning=None, envelope=None, envelope_path=N
         config = json.loads(meta["config"])
         config["transformer"].setdefault("pruning", {}).update(pruning)
         meta["config"] = json.dumps(config)
-    checkpoints.publish(output, lambda p: save_file(tensors, str(p), metadata=meta))
+    records.publish(output, lambda p: save_file(tensors, str(p), metadata=meta))
     return inventory
+
+
+def merge(source, state, output, *, pruning=None, envelope=None, envelope_path=None):
+    tensors, meta = export_pruned.load(source)
+    merge_adapters(tensors, state)
+    return finalize(tensors, meta, output, pruning=pruning, envelope=envelope, envelope_path=envelope_path)
 
 
 def run_export(study, checkpoint, output, *, probe=False):
@@ -137,18 +148,23 @@ def run_export(study, checkpoint, output, *, probe=False):
         source_transformer_fingerprint=provenance.checkpoint_fingerprint(source),
     )
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="ffn-export-", dir=output.parent) as temp:
-        base = Path(temp) / "compact_base.safetensors"
-        export_pruned.export(source, masks, base, model_key="2.5", mode="compact", provenance_block=pruning)
-        merge(
-            base,
-            compact,
-            output,
-            pruning=pruning,
-            envelope=envelope,
-            envelope_path=output.with_suffix(".envelope.json"),
-        )
-    checkpoints.publish_json(output.with_suffix(".json"), dict(path=str(output), sha256=provenance.file_sha256(output)))
+    # One read, in-memory compact surgery and adapter fusion, then one write.
+    tensors, meta = export_pruned.load(source)
+    export_pruned.export_tensors(
+        tensors,
+        meta,
+        masks,
+        widths=export_pruned.checkpoint_mask_widths(source),
+        model_key="2.5",
+        mode="compact",
+        provenance_block=pruning,
+    )
+    merge_adapters(tensors, compact)
+    finalize(
+        tensors, meta, output, pruning=pruning, envelope=envelope, envelope_path=output.with_suffix(".envelope.json")
+    )
+    del tensors
+    records.publish_json(output.with_suffix(".json"), dict(path=str(output), sha256=provenance.file_sha256(output)))
     return output
 
 
@@ -171,7 +187,7 @@ def validate_envelope(path, *, base, candidate):
     widths = export_pruned.checkpoint_mask_widths(study["components"]["transformer"]["path"])
     if masks_from_state(state, widths) != envelope["masks"]:
         raise ValueError("head/FFN original IDs changed")
-    from scripts.prune.learn.ffn import verify_consumed
+    from scripts.prune.learn.ddp_owner import verify_consumed
 
     verify_consumed(study, state["update"], state["input_chain"])
     if (
@@ -187,7 +203,7 @@ def validate_envelope(path, *, base, candidate):
         if set(handle.keys()) != set(envelope["tensor_inventory"]):
             raise ValueError("head/FFN merged tensor inventory differs")
         for key, expected in envelope["tensor_inventory"].items():
-            if checkpoints.tensor_hash(handle.get_tensor(key)) != expected["sha256"]:
+            if records.tensor_hash(handle.get_tensor(key)) != expected["sha256"]:
                 raise ValueError("head/FFN merged tensor changed")
     return envelope
 
@@ -200,9 +216,10 @@ def native_parity(study, checkpoint, candidate, gpu_id):
 
     if gpu_id not in study["config"]["test_gpu_ids"]:
         raise ValueError("FFN parity tests use GPUs 4–6")
-    heads.numerical_policy()
-    current = session.open_session(
-        argparse.Namespace(model="2.5", gpu_id=gpu_id, seed=42),
+    numerics.deterministic_policy()
+    current = session.open_model(
+        "2.5",
+        gpu_id,
         script="prune.score.export_learned_ffn",
         prompt="",
         transformer_path=Path(study["components"]["transformer"]["path"]),
@@ -250,7 +267,7 @@ def native_parity(study, checkpoint, candidate, gpu_id):
         result[key] <= 0.02
         for key in ("split_vs_fused_max_abs", "fused_vs_compact_max_abs", "split_vs_compact_max_abs")
     )
-    checkpoints.publish_json(Path(candidate).with_suffix(".parity.json"), result)
+    records.publish_json(Path(candidate).with_suffix(".parity.json"), result)
     return result
 
 

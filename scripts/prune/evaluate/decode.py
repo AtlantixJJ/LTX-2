@@ -14,9 +14,7 @@ def decode_latent(
     *,
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
-    """A dense ``(B,C,F,H,W)`` latent -> ``[F,H,W,C]`` float pixels in ``[0,1]``.
-
-    """
+    """A dense ``(B,C,F,H,W)`` latent -> ``[F,H,W,C]`` float pixels in ``[0,1]``."""
     decoded = torch.cat(
         list(decoder.decode_video(latent.to(device=session.device, dtype=DTYPE), None, generator)), dim=0
     ).float()

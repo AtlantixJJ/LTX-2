@@ -15,10 +15,10 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from scripts.prune.core import ltx_adapter, provenance, session
-from scripts.prune.data.learned_head_study import code_identity
-from scripts.prune.learn import adapters, checkpoints, ffn_training, heads
-from scripts.prune.learn.ffn import input_case
+from scripts.prune.core import ltx_adapter, numerics, provenance, records, session
+from scripts.prune.data.study_io import code_identity
+from scripts.prune.learn import adapters, ffn_training
+from scripts.prune.learn.ddp_owner import input_case
 
 
 def error(a, b):
@@ -32,19 +32,20 @@ def error(a, b):
 
 
 def run(study_path, output, gpu=4):
-    heads.numerical_policy()
+    numerics.deterministic_policy()
     torch.set_num_threads(4)
     if gpu not in (4, 5, 6):
         raise ValueError("Use physical GPUs 4–6")
     study = json.loads(Path(study_path).read_text())
     identity = study.pop("identity")
-    if checkpoints.digest(study) != identity:
+    if records.digest(study) != identity:
         raise ValueError("historical study identity changed")
     study["identity"] = identity
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    current = session.open_session(
-        argparse.Namespace(model="2.5", gpu_id=gpu, seed=42),
+    current = session.open_model(
+        "2.5",
+        gpu,
         script="prune.checks.joint_faults",
         prompt="",
         transformer_path=Path(study["components"]["transformer"]["path"]),
@@ -149,7 +150,7 @@ def run(study_path, output, gpu=4):
             )
             merged32 = torch.nn.functional.linear(inp32, base.weight.float() + module.B @ module.A, bias32)
             result["adapter_stages"][kind] = dict(bf16=error(split, fused), fp32=error(split32, merged32))
-    checkpoints.publish_json(output / "diagnosis.json", result)
+    records.publish_json(output / "diagnosis.json", result)
     print(json.dumps({k: v for k, v in result.items() if k != "code"}, indent=2))
 
 

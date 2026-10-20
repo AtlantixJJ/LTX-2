@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import math
 import re
@@ -18,6 +19,13 @@ from scripts.onestep_avatar.model import common
 from scripts.prune.core import provenance, session
 
 TASK = "whole_clip_d0"
+# Export families with a pinned artifact; each validator is imported only when used.
+ENVELOPE_FAMILIES = {
+    "width_recovered": ("scripts.prune.checks.learned_heads", "validate_envelope"),
+    "width_head_ffn_recovered": ("scripts.prune.score.export_learned_ffn", "validate_envelope"),
+    "width_joint_readmission_recovered": ("scripts.prune.score.export_joint", "validate_envelope"),
+    "depth": ("scripts.prune.score.export_depth", "verify_export"),
+}
 
 
 def load_manifest(root: Path) -> dict:
@@ -38,17 +46,26 @@ def validate_manifest(manifest: dict) -> None:  # noqa: PLR0912
     if manifest.get("latent_dtype") != "torch.bfloat16":
         raise ValueError("native D0 reconstruction requires torch.bfloat16 latent dtype")
     guidance = manifest.get("guidance", {})
-    if (guidance.get("cfg") != 1 or guidance.get("stg") != 0 or
-            guidance.get("rescale") != 0 or guidance.get("passes_per_step") != 1 or
-            guidance.get("negative_prompt") is not None or guidance.get("stg_blocks")):
+    if (
+        guidance.get("cfg") != 1
+        or guidance.get("stg") != 0
+        or guidance.get("rescale") != 0
+        or guidance.get("passes_per_step") != 1
+        or guidance.get("negative_prompt") is not None
+        or guidance.get("stg_blocks")
+    ):
         raise ValueError("native D0 reconstruction supports only unguided single-pass CFG 1 / STG 0")
     if manifest.get("checkpoint") is not None or manifest.get("model", {}).get("checkpoint") is not None:
         raise ValueError("native D0 reconstruction does not support LoRA checkpoints")
     if type(manifest.get("seed")) is not int:
         raise ValueError("native D0 manifest requires an integer seed")
     sigmas = manifest.get("sigmas")
-    if (not isinstance(sigmas, list) or not sigmas or len(set(sigmas)) != len(sigmas) or
-            any(type(s) not in (int, float) or not math.isfinite(s) or not 0 < s <= 1 for s in sigmas)):
+    if (
+        not isinstance(sigmas, list)
+        or not sigmas
+        or len(set(sigmas)) != len(sigmas)
+        or any(type(s) not in (int, float) or not math.isfinite(s) or not 0 < s <= 1 for s in sigmas)
+    ):
         raise ValueError("native D0 sigmas must be distinct finite values in (0, 1]")
     if not manifest.get("videos"):
         return  # The pair validator also supports empty synthetic manifests in CPU tests.
@@ -93,19 +110,33 @@ def native_provenance(root: Path, manifest: dict, views: list[str], sigmas: list
     validate_manifest(manifest)
     rows = records(manifest)
     return {
-        "task": TASK, "attention": manifest["attention"], "objective": manifest["objective"],
-        "conditioning": "clean_capture_frame_0", "calibration_views": views, "sigmas": sigmas,
-        "seed": manifest["seed"], "text_context": manifest["text_context"],
-        "geometry": manifest["geometry"], "guidance": manifest["guidance"],
-        "latent_dtype": manifest["latent_dtype"], "model_key": manifest["model"]["model_key"],
+        "task": TASK,
+        "attention": manifest["attention"],
+        "objective": manifest["objective"],
+        "conditioning": "clean_capture_frame_0",
+        "calibration_views": views,
+        "sigmas": sigmas,
+        "seed": manifest["seed"],
+        "text_context": manifest["text_context"],
+        "geometry": manifest["geometry"],
+        "guidance": manifest["guidance"],
+        "latent_dtype": manifest["latent_dtype"],
+        "model_key": manifest["model"]["model_key"],
         "transformer_fingerprint": manifest["model"]["transformer_fingerprint"],
         "video_vae_fingerprint": manifest["model"]["video_vae_fingerprint"],
         "baseline_manifest": str((root / "manifest.json").resolve()),
         "baseline_manifest_sha256": provenance.file_sha256(root / "manifest.json"),
         "calibration_inputs": [
-            {"view": view, "sigma": sigma, **{field: rows[(view, sigma)]["artifacts"][field]
-             for field in ("capture_sha256", "epsilon_sha256", "fps", "blocks")}}
-            for view in views for sigma in sigmas
+            {
+                "view": view,
+                "sigma": sigma,
+                **{
+                    field: rows[(view, sigma)]["artifacts"][field]
+                    for field in ("capture_sha256", "epsilon_sha256", "fps", "blocks")
+                },
+            }
+            for view in views
+            for sigma in sigmas
         ],
     }
 
@@ -142,8 +173,7 @@ def records(manifest: dict) -> dict[tuple[str, float], dict]:
 
 
 def latent_path(root: Path, row: dict) -> Path:
-    match = [item for item in row["artifacts"]["latents"]
-             if item["arm"] == "d0" and item["sigma"] == row["sigma"]]
+    match = [item for item in row["artifacts"]["latents"] if item["arm"] == "d0" and item["sigma"] == row["sigma"]]
     if len(match) != 1:
         raise ValueError(f"expected one D0 latent for {row['view']} at sigma {row['sigma']}")
     path = root / match[0]["path"]
@@ -155,8 +185,17 @@ def latent_path(root: Path, row: dict) -> Path:
 def verify_pair(base: dict, candidate: dict) -> None:
     validate_manifest(base)
     validate_manifest(candidate)
-    for key in ("objective", "sigmas", "seed", "trajectory_only", "geometry", "attention",
-                "latent_dtype", "text_context", "guidance"):
+    for key in (
+        "objective",
+        "sigmas",
+        "seed",
+        "trajectory_only",
+        "geometry",
+        "attention",
+        "latent_dtype",
+        "text_context",
+        "guidance",
+    ):
         if base[key] != candidate[key]:
             raise ValueError(f"unmatched manifest field: {key}")
     for key in ("model_key", "video_vae_fingerprint"):
@@ -177,7 +216,7 @@ def verify_pair(base: dict, candidate: dict) -> None:
 def verify_candidate(base: dict, candidate: dict) -> dict:
     """Bind a paired candidate to its actual export, source and family artifact content."""
     # Hooks consume this input contract; defer this validation-only dependency.
-    from scripts.prune.score import export_depth, export_pruned, hooks  # noqa: PLC0415
+    from scripts.prune.score import export_pruned, hooks  # noqa: PLC0415
 
     verify_pair(base, candidate)
     path = Path(candidate["model"]["transformer_path"])
@@ -186,48 +225,41 @@ def verify_candidate(base: dict, candidate: dict) -> dict:
     with safe_open(path, framework="pt", device="cpu") as handle:
         config = json.loads((handle.metadata() or {}).get("config", "{}"))
     pruning = config.get("transformer", {}).get("pruning", {})
-    if (pruning.get("task") != TASK or
-            pruning.get("source_transformer_fingerprint") != base["model"]["transformer_fingerprint"] or
-            pruning.get("model_key") != base["model"]["model_key"]):
+    if (
+        pruning.get("task") != TASK
+        or pruning.get("source_transformer_fingerprint") != base["model"]["transformer_fingerprint"]
+        or pruning.get("model_key") != base["model"]["model_key"]
+    ):
         raise ValueError("candidate export task/source differs from native whole-clip D0")
     family = pruning.get("family", "width")
-    if family == "width_head_ffn_recovered":
-        from scripts.prune.score.export_learned_ffn import validate_envelope  # noqa: PLC0415
-
+    if family in ENVELOPE_FAMILIES:
         artifact_path = Path(pruning.get("artifact", ""))
         if not artifact_path.is_file() or provenance.file_sha256(artifact_path) != pruning.get("artifact_sha256"):
-            raise ValueError("head/FFN export artifact content differs or is unavailable")
-        return validate_envelope(artifact_path, base=base, candidate=path)
-    if family == "width_recovered":
-        from scripts.prune.checks.learned_heads import validate_envelope  # noqa: PLC0415
-
-        artifact_path = Path(pruning.get("artifact", ""))
-        if not artifact_path.is_file() or provenance.file_sha256(artifact_path) != pruning.get("artifact_sha256"):
-            raise ValueError("recovered export artifact content differs or is unavailable")
-        return validate_envelope(artifact_path, base=base, candidate=path)
-    if family == "depth":
-        artifact_path = Path(pruning.get("artifact", ""))
-        if not artifact_path.is_file() or provenance.file_sha256(artifact_path) != pruning.get("artifact_sha256"):
-            raise ValueError("candidate export depth artifact content differs or is unavailable")
-        return export_depth.verify_export(
-            base["model"]["transformer_path"], artifact_path, path, baseline=base,
-        )
+            raise ValueError(f"{family} export artifact content differs or is unavailable")
+        module, function = ENVELOPE_FAMILIES[family]
+        validator = getattr(importlib.import_module(module), function)
+        if family == "depth":
+            return validator(base["model"]["transformer_path"], artifact_path, path, baseline=base)
+        return validator(artifact_path, base=base, candidate=path)
     if family != "width":
         raise ValueError(f"unknown native pruning family: {family!r}")
     mask_path = Path(pruning.get("masks", ""))
     if not mask_path.is_file() or provenance.file_sha256(mask_path) != pruning.get("mask_sha256"):
         raise ValueError("candidate export mask content differs or is unavailable")
     hooks.read_mask_artifact(
-        mask_path, model_key=base["model"]["model_key"], fingerprint=base["model"]["transformer_fingerprint"],
+        mask_path,
+        model_key=base["model"]["model_key"],
+        fingerprint=base["model"]["transformer_fingerprint"],
         widths=export_pruned.checkpoint_mask_widths(base["model"]["transformer_path"]),
-        expected_task=TASK, baseline=base,
+        expected_task=TASK,
+        baseline=base,
     )
     return pruning
 
 
 def load_epsilon(root: Path, row: dict) -> torch.Tensor:
     path = root / row["artifacts"]["epsilon"]
-    if provenance.file_sha256(path) != row["artifacts"]["epsilon_sha256"]:
+    if provenance.verified_sha256(path) != row["artifacts"]["epsilon_sha256"]:
         raise ValueError("saved epsilon content changed")
     tensor = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(tensor, torch.Tensor) or tensor.dtype != session.DTYPE or not torch.isfinite(tensor).all():
@@ -240,13 +272,14 @@ def verify_saved_noise(base_root: Path, candidate_root: Path, base_row: dict, ca
         raise ValueError(f"saved noise tensors differ for {base_row['view']} sigma={base_row['sigma']}")
 
 
-def build_input(root: Path, manifest: dict, *, view: str, sigma: float,
-                current: session.Session) -> tuple[common.ClipGrid, Modality, torch.Tensor, dict]:
+def build_input(
+    root: Path, manifest: dict, *, view: str, sigma: float, current: session.Session
+) -> tuple[common.ClipGrid, Modality, torch.Tensor, dict]:
     """Rebuild the baseline D0 modality without requiring a pruned candidate."""
     validate_manifest(manifest)
     row = records(manifest)[(view, sigma)]
     capture_path = Path(row["artifacts"]["capture"])
-    if provenance.file_sha256(capture_path) != row["artifacts"]["capture_sha256"]:
+    if provenance.verified_sha256(capture_path) != row["artifacts"]["capture_sha256"]:
         raise ValueError("capture changed since saved baseline rollout")
     capture, fps = load_training_master(capture_path)
     if capture.dtype != session.DTYPE or capture.ndim != 4 or not torch.isfinite(capture).all():
@@ -258,13 +291,18 @@ def build_input(root: Path, manifest: dict, *, view: str, sigma: float,
     epsilon = load_epsilon(root, row)
     _, latent_frames, height, width = capture.shape
     geometry = causal_core.deployed_geometry(
-        current.model.scale_factors, block_latent_frames=latent_frames - 1,
+        current.model.scale_factors,
+        block_latent_frames=latent_frames - 1,
         context_latent_frames=manifest["geometry"]["context_latent_frames"],
     )
     grid = common.ClipGrid.build(
-        latent_frames, height * current.model.scale_factors.height,
-        width * current.model.scale_factors.width, fps, geometry,
-        device=current.device, dtype=session.DTYPE,
+        latent_frames,
+        height * current.model.scale_factors.height,
+        width * current.model.scale_factors.width,
+        fps,
+        geometry,
+        device=current.device,
+        dtype=session.DTYPE,
         latent_channels=current.model.caps.latent_channels,
     )
     if geometry.as_dict() != manifest["geometry"] or geometry.plan(latent_frames) != [(0, latent_frames)]:
@@ -280,10 +318,13 @@ def build_input(root: Path, manifest: dict, *, view: str, sigma: float,
     if epsilon.shape != source.shape:
         raise ValueError("saved epsilon does not fit the captured token grid")
     noisy = common.mix_block_noise(source, epsilon.to(current.device), sigma)
-    c0 = source[:, :grid.tokens_per_latent_frame]
+    c0 = source[:, : grid.tokens_per_latent_frame]
     state = common.with_clean_prefix(noisy, c0)
     modality = common.block_modality(
-        grid, state, current.context, sigma,
+        grid,
+        state,
+        current.context,
+        sigma,
         token_slices=[grid.token_span(0, latent_frames)],
         # The entire clip is one bidirectional block. None expresses full visibility
         # without allocating and converting a quadratic all-ones mask.
@@ -294,8 +335,9 @@ def build_input(root: Path, manifest: dict, *, view: str, sigma: float,
     return grid, modality, c0, row
 
 
-def prepare_score_inputs(root: Path, source_record: dict, *, current: session.Session,
-                         sigmas: list[float], seed: int = 42) -> dict:
+def prepare_score_inputs(
+    root: Path, source_record: dict, *, current: session.Session, sigmas: list[float], seed: int = 42
+) -> dict:
     """Save capture-only D0 input evidence, without producing rollout predictions.
 
     Noising and conditioning remain in build_input. A completed input manifest
@@ -303,58 +345,93 @@ def prepare_score_inputs(root: Path, source_record: dict, *, current: session.Se
     """
     import os  # noqa: PLC0415
 
-    capture_path = Path(source_record['capture'])
-    for field, path in (('rgb_sha256', capture_path.parent / 'rgb.mp4'),
-                        ('clip_metadata_sha256', capture_path.parent.parent.parent / 'meta.json')):
-        if field in source_record and provenance.file_sha256(path) != source_record[field]:
-            raise ValueError(f'{field}: source differs from audited membership')
-    if provenance.file_sha256(capture_path) != source_record['capture_latent_sha256']:
-        raise ValueError('capture differs from audited membership')
-    bundle = torch.load(capture_path, map_location='cpu', weights_only=True)
+    capture_path = Path(source_record["capture"])
+    for field, path in (
+        ("rgb_sha256", capture_path.parent / "rgb.mp4"),
+        ("clip_metadata_sha256", capture_path.parent.parent.parent / "meta.json"),
+    ):
+        if field in source_record and provenance.verified_sha256(path) != source_record[field]:
+            raise ValueError(f"{field}: source differs from audited membership")
+    if provenance.verified_sha256(capture_path) != source_record["capture_latent_sha256"]:
+        raise ValueError("capture differs from audited membership")
+    bundle = torch.load(capture_path, map_location="cpu", weights_only=True)
     capture, fps = load_training_master(capture_path, bundle=bundle)
-    if (list(capture.shape) != source_record['shape'] or fps != source_record['fps']
-            or capture.dtype != session.DTYPE or not torch.isfinite(capture).all()
-            or any(bundle.get(k) != v for k, v in source_record['capture_encode_record'].items())):
-        raise ValueError('capture encoding differs from audited membership')
-    if (root / 'manifest.json').exists():
+    if (
+        list(capture.shape) != source_record["shape"]
+        or fps != source_record["fps"]
+        or capture.dtype != session.DTYPE
+        or not torch.isfinite(capture).all()
+        or any(bundle.get(k) != v for k, v in source_record["capture_encode_record"].items())
+    ):
+        raise ValueError("capture encoding differs from audited membership")
+    if (root / "manifest.json").exists():
         saved = load_manifest(root)
-        if (saved['sigmas'] != sigmas or saved['seed'] != seed
-                or saved['videos'][0]['artifacts']['capture_sha256'] != source_record['capture_latent_sha256']):
-            raise ValueError('saved scoring input settings differ')
-        load_epsilon(root, saved['videos'][0])
+        if (
+            saved["sigmas"] != sigmas
+            or saved["seed"] != seed
+            or saved["videos"][0]["artifacts"]["capture_sha256"] != source_record["capture_latent_sha256"]
+        ):
+            raise ValueError("saved scoring input settings differ")
+        load_epsilon(root, saved["videos"][0])
         return saved
     if root.exists() and any(root.iterdir()):
-        raise ValueError('orphan scoring inputs without manifest; preserve for diagnosis')
+        raise ValueError("orphan scoring inputs without manifest; preserve for diagnosis")
     frames, height, width = capture.shape[1:]
-    geometry = causal_core.deployed_geometry(current.model.scale_factors, block_latent_frames=frames-1,
-                                             context_latent_frames=8)
-    grid = common.ClipGrid.build(frames, height*current.model.scale_factors.height,
-                                width*current.model.scale_factors.width, fps, geometry,
-                                device=current.device, dtype=session.DTYPE,
-                                latent_channels=current.model.caps.latent_channels)
+    geometry = causal_core.deployed_geometry(
+        current.model.scale_factors, block_latent_frames=frames - 1, context_latent_frames=8
+    )
+    grid = common.ClipGrid.build(
+        frames,
+        height * current.model.scale_factors.height,
+        width * current.model.scale_factors.width,
+        fps,
+        geometry,
+        device=current.device,
+        dtype=session.DTYPE,
+        latent_channels=current.model.caps.latent_channels,
+    )
     tokens = grid.patchify(capture.unsqueeze(0).to(current.device))
     epsilon = common.epsilon_block(tokens, seed).cpu()
     root.mkdir(parents=True, exist_ok=True)
-    noise_path = root / 'epsilon.pt'
+    noise_path = root / "epsilon.pt"
     torch.save(epsilon, noise_path)
     stamp = current.stamp(dtype=str(session.DTYPE))
-    stamp['video_vae_fingerprint'] = provenance.checkpoint_fingerprint(current.model.paths.video_vae())
-    stamp['checkpoint'] = None
+    stamp["video_vae_fingerprint"] = provenance.checkpoint_fingerprint(current.model.paths.video_vae())
+    stamp["checkpoint"] = None
     context = current.context.detach().cpu().contiguous()
-    artifact = {'capture': str(capture_path), 'capture_sha256': source_record['capture_latent_sha256'],
-                'epsilon': noise_path.name, 'epsilon_sha256': provenance.file_sha256(noise_path),
-                'fps': fps, 'blocks': [[0, frames]]}
-    manifest = {'kind': 'whole_clip_d0_inputs_v1', 'whole_clip': True, 'trajectory_only': False,
-                'attention': 'full_bidirectional', 'objective': 'white', 'latent_dtype': str(session.DTYPE),
-                'guidance': {'cfg': 1, 'stg': 0, 'rescale': 0, 'passes_per_step': 1,
-                             'negative_prompt': None, 'stg_blocks': []},
-                'checkpoint': None, 'seed': seed, 'sigmas': sigmas, 'geometry': geometry.as_dict(),
-                'model': stamp, 'text_context': {'prompt': '', 'prompt_sha256': hashlib.sha256(b'').hexdigest(),
-                    'sha256': hashlib.sha256(context.view(torch.uint8).numpy().tobytes()).hexdigest()},
-                'videos': [{'view': source_record['resolved_dir'], 'sigma': sigma, 'schedule': [sigma, 0.0],
-                            'artifacts': artifact} for sigma in sigmas]}
+    artifact = {
+        "capture": str(capture_path),
+        "capture_sha256": source_record["capture_latent_sha256"],
+        "epsilon": noise_path.name,
+        "epsilon_sha256": provenance.file_sha256(noise_path),
+        "fps": fps,
+        "blocks": [[0, frames]],
+    }
+    manifest = {
+        "kind": "whole_clip_d0_inputs_v1",
+        "whole_clip": True,
+        "trajectory_only": False,
+        "attention": "full_bidirectional",
+        "objective": "white",
+        "latent_dtype": str(session.DTYPE),
+        "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1, "negative_prompt": None, "stg_blocks": []},
+        "checkpoint": None,
+        "seed": seed,
+        "sigmas": sigmas,
+        "geometry": geometry.as_dict(),
+        "model": stamp,
+        "text_context": {
+            "prompt": "",
+            "prompt_sha256": hashlib.sha256(b"").hexdigest(),
+            "sha256": hashlib.sha256(context.view(torch.uint8).numpy().tobytes()).hexdigest(),
+        },
+        "videos": [
+            {"view": source_record["resolved_dir"], "sigma": sigma, "schedule": [sigma, 0.0], "artifacts": artifact}
+            for sigma in sigmas
+        ],
+    }
     validate_manifest(manifest)
-    temp = root / f'manifest.{os.getpid()}.tmp'
-    temp.write_text(json.dumps(manifest, allow_nan=False, indent=2) + '\n')
-    temp.replace(root / 'manifest.json')
+    temp = root / f"manifest.{os.getpid()}.tmp"
+    temp.write_text(json.dumps(manifest, allow_nan=False, indent=2) + "\n")
+    temp.replace(root / "manifest.json")
     return manifest

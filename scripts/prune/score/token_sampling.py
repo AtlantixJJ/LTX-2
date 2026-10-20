@@ -49,8 +49,13 @@ def _spatial_indices(height: int, width: int, stride: int, sampler: str) -> list
 
 
 def sample_indices(
-    tokens: int, height: int, width: int, stride: int, device: torch.device,
-    *, sampler: str = "stride",
+    tokens: int,
+    height: int,
+    width: int,
+    stride: int,
+    device: torch.device,
+    *,
+    sampler: str = "stride",
 ) -> torch.Tensor:
     """Use the same equal-budget spatial points on every frame after clean c0."""
     _validate(tokens, height, width, stride, sampler)
@@ -61,7 +66,13 @@ def sample_indices(
 
 
 def sampling_record(
-    indices: torch.Tensor, *, tokens: int, height: int, width: int, stride: int, sampler: str,
+    indices: torch.Tensor,
+    *,
+    tokens: int,
+    height: int,
+    width: int,
+    stride: int,
+    sampler: str,
 ) -> dict:
     """Record exact geometry, coverage and index identity without implying full-grid coverage."""
     expected = sample_indices(tokens, height, width, stride, torch.device("cpu"), sampler=sampler)
@@ -69,11 +80,18 @@ def sampling_record(
         raise ValueError("sample indices differ from the declared deterministic sampler")
     spatial = torch.tensor(_spatial_indices(height, width, stride, sampler), dtype=torch.int64)
     return {
-        "sampler": sampler, "algorithm": "flattened_stride_v1" if sampler == "stride" else sampler,
-        "latent_frames": tokens // (height * width), "latent_height": height, "latent_width": width,
-        "spatial_stride": stride, "tokens_per_generated_frame": spatial.numel(), "sample_tokens": expected.numel(),
+        "sampler": sampler,
+        "algorithm": "flattened_stride_v1" if sampler == "stride" else sampler,
+        "latent_frames": tokens // (height * width),
+        "latent_height": height,
+        "latent_width": width,
+        "spatial_stride": stride,
+        "tokens_per_generated_frame": spatial.numel(),
+        "sample_tokens": expected.numel(),
         "sampled_rows": sorted({int(index) // width for index in spatial}),
         "sampled_columns": sorted({int(index) % width for index in spatial}),
-        "hash_encoding": HASH_ENCODING, "spatial_indices_sha256": index_sha256(spatial),
-        "token_indices_sha256": index_sha256(expected), "clean_frame_included": False,
+        "hash_encoding": HASH_ENCODING,
+        "spatial_indices_sha256": index_sha256(spatial),
+        "token_indices_sha256": index_sha256(expected),
+        "clean_frame_included": False,
     }

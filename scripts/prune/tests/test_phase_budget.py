@@ -1,5 +1,3 @@
-import json
-
 import pytest
 
 from scripts.prune.learn import protocol
@@ -38,21 +36,9 @@ def test_missing_budget_fails():
         protocol.phase_budget({"soft_updates": 700, "binary_updates": 300})
 
 
-def test_extended_draws_keep_the_frozen_prefix(tmp_path):
-    from scripts.prune.core.provenance import file_sha256
-    from scripts.prune.data.extend_learned_heads import extended_draws
-    from scripts.prune.data.learned_head_study import draw_list
-
-    sources = [{"relative_dir": f"view{i}", "actor": str(i)} for i in range(5)]
-    config = {"sigma_indices_cycle": [0, 2, 1], "global_unique_clips": 4}
-    old = draw_list(sources, 42, updates=6, sigma_indices=config["sigma_indices_cycle"], draws_per_update=4)
-    path = tmp_path / "draws.json"
-    path.write_text(json.dumps(old))
-    study = {"config": config, "splits": {"learning": sources},
-             "draws": {"42:ordinary": {"path": str(path), "sha256": file_sha256(path)}}}
-    new = extended_draws(study, 42, 10)
-    assert len(new) == 40 and new[:24] == old
-    path.write_text(json.dumps(old[::-1]))
-    study["draws"]["42:ordinary"]["sha256"] = file_sha256(path)
-    with pytest.raises(ValueError, match="prefix"):
-        extended_draws(study, 42, 10)
+def test_recovery_end_follows_the_frozen_budget():
+    default = {"soft_updates": 700, "binary_updates": 300, "compact_updates": 500}
+    extended = {"soft_updates": 2000, "binary_updates": 0, "compact_updates": 500}
+    assert protocol.recovery_end(default, "learned_joint") == 1500
+    assert protocol.recovery_end(default, "learned_sequential") == 2500
+    assert protocol.recovery_end(extended, "learned_joint") == 2500

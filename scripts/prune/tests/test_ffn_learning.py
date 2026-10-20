@@ -14,7 +14,7 @@ from torch.utils.checkpoint import checkpoint
 
 from ltx_core.model.transformer.feed_forward import FeedForward
 from ltx_core.model.transformer.model import X0Model
-from scripts.prune.data.resume_learned_heads import unchanged_state_hash
+from scripts.prune.core.records import unchanged_state_hash
 from scripts.prune.learn import adapters, checkpoints, ffn_training
 from scripts.prune.learn.ffn_gates import FFNGates, aligned_width, select_channels
 from scripts.prune.score import export_learned_ffn, hooks
@@ -186,7 +186,7 @@ def test_joint_frozen_backbone_and_exact_resume_across_freeze(tmp_path, arm):
     step.close()
 
 
-def test_ffn_adapter_and_adam_transfer_use_original_channel_ids():
+def test_ffn_adapter_transfer_uses_original_channel_ids():
     state = {
         "0.ff.up.A": torch.randn(2, 4),
         "0.ff.up.B": torch.randn(16, 2),
@@ -198,14 +198,6 @@ def test_ffn_adapter_and_adam_transfer_use_original_channel_ids():
     out = adapters.transfer_ffn(state, mask)
     assert torch.equal(out["0.ff.up.B"], state["0.ff.up.B"][[1, 3, 5, 7]])
     assert torch.equal(out["0.ff.down.A"], state["0.ff.down.A"][:, [1, 3, 5, 7]])
-    names = list(state)
-    optimizer = dict(
-        param_groups=[dict(params=list(range(4)))],
-        state={i: dict(step=torch.tensor(3.0), exp_avg=v, exp_avg_sq=v.square()) for i, v in enumerate(state.values())},
-    )
-    transferred = adapters.transfer_ffn_optimizer(optimizer, names, mask)
-    assert torch.equal(transferred["state"][1]["exp_avg"], out["0.ff.up.B"])
-    assert transferred["state"][1]["step"] == 3
 
 
 def test_ffn_merge_rounds_effective_weights_once_and_keeps_bias(tmp_path):

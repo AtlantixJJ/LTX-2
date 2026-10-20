@@ -10,7 +10,6 @@ from ltx_core.types import SpatioTemporalScaleFactors
 from scripts.onestep_avatar.model import causal as causal_core
 from scripts.onestep_avatar.model import common
 from scripts.prune.score import token_sampling
-from scripts.prune.score.whole_clip_d0_scores import _sample_indices
 
 
 @pytest.mark.parametrize(("height", "width", "stride"), [(32, 32, 16), (3, 5, 4), (1, 5, 2), (7, 1, 3)])
@@ -19,7 +18,9 @@ def test_default_sampler_exactly_preserves_old_stride(height: int, width: int, s
     tokens = 5 * height * width
     assert torch.equal(
         token_sampling.sample_indices(tokens, height, width, stride, device),
-        _sample_indices(tokens, height * width, stride, device),
+        (
+            torch.arange(height * width, tokens, height * width)[:, None] + torch.arange(0, height * width, stride)
+        ).reshape(-1),
     )
 
 

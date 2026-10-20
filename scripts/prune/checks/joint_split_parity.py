@@ -16,15 +16,15 @@ from pathlib import Path
 import torch
 
 from scripts.onestep_avatar.model import common
-from scripts.prune.core import ltx_adapter, provenance, session
-from scripts.prune.data.learned_head_study import code_identity
-from scripts.prune.learn import adapters, checkpoints, ffn_training, heads, joint_training
-from scripts.prune.learn.ffn import input_case
+from scripts.prune.core import ltx_adapter, numerics, provenance, records, session
+from scripts.prune.data.study_io import code_identity
+from scripts.prune.learn import adapters, ffn_training, joint_training
+from scripts.prune.learn.ddp_owner import input_case
 from scripts.prune.score import export_joint_split, export_pruned, hooks
 
 
 def run(study_path, output, gpu=5, reuse=None, selected_kinds=None):
-    heads.numerical_policy()
+    numerics.deterministic_policy()
     torch.set_num_threads(4)
     if gpu not in (4, 5, 6):
         raise ValueError("Native tests use GPUs 4–6")
@@ -32,11 +32,12 @@ def run(study_path, output, gpu=5, reuse=None, selected_kinds=None):
     output.mkdir(parents=True, exist_ok=True)
     study = json.loads(Path(study_path).read_text())
     identity = study.pop("identity")
-    if identity != checkpoints.digest(study):
+    if identity != records.digest(study):
         raise ValueError("Historical study changed")
     study["identity"] = identity
-    current = session.open_session(
-        argparse.Namespace(model="2.5", gpu_id=gpu, seed=42),
+    current = session.open_model(
+        "2.5",
+        gpu,
         script="prune.checks.joint_split_parity",
         prompt="",
         transformer_path=Path(study["components"]["transformer"]["path"]),
@@ -138,7 +139,7 @@ def run(study_path, output, gpu=5, reuse=None, selected_kinds=None):
                     _, clean = ltx_adapter.velocity_forward(model, case[1])
                     clean = common.with_clean_prefix(clean, case[2]).cpu()
                     path = output / f"{kind}_case{index}_functional.pt"
-                    checkpoints.publish_tensor(path, clean)
+                    records.publish_tensor(path, clean)
                     paths.append(path)
             del attached, model, clean
         gc.collect()
@@ -151,7 +152,7 @@ def run(study_path, output, gpu=5, reuse=None, selected_kinds=None):
                 difference = (expected.float() - clean.float()).abs()
                 maximum = float(difference.max())
                 path = output / f"{kind}_case{index}_compact.pt"
-                checkpoints.publish_tensor(path, clean)
+                records.publish_tensor(path, clean)
                 row = dict(
                     kind=kind,
                     case=index,
@@ -165,13 +166,13 @@ def run(study_path, output, gpu=5, reuse=None, selected_kinds=None):
                     envelope_sha256=provenance.file_sha256(envelope),
                 )
                 result["cases"].append(row)
-                checkpoints.publish_json(output / f"{kind}_case{index}.json", row)
+                records.publish_json(output / f"{kind}_case{index}.json", row)
                 print(json.dumps(row), flush=True)
             del model, clean
         gc.collect()
         torch.cuda.empty_cache()
     result["passed"] = len(result["cases"]) == result["expected_cases"] and all(r["passed"] for r in result["cases"])
-    checkpoints.publish_json(output / "acceptance.json", result)
+    records.publish_json(output / "acceptance.json", result)
     return result
 
 

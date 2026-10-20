@@ -15,7 +15,7 @@ It does not replace implementation contracts or current native evidence.
 The learned FFN extension has separate [preparation](data/ffn_study.md),
 [training](learn/ffn.md), [numerical state](learn/ffn_training.md) and
 [export](score/export_learned_ffn.md) owners.
-The small `learn/ffn_gates.py` and CPU `learn/ffn_logger.py` modules explain their logic in their headers.
+The small `learn/ffn_gates.py` and CPU `learn/receipt_logger.py` modules explain their logic in their headers.
 
 The joint V3 extension has [family rules](learn/readmission.md), [numerical state](learn/joint_training.md),
 [training](learn/joint.md), [preparation](data/joint_study.md), [preflight checks](checks/joint_preflight.md),
@@ -75,150 +75,119 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 
 | Source | Design | Physical lines |
 |---|---|---:|
-| `evaluate/joint_final.py` | [evaluate/joint_final.md](evaluate/joint_final.md) | 215 |
-| `evaluate/joint_media.py` | [evaluate/joint_media.md](evaluate/joint_media.md) | 121 |
-| `checks/joint_faults.py` | [checks/joint_faults.md](checks/joint_faults.md) | 166 |
-| `checks/joint_split_parity.py` | [checks/joint_split_parity.md](checks/joint_split_parity.md) | 190 |
+| `checks/__init__.py` | inline header | 1 |
+| `checks/ddp_native.py` | [checks/ddp_native.md](checks/ddp_native.md) | 178 |
+| `checks/export_parity.py` | [checks/export_parity.md](checks/export_parity.md) | 185 |
+| `checks/joint_export.py` | [checks/joint_export.md](checks/joint_export.md) | 236 |
+| `checks/joint_faults.py` | [checks/joint_faults.md](checks/joint_faults.md) | 167 |
+| `checks/joint_preflight.py` | [checks/joint_preflight.md](checks/joint_preflight.md) | 256 |
+| `checks/joint_review.py` | [checks/joint_review.md](checks/joint_review.md) | 97 |
+| `checks/joint_split_parity.py` | [checks/joint_split_parity.md](checks/joint_split_parity.md) | 191 |
+| `checks/learned_heads.py` | [checks/learned_heads.md](checks/learned_heads.md) | 228 |
+| `core/__init__.py` | inline header | 1 |
+| `core/artifacts.py` | [core/artifacts.md](core/artifacts.md) | 40 |
+| `core/geometry.py` | [core/geometry.md](core/geometry.md) | 50 |
+| `core/ltx_adapter.py` | [core/ltx_adapter.md](core/ltx_adapter.md) | 59 |
+| `core/model_registry.py` | [core/model_registry.md](core/model_registry.md) | 179 |
+| `core/numerics.py` | inline header | 23 |
+| `core/preflight.py` | [core/preflight.md](core/preflight.md) | 136 |
+| `core/provenance.py` | [core/provenance.md](core/provenance.md) | 154 |
+| `core/records.py` | [core/records.md](core/records.md) | 136 |
+| `core/session.py` | [core/session.md](core/session.md) | 159 |
+| `data/__init__.py` | inline header | 1 |
+| `data/corpus_pins.py` | inline header | 56 |
+| `data/ffn_study.py` | [data/ffn_study.md](data/ffn_study.md) | 148 |
+| `data/foreground.py` | [data/foreground.md](data/foreground.md) | 120 |
+| `data/joint_study.py` | [data/joint_study.md](data/joint_study.md) | 157 |
+| `data/learned_head_study.py` | [data/learned_head_study.md](data/learned_head_study.md) | 550 |
+| `data/prompt_cache.py` | [data/prompt_cache.md](data/prompt_cache.md) | 111 |
+| `data/study_io.py` | inline header | 47 |
+| `data/training_windows.py` | [data/training_windows.md](data/training_windows.md) | 155 |
+| `data/whole_clip.py` | [data/whole_clip.md](data/whole_clip.md) | 437 |
+| `evaluate/__init__.py` | inline header | 1 |
+| `evaluate/bench_whole_clip_d0.py` | [evaluate/bench_whole_clip_d0.md](evaluate/bench_whole_clip_d0.md) | 129 |
+| `evaluate/decode.py` | [evaluate/decode.md](evaluate/decode.md) | 21 |
+| `evaluate/ffn.py` | [evaluate/ffn.md](evaluate/ffn.md) | 381 |
+| `evaluate/joint_final.py` | [evaluate/joint_final.md](evaluate/joint_final.md) | 242 |
+| `evaluate/joint_media.py` | [evaluate/joint_media.md](evaluate/joint_media.md) | 162 |
+| `evaluate/learned_head_media.py` | [evaluate/learned_head_media.md](evaluate/learned_head_media.md) | 234 |
+| `evaluate/learned_heads.py` | [evaluate/learned_heads.md](evaluate/learned_heads.md) | 339 |
+| `evaluate/media_common.py` | [evaluate/media_common.md](evaluate/media_common.md) | 148 |
+| `evaluate/metrics.py` | [evaluate/metrics.md](evaluate/metrics.md) | 76 |
+| `evaluate/timing.py` | [evaluate/timing.md](evaluate/timing.md) | 110 |
+| `evaluate/whole_clip_baseline.py` | [evaluate/whole_clip_baseline.md](evaluate/whole_clip_baseline.md) | 703 |
+| `evaluate/whole_clip_d0.py` | [evaluate/whole_clip_d0.md](evaluate/whole_clip_d0.md) | 309 |
+| `learn/adapters.py` | [learn/adapters.md](learn/adapters.md) | 162 |
+| `learn/checkpoints.py` | [learn/checkpoints.md](learn/checkpoints.md) | 209 |
+| `learn/ddp.py` | [learn/ddp.md](learn/ddp.md) | 79 |
+| `learn/ddp_owner.py` | [learn/ddp_owner.md](learn/ddp_owner.md) | 513 |
+| `learn/ffn.py` | [learn/ffn.md](learn/ffn.md) | 95 |
+| `learn/ffn_gates.py` | inline header | 79 |
+| `learn/ffn_training.py` | [learn/ffn_training.md](learn/ffn_training.md) | 213 |
+| `learn/gates.py` | [learn/gates.md](learn/gates.md) | 123 |
+| `learn/heads.py` | [learn/heads.md](learn/heads.md) | 1344 |
+| `learn/joint.py` | [learn/joint.md](learn/joint.md) | 228 |
+| `learn/joint_training.py` | [learn/joint_training.md](learn/joint_training.md) | 338 |
+| `learn/losses.py` | [learn/losses.md](learn/losses.md) | 153 |
+| `learn/protocol.py` | inline header | 69 |
+| `learn/readmission.py` | [learn/readmission.md](learn/readmission.md) | 362 |
+| `learn/receipt_logger.py` | [learn/receipt_logger.md](learn/receipt_logger.md) | 96 |
+| `learn/run_full.py` | [learn/run_full.md](learn/run_full.md) | 228 |
+| `learn/step.py` | inline header | 42 |
+| `learn/teacher_references.py` | [learn/teacher_references.md](learn/teacher_references.md) | 105 |
+| `learn/wandb_logger.py` | [learn/wandb_logger.md](learn/wandb_logger.md) | 268 |
+| `score/__init__.py` | inline header | 1 |
+| `score/estimators.py` | [score/estimators.md](score/estimators.md) | 81 |
+| `score/export_depth.py` | [score/export_depth.md](score/export_depth.md) | 524 |
+| `score/export_joint.py` | [score/export_joint.md](score/export_joint.md) | 132 |
 | `score/export_joint_split.py` | [score/export_joint_split.md](score/export_joint_split.md) | 227 |
-| `checks/joint_review.py` | inline header | 97 |
-| `learn/joint_logger.py` | inline header | 88 |
-| `data/joint_study.py` | [data/joint_study.md](data/joint_study.md) | 164 |
-| `checks/joint_export.py` | [checks/joint_export.md](checks/joint_export.md) | 235 |
-| `checks/joint_preflight.py` | [checks/joint_preflight.md](checks/joint_preflight.md) | 255 |
-| `learn/joint.py` | [learn/joint.md](learn/joint.md) | 665 |
-| `learn/readmission.py` | [learn/readmission.md](learn/readmission.md) | 357 |
-| `learn/joint_training.py` | [learn/joint_training.md](learn/joint_training.md) | 387 |
-| `score/export_joint.py` | [score/export_joint.md](score/export_joint.md) | 126 |
-| `checks/__init__.py` | package marker | 1 |
-| `checks/export_parity.py` | [design](checks/export_parity.md) | 147 |
-| `checks/four_gpu_feasibility.py` | [design](checks/four_gpu_feasibility.md) | 85 |
-| `checks/fsdp_native.py` | [design](checks/fsdp_native.md) | 263 |
-| `checks/ddp_f28.py.txt` | [bounded diagnostic](checks/ddp_f28.md) | 203 |
-| `checks/fsdp_small.py` | [design](checks/fsdp_small.md) | 162 |
-| `checks/learned_heads.py` | [design](checks/learned_heads.md) | 227 |
-| `checks/mobilewan_native.py` | [design](checks/mobilewan_native.md) | 118 |
-| `checks/ddp_native.py` | [design](checks/ddp_native.md) | 400 |
-| `core/__init__.py` | package marker | 1 |
-| `core/artifacts.py` | [design](core/artifacts.md) | 40 |
-| `core/geometry.py` | [design](core/geometry.md) | 72 |
-| `core/ltx_adapter.py` | [design](core/ltx_adapter.md) | 59 |
-| `core/model_registry.py` | [design](core/model_registry.md) | 179 |
-| `core/preflight.py` | [design](core/preflight.md) | 136 |
-| `core/provenance.py` | [design](core/provenance.md) | 119 |
-| `core/session.py` | [design](core/session.md) | 117 |
-| `data/checkpoint_pairs.py` | [design](data/checkpoint_pairs.md) | 169 |
-| `data/clipped_reset_study.py` | [design](data/clipped_reset_study.md) | 196 |
-| `data/fixed_test_inputs.py` | [design](data/fixed_test_inputs.md) | 188 |
-| `data/continue_eligible.py` | [design](data/continue_eligible.md) | 208 |
-| `data/progressive_head_study.py` | [design](data/progressive_head_study.md) | 151 |
-| `data/__init__.py` | package marker | 1 |
-| `data/foreground.py` | [design](data/foreground.md) | 140 |
-| `data/head_score_dataset.py` | [design](data/head_score_dataset.md) | 139 |
-| `data/learned_head_study.py` | [design](data/learned_head_study.md) | 551 |
-| `data/native_gate_study.py` | [design](data/native_gate_study.md) | 225 |
-| `data/ffn_study.py` | [design](data/ffn_study.md) | 163 |
-| `data/prompt_cache.py` | [design](data/prompt_cache.md) | 111 |
-| `data/reuse_head_scores.py` | [design](data/reuse_head_scores.md) | 137 |
-| `data/resume_learned_heads.py` | [design](data/resume_learned_heads.md) | 211 |
-| `data/extend_learned_heads.py` | [design](data/extend_learned_heads.md) | 226 |
-| `data/whole_clip.py` | [design](data/whole_clip.md) | 360 |
-| `data/training_windows.py` | [design](data/training_windows.md) | 104 |
-| `evaluate/deck_comparison.py.txt` | [deck comparison](evaluate/deck_comparison.md) | 252 |
-| `evaluate/deck_composite.py.txt` | [deck composition](evaluate/deck_composite.md) | 100 |
-| `evaluate/__init__.py` | package marker | 1 |
-| `evaluate/bench_whole_clip_d0.py` | [design](evaluate/bench_whole_clip_d0.md) | 193 |
-| `evaluate/decode.py` | [design](evaluate/decode.md) | 23 |
-| `evaluate/learned_head_media.py` | [design](evaluate/learned_head_media.md) | 293 |
-| `evaluate/learned_head_checkpoint_media.py.txt` | [pinned checkpoint media](evaluate/learned_head_checkpoint_media.md) | 721 |
-| `evaluate/eligible_checkpoint_media.py.txt` | [design](evaluate/eligible_checkpoint_media.md) | 706 |
-| `evaluate/zero_one_checkpoint_media.py.txt` | [design](evaluate/zero_one_checkpoint_media.md) | 706 |
-| `evaluate/progressive_checkpoint_media.py.txt` | [progressive checkpoint media](evaluate/progressive_checkpoint_media.md) | 725 |
-| `evaluate/ffn.py` | [design](evaluate/ffn.md) | 338 |
-| `evaluate/learned_heads.py` | [design](evaluate/learned_heads.md) | 338 |
-| `evaluate/metrics.py` | [design](evaluate/metrics.md) | 103 |
-| `evaluate/mobilewan_media.py` | [design](evaluate/mobilewan_media.md) | 218 |
-| `evaluate/mobilewan_removal.py` | [design](evaluate/mobilewan_removal.md) | 215 |
-| `evaluate/whole_clip_baseline.py` | [design](evaluate/whole_clip_baseline.md) | 707 |
-| `evaluate/whole_clip_d0.py` | [design](evaluate/whole_clip_d0.md) | 245 |
-| `learn/clipped_reset.py` | [design](learn/clipped_reset.md) | 337 |
-| `learn/eligible.py` | [design](learn/eligible.md) | 195 |
-| `learn/zero_one.py` | [design](learn/zero_one.md) | 180 |
-| `data/continue_zero_one.py` | [design](data/continue_zero_one.md) | 187 |
-| `learn/progressive.py` | [design](learn/progressive.md) | 273 |
-| `learn/adapters.py` | [design](learn/adapters.md) | 177 |
-| `learn/checkpoints.py` | [design](learn/checkpoints.md) | 291 |
-| `learn/distributed.py` | [design](learn/distributed.md) | 153 |
-| `learn/gates.py` | [design](learn/gates.md) | 171 |
-| `learn/heads.py` | [design](learn/heads.md) | 1592 |
-| `learn/ffn.py` | [design](learn/ffn.md) | 509 |
-| `learn/ffn_training.py` | [design](learn/ffn_training.md) | 256 |
-| `learn/losses.py` | [design](learn/losses.md) | 155 |
-| `learn/placement.py` | [design](learn/placement.md) | 107 |
-| `learn/run_full.py` | [design](learn/run_full.md) | 290 |
-| `learn/teacher_references.py` | [design](learn/teacher_references.md) | 105 |
-| `learn/ddp.py` | [design](learn/ddp.md) | 51 |
-| `learn/protocol.py` | logic in module header | 95 |
-| `learn/step.py` | logic in module header | 47 |
-| `learn/wandb_logger.py` | [design](learn/wandb_logger.md) | 297 |
-| `score/__init__.py` | package marker | 1 |
-| `score/estimators.py` | [design](score/estimators.md) | 48 |
-| `score/export_depth.py` | [design](score/export_depth.md) | 431 |
-| `score/export_learned_heads.py` | [design](score/export_learned_heads.md) | 269 |
-| `score/export_learned_ffn.py` | [design](score/export_learned_ffn.md) | 275 |
-| `score/export_pruned.py` | [design](score/export_pruned.md) | 205 |
-| `score/ffn_reconstruction.py` | [design](score/ffn_reconstruction.md) | 261 |
-| `score/hooks.py` | [design](score/hooks.md) | 286 |
-| `score/mobilewan_aggregate.py` | [design](score/mobilewan_aggregate.md) | 241 |
-| `score/mobilewan_dataset.py` | [design](score/mobilewan_dataset.md) | 212 |
-| `score/mobilewan_heads.py` | [design](score/mobilewan_heads.md) | 127 |
-| `score/mobilewan_records.py` | [design](score/mobilewan_records.md) | 134 |
-| `score/native_gate_audit.py` | [design](score/native_gate_audit.md) | 227 |
-| `score/native_gate_accumulator.py` | [design](score/native_gate_accumulator.md) | 180 |
-| `score/native_gate_analysis.py` | [design](score/native_gate_analysis.md) | 826 |
-| `score/native_gate_observer.py` | [design](score/native_gate_observer.md) | 135 |
-| `score/native_gate_records.py` | [design](score/native_gate_records.md) | 189 |
-| `score/native_gate_review.py` | [design](score/native_gate_review.md) | 338 |
-| `score/native_head_gates.py` | [design](score/native_head_gates.md) | 485 |
-| `score/token_sampling.py` | [design](score/token_sampling.md) | 79 |
-| `score/whole_clip_d0_scores.py` | [design](score/whole_clip_d0_scores.md) | 164 |
-
-`scripts/` and `scripts/prune/` remain PEP 420 namespace packages.
-There is no root `__init__.py` to add.
+| `score/export_learned_ffn.py` | [score/export_learned_ffn.md](score/export_learned_ffn.md) | 292 |
+| `score/export_learned_heads.py` | [score/export_learned_heads.md](score/export_learned_heads.md) | 230 |
+| `score/export_pruned.py` | [score/export_pruned.md](score/export_pruned.md) | 225 |
+| `score/hooks.py` | [score/hooks.md](score/hooks.md) | 286 |
+| `score/token_sampling.py` | [score/token_sampling.md](score/token_sampling.md) | 97 |
+| `score/whole_clip_d0_scores.py` | [score/whole_clip_d0_scores.md](score/whole_clip_d0_scores.md) | 209 |
 
 ## Entry scripts
 
-Run modules from `LTX-2` in `ltx`. Each link goes to its Usage section.
+Run from `LTX-2` in `ltx`. Read each owner's Usage section before launching.
 
-| Module | Purpose | Started by |
-|---|---|---|
-| [`data.clipped_reset_study`](data/clipped_reset_study.md#usage) | Freeze fresh r13-zero initialization and exact-step checkpoint pairs | direct CPU CLI |
-| [`data.fixed_test_inputs`](data/fixed_test_inputs.md#usage) | Freeze twelve complete test sources and saved noise without inference | direct CLI on GPU 6 |
-| [`score.native_gate_audit`](score/native_gate_audit.md#usage) | Audit saved native-gate source prefixes and exact shard merges | direct CPU CLI |
-| [`core.preflight`](core/preflight.md#usage) | Check components and GPU memory | direct CLI |
-| [`data.prompt_cache`](data/prompt_cache.md#usage) | Build or verify default text context | direct CLI |
-| [`evaluate.whole_clip_baseline`](evaluate/whole_clip_baseline.md#usage) | Save source or candidate rollouts | human CLI; agent baseline through avatar queue |
-| [`score.whole_clip_d0_scores`](score/whole_clip_d0_scores.md#usage) | Rank heads and FFN channels | direct CLI |
-| [`score.export_pruned`](score/export_pruned.md#usage) | Export width masks | direct CLI; CUDA preflight, CPU surgery |
-| [`score.export_depth`](score/export_depth.md#usage) | Export retained blocks | direct CPU CLI |
-| [`checks.export_parity`](checks/export_parity.md#usage) | Check intervention/export agreement | direct CLI |
-| [`evaluate.whole_clip_d0`](evaluate/whole_clip_d0.md#usage) | Compare saved outputs or functional masks | CPU saved analysis; GPU ablation |
-| [`evaluate.bench_whole_clip_d0`](evaluate/bench_whole_clip_d0.md#usage) | Measure matched forward cost | direct CLI |
-| [`checks.fsdp_small`](checks/fsdp_small.md#usage) | Check four-rank gradients and exact resume | direct torchrun |
-| [`checks.ddp_native`](checks/ddp_native.md#usage) | Accept uniform-F18 DDP crops, gradients, memory and resume | direct torchrun |
-| [`checks.fsdp_native`](checks/fsdp_native.md#usage) | Accept full-clip FSDP parity and memory | direct torchrun |
-| [`checks/ddp_f28.py.txt`](checks/ddp_f28.md#usage) | Test one full F18 or F28 clip per GPU with two-rank DDP | direct torchrun file |
-| [`evaluate/learned_head_checkpoint_media.py.txt`](evaluate/learned_head_checkpoint_media.md#usage) | Decode and compare saved monitor predictions of a live study | direct file on one free GPU |
-| [`evaluate/progressive_checkpoint_media.py.txt`](evaluate/progressive_checkpoint_media.md#usage) | Compare actual progressive gates with the prior soft study | direct file on GPU 6 |
-| [`data.reuse_head_scores`](data/reuse_head_scores.md#usage) | Import compatible historical raw scores | direct CPU CLI |
-| [`data.resume_learned_heads`](data/resume_learned_heads.md#usage) | Preserve a stopped checkpoint under the amended sparsity loss | direct CPU CLI |
-| [`data.extend_learned_heads`](data/extend_learned_heads.md#usage) | Continue a completed soft checkpoint under a longer phase budget | direct CPU CLI |
-| [`learn.wandb_logger`](learn/wandb_logger.md#usage) | Log saved rank charts and globally averaged metrics | direct CPU writer |
-| [`learn.run_full`](learn/run_full.md#usage) | Run and monitor the full paired GT pilot | direct detached owner |
-
-The avatar wrapper owns supervision and queue receipts.
-These entry scripts retain their broader direct interfaces.
-See [launch rules](usage.md#launch-and-output-rules).
-
+| Module | Design |
+|---|---|
+| [`checks.ddp_native`](checks/ddp_native.md) | [Usage](checks/ddp_native.md#usage) |
+| [`checks.export_parity`](checks/export_parity.md) | [Usage](checks/export_parity.md#usage) |
+| [`checks.joint_export`](checks/joint_export.md) | [Usage](checks/joint_export.md#usage) |
+| [`checks.joint_faults`](checks/joint_faults.md) | [Usage](checks/joint_faults.md#usage) |
+| [`checks.joint_preflight`](checks/joint_preflight.md) | [Usage](checks/joint_preflight.md#usage) |
+| [`checks.joint_review`](checks/joint_review.md) | [Usage](checks/joint_review.md#usage) |
+| [`checks.joint_split_parity`](checks/joint_split_parity.md) | [Usage](checks/joint_split_parity.md#usage) |
+| [`checks.learned_heads`](checks/learned_heads.md) | [Usage](checks/learned_heads.md#usage) |
+| [`core.preflight`](core/preflight.md) | [Usage](core/preflight.md#usage) |
+| [`data.ffn_study`](data/ffn_study.md) | [Usage](data/ffn_study.md#usage) |
+| [`data.joint_study`](data/joint_study.md) | [Usage](data/joint_study.md#usage) |
+| [`data.learned_head_study`](data/learned_head_study.md) | [Usage](data/learned_head_study.md#usage) |
+| [`data.prompt_cache`](data/prompt_cache.md) | [Usage](data/prompt_cache.md#usage) |
+| [`evaluate.bench_whole_clip_d0`](evaluate/bench_whole_clip_d0.md) | [Usage](evaluate/bench_whole_clip_d0.md#usage) |
+| [`evaluate.ffn`](evaluate/ffn.md) | [Usage](evaluate/ffn.md#usage) |
+| [`evaluate.joint_final`](evaluate/joint_final.md) | [Usage](evaluate/joint_final.md#usage) |
+| [`evaluate.joint_media`](evaluate/joint_media.md) | [Usage](evaluate/joint_media.md#usage) |
+| [`evaluate.learned_head_media`](evaluate/learned_head_media.md) | [Usage](evaluate/learned_head_media.md#usage) |
+| [`evaluate.learned_heads`](evaluate/learned_heads.md) | [Usage](evaluate/learned_heads.md#usage) |
+| [`evaluate.whole_clip_baseline`](evaluate/whole_clip_baseline.md) | [Usage](evaluate/whole_clip_baseline.md#usage) |
+| [`evaluate.whole_clip_d0`](evaluate/whole_clip_d0.md) | [Usage](evaluate/whole_clip_d0.md#usage) |
+| [`learn.ffn`](learn/ffn.md) | [Usage](learn/ffn.md#usage) |
+| [`learn.heads`](learn/heads.md) | [Usage](learn/heads.md#usage) |
+| [`learn.joint`](learn/joint.md) | [Usage](learn/joint.md#usage) |
+| [`learn.receipt_logger`](learn/receipt_logger.md) | [Usage](learn/receipt_logger.md#usage) |
+| [`learn.run_full`](learn/run_full.md) | [Usage](learn/run_full.md#usage) |
+| [`learn.wandb_logger`](learn/wandb_logger.md) | [Usage](learn/wandb_logger.md#usage) |
+| [`score.export_depth`](score/export_depth.md) | [Usage](score/export_depth.md#usage) |
+| [`score.export_joint`](score/export_joint.md) | [Usage](score/export_joint.md#usage) |
+| [`score.export_joint_split`](score/export_joint_split.md) | [Usage](score/export_joint_split.md#usage) |
+| [`score.export_learned_ffn`](score/export_learned_ffn.md) | [Usage](score/export_learned_ffn.md#usage) |
+| [`score.export_learned_heads`](score/export_learned_heads.md) | [Usage](score/export_learned_heads.md#usage) |
+| [`score.export_pruned`](score/export_pruned.md) | [Usage](score/export_pruned.md#usage) |
+| [`score.whole_clip_d0_scores`](score/whole_clip_d0_scores.md) | [Usage](score/whole_clip_d0_scores.md#usage) |
 ## Core logic review map
 
 - [Saved inputs](data/whole_clip.md): manifest content, exact reconstruction, actor split and export identity.
@@ -227,7 +196,6 @@ See [launch rules](usage.md#launch-and-output-rules).
 - [Estimators](score/estimators.md) and [sampling](score/token_sampling.md): score meaning and spatial coverage.
 - [Width export](score/export_pruned.md): Q/K normalization, positional identity and storage/execution modes.
 - [Depth export](score/export_depth.md): retained order, streaming copy and parameter denominators.
-- [Local fitting](score/ffn_reconstruction.md): bounded ridge solve and calibration-cache limits.
 - [Comparison](evaluate/whole_clip_d0.md): generated-frame metrics and labeled VAE panels.
 - [Timing](evaluate/bench_whole_clip_d0.md): saved-output guard, synchronized repetitions and drift.
 
@@ -240,9 +208,3 @@ The queued baseline wrapper adds complete component and software pins.
 Saved verification opens no model and does not regenerate CUDA noise.
 Report rebuilds read saved results; they must not launch missing runs.
 Passing schema checks, CPU tests or export parity alone does not establish decoded quality or speed.
-
-The progressive [preparation owner](data/progressive_head_study.md#usage) verifies r13 inputs and checkpoint zero.
-Its [policy owner](learn/progressive.md) defines irreversible mixed gates. The direct run ends after 500 updates and saved monitors.
-
-The [zero/one preparation owner](data/continue_zero_one.md) migrates checkpoint 500 without resetting optimizer/RNG state.
-The [zero/one policy](learn/zero_one.md) adds permanent high-regret ones and supports empty free populations.

@@ -14,22 +14,23 @@ from pathlib import Path
 import torch
 
 from scripts.onestep_avatar.model import common
-from scripts.prune.core import ltx_adapter, provenance, session
+from scripts.prune.core import ltx_adapter, numerics, provenance, records, session
 from scripts.prune.data import joint_study
-from scripts.prune.learn import adapters, checkpoints, ffn_training, heads, joint_training
-from scripts.prune.learn.ffn import input_case
+from scripts.prune.learn import adapters, ffn_training, joint_training
+from scripts.prune.learn.ddp_owner import input_case
 from scripts.prune.score import export_learned_ffn, export_pruned, hooks
 
 
 def run(study, output, *, gpu=6):
     if gpu not in (4, 5, 6):
         raise ValueError("export tests use GPUs 4–6")
-    heads.numerical_policy()
+    numerics.deterministic_policy()
     torch.set_num_threads(4)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    current = session.open_session(
-        argparse.Namespace(model="2.5", gpu_id=gpu, seed=42),
+    current = session.open_model(
+        "2.5",
+        gpu,
         script="prune.checks.joint_export",
         prompt="",
         transformer_path=Path(study["components"]["transformer"]["path"]),
@@ -71,7 +72,7 @@ def run(study, output, *, gpu=6):
                     error = float((saved.float() - value.float()).abs().max())
                     errors.append(dict(block=block_id, max_abs=error))
                 else:
-                    checkpoints.publish_tensor(trace_dir / f"{block_id:02d}.pt", value)
+                    records.publish_tensor(trace_dir / f"{block_id:02d}.pt", value)
 
             return hook
 
@@ -85,11 +86,11 @@ def run(study, output, *, gpu=6):
                 handle.remove()
         if reference:
             first = next((row for row in errors if row["max_abs"] > 0), None)
-            checkpoints.publish_json(
+            records.publish_json(
                 output / f"{label}_layer_errors.json", dict(reference=reference, errors=errors, first_divergence=first)
             )
         clean = common.with_clean_prefix(clean, case[2]).cpu()
-        checkpoints.publish(output / f"{label}.pt", lambda p: torch.save(clean, p))
+        records.publish(output / f"{label}.pt", lambda p: torch.save(clean, p))
         return clean
 
     def compare(a, b, label):
@@ -98,7 +99,7 @@ def run(study, output, *, gpu=6):
         result["transitions"].append(
             dict(name=label, max_abs=error, passed=bool(torch.isfinite(difference).all() and error <= 0.02))
         )
-        checkpoints.publish_json(
+        records.publish_json(
             output / "progress.json"
             if not (output / "progress.json").exists()
             else output / f"transition_{len(result['transitions'])}.json",
@@ -207,7 +208,7 @@ def run(study, output, *, gpu=6):
             torch.cuda.empty_cache()
             # Preserve predictions, exact mask IDs and hashes; disposable full
             # checkpoint payloads are rebuildable and occupy tens of GiB each.
-            checkpoints.publish_json(
+            records.publish_json(
                 output / f"{label}_{kind}_inventory.json",
                 dict(
                     masks=masks,
@@ -218,7 +219,7 @@ def run(study, output, *, gpu=6):
             compact_path.unlink()
         merged_path.unlink()
     result["passed"] = all(row["passed"] for row in result["transitions"])
-    checkpoints.publish_json(output / "acceptance.json", result)
+    records.publish_json(output / "acceptance.json", result)
     return result
 
 

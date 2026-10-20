@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 from scripts.prune.core.provenance import file_sha256
-from scripts.prune.learn.checkpoints import digest, publish_json, publish_tensor, tensor_hash
+from scripts.prune.core.records import digest, publish_json, publish_tensor, tensor_hash
 
 REQUIRED = {
     "components",

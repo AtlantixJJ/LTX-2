@@ -20,7 +20,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]  # .../LTX-2 (scripts/prune/core
 
 
 def checkpoint_fingerprint(path: str | Path) -> str:
-    """Stable short identifier for a safetensors checkpoint (see module docstring)."""
+    """Stable short identifier: file size, header bytes and three sampled 1 MiB payload regions.
+
+    It identifies a checkpoint cheaply; it does not prove full-file integrity.
+    """
     p = Path(path)
     size = p.stat().st_size
     h = hashlib.sha256()
@@ -47,7 +50,39 @@ def file_sha256(path: str | Path) -> str:
     return h.hexdigest()
 
 
+_VERIFIED: dict[tuple, str] = {}
+
+
+def verified_sha256(path: str | Path) -> str:
+    """Full sha256, memoized per process by device, inode, size, mtime and ctime.
+
+    Repeated input checks within one process hash each unchanged file once.
+    Any rewrite, replacement or touch changes the key and forces a new hash.
+    Timestamps have coarse ticks, so a file modified in the last two seconds
+    is always hashed again rather than remembered.
+    """
+    stat = Path(path).stat()
+    key = (str(Path(path).resolve()), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    if key in _VERIFIED:
+        return _VERIFIED[key]
+    digest = file_sha256(path)
+    if time.time_ns() - max(stat.st_mtime_ns, stat.st_ctime_ns) > 2_000_000_000:
+        _VERIFIED[key] = digest
+    return digest
+
+
+_GIT_REV: str | None = None
+
+
 def _git_rev() -> str:
+    """The LTX-2 revision with a dirty mark, computed once per process."""
+    global _GIT_REV  # noqa: PLW0603
+    if _GIT_REV is None:
+        _GIT_REV = _read_git_rev()
+    return _GIT_REV
+
+
+def _read_git_rev() -> str:
     try:
         out = subprocess.run(
             ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
@@ -76,7 +111,7 @@ def _git_rev() -> str:
 
 def run_id(prefix: str = "") -> str:
     """Timestamped, collision-safe run id -- the ``<run-id>`` level of
-    ``expr/refiner_prune/<key>/<run-id>/`` (§12).
+    ``expr/refiner_prune/<key>/<run-id>/``.
 
     The timestamp alone has 1-second resolution, and parallel sweeps call this at the
     *end* of their work, so a per-GPU launch stagger does not separate them: two jobs

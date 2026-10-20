@@ -23,13 +23,17 @@ Final training uses the pinned P0/P1/P2 receipt and fresh four-rank native accep
 CUDA_VISIBLE_DEVICES=0,1,2,3 CUBLAS_WORKSPACE_CONFIG=:4096:8 conda run --no-capture-output -n ltx torchrun --standalone --nproc_per_node=4 -m scripts.prune.learn.joint --study ../expr/refiner_prune/2.5/joint_clip_reset_readmission_20261019_A/configs/frozen_study.json --phase formal
 ```
 
-The distinct V3 entrypoint protects the historical learner while it remains active.
+The V3 entrypoint supplies its family hooks to `learn.ddp_owner`.
 It accepts the frozen `joint_clip_reset_v3`, `heads_clip_reset_v3` and `budget_joint_v3` arms.
 The historical `learn.ffn` CLI does not dispatch these studies.
 
 ## Data flow
 
 The owner loads the frozen study and exact physical GPU list. Each rank loads one native model. Native checks compare all-one execution, mixed-gradient behavior, event resume and fixed-mask recovery.
+
+The [shared DDP owner](ddp_owner.md) owns the runtime, input reuse, native acceptance, monitor and update loop.
+This module supplies V3 family hooks and its numerical state owner.
+The frozen world size determines the draw stride, including smaller disposable pilots.
 
 ## Organization logic
 

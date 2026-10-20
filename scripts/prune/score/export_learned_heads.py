@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 import torch
 from safetensors import safe_open
-from safetensors.torch import save_file
 
-from scripts.prune.core import provenance
+from scripts.prune.core import numerics, provenance, records
 from scripts.prune.data import whole_clip
 from scripts.prune.data.learned_head_study import load_study
 from scripts.prune.learn import checkpoints, protocol
@@ -34,7 +32,7 @@ def prepare_geometry_inputs(study, gpu_id):
             missing.append((source, inputs))
     if not missing:
         return
-    heads.numerical_policy()
+    numerics.deterministic_policy()
     current = heads.open_current(study, gpu_id)
     with torch.no_grad():
         for source, inputs in missing:
@@ -83,64 +81,25 @@ def geometry_wrappers(study, masks, destination):
             raise ValueError("both complete clip lengths are required for structural wrappers")
         merged = {**first, "videos": rows}
         native_root = destination / f"learning_inputs_F{length}"
-        checkpoints.publish_json(native_root / "manifest.json", merged)
+        records.publish_json(native_root / "manifest.json", merged)
         stamp = whole_clip.native_provenance(
             native_root, merged, [s["resolved_dir"] for s in sources], study["config"]["sigmas"]
         )
         path = destination / f"structural_mask_F{length}.json"
-        checkpoints.publish_json(
-            path, {"candidate_format": "whole_clip_d0_mask_v1", "provenance": stamp, "masks": masks}
-        )
+        records.publish_json(path, {"candidate_format": "whole_clip_d0_mask_v1", "provenance": stamp, "masks": masks})
         wrappers[str(length)] = {"path": str(path), "sha256": provenance.file_sha256(path)}
     return wrappers
 
 
 def merge(source, state, output, *, metadata=None, scaling=1.0, envelope=None, envelope_path=None):
-    """Merge in FP32 and round once to the compact base dtype."""
-    with safe_open(source, framework="pt", device="cpu") as handle:
-        meta = dict(handle.metadata() or {})
-        tensors = {key: handle.get_tensor(key) for key in handle.keys()}
-    expected = set()
-    for name in state:
-        if not name.endswith(".A"):
-            continue
-        prefix = name[:-2]
-        block, kind, projection = prefix.split(".")
-        if kind != "attn1" or projection not in ("v", "out"):
-            raise ValueError("adapter targets unsupported projection")
-        a, b = state[prefix + ".A"], state[prefix + ".B"]
-        expected.update((prefix + ".A", prefix + ".B"))
-        key = f"{export_pruned.PREFIX}.{block}.attn1." + ("to_v.weight" if projection == "v" else "to_out.0.weight")
-        base = tensors[key]
-        if (
-            a.dtype != torch.float32
-            or b.dtype != torch.float32
-            or b.shape[1] != a.shape[0]
-            or (b.shape[0], a.shape[1]) != base.shape
-            or not torch.isfinite(a).all()
-            or not torch.isfinite(b).all()
-        ):
-            raise ValueError("compact adapter tensor shape or values differ")
-        tensors[key] = (base.float() + scaling * b @ a).to(base.dtype).contiguous()
-    if set(state) != expected:
-        raise ValueError("incomplete adapter fusion inventory")
-    inventory = {
-        name: {"shape": list(value.shape), "sha256": checkpoints.tensor_hash(value)} for name, value in tensors.items()
-    }
-    if envelope is not None:
-        envelope["tensor_inventory"] = inventory
-        checkpoints.publish_json(envelope_path, envelope)
-        metadata = {
-            **(metadata or {}),
-            "artifact": str(envelope_path),
-            "artifact_sha256": provenance.file_sha256(envelope_path),
-        }
-    if metadata:
-        config = json.loads(meta["config"])
-        config["transformer"]["pruning"].update(metadata)
-        meta["config"] = json.dumps(config)
-    checkpoints.publish(output, lambda p: save_file(tensors, str(p), metadata=meta))
-    return inventory
+    """Merge V/output adapters in FP32 and round once to the compact base dtype."""
+    from scripts.prune.score.export_learned_ffn import finalize, merge_adapters  # noqa: PLC0415
+
+    tensors, meta = export_pruned.load(source)
+    merge_adapters(tensors, state, kinds=("attn1",), scaling=scaling)
+    return finalize(
+        tensors, meta, output, pruning=metadata, envelope=envelope, envelope_path=envelope_path, inventory_dtype=False
+    )
 
 
 def run_export(study, arm, seed, stage):
@@ -166,7 +125,7 @@ def run_export(study, arm, seed, stage):
         "selection_checkpoint": str(selection_path),
         "selection_sha256": provenance.file_sha256(selection_path),
     }
-    checkpoints.publish_json(mask_path, mask_record)
+    records.publish_json(mask_path, mask_record)
     wrappers = geometry_wrappers(study, values, mask_path.parent)
     base_path = dest / "compact_base.safetensors"
     pruning = {
@@ -178,7 +137,7 @@ def run_export(study, arm, seed, stage):
         "qualification": "compact_base_unqualified",
     }
     if not base_path.exists():
-        checkpoints.publish(
+        records.publish(
             base_path,
             lambda p: export_pruned.export(
                 source, values, p, model_key="2.5", mode="compact", provenance_block=pruning
@@ -186,8 +145,8 @@ def run_export(study, arm, seed, stage):
         )
     if stage == "compact_base":
         return base_path
-    final_step = compact_end + 1000 if arm == "learned_sequential" else compact_end
-    final = checkpoints.load(training / f"checkpoints/update_{final_step}.pt")
+    final_step = protocol.recovery_end(study["config"], arm)
+    final = checkpoints.load(training / f"checkpoints/update_{final_step:04d}.pt")
     if final["identity"]["study"] != study["identity"] or not torch.equal(final["mask"].cpu(), mask):
         raise ValueError("recovery changed original head IDs or study")
     envelope_path = root / f"masks/{arm}/replicate_{seed}/recovered.json"
@@ -213,7 +172,7 @@ def run_export(study, arm, seed, stage):
         "recovery_sha256": provenance.file_sha256(training / f"checkpoints/update_{final_step}.pt"),
         "adapter_rank": study["config"]["rank"],
         "adapter_scaling": 1.0,
-        "adapter_hashes": {n: checkpoints.tensor_hash(v) for n, v in final["adapters"].items()},
+        "adapter_hashes": {n: records.tensor_hash(v) for n, v in final["adapters"].items()},
         "training_identity": final["identity"],
         "config": study["config"],
         "lineage": final["lineage"],
@@ -240,7 +199,7 @@ def run_export(study, arm, seed, stage):
         envelope=envelope,
         envelope_path=envelope_path,
     )
-    checkpoints.publish_json(
+    records.publish_json(
         dest / "final_merged.json",
         {
             "sha256": provenance.file_sha256(output),
@@ -257,7 +216,9 @@ def main():
     p.add_argument("--arm", required=True)
     p.add_argument("--replicate-seed", type=int, default=42)
     p.add_argument("--stage", choices=("compact_base", "final_merged"), required=True)
-    p.add_argument("--input-gpu-id", type=int, help="Save missing seed-42 structural inputs on this GPU; no model load.")
+    p.add_argument(
+        "--input-gpu-id", type=int, help="Save missing seed-42 structural inputs on this GPU; no model load."
+    )
     args = p.parse_args()
     study = load_study(args.study)
     if args.input_gpu_id is not None:

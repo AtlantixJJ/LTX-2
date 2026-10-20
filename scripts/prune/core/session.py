@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import platform
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ import torch
 from ltx_core.loader.primitives import LoraPathStrengthAndSDOps
 from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
 from ltx_pipelines.utils.blocks import DiffusionStage
-from scripts.prune.core import artifacts, ltx_adapter, preflight
+from scripts.prune.core import artifacts, ltx_adapter, preflight, records
 from scripts.prune.core.model_registry import SUPPORTED_MODELS, RefinerModel
 from scripts.prune.data import prompt_cache
 
@@ -35,7 +36,7 @@ def add_prompt_args(parser: argparse.ArgumentParser) -> None:
 
 
 def resolve_prompt(args: argparse.Namespace) -> str:
-    """The prompt text selected by ``add_prompt_args`` (``REFINE_PROMPT`` when neither flag is set)."""
+    """The prompt text selected by ``add_prompt_args`` (``DEFAULT_PROMPT`` when neither flag is set)."""
     if getattr(args, "prompt_file", None) is not None:
         return args.prompt_file.read_text(encoding="utf-8").strip()
     if getattr(args, "prompt", None) is not None:
@@ -106,8 +107,21 @@ def open_session(
     transformer_path: Path | None = None,
     prompt: str | None = None,
 ) -> Session:
-    model = preflight.check(args.model, gpu_id=args.gpu_id, transformer_path=transformer_path)
-    device = torch.device(f"cuda:{args.gpu_id}")
+    """Open a session from parsed `add_model_args` options."""
+    return open_model(args.model, args.gpu_id, script=script, transformer_path=transformer_path, prompt=prompt)
+
+
+def open_model(
+    model_key: str,
+    gpu_id: int,
+    *,
+    script: str,
+    transformer_path: Path | None = None,
+    prompt: str | None = None,
+) -> Session:
+    """Check the device and components, then load or build the selected prompt context."""
+    model = preflight.check(model_key, gpu_id=gpu_id, transformer_path=transformer_path)
+    device = torch.device(f"cuda:{gpu_id}")
     context = prompt_cache.get_or_build(model, DEFAULT_PROMPT if prompt is None else prompt, DTYPE, device)
     return Session(
         model=model,
@@ -115,3 +129,31 @@ def open_session(
         script=script,
         context=context,
     )
+
+
+def open_frozen(study: dict, gpu_id: int, *, script: str) -> Session:
+    """Open a 2.5 empty-text session on a frozen study's transformer and verify it.
+
+    The frozen software versions, the actual context tensor and every resolved
+    component path must equal the study's pins.
+    """
+    software = study["software"]
+    if (
+        software["torch"] != str(torch.__version__)
+        or software["cuda"] != torch.version.cuda
+        or software["python"] != platform.python_version()
+    ):
+        raise ValueError("runtime software differs from frozen study")
+    current = open_model(
+        "2.5", gpu_id, script=script, prompt="", transformer_path=Path(study["components"]["transformer"]["path"])
+    )
+    if records.tensor_hash(current.context) != study["text_context"]["tensor_sha256"]:
+        raise ValueError("actual empty context differs from frozen study")
+    for role, path in (
+        ("transformer", current.model.paths.transformer()),
+        ("text_encoder", current.model.paths.text_encoder()),
+        ("video_vae", current.model.paths.video_vae()),
+    ):
+        if Path(path).resolve() != Path(study["components"][role]["path"]).resolve():
+            raise ValueError("resolved component differs from frozen study")
+    return current

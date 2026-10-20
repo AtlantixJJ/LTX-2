@@ -19,14 +19,15 @@ See the [run guide](../usage.md#uniform-f18-ddp-training). A user-stopped run re
 
 ## Data flow
 
-The frozen config selects uniform-F18 DDP or the retained legacy FSDP method.
-CPU historical score reuse, native acceptance, selection, export, compact recovery and final merge follow the same declared study.
+The frozen config selects uniform-F18 DDP.
+Native acceptance, selection, export, compact recovery and final merge follow the same declared study.
+The energy arm requires an existing `calibration/ranking.json`; this owner does not run historical score reuse.
 The DDP recipe uses one F18 optimizer draw per rank. Source manifests, calibration and quality evaluation retain full sources.
 
 ## Organization logic
 
 Read devices and world size from the config. Check free memory before initial native loading.
-Select `checks.ddp_native` for uniform-F18 DDP; select `checks.fsdp_native` for FSDP.
+Use `checks.ddp_native` for native DDP acceptance.
 Require matching study identity and method. DDP acceptance must also match the frozen world size.
 Native acceptance runs separately and its trained tensors never seed formal training.
 
@@ -58,20 +59,3 @@ The earlier two-rank F18 memory pass is supporting evidence, not native acceptan
 
 CPU DDP tests check averaging, frozen state and exact resume. Crop tests check source alignment and window identity.
 Logger tests verify rank charts and global means. Native DDP acceptance remains a separate authorized GPU gate.
-
-## Progressive gate removal
-
-A progressive study accepts only `--arms learned_progressive --replicate-seed 42`.
-It requires fresh progressive native acceptance, runs 500 soft updates and their saved monitors, then ends.
-It performs no compact export, binary training or recovery. Read `progressive_training_complete` as training completion only.
-
-Zero/one continuations use global soft budgets and require fresh fixed-one execution/migration acceptance.
-The owner can cross bounded twelve-hour segments by resuming its last canonical state without counter reset.
-It runs no binary refinement or compact recovery for this policy.
-
-## Eligible-population continuation
-
-The explicit eligible policy selects each percentage from its own eligible branch, with a configured minimum count.
-See [eligible policy](eligible.md) for the terminal override and exact fixed-gate tail.
-
-Gate-only studies additionally require gate_only_execution from fresh native acceptance.

@@ -9,9 +9,9 @@ import sys
 import time
 from pathlib import Path
 
+from scripts.prune.core import records
 from scripts.prune.data.learned_head_study import load_study
-from scripts.prune.learn import checkpoints, protocol
-from scripts.prune.learn.clipped_reset import is_clipped
+from scripts.prune.learn import protocol
 
 
 def main():
@@ -21,20 +21,12 @@ def main():
     parser.add_argument("--replicate-seed", type=int, default=42)
     args = parser.parse_args()
     study = load_study(args.study)
-    if study["config"].get("monitor_reference") != "gt_capture" or study["config"].get("distributed_training") not in (
-        protocol.FSDP_METHOD,
-        protocol.DDP_METHOD,
-    ):
-        raise ValueError("direct full run requires a frozen GT distributed preset")
+    if study["config"].get("monitor_reference") != "gt_capture" or not protocol.is_ddp(study["config"]):
+        raise ValueError("direct full run requires a frozen GT uniform-F18 DDP preset")
     protocol.validate(study["config"])
-    progressive = study["config"].get("progressive_policy") is not None
-    clipped = is_clipped(study["config"].get("progressive_policy"))
-    if progressive and (args.arms != ["learned_progressive"] or args.replicate_seed != 42):
-        raise ValueError("progressive study has one arm and seed 42")
     devices = ",".join(str(gpu) for gpu in study["config"]["gpu_ids"])
     world = len(study["config"]["gpu_ids"])
-    ddp = protocol.is_ddp(study["config"])
-    method = "uniform_f18_ddp" if ddp else "four_rank_fsdp"
+    method = "uniform_f18_ddp"
     if args.replicate_seed not in study["config"]["replicate_seeds"]:
         raise ValueError("replicate seed is not frozen")
     root = Path(study["root"])
@@ -105,7 +97,7 @@ def main():
                 start_new_session=True,
             )
         state.update(status=label, child_pid=child.pid, log=str(log))
-        checkpoints.publish_json(
+        records.publish_json(
             root / f"provenance/full_launches/{serial:03d}.json",
             {"command": command, "devices": devices, "pid": child.pid, "log": str(log)},
         )
@@ -122,31 +114,7 @@ def main():
         folder = root / f"training/{arm}/replicate_{args.replicate_seed}"
         _, selection_end, compact_end = protocol.phase_budget(study["config"])
         boundary = selection_end if phase == "selection" else compact_end
-        adaptive = clipped or study["config"].get("progressive_policy", {}).get("selection_population") == "eligible"
-        completion = folder / "selection_completion.json"
-        if adaptive and completion.exists():
-            receipt = json.loads(completion.read_text())
-            terminal = receipt["update"]
-            saved = checkpoints.load(folder / f"checkpoints/update_{terminal:04d}.pt")
-            from scripts.prune.learn.progressive import ProgressivePolicy
-
-            policy = ProgressivePolicy.from_state(saved["progressive"], study["config"]["progressive_policy"])
-            if (
-                receipt["identity"] != saved["identity"]
-                or policy.final_update != terminal
-                or terminal - policy.finalization_start != study["config"]["progressive_policy"]["finalize_updates"]
-                or not (root / f"checks/{arm}/replicate_{args.replicate_seed}/monitor_{terminal:04d}.json").exists()
-            ):
-                raise ValueError("eligible completion differs from terminal checkpoint or monitor")
-            return
-        if (
-            not adaptive
-            and (folder / f"checkpoints/update_{boundary:04d}.pt").exists()
-            and (
-                not progressive
-                or (root / f"checks/{arm}/replicate_{args.replicate_seed}/monitor_{boundary:04d}.json").exists()
-            )
-        ):
+        if (folder / f"checkpoints/update_{boundary:04d}.pt").exists():
             return
         for segment in range(12):
             before = len(list((folder / "updates").glob("*.json")))
@@ -162,7 +130,8 @@ def main():
                     str(args.replicate_seed),
                     "--gpu-id",
                     "0",
-                    *([] if progressive else ["--removed-heads", "152"]),
+                    "--removed-heads",
+                    "152",
                 ],
                 devices,
                 True,
@@ -177,9 +146,9 @@ def main():
 
     try:
         if "energy" in args.arms and not (root / "calibration/ranking.json").exists():
-            previous = Path(__file__).resolve().parents[4] / study["config"]["energy_source"]
-            if run("reuse_energy", "scripts.prune.data.reuse_head_scores", ["--previous", str(previous)]):
-                raise RuntimeError("historical score reuse failed")
+            raise RuntimeError(
+                "the energy arm requires calibration/ranking.json from learn.heads --phase energy_calibration"
+            )
         gate = root / "checks/feasibility.json"
         if not gate.exists():
             free = subprocess.check_output(
@@ -187,41 +156,14 @@ def main():
             )
             if any(int(v) < 45056 for v in free.splitlines()):
                 raise RuntimeError("GPUs 0–3 must be free for native model initialization")
-            module = "scripts.prune.checks.ddp_native" if ddp else "scripts.prune.checks.fsdp_native"
-            if run("ddp_native" if ddp else "fsdp_native", module, [], devices, True):
+            if run("ddp_native", "scripts.prune.checks.ddp_native", [], devices, True):
                 raise RuntimeError("native distributed acceptance failed")
         acceptance = json.loads(gate.read_text())
         if (
             acceptance.get("study") != study["identity"]
             or not acceptance.get("passed")
             or acceptance.get("method") != method
-            or (ddp and acceptance.get("world_size") != world)
-            or (progressive and acceptance.get("progressive_execution") is not True)
-            or (progressive and acceptance.get("arbitrary_removal_count") != 3)
-            or (
-                clipped
-                and (
-                    acceptance.get("clipped_reset_execution") is not True
-                    or acceptance.get("clipped_reset_config_sha256")
-                    != checkpoints.digest(study["config"]["progressive_policy"])
-                )
-            )
-            or (
-                study["config"].get("progressive_policy", {}).get("selection_population") == "eligible"
-                and not acceptance.get("eligible_finalization_execution")
-            )
-            or (
-                study["config"].get("progressive_policy", {}).get("fixed_one_selection") == "gate_only"
-                and not acceptance.get("gate_only_execution")
-            )
-            or (
-                "fixed_one_fraction" in study["config"].get("progressive_policy", {})
-                and (
-                    not acceptance.get("fixed_one_execution")
-                    or not acceptance.get("parent_migration_bit_identical")
-                    or acceptance.get("arbitrary_fixed_one_count") != 2
-                )
-            )
+            or acceptance.get("world_size") != world
         ):
             raise ValueError("native distributed acceptance does not match the frozen study")
         if study["config"].get("wandb", {}).get("enabled", False):
@@ -252,8 +194,6 @@ def main():
                 loggers.append(logger)
         for arm in args.arms:
             train("selection", arm)
-            if progressive:
-                continue
             flags = ["--arm", arm, "--replicate-seed", str(args.replicate_seed)]
             if run(
                 f"{arm}_compact_export",
@@ -265,9 +205,7 @@ def main():
             train("compact_recovery", arm)
             if run(f"{arm}_merge", "scripts.prune.score.export_learned_heads", [*flags, "--stage", "final_merged"]):
                 raise RuntimeError("merged export failed")
-        state["status"] = (
-            "progressive_training_complete" if progressive else "paired_training_complete_GT_validation_pending"
-        )
+        state["status"] = "paired_training_complete_GT_validation_pending"
     except BaseException as error:
         state.update(
             status="stopped" if isinstance(error, KeyboardInterrupt) else "failed",

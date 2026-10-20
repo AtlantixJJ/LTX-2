@@ -61,8 +61,14 @@ def test_feasibility_zero_adapter_control_does_not_retain_graph(tmp_path, monkey
         "root": str(tmp_path),
         "components": {"transformer": {"path": "unused"}},
         "splits": {"learning": [{"n_latent_frames": n} for n in (18, 28)]},
-        "config": {"adapter_lr": 0.0001, "gate_lr": 0.01, "betas": [0.9, 0.999], "adam_epsilon": 1e-8,
-                   "sigmas": [1.0], "rank": 2},
+        "config": {
+            "adapter_lr": 0.0001,
+            "gate_lr": 0.01,
+            "betas": [0.9, 0.999],
+            "adam_epsilon": 1e-8,
+            "sigmas": [1.0],
+            "rank": 2,
+        },
     }
     with pytest.raises(BeforeBackward):
         heads.feasibility(study, current, float("inf"))

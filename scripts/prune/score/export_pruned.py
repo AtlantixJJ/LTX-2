@@ -74,7 +74,7 @@ def _slice_ffn(sd: dict[str, torch.Tensor], layer: int, keep: list[int]) -> None
     sd[key] = sd[key][:, index]
 
 
-def export(  # noqa: PLR0912 -- four explicit export formats
+def export(
     source: str | Path,
     masks: dict,
     output: str | Path,
@@ -85,37 +85,60 @@ def export(  # noqa: PLR0912 -- four explicit export formats
 ) -> Path:
     """Perform checkpoint-space surgery; masks are keyed ``'0.attn1'`` / ``'0.ff'``."""
     source, output = Path(source), Path(output)
+    sd, metadata = load(source)
+    export_tensors(
+        sd,
+        metadata,
+        masks,
+        widths=checkpoint_mask_widths(source),
+        model_key=model_key,
+        provenance_block=provenance_block,
+        mode=mode,
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    save_file(sd, str(output), metadata=metadata)
+    return output
+
+
+def load(source):
+    """All tensors and metadata of one safetensors checkpoint, read once."""
+    with safe_open(source, framework="pt", device="cpu") as handle:
+        metadata = dict(handle.metadata() or {})
+        # safe_open exposes keys() but does not implement iteration.
+        sd = {key: handle.get_tensor(key) for key in handle.keys()}  # noqa: SIM118
+    return sd, metadata
+
+
+def export_tensors(  # noqa: PLR0912 -- four explicit export formats
+    sd, metadata, masks, *, widths, model_key, provenance_block=None, mode="masked_full"
+):
+    """Apply checkpoint-space surgery to loaded tensors and their config metadata in place."""
     if mode not in ("masked_full", "sparse", "compact", "compact_faithful"):
         raise ValueError(f"unknown export mode: {mode}")
-    widths = checkpoint_mask_widths(source)
     if set(masks) - set(widths):
         raise ValueError(f"unknown mask keys: {sorted(set(masks) - set(widths))[:4]}")
     for name, values in masks.items():
         if len(values) != widths[name] or not values or not any(values) or any(value not in (0, 1) for value in values):
             raise ValueError(f"{name}: invalid binary mask or width")
-    with safe_open(source, framework="pt", device="cpu") as handle:
-        metadata = dict(handle.metadata() or {})
-        # safe_open exposes keys() but does not implement iteration.
-        sd = {key: handle.get_tensor(key) for key in handle.keys()}  # noqa: SIM118
     config_all = json.loads(metadata.get("config", "{}"))
     config = config_all.setdefault("transformer", {})
     layers, d = int(config.get("num_layers", 48)), int(config.get("attention_head_dim", 128))
     a1, a2, ffn, a1_indices, a2_indices = [], [], [], [], []
     a1_active, a2_active, ffn_active = [], [], []
     for layer in range(layers):
-        for kind, widths, identities in (("attn1", a1, a1_indices), ("attn2", a2, a2_indices)):
+        for kind, kept_widths, identities in (("attn1", a1, a1_indices), ("attn2", a2, a2_indices)):
             key = f"{layer}.{kind}"
             original = sd[f"{PREFIX}.{layer}.{kind}.to_q.weight"].shape[0] // d
             keep = _keep(masks.get(key, [1.0] * original), key)
             if mode in ("compact", "compact_faithful"):
                 if len(keep) < original:
                     _slice_heads(sd, layer, kind, keep, d)
-                widths.append(len(keep) if mode == "compact" else original)
+                kept_widths.append(len(keep) if mode == "compact" else original)
                 identities.append(keep if mode == "compact" and len(keep) < original else None)
                 if mode == "compact_faithful":
                     (a1_active if kind == "attn1" else a2_active).append(keep)
             else:
-                widths.append(original)
+                kept_widths.append(original)
                 # Full-width Q/K already use the original RoPE order. An
                 # identity list would gather frequencies in every layer.
                 identities.append(None)
@@ -153,9 +176,6 @@ def export(  # noqa: PLR0912 -- four explicit export formats
             }
         )
     metadata["config"] = json.dumps(config_all)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    save_file(sd, str(output), metadata=metadata)
-    return output
 
 
 def main() -> None:

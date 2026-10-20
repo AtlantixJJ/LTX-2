@@ -18,8 +18,8 @@ from torch import nn
 from torch.nn import functional as F
 
 from ltx_core.model.transformer.feed_forward import ShapeFaithfulLinear
+from scripts.prune.core import records
 from scripts.prune.core.provenance import file_sha256
-from scripts.prune.learn import checkpoints
 from scripts.prune.score import export_learned_ffn, export_pruned, hooks
 
 FORMAT = "joint_split_bundle_v1"
@@ -151,7 +151,7 @@ def bundle(source, masks, state, output, *, provenance=None, mode="compact_prese
         mode="compact" if mode == "compact_preserve_ffn_reduction" else mode,
         provenance_block=dict(family="width_joint_split", qualification="unqualified_until_native_replay"),
     )
-    checkpoints.publish(adapter_path, lambda p: save_file(compact, str(p)))
+    records.publish(adapter_path, lambda p: save_file(compact, str(p)))
     record = dict(
         format=FORMAT,
         masks=masks,
@@ -166,7 +166,7 @@ def bundle(source, masks, state, output, *, provenance=None, mode="compact_prese
         compact_execution_qualified=False,
         timing_qualified=False,
     )
-    checkpoints.publish_json(output, record)
+    records.publish_json(output, record)
     return record
 
 

@@ -14,15 +14,6 @@ from scripts.prune.data import whole_clip
 from scripts.prune.score import estimators, hooks, token_sampling
 
 
-def _sample_indices(tokens: int, tokens_per_frame: int, stride: int, device: torch.device) -> torch.Tensor:
-    """Uniform spatial samples on every generated latent frame; omit clean frame zero."""
-    if tokens % tokens_per_frame or tokens <= tokens_per_frame or stride < 1:
-        raise ValueError("invalid token grid or stride")
-    frame_starts = torch.arange(tokens_per_frame, tokens, tokens_per_frame, device=device)
-    spatial = torch.arange(0, tokens_per_frame, stride, device=device)
-    return (frame_starts[:, None] + spatial[None, :]).reshape(-1)
-
-
 def _weight_norms(model) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:  # noqa: ANN001
     head, ffn = {}, {}
     for name, attn in hooks.iter_video_attention(model):
@@ -37,9 +28,18 @@ def _weight_norms(model) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tenso
     return head, ffn
 
 
-def score(baseline: Path, *, gpu_id: int, calibration_views: list[str],  # noqa: PLR0915
-          sigma_levels: list[float], head_fraction: float, ffn_fraction: float,
-          spatial_stride: int, output: Path, sampler: str = "stride") -> dict:
+def score(
+    baseline: Path,
+    *,
+    gpu_id: int,
+    calibration_views: list[str],  # noqa: PLR0915
+    sigma_levels: list[float],
+    head_fraction: float,
+    ffn_fraction: float,
+    spatial_stride: int,
+    output: Path,
+    sampler: str = "stride",
+) -> dict:
     base = whole_clip.load_manifest(baseline)
     rows = whole_clip.records(base)
     if not calibration_views or not sigma_levels:
@@ -57,9 +57,9 @@ def score(baseline: Path, *, gpu_id: int, calibration_views: list[str],  # noqa:
     torch.cuda.set_device(device)
     if torch.cuda.mem_get_info(device)[0] < 44 * 2**30:
         raise ValueError(f"GPU {gpu_id} needs at least 44 GiB free")
-    args = argparse.Namespace(model="2.5", gpu_id=gpu_id, seed=base["seed"])
-    current = session.open_session(args, script="prune.score.whole_clip_d0_scores",
-                                   prompt=base["text_context"]["prompt"])
+    current = session.open_model(
+        "2.5", gpu_id, script="prune.score.whole_clip_d0_scores", prompt=base["text_context"]["prompt"]
+    )
     checkpoint = Path(base["model"]["transformer_path"])
     if provenance.checkpoint_fingerprint(checkpoint) != base["model"]["transformer_fingerprint"]:
         raise ValueError("baseline checkpoint changed since saved rollout")
@@ -67,66 +67,98 @@ def score(baseline: Path, *, gpu_id: int, calibration_views: list[str],  # noqa:
     runs = []
     with current.transformer(checkpoint) as model:
         head_norm, ffn_norm = _weight_norms(model)
-        head_squares = {name: torch.zeros_like(value) for name, value in head_norm.items()}
-        ffn_squares = {name: torch.zeros_like(value) for name, value in ffn_norm.items()}
+        # Partial sums stay on the device; one copy per branch after the last case.
+        head_squares = {name: torch.zeros_like(value, device=device) for name, value in head_norm.items()}
+        ffn_squares = {name: torch.zeros_like(value, device=device) for name, value in ffn_norm.items()}
         count = 0
         indices = None
 
         def head_hook(name, activation, attn) -> None:  # noqa: ANN001
             assert indices is not None
             sample = activation[:, indices].reshape(-1, attn.heads, attn.dim_head).float()
-            head_squares[name].add_(sample.square().mean((0, 2)).cpu())
+            head_squares[name].add_(sample.square().mean((0, 2)))
 
         def ffn_hook(name, activation, _block) -> None:  # noqa: ANN001
             assert indices is not None
             sample = activation[:, indices].float()
-            ffn_squares[name].add_(sample.square().mean((0, 1)).cpu())
+            ffn_squares[name].add_(sample.square().mean((0, 1)))
 
         with hooks.collect_activations(model, "head", head_hook), hooks.collect_activations(model, "ffn", ffn_hook):
             for view, sigma in keys:
                 grid, modality, c0, b = whole_clip.build_input(
-                    baseline, base, view=view, sigma=sigma, current=current,
+                    baseline,
+                    base,
+                    view=view,
+                    sigma=sigma,
+                    current=current,
                 )
                 shape = grid.tools.target_shape
                 if shape.height * shape.width != grid.tokens_per_latent_frame:
                     raise ValueError("latent H/W differ from native tokens per frame")
                 indices = token_sampling.sample_indices(
-                    modality.latent.shape[1], shape.height, shape.width, spatial_stride, device, sampler=sampler,
+                    modality.latent.shape[1],
+                    shape.height,
+                    shape.width,
+                    spatial_stride,
+                    device,
+                    sampler=sampler,
                 )
                 sampling = token_sampling.sampling_record(
-                    indices, tokens=modality.latent.shape[1], height=shape.height, width=shape.width,
-                    stride=spatial_stride, sampler=sampler,
+                    indices,
+                    tokens=modality.latent.shape[1],
+                    height=shape.height,
+                    width=shape.width,
+                    stride=spatial_stride,
+                    sampler=sampler,
                 )
                 with torch.no_grad():
                     prediction, _ = model(video=modality, audio=None, perturbations=None)
                     prediction = grid.unpatchify_block(
-                        torch.cat((c0, prediction[:, c0.shape[1]:]), dim=1), grid.latent_frames,
+                        torch.cat((c0, prediction[:, c0.shape[1] :]), dim=1),
+                        grid.latent_frames,
                     )
                 recorded = torch.load(whole_clip.latent_path(baseline, b), map_location="cpu", weights_only=True)
                 max_abs = float((recorded.float() - prediction.cpu().float()).abs().max())
                 if not math.isfinite(max_abs) or max_abs > 0.02:
                     raise ValueError(f"scoring forward differs from saved baseline for {view}, {sigma}: {max_abs}")
-                runs.append({"view": view, "sigma": sigma, "sample_tokens": int(indices.numel()),
-                             "sampling": sampling, "saved_rollout_max_abs": max_abs})
+                runs.append(
+                    {
+                        "view": view,
+                        "sigma": sigma,
+                        "sample_tokens": int(indices.numel()),
+                        "sampling": sampling,
+                        "saved_rollout_max_abs": max_abs,
+                    }
+                )
                 count += 1
                 del grid, modality, c0, prediction, recorded, indices
                 indices = None
                 torch.cuda.empty_cache()
                 print(f"Scored {view} sigma={sigma}", flush=True)
+        head_squares = {name: value.cpu() for name, value in head_squares.items()}
+        ffn_squares = {name: value.cpu() for name, value in ffn_squares.items()}
         contributions = {
-            **{name: estimators.rms_projection_scores(head_squares[name], head_norm[name], count)
-               for name in head_squares},
-            **{name: estimators.rms_projection_scores(ffn_squares[name], ffn_norm[name], count)
-               for name in ffn_squares},
+            **{
+                name: estimators.rms_projection_scores(head_squares[name], head_norm[name], count)
+                for name in head_squares
+            },
+            **{
+                name: estimators.rms_projection_scores(ffn_squares[name], ffn_norm[name], count) for name in ffn_squares
+            },
         }
-    masks = {**estimators.fractional_masks({k: contributions[k] for k in head_squares}, head_fraction),
-             **estimators.fractional_masks({k: contributions[k] for k in ffn_squares}, ffn_fraction)}
+    masks = {
+        **estimators.fractional_masks({k: contributions[k] for k in head_squares}, head_fraction),
+        **estimators.fractional_masks({k: contributions[k] for k in ffn_squares}, ffn_fraction),
+    }
     report = {
         "candidate_format": "whole_clip_d0_mask_v1",
         "provenance": whole_clip.native_provenance(baseline, base, calibration_views, sigma_levels),
         "method": "sampled post-activation RMS times output-projection column norm; per-layer/branch allocation",
-        "head_fraction": head_fraction, "ffn_fraction": ffn_fraction,
-        "spatial_token_stride": spatial_stride, "sampler": sampler, "runs": runs,
+        "head_fraction": head_fraction,
+        "ffn_fraction": ffn_fraction,
+        "spatial_token_stride": spatial_stride,
+        "sampler": sampler,
+        "runs": runs,
         "scores": {name: value.tolist() for name, value in contributions.items()},
         "masks": masks,
         "removed_heads": sum(len(v) - sum(v) for k, v in masks.items() if not k.endswith(".ff")),
@@ -150,14 +182,27 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     result = score(
-        args.baseline, gpu_id=args.gpu_id,
-        calibration_views=args.view, sigma_levels=args.sigmas,
-        head_fraction=args.head_fraction, ffn_fraction=args.ffn_fraction,
-        spatial_stride=args.spatial_stride, output=args.output, sampler=args.sampler,
+        args.baseline,
+        gpu_id=args.gpu_id,
+        calibration_views=args.view,
+        sigma_levels=args.sigmas,
+        head_fraction=args.head_fraction,
+        ffn_fraction=args.ffn_fraction,
+        spatial_stride=args.spatial_stride,
+        output=args.output,
+        sampler=args.sampler,
     )
-    print(json.dumps({"output": str(args.output), "runs": len(result["runs"]),
-                      "removed_heads": result["removed_heads"],
-                      "removed_ffn_channels": result["removed_ffn_channels"]}), flush=True)
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "runs": len(result["runs"]),
+                "removed_heads": result["removed_heads"],
+                "removed_ffn_channels": result["removed_ffn_channels"],
+            }
+        ),
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Pixel metrics and synchronized comparison videos shared with avatar probes."""
+"""Synchronized three-panel comparison video for the saved-rollout producer."""
 
 from __future__ import annotations
 
@@ -18,33 +18,6 @@ def _as_bchw(x: torch.Tensor) -> torch.Tensor:
     if x.ndim != 4:
         raise ValueError(f"expected video frames, got {tuple(x.shape)}")
     return x
-
-
-def psnr(pred: torch.Tensor, target: torch.Tensor, data_range: float = 1.0) -> float:
-    pred, target = _as_bchw(pred), _as_bchw(target)
-    if pred.shape != target.shape:
-        raise ValueError(f"PSNR shapes differ: {tuple(pred.shape)} vs {tuple(target.shape)}")
-    mse = (pred - target).square().mean()
-    return (
-        float("inf")
-        if mse.item() == 0
-        else float(10 * torch.log10(torch.tensor(data_range**2, device=mse.device) / mse))
-    )
-
-
-def ssim_global(pred: torch.Tensor, target: torch.Tensor, data_range: float = 1.0) -> float:
-    """A dependency-free global SSIM; LPIPS remains optional due to its weights."""
-    x, y = _as_bchw(pred), _as_bchw(target)
-    if x.shape != y.shape:
-        raise ValueError(f"SSIM shapes differ: {tuple(x.shape)} vs {tuple(y.shape)}")
-    c1, c2 = (0.01 * data_range) ** 2, (0.03 * data_range) ** 2
-    mux, muy = x.mean((-1, -2), keepdim=True), y.mean((-1, -2), keepdim=True)
-    vx = ((x - mux) ** 2).mean((-1, -2), keepdim=True)
-    vy = ((y - muy) ** 2).mean((-1, -2), keepdim=True)
-    cov = ((x - mux) * (y - muy)).mean((-1, -2), keepdim=True)
-    return float(
-        (((2 * mux * muy + c1) * (2 * cov + c2)) / ((mux.square() + muy.square() + c1) * (vx + vy + c2))).mean()
-    )
 
 
 def t3_video(

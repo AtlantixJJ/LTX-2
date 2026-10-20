@@ -32,6 +32,8 @@ flowchart LR
 Inference covers 108 test cases: six actors, two views, three seeds and three direct schedules.
 Selection and final use the same aligned masks. Their adapters differ only through the recorded recovery.
 The owner verifies checkpoint bytes and records the current evaluation code separately from training code.
+`load` permits historical code identity but verifies all pinned plan, draw, parent, continuation, source and component files.
+Full hashes run once per evaluation process; no persistent stat-only component trust is implied.
 Native input manifest hashes must equal the saved r3 native baseline for every case.
 
 The final split bundle retains original FFN down reduction coordinates and separate adapter GEMMs.
@@ -54,6 +56,8 @@ One timing source does not establish a hardware-wide or length-wide speed result
 Historical training code can differ from the evaluation owner. Both identities remain explicit.
 
 ## Tests
+
+`tests/test_completed_study.py` accepts historical code and rejects changed input and component pins or a nonterminal owner.
 
 Run existing mask/adapter and V3 state tests. Check the independent final input hashes and all 18 native parity cases.
 The full native run supplies the scientific acceptance evidence.

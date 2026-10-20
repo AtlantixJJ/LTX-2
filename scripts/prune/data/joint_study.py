@@ -13,9 +13,8 @@ import json
 from pathlib import Path
 
 from scripts.prune.core.provenance import file_sha256
-from scripts.prune.data.ffn_study import verify_files
-from scripts.prune.data.learned_head_study import code_identity
-from scripts.prune.learn.checkpoints import digest, publish, publish_json
+from scripts.prune.core.records import digest, publish, publish_json
+from scripts.prune.data.study_io import code_identity, read_frozen, verify_files
 
 SIGMAS = [0.9489720463752747, 0.7663628458976746, 0.48016369342803955]
 ARMS = ("joint_clip_reset_v3", "heads_clip_reset_v3", "budget_joint_v3")
@@ -126,14 +125,8 @@ def prepare(source, continuation, plan, output, *, arm=ARMS[0], budget_receipt=N
 
 
 def load(path, *, verify_inputs=True):
-    study = json.loads(Path(path).read_text())
-    identity = study.pop("identity")
-    if study["format"] != "joint_study_v3" or identity != digest(study):
-        raise ValueError("joint study identity changed")
-    study["identity"] = identity
+    study = read_frozen(path, formats=("joint_study_v3",))
     validate_config(study["config"])
-    if study["code"] != code_identity():
-        raise ValueError("joint source changed; prepare a new study")
     verify_files([study[k] for k in ("plan", "draws", "parent", "continuation")])
     if verify_inputs:
         verify_files([*study["files"], *study["components"].values()])

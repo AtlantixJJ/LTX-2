@@ -14,8 +14,8 @@ from pathlib import Path
 
 import torch
 
+from scripts.prune.core import numerics, records
 from scripts.prune.core.provenance import file_sha256
-from scripts.prune.learn import checkpoints
 
 
 def replay(gradients, start, epsilon, penalty=0):
@@ -37,7 +37,7 @@ def p0(output, *, traces=None, samples=1048576):
     # Saved seed and exact gradient bytes make this CPU replay independently repeatable.
     noise_path = output / "checks/p0/seeded_gradients.pt"
     if not noise_path.exists():
-        checkpoints.publish_tensor(noise_path, noise)
+        records.publish_tensor(noise_path, noise)
     rows = []
     for start in (0, 1):
         for epsilon in (1e-8, 1e-12):
@@ -127,23 +127,24 @@ def p0(output, *, traces=None, samples=1048576):
         correlation=correlation,
         limitations="Independent Gaussian reference is not a false-removal rate or a native prediction.",
     )
-    checkpoints.publish_json(output / "checks/p0/replay.json", result)
+    records.publish_json(output / "checks/p0/replay.json", result)
     return result
 
 
 def p1(study, gpu, shard, shards, *, timing_only=False):
     from scripts.onestep_avatar.model import common
     from scripts.prune.core import ltx_adapter, session
-    from scripts.prune.learn import heads, losses
-    from scripts.prune.learn.ffn import input_case
+    from scripts.prune.learn import losses
+    from scripts.prune.learn.ddp_owner import input_case
     from scripts.prune.score import hooks
 
-    heads.numerical_policy()
+    numerics.deterministic_policy()
     torch.set_num_threads(4)
     if gpu not in (4, 5, 6):
         raise ValueError("P1 tests use GPUs 4–6")
-    current = session.open_session(
-        argparse.Namespace(model="2.5", gpu_id=gpu, seed=42),
+    current = session.open_model(
+        "2.5",
+        gpu,
         script="prune.checks.joint_preflight",
         prompt="",
         transformer_path=Path(study["components"]["transformer"]["path"]),
@@ -190,7 +191,7 @@ def p1(study, gpu, shard, shards, *, timing_only=False):
                 )
                 estimate_path = root / f"checks/p1/estimate_shard_{shard}.json"
                 if not estimate_path.exists():
-                    checkpoints.publish_json(estimate_path, estimate)
+                    records.publish_json(estimate_path, estimate)
                 if timing_only:
                     return estimate
                 for b in range(shard, 48, shards):
@@ -221,7 +222,7 @@ def p1(study, gpu, shard, shards, *, timing_only=False):
                             delta={k: metrics[k] - native[k] for k in metrics},
                             delta_per_channel={k: (metrics[k] - native[k]) / count for k in metrics},
                         )
-                        checkpoints.publish(target, lambda p: torch.save(row, p))
+                        records.publish(target, lambda p: torch.save(row, p))
                         completed += 1
                         print(
                             f"P1 shard={shard} completed={completed} actor={source['actor']} sigma={si} block={b} removed={count}",

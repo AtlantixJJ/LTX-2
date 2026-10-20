@@ -9,9 +9,9 @@ from pathlib import Path
 import torch
 from safetensors import safe_open
 
-from scripts.prune.core import provenance
+from scripts.prune.core import provenance, records
 from scripts.prune.data.learned_head_study import load_study
-from scripts.prune.learn import adapters, checkpoints
+from scripts.prune.learn import adapters, checkpoints, protocol
 from scripts.prune.score.export_learned_heads import FORMAT
 from scripts.prune.score.export_pruned import PREFIX
 
@@ -79,17 +79,18 @@ def validate_envelope(path, *, base=None, candidate=None, verify_components=True
     if [[i for i, v in enumerate(row) if v == 1] for row in mask["mask"]] != ids:
         raise ValueError("raw mask and original head identities differ")
     state = checkpoints.load(record["recovery_checkpoint"])
-    final_step = 2500 if record["training_identity"]["arm"] == "learned_sequential" else 1500
+    soft_end, selection_end, _ = protocol.phase_budget(config)
+    final_step = protocol.recovery_end(config, record["training_identity"]["arm"])
     if state["update"] != final_step or state["identity"] != record["training_identity"]:
         raise ValueError("recovery lineage or update count differs")
     if [torch.where(row == 1)[0].tolist() for row in state["mask"].cpu()] != ids:
         raise ValueError("recovery changed the frozen binary mask")
-    if {n: checkpoints.tensor_hash(v) for n, v in state["adapters"].items()} != record["adapter_hashes"]:
+    if {n: records.tensor_hash(v) for n, v in state["adapters"].items()} != record["adapter_hashes"]:
         raise ValueError("recovery adapter hashes differ")
     if not record.get("update_receipts"):
         raise ValueError("recovery requires complete draw and noise evidence")
     expected_updates = (
-        set(range(1001, 1501))
+        set(range(selection_end + 1, final_step + 1))
         if record["training_identity"]["arm"].endswith("_fresh")
         else set(range(1, final_step + 1))
     )
@@ -100,7 +101,7 @@ def validate_envelope(path, *, base=None, candidate=None, verify_components=True
         receipt = json.loads(Path(p).read_text())
         actual_updates.add(receipt["update"])
         expected_study = study["identity"]
-        if receipt["update"] <= 700 and p in record["lineage"].get("prefix_receipts", {}):
+        if receipt["update"] <= soft_end and p in record["lineage"].get("prefix_receipts", {}):
             expected_study = record["lineage"]["source_identity"]["study"]
         if receipt["study"] != expected_study or len(receipt["draws"]) != config.get("global_unique_clips", 2):
             raise ValueError("incomplete paired microbatch coverage")
@@ -164,7 +165,7 @@ def validate_envelope(path, *, base=None, candidate=None, verify_components=True
             if {
                 k: {
                     "shape": list(handle.get_slice(k).get_shape()),
-                    "sha256": checkpoints.tensor_hash(handle.get_tensor(k)),
+                    "sha256": records.tensor_hash(handle.get_tensor(k)),
                 }
                 for k in handle.keys()
             } != record["tensor_inventory"]:
@@ -213,7 +214,7 @@ def main():
         candidate=root / f"exports/{args.arm}/replicate_{args.replicate_seed}/final_merged.safetensors",
     )
     structural_inventory(record["components"]["transformer"]["path"], record["compact_base"], record["head_ids"])
-    checkpoints.publish_json(
+    records.publish_json(
         root / f"checks/{args.arm}/replicate_{args.replicate_seed}/inventory.json",
         {"study": study["identity"], "passed": True, "native_checks": "not_run"},
     )

@@ -70,17 +70,13 @@ def select_legal(scores, kept, allowed):
 class HeadGates(nn.Module):
     """One decision per update; a fresh autograd graph per microbatch."""
 
-    def __init__(self, blocks=48, heads=32, allowed=None, activation="sigmoid_v1"):
+    def __init__(self, blocks=48, heads=32, allowed=None):
         super().__init__()
-        if activation not in ("sigmoid_v1", "clip01_v1"):
-            raise ValueError("unsupported head gate activation")
-        self.activation = activation
-        self.alpha = nn.Parameter(torch.full((blocks, heads), 1.0 if activation == "clip01_v1" else 3.0, dtype=torch.float32))
+        self.alpha = nn.Parameter(torch.full((blocks, heads), 3.0, dtype=torch.float32))
         self.allowed = allowed or [[16, 20, 24, 28, 32] for _ in range(blocks)]
         self.phase = "soft"
         self.decision = None
         self.current = None
-        self.progressive = None
 
     def begin_update(self, phase, kept=None, scores=None, ramp=1.0):
         if phase not in ("soft", "binary", "fixed", "compact", "all_one"):
@@ -95,21 +91,8 @@ class HeadGates(nn.Module):
             raise ValueError("invalid gate ramp")
 
     def microbatch(self):
-        if self.activation == "clip01_v1":
-            from scripts.prune.learn.clipped_reset import clipped_gate
-
-            if self.phase not in ("soft", "recovery", "all_one"):
-                raise ValueError("clipped scores require their own selection or recovery phase")
-            self.current = (
-                torch.ones_like(self.alpha) if self.phase == "all_one"
-                else self.progressive.compose(self.alpha) if self.progressive is not None
-                else clipped_gate(self.alpha, torch.ones_like(self.alpha, dtype=torch.bool))
-            )
-            return self.current
         p = self.alpha.sigmoid()
-        if self.progressive is not None and self.phase == "soft":
-            self.current = self.progressive.compose(self.alpha)
-        elif self.phase == "soft":
+        if self.phase == "soft":
             self.current = p
         elif self.phase == "binary":
             self.current = self.decision + (p - p.detach())
@@ -129,39 +112,8 @@ class HeadGates(nn.Module):
         return self.current[int(name.split(".")[0])]
 
     def snapshot(self):
-        if self.activation == "clip01_v1":
-            alpha = self.alpha.detach().float().cpu()
-            alive = self.progressive.free if self.progressive is not None else torch.ones_like(alpha, dtype=torch.bool)
-            gate = alpha.clamp(0, 1)
-            raw = alpha[alive]
-            return dict(
-                counts=self.progressive.counts() if self.progressive is not None else dict(alive=alpha.numel(), removed=0),
-                population="alive_heads_only", activation=self.activation,
-                raw_score_mean=float(raw.mean()) if raw.numel() else None,
-                raw_score_quantiles=torch.quantile(raw, torch.tensor([0., .1, .5, .9, 1.])).tolist() if raw.numel() else None,
-                executed_gate_mean=float(gate[alive].mean()) if raw.numel() else None,
-                executed_gate_quantiles=torch.quantile(gate[alive], torch.tensor([0., .1, .5, .9, 1.])).tolist() if raw.numel() else None,
-                alive_clipped_zero=int(((gate == 0) & alive).sum()),
-                alive_interior=int(((gate > 0) & (gate < 1) & alive).sum()),
-                alive_clipped_one=int(((gate == 1) & alive).sum()),
-            )
-        if self.progressive is not None and hasattr(self.progressive, "one"):
-            free = self.progressive.free
-            p = self.alpha.detach().float().cpu().sigmoid()[free]
-            per_head = self.alpha.detach().float().cpu().sigmoid().masked_fill(~free, float("nan"))
-            return dict(
-                counts=self.progressive.counts(),
-                population="free_heads_only",
-                mean=float(p.mean()) if p.numel() else None,
-                quantiles=torch.quantile(p, torch.tensor([0.0, 0.1, 0.5, 0.9, 1.0])).tolist() if p.numel() else None,
-                block_means=[float(v) if torch.isfinite(v) else None for v in per_head.nanmean(1)],
-                le_0_1=float((p <= 0.1).float().mean()) if p.numel() else None,
-                lt_0_5=float((p < 0.5).float().mean()) if p.numel() else None,
-                ge_0_9=float((p >= 0.9).float().mean()) if p.numel() else None,
-            )
-        p = (self.progressive.compose(self.alpha) if self.progressive else self.alpha.sigmoid()).detach().cpu()
+        p = self.alpha.sigmoid().detach().cpu()
         return {
-            **({"counts": self.progressive.counts()} if self.progressive else {}),
             "mean": float(p.mean()),
             "quantiles": torch.quantile(p.flatten(), torch.tensor([0.0, 0.1, 0.5, 0.9, 1.0])).tolist(),
             "block_means": p.mean(1).tolist(),

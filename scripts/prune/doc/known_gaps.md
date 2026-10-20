@@ -38,11 +38,6 @@ The RMS proxy ignores cancellation, downstream interactions and full-token contr
 Neither spatial sampler covers the full grid.
 The balanced sampler's production BF16 saved-baseline check remains a documented GPU gate.
 
-The ridge helper fits a bounded local projection on CPU.
-It has no native collector or fitted-checkpoint exporter.
-Local calibration MSE is not held-out model improvement.
-Cache identity checks cannot prove how arbitrary features were collected.
-
 The depth exporter accepts a declared block set.
 It does not implement a selection or recovery method.
 New depth artifacts are `unqualified`.
@@ -76,18 +71,6 @@ A smaller file does not establish reduced latency or VRAM.
 One actor or geometry does not establish general quality or throughput.
 The [verification guide](VALIDATION.md) defines the required independent gates.
 
-## MobileWan implementation status
-
-Squared projected-energy, cohort statistics and global allocation now have focused CPU controls.
-The complete capture-only audit CLI checks pinned membership and source content.
-The resident dataset runner and native dev queue integration are implemented.
-Complete dataset execution, removal evaluation and final reporting remain pending.
-These helpers do not establish native scoring or removal quality.
-
-The producer now supports explicit direct dev schedules and capture-only D0.
-The restricted agent baseline wrapper now accepts unmodified direct dev D0 at sigma <=0.95.
-Per-view score records now reject incomplete observations and changed resume identities.
-
 ## Learned head implementation and scientific evidence
 
 The +3 gate learner, legal selector, official velocity loss and adapter/moment transfer are implemented.
@@ -102,20 +85,6 @@ Preparation pins installed AlexNet LPIPS and cached weights when available.
 Missing LPIPS or required region coverage prevents decoded quality acceptance.
 Native feasibility, sustained paired training, final quality and cost results must use saved stage receipts.
 
-The single-process block placement and four-process FSDP methods have separate native acceptance gates.
-Passing a small-model or block-placement check does not establish full-length FSDP acceptance.
-Keep run-specific memory results, failures and retired artifacts in experiment records and the active plan.
-
-## GT-reference FSDP pilot
-
-The direct four-rank FSDP method is implemented with replicated small FP32 trainable state.
-Small distributed/serial gradient and exact resume checks pass. Native full-clip FSDP acceptance passes for the frozen primary pilot.
-The direct supervisor runs formal training. Full training completion and decoded quality remain pending.
-The user-directed GT reference mode requires no teacher cache or speed probe before training.
-Historical score reuse declares its actual learning-view coverage. Reviewed small-region tracks and decoded quality acceptance remain separate gaps.
-Unweighted training defers foreground replay and bucket preparation. Regional and balanced arms require a separate full preparation.
-Compact export lazily creates missing structural input manifests after selection; it does not rerun calibration or teacher forwards.
-
 ## Uniform-F18 DDP training
 
 The production DDP route, deterministic temporal crop and shared CPU W&B logger are implemented.
@@ -123,11 +92,10 @@ Four-rank CPU checks establish mean gradients and exact resume; they do not prov
 The prior two-rank F18 native diagnostic passed three updates. Full F28 training failed its memory test.
 A new four-rank uniform-crop study requires its own `checks.ddp_native` receipt before formal training.
 Native crop acceptance, sustained training, full-source monitoring memory and final compact quality remain separate gates.
-The current run remains user-stopped; implementation work does not authorize a restart.
+Implementation work does not authorize restarting a stopped study.
 
-## Progressive global removals
+## Refactor acceptance
 
-The configurable soft/zero policy and checkpoint-zero preparation have CPU coverage.
-The focused controls cover thresholds, global sorting, percentage rounding, arbitrary head counts and exact event replay.
-Fresh three-head native acceptance gates each new study. CPU tests do not prove native execution or sustained training.
-Event statistics and capture latent MSE cannot establish decoded video quality or compute savings.
+CPU tests and lint establish local integration only.
+Shared-owner native gradient parity, real V3 export identity, saved-media reproduction and I/O timing remain separate gates.
+The refactor does not authorize restarting historical studies or replacing their pinned source snapshots.

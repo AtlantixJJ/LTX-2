@@ -9,8 +9,9 @@ import math
 from pathlib import Path
 
 from scripts.prune.core.provenance import file_sha256
-from scripts.prune.data.learned_head_study import code_identity, draw_list
-from scripts.prune.learn.checkpoints import digest, publish, publish_json
+from scripts.prune.core.records import digest, publish, publish_json
+from scripts.prune.data.learned_head_study import draw_list
+from scripts.prune.data.study_io import code_identity, read_frozen, verify_files
 from scripts.prune.learn.ffn_gates import aligned_width
 
 
@@ -48,16 +49,6 @@ def validate_config(config):
     )
     if config["world_size"] != 4 or config["gpu_ids"] != [0, 1, 2, 3] or config["test_gpu_ids"] != [4, 5, 6]:
         raise ValueError("FFN GPU assignment differs from the authorized launch")
-
-
-def verify_files(items):
-    seen = {}
-    for item in items:
-        path = item["path"]
-        if path not in seen:
-            seen[path] = file_sha256(path)
-        if seen[path] != item.get("sha256", item.get("file_sha256")):
-            raise ValueError(f"frozen FFN input changed: {path}")
 
 
 def prepare(source, config, plan, output):
@@ -134,14 +125,8 @@ def prepare(source, config, plan, output):
 
 
 def load(path, *, verify_inputs=True):
-    study = json.loads(Path(path).read_text())
-    identity = study.pop("identity")
-    if study.get("format") != "ffn_mask_study_v1" or identity != digest(study):
-        raise ValueError("FFN study identity changed")
-    study["identity"] = identity
+    study = read_frozen(path, formats=("ffn_mask_study_v1",))
     validate_config(study["config"])
-    if code_identity() != study["code"]:
-        raise ValueError("FFN source changed; freeze a new study")
     verify_files([study["plan"], study["draws"], study["parent"]])
     if verify_inputs:
         verify_files([*study["files"], *study["components"].values()])

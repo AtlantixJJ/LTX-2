@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import torch
 from torch import nn
 
 from scripts.prune.core import ltx_adapter
-from scripts.prune.core.provenance import file_sha256
-from scripts.prune.data.resume_learned_heads import unchanged_state_hash
 from scripts.prune.learn import adapters, checkpoints, losses
 from scripts.prune.learn.ffn_gates import FFNGates
 from scripts.prune.learn.gates import HeadGates, select_legal
@@ -166,51 +161,13 @@ def state(step, adapter_optimizer, gate_optimizer, *, study, update, world_size,
 
 
 def save(path, payload):
-    path = Path(path)
-    state_digest = unchanged_state_hash(payload)
-    if path.exists():
-        if unchanged_state_hash(read(path)) != state_digest:
-            raise ValueError("replayed FFN checkpoint differs")
-    else:
-
-        def write(p):
-            with p.open("wb") as stream:
-                torch.save(payload, stream)
-
-        checkpoints.publish(path, write)
-    checkpoints.publish_json(
-        path.with_suffix(".json"),
-        dict(
-            format=payload["format"],
-            study=payload["study"],
-            update=payload["update"],
-            sha256=file_sha256(path),
-            state_sha256=state_digest,
-            draw_cursor=payload["draw_cursor"],
-        ),
-    )
+    return checkpoints.publish_state(path, payload)
 
 
 def read(path, *, study=None, world_size=None):
-    path = Path(path)
-    receipt = json.loads(path.with_suffix(".json").read_text())
-    if file_sha256(path) != receipt["sha256"]:
-        raise ValueError("FFN checkpoint bytes changed")
-    payload = torch.load(path, map_location="cpu", weights_only=False)
-    if (
-        payload.get("format") != "head_ffn_learning_state_v1"
-        or unchanged_state_hash(payload) != receipt["state_sha256"]
-    ):
-        raise ValueError("FFN checkpoint state changed")
-    if study is not None and payload["study"] != study:
-        raise ValueError("FFN checkpoint belongs to another study")
-    if world_size is not None and payload["world_size"] != world_size:
-        raise ValueError("FFN checkpoint world size differs")
-    if payload["draw_cursor"] != payload["world_size"] * payload["update"]:
-        raise ValueError("FFN checkpoint draw cursor differs")
-    if len(payload["rng"]) != payload["world_size"]:
-        raise ValueError("FFN checkpoint rank RNG coverage differs")
-    return payload
+    return checkpoints.read_state(
+        path, format="head_ffn_learning_state_v1", label="FFN", study=study, world_size=world_size
+    )
 
 
 def restore(step, adapter_optimizer, gate_optimizer, payload, *, rank=0, restore_rng=True):

@@ -1,25 +1,24 @@
-"""Bounded native acceptance for uniform-F18 DDP before sustained training.
+"""Bounded native acceptance for uniform-F18 DDP before sustained head training.
 
-Clipped-reset studies also prove all-one parity, below-zero and above-one scores,
-surrogate gradients, a complete score/Adam reset with three removals, exact resume,
-executed-gate gradients on removed heads, and fixed-gate adapter recovery.
+Even ranks use an F18 source and odd ranks a nonzero crop of an F28 source.
+The check proves zero-adapter all-one parity, soft and binary DDP gradients,
+frozen backbone weights, device headroom and an exact resumed update.
+See doc/checks/ddp_native.md.
 """
 
 import argparse
+import os
 import time
 from pathlib import Path
 
 import torch
 
-from scripts.prune.core import ltx_adapter, provenance
+from scripts.prune.core import ltx_adapter, numerics, provenance, records
 from scripts.prune.data import training_windows
 from scripts.prune.data.learned_head_study import load_study, study_sigmas
 from scripts.prune.learn import adapters, checkpoints, heads
-from scripts.prune.learn.clipped_reset import is_clipped
-from scripts.prune.learn.ddp import DDPRuntime
-from scripts.prune.learn.distributed import Session
+from scripts.prune.learn.ddp import DDPRuntime, Session
 from scripts.prune.learn.gates import HeadGates
-from scripts.prune.learn.progressive import ProgressivePolicy, new_policy
 from scripts.prune.learn.step import TrainingStep
 from scripts.prune.score import hooks
 
@@ -28,9 +27,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--study", type=Path, required=True)
     args = parser.parse_args()
-    heads.numerical_policy()
+    numerics.deterministic_policy()
     torch.set_num_threads(4)
-    study = load_study(args.study)
+    study = load_study(args.study, verify_components=int(os.environ.get("RANK", "0")) == 0)
     cfg = study["config"]
     root = Path(study["root"])
     runtime = DDPRuntime(cfg)
@@ -38,9 +37,7 @@ def main():
     groups = {length: [s for s in study["splits"]["learning"] if s["n_latent_frames"] == length] for length in (18, 28)}
     length = 18 if runtime.rank % 2 == 0 else 28
     source = groups[length][runtime.rank // 2]
-    noise_seed = 42000 + runtime.rank
-    while length > 18 and training_windows.bounds(length, noise_seed)[0] == 0:
-        noise_seed += runtime.world
+    noise_seed = training_windows.nonzero_crop_seed(length, 42000 + runtime.rank, runtime.world)
     identity = {"study": study["identity"], "phase": "ddp_native"}
     output = root / "checks/ddp_native"
     started = time.monotonic()
@@ -55,10 +52,7 @@ def main():
                 native, _ = ltx_adapter.velocity_forward(model, video)
             attached = adapters.attach(model, 42, cfg["rank"])
             ap = adapters.parameters(attached)
-            clipped = is_clipped(cfg.get("progressive_policy"))
-            gates = HeadGates(
-                cfg["blocks"], cfg["heads"], activation="clip01_v1" if clipped else "sigmoid_v1"
-            ).to(current.device)
+            gates = HeadGates(cfg["blocks"], cfg["heads"]).to(current.device)
             live = hooks.attach_head_provider(model, gates.provider)
             gates.phase = "all_one"
             gates.microbatch()
@@ -66,92 +60,11 @@ def main():
                 control, _ = ltx_adapter.velocity_forward(model, video)
             if not torch.equal(native, control):
                 raise ValueError("native zero-adapter all-one control differs")
-            progressive = cfg.get("progressive_policy") is not None
-            zero_one = "fixed_one_fraction" in cfg.get("progressive_policy", {})
-            migration_equal = False
-            fixture = None
-            if clipped:
-                # Fresh all-one scores must execute exactly the native all-one model.
-                gates.phase = "soft"
-                gates.progressive = new_policy(gates.alpha, cfg["progressive_policy"])
-                gates.microbatch()
-                with torch.no_grad():
-                    mixed, _ = ltx_adapter.velocity_forward(model, video)
-                if not torch.equal(native, mixed):
-                    raise ValueError("clipped all-one native parity failed")
-                del mixed
-                # A disposable two-update window from the all-one start: three heads
-                # are pushed below zero and two start above one. Updates and Adam steps align.
-                fixture = dict(
-                    cfg["progressive_policy"], hardening_interval=2, late_updates=1, full_speed_drop=0.02,
-                    strong_fraction=40.0, persistent_fraction=40.0, cap_fraction=1.0,
-                    selection_updates=6, finalize_updates=300,
-                )
-                gates.progressive = new_policy(gates.alpha, fixture)
-                gates.alpha.data[0, :3] = -0.5
-                gates.alpha.data[0, 3:5] = 1.5
-            elif progressive:
-                gates.phase = "soft"
-                gates.microbatch()
-                with torch.no_grad():
-                    soft, _ = ltx_adapter.velocity_forward(model, video)
-                gates.progressive = new_policy(gates.alpha, cfg["progressive_policy"])
-                gates.microbatch()
-                with torch.no_grad():
-                    mixed, _ = ltx_adapter.velocity_forward(model, video)
-                if not torch.equal(soft, mixed):
-                    raise ValueError("all-free progressive native parity failed")
-                del soft, mixed
-                if zero_one:
-                    initial_adapters = adapters.state_dict(attached)
-                    parent = checkpoints.load(study["zero_one_source"]["checkpoint"])
-                    migrated = checkpoints.load(
-                        root
-                        / f"training/learned_progressive/replicate_42/checkpoints/update_{cfg.get('continuation_start_update', 500):04d}.pt"
-                    )
-                    adapters.load_state(attached, parent["adapters"])
-                    gates.alpha.data.copy_(parent["alpha"])
-                    gates.progressive = ProgressivePolicy.from_state(parent["progressive"])
-                    gates.microbatch()
-                    with torch.no_grad():
-                        parent_prediction, _ = ltx_adapter.velocity_forward(model, video)
-                    adapters.load_state(attached, migrated["adapters"])
-                    gates.alpha.data.copy_(migrated["alpha"])
-                    gates.progressive = ProgressivePolicy.from_state(migrated["progressive"], cfg["progressive_policy"])
-                    gates.microbatch()
-                    with torch.no_grad():
-                        migrated_prediction, _ = ltx_adapter.velocity_forward(model, video)
-                    if not torch.equal(parent_prediction, migrated_prediction):
-                        raise ValueError("parent/migrated native step-500 prediction differs")
-                    migration_equal = True
-                    del parent_prediction, migrated_prediction, parent, migrated
-                    adapters.load_state(attached, initial_adapters)
-                    gates.alpha.data.fill_(3.0)
-                    del initial_adapters
-                # A disposable three-head fixture proves arbitrary functional widths.
-                fixture = dict(hardening_interval=3, removal_fraction=3 / gates.alpha.numel(), regret_threshold=1.0)
-                if zero_one:
-                    fixture.update(
-                        regret_threshold=0.1, fixed_one_fraction=2 / gates.alpha.numel(), fixed_one_regret_threshold=0.5
-                    )
-                gates.progressive = new_policy(gates.alpha, fixture)
-                value = gates.alpha.detach().clone() + 1
-                value[0, :3] -= 2
-                gates.alpha.data.copy_(value)
-                if zero_one:
-                    value[0, 3:5] = 5
-                    gates.alpha.data.copy_(value)
-                gates.progressive.record(1, gates.alpha)
-                if zero_one:
-                    gates.alpha.data[0, 3:5] = 3
             control_record = {
                 "rank": runtime.rank,
                 "source": source["relative_dir"],
                 "training_window": manifest["training_window"],
                 "all_one_bit_identical": True,
-                "all_free_bit_identical": progressive,
-                "clipped_all_one_bit_identical": clipped,
-                "parent_migration_bit_identical": migration_equal,
                 "input_manifest_sha256": provenance.file_sha256(inputs / "manifest.json"),
             }
             del native, control, case, grid, video, c0, capture, eps
@@ -159,28 +72,20 @@ def main():
             model.velocity_model.set_gradient_checkpointing(True)
             ao = heads.optimizer(ap, cfg["adapter_lr"], cfg)
             go = heads.optimizer([gates.alpha], cfg["gate_lr"], cfg)
-            training = runtime.wrap_step(
-                TrainingStep(model, gates, cfg, "learned_progressive" if progressive else "learned_joint")
-            )
+            training = runtime.wrap_step(TrainingStep(model, gates, cfg, "learned_joint"))
             frozen = [(p, p._version) for p in model.parameters() if not p.requires_grad]
 
             def state_hash():
-                return checkpoints.digest(
+                return records.digest(
                     {
-                        "alpha": checkpoints.tensor_hash(gates.alpha),
-                        "adapters": {k: checkpoints.tensor_hash(v) for k, v in adapters.state_dict(attached).items()},
-                        "progressive": gates.progressive.state_dict() if progressive else None,
+                        "alpha": records.tensor_hash(gates.alpha),
+                        "adapters": {k: records.tensor_hash(v) for k, v in adapters.state_dict(attached).items()},
                     }
                 )
 
-            def update(number, allow_zero_gate=False, policy_update=None):
-                phase = "soft" if progressive or number <= 3 else "binary"
-                recovering = clipped and gates.progressive.recovering
-                pushing = clipped and policy_update is None and number in (1, 2)
-                if recovering:
-                    phase = gates.phase = "recovery"
-                else:
-                    gates.begin_update(phase, cfg["blocks"] * cfg["heads"] - 152 if phase == "binary" else None)
+            def update(number):
+                phase = "soft" if number <= 3 else "binary"
+                gates.begin_update(phase, cfg["blocks"] * cfg["heads"] - 152 if phase == "binary" else None)
                 ao.zero_grad(set_to_none=True)
                 go.zero_grad(set_to_none=True)
                 for group in ao.param_groups:
@@ -193,66 +98,12 @@ def main():
                 loss, official, penalty = training(video, eps, y, grid.tokens_per_latent_frame, number, phase, None, 1)
                 loss.backward()
                 runtime.reduce_gradients(ap + [gates.alpha])
-                removed_regret = None
-                if clipped:
-                    executed = gates.current.grad
-                    if executed is None or not torch.isfinite(executed).all():
-                        raise ValueError("missing executed-gate gradient")
-                    removed = ~gates.progressive.free.to(current.device)
-                    if removed.any():
-                        if not executed[removed].abs().sum() > 0:
-                            raise ValueError("removed heads lack executed-gate gradients")
-                        removed_regret = float((executed[removed] < 0).float().mean())
-                    if pushing:
-                        # Below zero executes zero but keeps a unit surrogate; above one executes one.
-                        if (gates.current[0, :3] != 0).any() or (gates.current[0, 3:5] != 1).any():
-                            raise ValueError("clipped forward differs outside [0, 1]")
-                        if (gates.alpha.grad[0, :3] == 0).any():
-                            raise ValueError("below-zero alive scores lack surrogate gradients")
-                    gates.progressive.mask_gradient(gates.alpha)
-                if progressive:
-                    fixed = ~gates.progressive.free.to(current.device)
-                    if (gates.alpha.grad[fixed] != 0).any():
-                        raise ValueError("fixed logit gradient is nonzero")
                 anorm = float(torch.nn.utils.clip_grad_norm_(ap, 1, error_if_nonfinite=True))
                 gnorm = float(torch.nn.utils.clip_grad_norm_([gates.alpha], 1, error_if_nonfinite=True))
-                if anorm <= 0 or (gnorm <= 0 and not allow_zero_gate) or (allow_zero_gate and gnorm != 0):
+                if anorm <= 0 or gnorm <= 0:
                     raise ValueError("missing native DDP gradients")
                 ao.step()
-                if not recovering:
-                    go.step()
-                if pushing:
-                    gates.alpha.data[0, :3] -= 0.5
-                if progressive:
-                    gates.progressive.protect(gates.alpha, go)
-                    event = gates.progressive.record(
-                        number + (0 if clipped else 1) if policy_update is None else policy_update, gates.alpha, go
-                    )
-                    gates.progressive.verify_ranks(current.device)
-                    if number == 2 and (event["selected_count"] != 3 or event["selected_count"] % 4 == 0):
-                        raise ValueError("native acceptance must remove exactly three heads")
-                    actual = gates.progressive.compose(gates.alpha)
-                    free = gates.progressive.free.to(current.device)
-                    ones = gates.progressive.one.to(current.device) if zero_one else torch.zeros_like(free)
-                    if (actual[~free & ~ones] != 0).any() or (actual[ones] != 1).any():
-                        raise ValueError("fixed gate execution differs")
-                    if clipped and number == 2 and policy_update is None and (
-                        go.state
-                        or not torch.equal(gates.alpha.detach(), gates.progressive.free.float().to(current.device))
-                    ):
-                        raise ValueError("clipped event must reset scores to binary and clear gate Adam")
-                    if clipped and number == 3 and float(go.state[gates.alpha]["step"]) != 1:
-                        raise ValueError("gate Adam step counter did not restart after the reset")
-                    if zero_one and number == 2 and event["one_selected_count"] != 2:
-                        raise ValueError("native acceptance must fix exactly two heads at one")
-                    if not torch.equal(gates.alpha.detach()[~free], gates.progressive.frozen.to(current.device)[~free]):
-                        raise ValueError("frozen native logits changed")
-                    if any(
-                        (value[~free] != 0).any()
-                        for value in go.state[gates.alpha].values()
-                        if isinstance(value, torch.Tensor) and value.shape == gates.alpha.shape
-                    ):
-                        raise ValueError("fixed Adam moments are nonzero")
+                go.step()
                 torch.cuda.synchronize(current.device)
                 if any(p._version != version for p, version in frozen):
                     raise ValueError("native DDP changed frozen weights")
@@ -261,7 +112,7 @@ def main():
                     raise MemoryError("native DDP lacks frozen headroom")
                 digest = state_hash()
                 runtime.agree(digest)
-                record = {
+                return {
                     "rank": runtime.rank,
                     "update": number,
                     "phase": phase,
@@ -274,16 +125,14 @@ def main():
                     "peak_reserved_bytes": torch.cuda.max_memory_reserved(current.device),
                     "free_bytes": free,
                     "trainable_state_sha256": digest,
-                    "removed_negative_gradient_fraction": removed_regret,
                 }
-                return record
 
             rows = [update(1)]
             saved = output / "update_0001.pt"
             runtime.save(
                 saved,
                 identity=identity,
-                update=2 if progressive and not clipped else 1,
+                update=1,
                 phase="soft",
                 gates=gates,
                 adapters=attached,
@@ -291,78 +140,22 @@ def main():
                 gate_optimizer=go,
             )
             second = update(2)
-            third = update(3) if progressive else None
             state = checkpoints.load(saved, identity)
             adapters.load_state(attached, state["adapters"])
             gates.alpha.data.copy_(state["alpha"])
             gates.decision = state["mask"]
-            if progressive:
-                gates.progressive = ProgressivePolicy.from_state(state["progressive"])
             ao.load_state_dict(state["adapter_optimizer"])
             go.load_state_dict(state["gate_optimizer"])
             checkpoints.restore_rng(state["rng"])
             replay = update(2)
             if any(second[key] != replay[key] for key in ("trainable_state_sha256", "official", "penalty")):
                 raise ValueError("native DDP resumed update differs")
-            resumed_third = update(3)
-            if progressive and any(
-                third[key] != resumed_third[key] for key in ("trainable_state_sha256", "official", "penalty")
-            ):
-                raise ValueError("native DDP post-event resumed update differs")
-            rows += [second, resumed_third, update(4)]
-            eligible = cfg.get("progressive_policy", {}).get("selection_population") == "eligible"
-            if clipped:
-                # Terminal cap event with two strong drops, then one fixed-gate adapter update.
-                probe = dict(
-                    cfg["progressive_policy"], hardening_interval=1, late_updates=1, selection_updates=1,
-                    finalize_updates=1,
-                )
-                gates.alpha.data.fill_(1.0)
-                gates.progressive = new_policy(gates.alpha, probe)
-                gates.alpha.data[1, :2] = 0.5
-                terminal = gates.progressive.record(1, gates.alpha, go)
-                if (
-                    terminal["selected_ids"] != [[1, 0], [1, 1]]
-                    or terminal["terminal_reason"] != "pilot_cap"
-                    or gates.progressive.final_update != 2
-                    or not gates.progressive.recovering
-                ):
-                    raise ValueError("native clipped terminal event differs")
-                recovery = update(5, allow_zero_gate=True, policy_update=2)
-                if recovery["phase"] != "recovery" or recovery["removed_negative_gradient_fraction"] is None:
-                    raise ValueError("native clipped recovery update differs")
-                rows.append(recovery)
-                restored = ProgressivePolicy.from_state(gates.progressive.state_dict(), probe)
-                if restored.final_update != restored.update or restored.counts()["removed"] != 2:
-                    raise ValueError("native clipped recovery checkpoint differs")
-            elif eligible:
-                probe = dict(
-                    cfg["progressive_policy"],
-                    hardening_interval=1,
-                    minimum_count=1,
-                    removal_fraction=1.0,
-                    fixed_one_fraction=1.0,
-                    finalize_updates=1,
-                )
-                gates.progressive = new_policy(gates.alpha, probe)
-                gates.alpha.data.add_(1)
-                terminal = gates.progressive.record(1, gates.alpha, go)
-                if (
-                    terminal["eligible_count"] != 0
-                    or terminal["new_fixed_one_count"] != gates.alpha.numel()
-                    or gates.progressive.final_update != 2
-                    or gates.progressive.free.any()
-                ):
-                    raise ValueError("native finalization trigger or force-one differs")
-                rows.append(update(5, allow_zero_gate=True, policy_update=2))
-                restored = ProgressivePolicy.from_state(gates.progressive.state_dict(), probe)
-                if restored.final_update != restored.update or restored.free.any():
-                    raise ValueError("native finalization checkpoint differs")
+            rows += [second, update(3), update(4)]
             controls = runtime.gather(control_record)
             updates = runtime.gather(rows)
             live.detach_all()
             if runtime.primary:
-                checkpoints.publish_json(
+                records.publish_json(
                     root / "checks/feasibility.json",
                     {
                         "study": study["identity"],
@@ -373,21 +166,6 @@ def main():
                         "controls": controls,
                         "updates": updates,
                         "exact_native_resume": True,
-                        "progressive_execution": progressive,
-                        "arbitrary_removal_count": 3 if progressive else None,
-                        "fixed_one_execution": zero_one,
-                        "eligible_finalization_execution": eligible,
-                        "gate_only_execution": eligible
-                        and cfg["progressive_policy"].get("fixed_one_selection") == "gate_only",
-                        "arbitrary_fixed_one_count": 2 if zero_one else None,
-                        "parent_migration_bit_identical": zero_one
-                        and all(c["parent_migration_bit_identical"] for c in controls),
-                        "disposable_policy": fixture if progressive else None,
-                        "clipped_reset_execution": clipped,
-                        "clipped_reset_config_sha256": checkpoints.digest(cfg["progressive_policy"]) if clipped else None,
-                        "clipped_all_one_bit_identical": clipped
-                        and all(c["clipped_all_one_bit_identical"] for c in controls),
-                        "removed_head_gradient_logging": clipped,
                         "elapsed_seconds": time.monotonic() - started,
                         "quality_accepted": False,
                     },

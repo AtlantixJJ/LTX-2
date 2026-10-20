@@ -15,7 +15,7 @@ from pathlib import Path
 import torch
 
 from scripts.prune.core.provenance import file_sha256
-from scripts.prune.learn.checkpoints import publish_json
+from scripts.prune.core.records import publish_json
 
 
 def review(study, pilot, p1, p2):

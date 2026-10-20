@@ -11,7 +11,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from scripts.prune.learn.checkpoints import tensor_hash
+from scripts.prune.core.records import tensor_hash
 
 
 def aligned_width(update, width, kept, *, alignment=128, warmup=50, ramp_end=300):

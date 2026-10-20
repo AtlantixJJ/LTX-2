@@ -19,13 +19,23 @@ def case(frames, seed=42):
     model = SimpleNamespace(scale_factors=SpatioTemporalScaleFactors(8, 32, 32))
     current = SimpleNamespace(model=model)
     grid = common.ClipGrid.build(frames, 64, 64, 30, model, device="cpu", dtype=torch.bfloat16, latent_channels=2)
-    dense = torch.arange(frames, dtype=torch.bfloat16)[None, None, :, None, None].expand(1, 2, frames, 2, 2).contiguous()
+    dense = (
+        torch.arange(frames, dtype=torch.bfloat16)[None, None, :, None, None].expand(1, 2, frames, 2, 2).contiguous()
+    )
     capture = grid.patchify(dense)
     epsilon = common.epsilon_block(capture, seed)
     c0 = capture[:, :4]
     noisy = common.with_clean_prefix(common.mix_block_noise(capture, epsilon, 0.9), c0)
-    video = common.block_modality(grid, noisy, torch.zeros(1, 2, 2), 0.9, token_slices=[grid.token_span(0, frames)],
-                                 attention_mask=None, clean_prefix_tokens=4, sigma_dtype=torch.float32)
+    video = common.block_modality(
+        grid,
+        noisy,
+        torch.zeros(1, 2, 2),
+        0.9,
+        token_slices=[grid.token_span(0, frames)],
+        attention_mask=None,
+        clean_prefix_tokens=4,
+        sigma_dtype=torch.float32,
+    )
     return (grid, video, c0, capture, epsilon, "input", {"seed": seed}), current, dense
 
 
@@ -96,13 +106,28 @@ def saved_case(tmp_path):
     capture_path = tmp_path / "capture.pt"
     torch.save({"schema_version": 2, "master": dense[0], "fps": 30}, capture_path)
     torch.save(full[4], tmp_path / "epsilon.pt")
-    row = {"view": "case", "sigma": 0.9, "schedule": [0.9, 0.0], "artifacts": {
-        "capture": str(capture_path), "capture_sha256": file_sha256(capture_path), "fps": 30,
-        "epsilon": "epsilon.pt", "epsilon_sha256": file_sha256(tmp_path / "epsilon.pt"),
-    }}
-    manifest = {"whole_clip": True, "attention": "full_bidirectional", "objective": "white", "seed": seed,
-        "latent_dtype": "torch.bfloat16", "sigmas": [0.9], "videos": [row],
-        "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1}}
+    row = {
+        "view": "case",
+        "sigma": 0.9,
+        "schedule": [0.9, 0.0],
+        "artifacts": {
+            "capture": str(capture_path),
+            "capture_sha256": file_sha256(capture_path),
+            "fps": 30,
+            "epsilon": "epsilon.pt",
+            "epsilon_sha256": file_sha256(tmp_path / "epsilon.pt"),
+        },
+    }
+    manifest = {
+        "whole_clip": True,
+        "attention": "full_bidirectional",
+        "objective": "white",
+        "seed": seed,
+        "latent_dtype": "torch.bfloat16",
+        "sigmas": [0.9],
+        "videos": [row],
+        "guidance": {"cfg": 1, "stg": 0, "rescale": 0, "passes_per_step": 1},
+    }
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
     return windows.crop_case(full, current, seed, 0.9)[-1]["training_window"]
 
@@ -110,8 +135,12 @@ def saved_case(tmp_path):
 def test_resume_and_export_validate_actual_source_slices(tmp_path):
     record = saved_case(tmp_path)
     windows.validate_saved_window(tmp_path, record)
-    for changed in ({**record, "latent_start": 0}, {**record, "capture_tensor_sha256": "wrong"},
-                    {**record, "epsilon_tensor_sha256": "wrong"}, {**record, "noise_seed": 43}):
+    for changed in (
+        {**record, "latent_start": 0},
+        {**record, "capture_tensor_sha256": "wrong"},
+        {**record, "epsilon_tensor_sha256": "wrong"},
+        {**record, "noise_seed": 43},
+    ):
         with pytest.raises(ValueError, match="window changed"):
             windows.validate_saved_window(tmp_path, changed)
     torch.save({"master": torch.zeros(2, 28, 2, 2), "fps": 30}, tmp_path / "capture.pt")

@@ -84,17 +84,17 @@ marks only tests already labeled `gpu` skipped when CUDA is unavailable or
 hidden. With real CUDA those tests still run. Metadata and tiny-model CPU
 fixtures retain their own checks; a marker does not disable their imports.
 
-## MobileWan helpers
+## Joint V3 selection
 
-`data.head_score_dataset` verifies complete capture membership without guides.
-`score.mobilewan_heads` computes squared projected energy, actor-cluster statistics and global nested masks.
-Pool raw energy before normalization. Use only train membership for removal allocation.
-`score.mobilewan_dataset` runs resident native dev scoring with resumable observations.
-`score.mobilewan_aggregate` freezes train-only masks before held-out scoring and validates final statistics.
-`evaluate.mobilewan_removal` saves matched native held-out predictions and latent errors.
-`evaluate.mobilewan_media` decodes those saved predictions and creates synchronized comparisons.
-Full dataset execution and reviewed results are separate gates; helper tests do not prove them.
-The producer supports explicit direct dev and capture-only D0. Its restricted agent queue wrapper supports unmodified direct dev D0 at sigma <=0.95.
+`learn.ddp_owner` owns DDP runtime, native acceptance, saved inputs, monitors and the update loop.
+`learn.joint` supplies V3 family hooks; `learn.readmission` owns the policy and `learn.joint_training` owns numerical state.
+`data.joint_study` freezes the study. Its code identity changes after any package source edit.
+`checks.joint_preflight`, `checks.joint_export`, `checks.joint_faults`, `checks.joint_review` and
+`checks.joint_split_parity` retain independent acceptance receipts.
+`score.export_joint` merges adapters. `score.export_joint_split` preserves trained adapter arithmetic.
+`evaluate.joint_final` and `evaluate.joint_media` evaluate fixed completed checkpoints without optimizer updates.
+The CPU `learn.receipt_logger` follows FFN and V3 receipts.
+Live studies retain isolated snapshots. Do not restart, resume or alter them during package maintenance.
 
 ## Learned FFN masks
 
@@ -126,8 +126,3 @@ Its ten-level grid includes all five official 30-step dev sigmas in [0.9, 0.95].
 W&B uses one CPU writer per arm. Rank sigma/memory charts have one line per rank;
 total loss and validation errors are averaged scalars. Metric tabs omit `learned_joint/`.
 Do not restart a user-stopped run while updating code or documentation.
-
-The progressive alternative uses `data.progressive_head_study` and the single `learned_progressive` arm.
-It starts from verified r13 checkpoint zero, preserves 2,000 draws and removes globally ranked subsets at a configured interval.
-Fresh native acceptance must exercise mixed gates and exact resume before its 500 updates on GPUs 0–3.
-See `doc/learn/progressive.md`; monitors use only actual mixed gates and preserve optimizer RNG.

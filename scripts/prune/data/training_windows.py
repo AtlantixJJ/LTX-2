@@ -17,9 +17,9 @@ import torch
 
 from scripts.onestep_avatar.corpus.dataset import load_training_master
 from scripts.onestep_avatar.model import common
-from scripts.prune.core.provenance import file_sha256
+from scripts.prune.core.provenance import file_sha256, verified_sha256
+from scripts.prune.core.records import tensor_hash
 from scripts.prune.data import whole_clip
-from scripts.prune.learn.checkpoints import tensor_hash
 
 LATENT_FRAMES = 18
 
@@ -38,13 +38,26 @@ def bounds(frames, seed):
     return start, start + LATENT_FRAMES
 
 
+def nonzero_crop_seed(frames, seed, stride):
+    """First seed in `seed, seed+stride, ...` whose crop of a longer source starts after zero."""
+    while frames > LATENT_FRAMES and bounds(frames, seed)[0] == 0:
+        seed += stride
+    return seed
+
+
 def window_record(frames, seed, per_frame, capture, epsilon):
     start, stop = bounds(frames, seed)
     return {
-        "mode": "uniform_f18", "source_latent_frames": frames, "latent_start": start, "latent_stop": stop,
-        "latent_frames": LATENT_FRAMES, "noise_seed": seed, "tokens_per_latent_frame": per_frame,
+        "mode": "uniform_f18",
+        "source_latent_frames": frames,
+        "latent_start": start,
+        "latent_stop": stop,
+        "latent_frames": LATENT_FRAMES,
+        "noise_seed": seed,
+        "tokens_per_latent_frame": per_frame,
         "position_policy": "window_local_first_keyframe",
-        "capture_tensor_sha256": tensor_hash(capture), "epsilon_tensor_sha256": tensor_hash(epsilon),
+        "capture_tensor_sha256": tensor_hash(capture),
+        "epsilon_tensor_sha256": tensor_hash(epsilon),
     }
 
 
@@ -59,15 +72,26 @@ def crop_case(case, current, seed, sigma):
     spatial = full_grid.tools.target_shape
     scales = current.model.scale_factors
     grid = common.ClipGrid.build(
-        LATENT_FRAMES, spatial.height * scales.height, spatial.width * scales.width,
-        full_grid.fps, current.model, device=capture.device, dtype=capture.dtype,
+        LATENT_FRAMES,
+        spatial.height * scales.height,
+        spatial.width * scales.width,
+        full_grid.fps,
+        current.model,
+        device=capture.device,
+        dtype=capture.dtype,
         latent_channels=capture.shape[-1],
     )
     c0 = capture[:, :per_frame]
     noisy = common.with_clean_prefix(common.mix_block_noise(capture, epsilon, sigma), c0)
     video = common.block_modality(
-        grid, noisy, full_video.context, sigma, token_slices=[grid.token_span(0, LATENT_FRAMES)],
-        attention_mask=None, clean_prefix_tokens=per_frame, sigma_dtype=torch.float32,
+        grid,
+        noisy,
+        full_video.context,
+        sigma,
+        token_slices=[grid.token_span(0, LATENT_FRAMES)],
+        attention_mask=None,
+        clean_prefix_tokens=per_frame,
+        sigma_dtype=torch.float32,
     )
     record = window_record(full_grid.latent_frames, seed, per_frame, capture, epsilon)
     return grid, video, c0, capture, epsilon, root, {**manifest, "training_window": record}
@@ -84,15 +108,25 @@ def slice_regions(regions, record):
     return {name: value[:, lo:hi].contiguous() for name, value in regions.items()}
 
 
-def validate_saved_window(root, record):
-    """Verify a consumed crop against the original pinned capture and noise."""
-    manifest = whole_clip.load_manifest(Path(root))
+def validate_saved_window(root, record, *, capture_hashes=None):
+    """Verify a consumed crop against the original pinned capture and noise.
+
+    `capture_hashes` maps capture paths to already verified SHA-256 values, so a
+    caller that checks many draws hashes each shared capture file once.
+    """
+    root = Path(root)
+    manifest = whole_clip.load_manifest(root)
     row = manifest["videos"][0]
     path = Path(row["artifacts"]["capture"])
-    if file_sha256(path) != row["artifacts"]["capture_sha256"]:
+    known = None if capture_hashes is None else capture_hashes.get(str(path))
+    if known is None:
+        known = file_sha256(path)
+        if capture_hashes is not None:
+            capture_hashes[str(path)] = known
+    if known != row["artifacts"]["capture_sha256"]:
         raise ValueError("training window capture source changed")
     capture, fps = load_training_master(path)
-    epsilon = whole_clip.load_epsilon(Path(root), row)
+    epsilon = whole_clip.load_epsilon(root, row)
     channels, frames, height, width = capture.shape
     per_frame = height * width
     if fps != row["artifacts"]["fps"] or epsilon.shape != (1, frames * per_frame, channels):
@@ -102,3 +136,20 @@ def validate_saved_window(root, record):
     noise = epsilon[:, start * per_frame : stop * per_frame].contiguous()
     if record != window_record(frames, manifest["seed"], per_frame, clean, noise):
         raise ValueError("consumed training window changed")
+
+
+def verify_consumed_inputs(draws, *, manifest_key, windows=True):
+    """Check every consumed input manifest, saved epsilon and training crop.
+
+    Each epsilon is hashed and loaded once; each shared capture is hashed once.
+    `manifest_key` names the receipt field that pins the input manifest bytes.
+    """
+    capture_hashes = {}
+    for draw in draws:
+        path = Path(draw["input_manifest"])
+        if verified_sha256(path) != draw[manifest_key]:
+            raise ValueError("consumed training input changed since checkpoint")
+        if windows:
+            validate_saved_window(path.parent, draw["training_window"], capture_hashes=capture_hashes)
+        else:
+            whole_clip.load_epsilon(path.parent, whole_clip.load_manifest(path.parent)["videos"][0])

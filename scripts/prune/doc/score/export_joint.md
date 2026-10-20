@@ -14,7 +14,8 @@ CUDA_VISIBLE_DEVICES= conda run --no-capture-output -n ltx python -m scripts.pru
 ```
 
 See the [run guide](../usage.md#joint-clipped-gates-with-re-admission).
-Outputs include predictions, transition receipts, tensor inventories and artifact hashes.
+Outputs are the checkpoint, an envelope with the tensor inventory, and a hash sidecar.
+`checks.joint_export` publishes predictions and transition receipts.
 
 ## Data flow
 

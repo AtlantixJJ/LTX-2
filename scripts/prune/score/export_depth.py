@@ -26,9 +26,13 @@ from scripts.prune.data import whole_clip
 PREFIX = "model.diffusion_model.transformer_blocks."
 FORMAT = "whole_clip_d0_depth_v1"
 PER_LAYER_FIELDS = (
-    "per_layer_video_attn1_heads", "per_layer_video_attn2_heads", "per_layer_ff_inner_dim",
-    "per_layer_video_attn1_rope_head_indices", "per_layer_video_attn2_rope_head_indices",
-    "per_layer_video_attn1_active_head_indices", "per_layer_video_attn2_active_head_indices",
+    "per_layer_video_attn1_heads",
+    "per_layer_video_attn2_heads",
+    "per_layer_ff_inner_dim",
+    "per_layer_video_attn1_rope_head_indices",
+    "per_layer_video_attn2_rope_head_indices",
+    "per_layer_video_attn1_active_head_indices",
+    "per_layer_video_attn2_active_head_indices",
     "per_layer_video_ffn_active_channels",
 )
 PURPOSES = ("diagnostic_architecture", "calibration_candidate", "no_prune_control")
@@ -49,7 +53,7 @@ def _header(path: Path) -> tuple[dict, int, str]:
 def _block_index(name: str) -> int | None:
     if not name.startswith(PREFIX):
         return None
-    index, separator, _ = name[len(PREFIX):].partition(".")
+    index, separator, _ = name[len(PREFIX) :].partition(".")
     if not separator or not index.isdecimal():
         raise ValueError(f"invalid transformer block key: {name}")
     return int(index)
@@ -108,9 +112,7 @@ def inspect_checkpoint(source: str | Path) -> dict:
     for key, values in transformer.items():
         if key.startswith("per_layer_") and key not in PER_LAYER_FIELDS:
             raise ValueError(f"unsupported block-indexed config field: {key}")
-        if key in PER_LAYER_FIELDS and values is not None and (
-            not isinstance(values, list) or len(values) != layers
-        ):
+        if key in PER_LAYER_FIELDS and values is not None and (not isinstance(values, list) or len(values) != layers):
             raise ValueError(f"{key} must contain one entry per original block")
     return {
         "source_num_layers": layers,
@@ -138,8 +140,13 @@ def _mapping(layers: int, removed: list[int]) -> dict:
 
 
 def create_artifact(
-    baseline_root: str | Path, calibration_views: list[str], sigmas: list[float], removed_blocks: list[int],
-    *, purpose: str = "diagnostic_architecture", quality_status: str = "not_evaluated",
+    baseline_root: str | Path,
+    calibration_views: list[str],
+    sigmas: list[float],
+    removed_blocks: list[int],
+    *,
+    purpose: str = "diagnostic_architecture",
+    quality_status: str = "not_evaluated",
 ) -> dict:
     """Bind an explicitly chosen deletion set to saved native calibration inputs."""
     root = Path(baseline_root)
@@ -157,8 +164,11 @@ def create_artifact(
     if inspected["source_fingerprint"] != baseline["model"]["transformer_fingerprint"]:
         raise ValueError("source checkpoint changed since the saved baseline")
     return {
-        "candidate_format": FORMAT, "family": "depth", "purpose": purpose,
-        "qualification": "unqualified", "quality_status": quality_status,
+        "candidate_format": FORMAT,
+        "family": "depth",
+        "purpose": purpose,
+        "qualification": "unqualified",
+        "quality_status": quality_status,
         "source_num_layers": inspected["source_num_layers"],
         "source_header_sha256": inspected["source_header_sha256"],
         "source_parameter_counts": inspected["parameter_counts"],
@@ -168,35 +178,56 @@ def create_artifact(
 
 
 def read_artifact(
-    path: str | Path, *, model_key: str, fingerprint: str, num_layers: int, baseline: dict | None = None,
+    path: str | Path,
+    *,
+    model_key: str,
+    fingerprint: str,
+    num_layers: int,
+    baseline: dict | None = None,
 ) -> tuple[dict, str]:
     """Validate depth syntax and immutable native D0 provenance independently of width masks."""
     raw = Path(path).read_bytes()
     artifact = json.loads(raw)
-    if (not isinstance(artifact, dict) or artifact.get("candidate_format") != FORMAT or
-            artifact.get("family") != "depth" or
-            "masks" in artifact or artifact.get("source_num_layers") != num_layers or
-            type(artifact.get("source_num_layers")) is not int):
+    if (
+        not isinstance(artifact, dict)
+        or artifact.get("candidate_format") != FORMAT
+        or artifact.get("family") != "depth"
+        or "masks" in artifact
+        or artifact.get("source_num_layers") != num_layers
+        or type(artifact.get("source_num_layers")) is not int
+    ):
         raise ValueError("invalid native D0 depth artifact format or original layer count")
     mapping = _mapping(num_layers, artifact.get("removed_blocks"))
     if any(artifact.get(key) != value for key, value in mapping.items()):
         raise ValueError("depth artifact retained mapping differs from removed_blocks")
     stamp = artifact.get("provenance")
-    if (not isinstance(stamp, dict) or stamp.get("model_key") != model_key or
-            stamp.get("transformer_fingerprint") != fingerprint or stamp.get("task") != whole_clip.TASK):
+    if (
+        not isinstance(stamp, dict)
+        or stamp.get("model_key") != model_key
+        or stamp.get("transformer_fingerprint") != fingerprint
+        or stamp.get("task") != whole_clip.TASK
+    ):
         raise ValueError("depth artifact model, source fingerprint or task differs")
     views, sigmas = stamp.get("calibration_views"), stamp.get("sigmas")
-    if (not isinstance(views, list) or not views or any(not isinstance(view, str) or not view for view in views) or
-            len(set(views)) != len(views) or not isinstance(sigmas, list) or not sigmas or
-            any(type(sigma) not in (int, float) or not math.isfinite(sigma) or not 0 < sigma <= 1
-                for sigma in sigmas) or
-            len(set(sigmas)) != len(sigmas)):
+    if (
+        not isinstance(views, list)
+        or not views
+        or any(not isinstance(view, str) or not view for view in views)
+        or len(set(views)) != len(views)
+        or not isinstance(sigmas, list)
+        or not sigmas
+        or any(type(sigma) not in (int, float) or not math.isfinite(sigma) or not 0 < sigma <= 1 for sigma in sigmas)
+        or len(set(sigmas)) != len(sigmas)
+    ):
         raise ValueError("incomplete native D0 depth calibration scope")
-    if (artifact.get("purpose") not in PURPOSES or artifact.get("quality_status") not in QUALITY_STATUSES or
-            artifact.get("qualification") != "unqualified" or
-            not isinstance(artifact.get("source_header_sha256"), str) or
-            len(artifact["source_header_sha256"]) != 64 or
-            not isinstance(artifact.get("source_parameter_counts"), dict)):
+    if (
+        artifact.get("purpose") not in PURPOSES
+        or artifact.get("quality_status") not in QUALITY_STATUSES
+        or artifact.get("qualification") != "unqualified"
+        or not isinstance(artifact.get("source_header_sha256"), str)
+        or len(artifact["source_header_sha256"]) != 64
+        or not isinstance(artifact.get("source_parameter_counts"), dict)
+    ):
         raise ValueError("incomplete depth artifact source accounting or diagnostic status")
     whole_clip.validate_native_provenance(stamp, baseline)
     return artifact, hashlib.sha256(raw).hexdigest()
@@ -213,7 +244,7 @@ def _remap_header(header: dict, artifact: dict) -> dict:
             compact = mapping[block]
             if compact is None:
                 continue
-            renamed = PREFIX + str(compact) + "." + name[len(PREFIX):].split(".", 1)[1]
+            renamed = PREFIX + str(compact) + "." + name[len(PREFIX) :].split(".", 1)[1]
         result[renamed] = copy.deepcopy(entry)
     return result
 
@@ -232,13 +263,12 @@ def _parameter_counts(compact: dict, config: dict, artifact: dict) -> dict:
     output = _architecture_counts(compact, config)
     source = artifact["source_parameter_counts"]
     return {
-        "source": source, "exported": output,
-        "resident_video_element_reduction": 1 - (
-            output["resident_video_parameters"]["elements"] / source["resident_video_parameters"]["elements"]
-        ),
-        "checkpoint_payload_byte_reduction": 1 - (
-            output["checkpoint_tensors"]["stored_bytes"] / source["checkpoint_tensors"]["stored_bytes"]
-        ),
+        "source": source,
+        "exported": output,
+        "resident_video_element_reduction": 1
+        - (output["resident_video_parameters"]["elements"] / source["resident_video_parameters"]["elements"]),
+        "checkpoint_payload_byte_reduction": 1
+        - (output["checkpoint_tensors"]["stored_bytes"] / source["checkpoint_tensors"]["stored_bytes"]),
     }
 
 
@@ -258,7 +288,11 @@ def _copy_tensor(source: BinaryIO, output: BinaryIO, start: int, size: int, chun
 
 
 def export(  # noqa: PLR0912, PLR0915
-    source: str | Path, artifact_path: str | Path, output: str | Path, *, chunk_bytes: int = 8 << 20,
+    source: str | Path,
+    artifact_path: str | Path,
+    output: str | Path,
+    *,
+    chunk_bytes: int = 8 << 20,
 ) -> dict:
     """Write intact retained payloads with bounded RAM and atomic, non-overwriting publication."""
     source, artifact_path, output = Path(source), Path(artifact_path), Path(output)
@@ -271,25 +305,42 @@ def export(  # noqa: PLR0912, PLR0915
     source_state = _source_stat(source.stat())
     inspected = inspect_checkpoint(source)
     artifact, digest = read_artifact(
-        artifact_path, model_key=json.loads(artifact_path.read_bytes())["provenance"]["model_key"],
-        fingerprint=inspected["source_fingerprint"], num_layers=inspected["source_num_layers"],
+        artifact_path,
+        model_key=json.loads(artifact_path.read_bytes())["provenance"]["model_key"],
+        fingerprint=inspected["source_fingerprint"],
+        num_layers=inspected["source_num_layers"],
     )
-    if (artifact["source_header_sha256"] != inspected["source_header_sha256"] or
-            artifact["source_parameter_counts"] != inspected["parameter_counts"]):
+    if (
+        artifact["source_header_sha256"] != inspected["source_header_sha256"]
+        or artifact["source_parameter_counts"] != inspected["parameter_counts"]
+    ):
         raise ValueError("depth artifact source header or parameter accounting changed")
     header, data_start, _ = _header(source)
     compact = _remap_header(header, artifact)
     config = _compact_configuration(header, artifact)
     counts = _parameter_counts(compact, config, artifact)
     pruning = {
-        "family": "depth", "mode": "compact_depth", "task": whole_clip.TASK,
+        "family": "depth",
+        "mode": "compact_depth",
+        "task": whole_clip.TASK,
         "model_key": artifact["provenance"]["model_key"],
         "source_transformer_path": str(source.resolve()),
         "source_transformer_fingerprint": inspected["source_fingerprint"],
-        "artifact": str(artifact_path.resolve()), "artifact_sha256": digest,
+        "artifact": str(artifact_path.resolve()),
+        "artifact_sha256": digest,
         "source_num_layers": artifact["source_num_layers"],
-        **{key: artifact[key] for key in ("removed_blocks", "retained_blocks", "compact_to_original",
-                                         "original_to_compact", "purpose", "qualification", "quality_status")},
+        **{
+            key: artifact[key]
+            for key in (
+                "removed_blocks",
+                "retained_blocks",
+                "compact_to_original",
+                "original_to_compact",
+                "purpose",
+                "qualification",
+                "quality_status",
+            )
+        },
         "parameter_counts": counts,
     }
     config["transformer"]["pruning"] = pruning
@@ -309,12 +360,21 @@ def export(  # noqa: PLR0912, PLR0915
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
-        with source.open("rb") as source_file, tempfile.NamedTemporaryFile(
-            mode="wb", prefix="." + output.name + ".", suffix=".tmp", dir=output.parent, delete=False,
-        ) as target:
+        with (
+            source.open("rb") as source_file,
+            tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix="." + output.name + ".",
+                suffix=".tmp",
+                dir=output.parent,
+                delete=False,
+            ) as target,
+        ):
             temporary = Path(target.name)
-            if (_source_stat(os.fstat(source_file.fileno())) != source_state or
-                    _source_stat(source.stat()) != source_state):
+            if (
+                _source_stat(os.fstat(source_file.fileno())) != source_state
+                or _source_stat(source.stat()) != source_state
+            ):
                 raise ValueError("source checkpoint changed before streaming copy")
             target.write(struct.pack("<Q", len(encoded)))
             target.write(encoded)
@@ -322,8 +382,10 @@ def export(  # noqa: PLR0912, PLR0915
                 _copy_tensor(source_file, target, start, size, chunk_bytes)
             target.flush()
             os.fsync(target.fileno())
-            if (_source_stat(os.fstat(source_file.fileno())) != source_state or
-                    _source_stat(source.stat()) != source_state):
+            if (
+                _source_stat(os.fstat(source_file.fileno())) != source_state
+                or _source_stat(source.stat()) != source_state
+            ):
                 raise ValueError("source checkpoint changed during streaming copy")
         if provenance.file_sha256(artifact_path) != digest:
             raise ValueError("depth artifact changed during streaming copy")
@@ -339,18 +401,27 @@ def export(  # noqa: PLR0912, PLR0915
         if temporary is not None:
             temporary.unlink(missing_ok=True)
     return {
-        "checkpoint": str(output.resolve()), "artifact": str(artifact_path.resolve()),
-        "artifact_sha256": digest, "fingerprint": provenance.checkpoint_fingerprint(output),
-        "source_file_bytes": source.stat().st_size, "exported_file_bytes": output.stat().st_size,
-        "parameter_counts": counts, "source_num_layers": artifact["source_num_layers"],
+        "checkpoint": str(output.resolve()),
+        "artifact": str(artifact_path.resolve()),
+        "artifact_sha256": digest,
+        "fingerprint": provenance.checkpoint_fingerprint(output),
+        "source_file_bytes": source.stat().st_size,
+        "exported_file_bytes": output.stat().st_size,
+        "parameter_counts": counts,
+        "source_num_layers": artifact["source_num_layers"],
         "exported_num_layers": len(artifact["retained_blocks"]),
-        "removed_blocks": artifact["removed_blocks"], "qualification": "unqualified",
+        "removed_blocks": artifact["removed_blocks"],
+        "qualification": "unqualified",
         "quality_status": artifact["quality_status"],
     }
 
 
 def verify_export(
-    source: str | Path, artifact_path: str | Path, exported: str | Path, *, baseline: dict | None = None,
+    source: str | Path,
+    artifact_path: str | Path,
+    exported: str | Path,
+    *,
+    baseline: dict | None = None,
 ) -> dict:
     """Bind a depth export to its artifact, source architecture and exact retained key inventory."""
     source, exported = Path(source), Path(exported)
@@ -359,20 +430,38 @@ def verify_export(
     config = _configuration(header)
     pruning = config["transformer"].get("pruning", {})
     artifact, digest = read_artifact(
-        artifact_path, model_key=pruning.get("model_key"), fingerprint=inspected["source_fingerprint"],
-        num_layers=inspected["source_num_layers"], baseline=baseline,
+        artifact_path,
+        model_key=pruning.get("model_key"),
+        fingerprint=inspected["source_fingerprint"],
+        num_layers=inspected["source_num_layers"],
+        baseline=baseline,
     )
     required = {
-        "family": "depth", "mode": "compact_depth", "task": whole_clip.TASK,
-        "source_transformer_fingerprint": inspected["source_fingerprint"], "artifact_sha256": digest,
-        **{key: artifact[key] for key in ("source_num_layers", "removed_blocks", "retained_blocks",
-                                         "compact_to_original", "original_to_compact", "purpose",
-                                         "qualification", "quality_status")},
+        "family": "depth",
+        "mode": "compact_depth",
+        "task": whole_clip.TASK,
+        "source_transformer_fingerprint": inspected["source_fingerprint"],
+        "artifact_sha256": digest,
+        **{
+            key: artifact[key]
+            for key in (
+                "source_num_layers",
+                "removed_blocks",
+                "retained_blocks",
+                "compact_to_original",
+                "original_to_compact",
+                "purpose",
+                "qualification",
+                "quality_status",
+            )
+        },
     }
     if any(pruning.get(key) != value for key, value in required.items()):
         raise ValueError("exported checkpoint does not carry this native depth artifact and source")
-    if (artifact["source_header_sha256"] != inspected["source_header_sha256"] or
-            artifact["source_parameter_counts"] != inspected["parameter_counts"]):
+    if (
+        artifact["source_header_sha256"] != inspected["source_header_sha256"]
+        or artifact["source_parameter_counts"] != inspected["parameter_counts"]
+    ):
         raise ValueError("depth artifact source architecture or accounting changed")
     source_header, _, _ = _header(source)
     expected_header = _remap_header(source_header, artifact)
@@ -415,8 +504,12 @@ def main() -> None:
     parser.add_argument("--quality-status", choices=QUALITY_STATUSES, default="not_evaluated")
     args = parser.parse_args()
     artifact = create_artifact(
-        args.baseline, args.calibration_views, args.sigmas, args.remove_blocks,
-        purpose=args.purpose, quality_status=args.quality_status,
+        args.baseline,
+        args.calibration_views,
+        args.sigmas,
+        args.remove_blocks,
+        purpose=args.purpose,
+        quality_status=args.quality_status,
     )
     args.artifact.parent.mkdir(parents=True, exist_ok=True)
     with args.artifact.open("x") as target:

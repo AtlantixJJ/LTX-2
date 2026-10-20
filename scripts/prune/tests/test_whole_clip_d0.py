@@ -11,7 +11,8 @@ from safetensors.torch import save_file
 
 from scripts.prune.core import provenance
 from scripts.prune.data import whole_clip
-from scripts.prune.evaluate.whole_clip_d0 import _direction_metrics, _verify_pair
+from scripts.prune.data.whole_clip import verify_pair as _verify_pair
+from scripts.prune.evaluate.whole_clip_d0 import _direction_metrics
 
 
 def test_direction_uses_noisy_input_and_excludes_clean_keyframe() -> None:

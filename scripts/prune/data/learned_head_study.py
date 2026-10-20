@@ -7,6 +7,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import os
 import platform
 import random
 import re
@@ -21,9 +22,10 @@ from scripts.onestep_avatar.corpus.dataset import CaptureManifest, ClipStore
 from scripts.onestep_avatar.corpus.subset import load_membership
 from scripts.prune.core import model_registry
 from scripts.prune.core.provenance import file_sha256
+from scripts.prune.core.records import digest, publish, publish_json, tensor_hash
 from scripts.prune.data import foreground, prompt_cache, training_windows, whole_clip
-from scripts.prune.data.head_score_dataset import CSV_SHA, JSON_SHA, SEMANTIC_SHA, official_schedule
-from scripts.prune.learn.checkpoints import digest, publish, publish_json, tensor_hash
+from scripts.prune.data.corpus_pins import CSV_SHA, JSON_SHA, SEMANTIC_SHA, official_schedule
+from scripts.prune.data.study_io import code_identity, read_frozen, verify_files
 from scripts.prune.learn.protocol import draws_per_update
 from scripts.prune.learn.protocol import validate as validate_protocol
 
@@ -223,35 +225,21 @@ def draw_list(sources, seed, *, buckets=None, updates=1500, sigma_indices=None, 
     return draws
 
 
-def code_identity():
-    repo = Path(__file__).resolve().parents[3]
-    paths = list((repo / "scripts/prune").rglob("*.py"))
-    paths += list((repo / "packages/ltx-core/src/ltx_core").rglob("*.py"))
-    paths += list((repo / "packages/ltx-pipelines/src/ltx_pipelines/utils").rglob("*.py"))
-    paths += list((repo / "scripts/onestep_avatar/corpus").glob("*.py"))
-    paths += list((repo / "scripts/onestep_avatar/model").glob("*.py"))
-    files = {str(p.relative_to(repo)): file_sha256(p) for p in sorted(paths) if "tests" not in p.parts}
-    return {"sha256": digest(files), "files": files}
+def delivered_reports(root):
+    """Every REPORT.md under the experiment root, skipping source snapshots and per-draw inputs."""
+    found = []
+    for directory, folders, files in os.walk(root):
+        folders[:] = sorted(f for f in folders if f not in ("LTX-2", "inputs"))
+        if "REPORT.md" in files:
+            found.append(Path(directory) / "REPORT.md")
+    return sorted(found)
 
 
 def load_study(path, *, verify_components=True):
-    path = Path(path)
-    study = json.loads(path.read_text())
-    recorded = study.pop("identity", None)
-    if recorded != digest(study) or study.get("format") != "learned_head_study_v1":
-        raise ValueError("frozen study identity changed")
-    study["identity"] = recorded
-    if code_identity() != study["code"]:
-        raise ValueError("frozen model code changed; create a new study")
-    if file_sha256(study["plan"]["path"]) != study["plan"]["sha256"]:
-        raise ValueError("frozen plan changed")
-    for item in study["files"]:
-        if file_sha256(item["path"]) != item["sha256"]:
-            raise ValueError(f"frozen input changed: {item['path']}")
+    study = read_frozen(path, formats=("learned_head_study_v1",))
+    verify_files([study["plan"], *study["files"]])
     if verify_components:
-        for item in study["components"].values():
-            if file_sha256(item["path"]) != item["file_sha256"]:
-                raise ValueError("frozen component changed")
+        verify_files(study["components"].values())
     return study
 
 
@@ -387,7 +375,7 @@ def prepare(config_path, plan, output, seen_path=None, region_path=None, *, unif
             if "actor" in case:
                 seen["actors"].append(normalized_actor(case["actor"]))
         inspected.append({"path": str(p), "sha256": file_sha256(p)})
-    for p in workspace.glob("expr/refiner_prune/2.5/**/REPORT.md"):
+    for p in delivered_reports(workspace / "expr/refiner_prune/2.5"):
         text = p.read_text()
         found = re.findall(r"Part_\d+/0*(\d+)_\d+/views/", text)
         found += re.findall(r'(?i)\bactor\s*[:=]\s*["\x27]?(\d+)', text)
@@ -451,10 +439,16 @@ def prepare(config_path, plan, output, seen_path=None, region_path=None, *, unif
             if buckets is not None and (not audit_foreground or any(v == 0 for v in coverage["counts"].values())):
                 continue
             path = output / f"draws/replicate_{seed}_{policy}.json"
-            publish_json(path, draw_list(
-                splits["learning"], seed, buckets=buckets, sigma_indices=cycle,
-                draws_per_update=draws_per_update(config),
-            ))
+            publish_json(
+                path,
+                draw_list(
+                    splits["learning"],
+                    seed,
+                    buckets=buckets,
+                    sigma_indices=cycle,
+                    draws_per_update=draws_per_update(config),
+                ),
+            )
             draws[f"{seed}:{policy}"] = {"path": str(path), "sha256": file_sha256(path)}
             files.append(draws[f"{seed}:{policy}"])
     components = {
@@ -528,13 +522,18 @@ def prepare(config_path, plan, output, seen_path=None, region_path=None, *, unif
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[1]
-                   / "configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json")
+    p.add_argument(
+        "--config",
+        type=Path,
+        default=Path(__file__).resolve().parents[1] / "configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json",
+    )
     p.add_argument("--plan", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--seen-actors", type=Path)
     p.add_argument("--region-tracks", type=Path)
-    p.add_argument("--uniform-f18", action="store_true", help="Train on continuous 18-latent windows from full sources.")
+    p.add_argument(
+        "--uniform-f18", action="store_true", help="Train on continuous 18-latent windows from full sources."
+    )
     args = p.parse_args()
     torch.set_num_threads(4)
     try:

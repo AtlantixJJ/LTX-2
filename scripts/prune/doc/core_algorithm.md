@@ -189,11 +189,3 @@ The aligned decoder output is 137 frames at the original spatial geometry and fp
 This is a slice of continuous VAE latents, not an independent re-encode of a raw RGB crop.
 Full-source calibration, export parity and quality evaluation retain the original input contract.
 Store both full source/noise file pins and actual consumed window tensor hashes.
-
-## Progressive gate removal
-
-The progressive alternative uses 500 soft updates and no binary or compact phase.
-At the configured interval, filter by positive decrease and regret, then rank globally by regret and decreasing logit decrease.
-Remove up to the rounded-up fraction of the original head count; leave every other free gate soft.
-Free gates retain sigmoid gradients and free-logit sparsity with denominator 1,536. Terminal heads have no logit update.
-The [policy design](learn/progressive.md) defines trajectory statistics, deterministic global selection and exact resume.

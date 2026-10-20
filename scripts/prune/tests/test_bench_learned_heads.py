@@ -8,7 +8,7 @@ def test_benchmark_refuses_nonfinite_outputs_and_differences(tmp_path, monkeypat
     import pytest
     import torch
 
-    from scripts.prune.evaluate.bench_whole_clip_d0 import _one_arm
+    from scripts.prune.evaluate.timing import measure_arm as _one_arm
 
     class Model(torch.nn.Module):
         def __init__(self, value):

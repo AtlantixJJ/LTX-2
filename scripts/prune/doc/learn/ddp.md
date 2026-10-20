@@ -6,6 +6,7 @@ Run one uniform-F18 training draw per GPU with full native model replicas.
 
 ## Data flow
 
+`DDPRuntime` extends `learn.ddp_owner.Runtime` for exact device assignment, one 15-minute NCCL group and record collectives.
 Torchrun assigns ranks and local devices. Each process owns the frozen BF16 backbone, FP32 adapters, gates and Adam states.
 `TrainingStep` registers the model and hook-owned gates together. DDP sees both the velocity and sparsity gradient paths.
 One local undivided loss enters one backward. DDP averages trainable gradients across ranks.

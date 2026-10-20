@@ -10,6 +10,12 @@ Select the model and prompt context. Own transformer and decoder lifetimes.
 It returns a frozen `Session`.
 The transformer context builds a video-only `DiffusionStage` with the probed VAE factors.
 
+`open_model` opens a session from explicit model, device, transformer and prompt arguments.
+`open_session` remains the parser-facing avatar-compatible entrypoint.
+`open_frozen` opens an LTX-2.5 empty-text study session after checking Python, Torch and CUDA versions.
+It checks the actual context tensor hash and all resolved component paths against the frozen study.
+Full component content checks remain the study reader's responsibility.
+
 ## Organization logic
 
 `DTYPE=torch.bfloat16` owns weight and latent dtype.

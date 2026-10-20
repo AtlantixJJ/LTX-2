@@ -1,8 +1,9 @@
 import pytest
 import torch
 
-from scripts.prune.evaluate import learned_head_media
-from scripts.prune.evaluate.learned_head_media import panels, pixel_metrics
+from scripts.prune.evaluate import media_common
+from scripts.prune.evaluate.learned_head_media import panels
+from scripts.prune.evaluate.media_common import pixel_metrics
 
 
 def test_roles_frames_and_fixed_regions():
@@ -27,8 +28,8 @@ def test_white_resize_keeps_strict_metric_range(monkeypatch):
             assert torch.isfinite(value).all() and value.min() >= 0 and value.max() <= 1
         return 0.0
 
-    monkeypatch.setattr(learned_head_media, "lpips_distance", checked_metric)
-    result = learned_head_media.region_lpips(None, rgb, rgb, torch.ones(2, 257, 187), "cpu")
+    monkeypatch.setattr(media_common, "lpips_distance", checked_metric)
+    result = media_common.region_lpips(None, rgb, rgb, torch.ones(2, 257, 187), "cpu")
     assert result["lpips"] == 0 and result["frame_ids"] == [1]
     with pytest.raises(ValueError, match="bounded interpolation roundoff"):
-        learned_head_media.region_lpips(None, rgb.float() * 2, rgb, torch.ones(2, 257, 187), "cpu")
+        media_common.region_lpips(None, rgb.float() * 2, rgb, torch.ones(2, 257, 187), "cpu")

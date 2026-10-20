@@ -10,6 +10,7 @@ import torch.multiprocessing as mp
 from torch.utils.checkpoint import checkpoint
 
 from ltx_core.model.transformer.model import X0Model
+from scripts.prune.core import records
 from scripts.prune.data.learned_head_study import draw_list
 from scripts.prune.learn import adapters, checkpoints, protocol
 from scripts.prune.learn.ddp import DDPRuntime
@@ -114,10 +115,10 @@ def worker(rank, store, root):
                 torch.testing.assert_close(actual.grad, expected.grad, atol=2e-7, rtol=1e-5)
         ao.step()
         go.step()
-        digest = checkpoints.digest(
+        digest = records.digest(
             {
-                "alpha": checkpoints.tensor_hash(gates.alpha),
-                "adapters": {k: checkpoints.tensor_hash(v) for k, v in adapters.state_dict(modules).items()},
+                "alpha": records.tensor_hash(gates.alpha),
+                "adapters": {k: records.tensor_hash(v) for k, v in adapters.state_dict(modules).items()},
             }
         )
         runtime.agree(digest)
