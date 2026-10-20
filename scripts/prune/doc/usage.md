@@ -778,3 +778,11 @@ The [native matrix](checks/joint_split_parity.md#usage) checks every representat
 The native gate projection preserves its original output width. V, attention, output and FFN up paths remain compact.
 The default split bundle preserves original FFN down reduction coordinates. Its actual cost must include that full-width GEMM.
 Timing requires a separate qualified benchmark. A merged BF16 export failure remains visible.
+
+## Deck comparison
+
+The [deck comparison executor](evaluate/deck_comparison.md#usage) renders native dev, old step 3300 and new step 800.
+It uses saved source and noise, exact four-step or full-tail schedules, and actual checkpoint policies.
+Launch directly in ltx on the GPUs allocated to visualization, one process per GPU.
+Do not share a device with training.
+It does not restart training or change a frozen study.

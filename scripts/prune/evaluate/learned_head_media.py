@@ -43,11 +43,14 @@ def region_lpips(model, student, reference, weights, device, *, boxes=None, vali
             crop = masked[:, y0:y1, x0:x1].unsqueeze(0)
             if crop.numel() == 0:
                 raise ValueError("reviewed GT box lies outside pixel grid")
-            dest.append(
-                torch.nn.functional.interpolate(crop, (256, 256), mode="bilinear", align_corners=False, antialias=True)[
-                    0
-                ]
+            resized = torch.nn.functional.interpolate(
+                crop, (256, 256), mode="bilinear", align_corners=False, antialias=True
             )
+            # FP32 interpolation can overshoot white by a few ulps. Preserve the
+            # metric's strict RGB contract, and reject larger input errors.
+            if not torch.isfinite(resized).all() or resized.min() < -1e-6 or resized.max() > 1 + 1e-6:
+                raise ValueError("RGB resize exceeds bounded interpolation roundoff")
+            dest.append(resized[0].clamp(0, 1))
         frame_ids.append(f)
     if not left:
         return {"lpips": None, "valid_frames": 0, "frame_ids": [], "status": "missing_coverage"}

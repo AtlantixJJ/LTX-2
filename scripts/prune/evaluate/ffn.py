@@ -226,7 +226,7 @@ def decoded(study, gpu, split):
                     common_settings=dict(schedule=[sigma, 0.0], seed=seed, actor=source["actor"]),
                 )
                 rendering = verify_comparison(media.save_render(combined, rendering, dest))
-                checkpoints.publish_json(dest / "rendering.json", rendering)
+                checkpoints.publish_json(dest / "rendering.verified.json", rendering)
                 for role, _, value in roles:
                     saved_video(value, dest / f"{role}.mp4", source["fps"])
                 row = dict(

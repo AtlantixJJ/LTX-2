@@ -119,10 +119,12 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `data/extend_learned_heads.py` | [design](data/extend_learned_heads.md) | 226 |
 | `data/whole_clip.py` | [design](data/whole_clip.md) | 360 |
 | `data/training_windows.py` | [design](data/training_windows.md) | 104 |
+| `evaluate/deck_comparison.py.txt` | [deck comparison](evaluate/deck_comparison.md) | 252 |
+| `evaluate/deck_composite.py.txt` | [deck composition](evaluate/deck_composite.md) | 100 |
 | `evaluate/__init__.py` | package marker | 1 |
 | `evaluate/bench_whole_clip_d0.py` | [design](evaluate/bench_whole_clip_d0.md) | 193 |
 | `evaluate/decode.py` | [design](evaluate/decode.md) | 23 |
-| `evaluate/learned_head_media.py` | [design](evaluate/learned_head_media.md) | 290 |
+| `evaluate/learned_head_media.py` | [design](evaluate/learned_head_media.md) | 293 |
 | `evaluate/learned_head_checkpoint_media.py.txt` | [pinned checkpoint media](evaluate/learned_head_checkpoint_media.md) | 721 |
 | `evaluate/eligible_checkpoint_media.py.txt` | [design](evaluate/eligible_checkpoint_media.md) | 706 |
 | `evaluate/zero_one_checkpoint_media.py.txt` | [design](evaluate/zero_one_checkpoint_media.md) | 706 |

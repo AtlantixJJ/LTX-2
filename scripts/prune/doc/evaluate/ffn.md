@@ -39,6 +39,8 @@ Media uses the first view of four distinct actors, one saved seed and all three 
 It shows Capture RGB, Capture VAE, Native, Before recovery and After recovery in a wide grid.
 All panels use matched source frames, fps and aspect-preserving padding.
 Full individual source and output videos are retained.
+The renderer owns `rendering.json`. Added verification is published separately as `rendering.verified.json`.
+This preserves immutable publication and the original output hashes.
 Person LPIPS uses capture-derived matte coverage and boxes, with a Capture VAE/RGB ceiling.
 Frame LPIPS uses the whole frame. Neither proves correct identity or action.
 Original matte replay checks recorded crop and scale before interpreting images.

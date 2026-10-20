@@ -42,7 +42,7 @@ Keep native loss reduction in FP32. Preserve the frozen backbone and complete ra
 
 ## Gotchas
 
-A review trigger remains pending on restart. Formal training verifies pinned preflight receipts before any optimizer update. Final training requires separate four-rank native acceptance. The test command uses only physical GPUs 4–6. The owner never stops unrelated processes.
+A root `reviews/G*.json` trigger remains pending on restart. The frozen owner has no separate approval flag. An external reviewed-continuation supervisor can move the original record into `reviews/resolved/` only after saving and verifying its decision. It retains the original bytes and records a path/hash resolution index. The report reads both locations. Resume the unchanged study with `--phase train`; archive the old mutable terminal-owner receipt before restarting CPU readers. Formal training verifies pinned preflight receipts before any optimizer update. Final training requires separate four-rank native acceptance. The test command uses only physical GPUs 4–6. The owner never stops unrelated processes.
 
 ## Tests
 

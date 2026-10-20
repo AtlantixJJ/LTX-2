@@ -1,0 +1,100 @@
+"""Compose checked saved videos into two synchronized rows, one MP4 per actor.
+
+Run in ltx from LTX-2: python scripts/prune/evaluate/deck_composite.py.txt
+--root ../expr/refiner_prune/report-10-19 --actor 35. No model or decoder runs.
+Rows show four steps and the full tail. Columns show capture VAE, native,
+continuous soft gate step 3300 and window reset hard gate step 800. Preserve aspect ratios, all frames and 30 fps.
+Save frame maps, exact schedules, source hashes, labels, padding and a poster.
+"""
+
+import argparse
+import hashlib
+import json
+import subprocess
+from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageFont
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def build(root, actor):
+    base = root / f'data/video_comparison_sigma094/actor_{actor}'
+    rows = [json.loads((base / schedule / 'receipt.json').read_text()) for schedule in ('four', 'tail')]
+    keys = ('capture', 'epsilon_tensor_sha256', 'context_tensor_sha256', 'noisy_tokens_sha256',
+            'clean_first_frame_sha256', 'source', 'geometry', 'fps')
+    if not all(rows[0]['inputs'][k] == rows[1]['inputs'][k] for k in keys):
+        raise ValueError('four-step and full-tail inputs differ')
+    if rows[0]['steps'] != 4 or rows[1]['steps'] != 21 or rows[0]['schedule'][0] != rows[1]['schedule'][0]:
+        raise ValueError('unexpected schedule comparison')
+    sources, labels, records = [], [], []
+    for row in rows:
+        if not row['passed'] or not all(c['passed'] for c in row['controls']):
+            raise ValueError('saved execution control failed')
+        for role in ('capture_vae', 'native', 'old', 'new'):
+            item = row['capture_vae'] if role == 'capture_vae' else row['outputs'][role]['video']
+            if sha(item['path']) != item['sha256']:
+                raise ValueError('video bytes changed: ' + item['path'])
+            info = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                '-show_entries', 'stream=nb_frames,r_frame_rate,width,height', '-of', 'json', item['path']]))['streams'][0]
+            sources.append(item['path'])
+            labels.append({'capture_vae': 'Capture · VAE decoding', 'native': 'Native dev',
+                           'old': 'Continuous soft gate · step 3300', 'new': 'Window reset hard gate · step 800'}[role])
+            records.append(dict(role=role, steps=row['steps'], schedule=row['schedule'], source=item, probe=info))
+    if len({(r['probe']['nb_frames'],r['probe']['r_frame_rate']) for r in records}) != 1:
+        raise ValueError('video frame maps or playback rates differ')
+    frames = int(records[0]['probe']['nb_frames'])
+    dest = root / 'media/videos'
+    dest.mkdir(parents=True, exist_ok=True)
+    width, height, panel, gap, margin = 1576, 952, 384, 8, 8
+    canvas = Image.new('RGB', (width, height), '#f8fafc')
+    draw = ImageDraw.Draw(canvas)
+    font = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+    draw.text((margin, 7), f'Actor {actor} · How do the methods compare under each denoising schedule?',
+              font=ImageFont.truetype(font, 27), fill='#14253e')
+    positions = []
+    for i, title in enumerate(labels):
+        row, col = divmod(i, 4)
+        top = 100 + row * 460
+        if col == 0:
+            draw.text((margin, top - 53), '4 denoising steps' if row == 0 else 'Full tail · 21 denoising steps',
+                      font=ImageFont.truetype(font, 24), fill='#314f78')
+        x = margin + col * (panel + gap)
+        label_font = ImageFont.truetype(font, 22)
+        while draw.textlength(title, font=label_font) > panel - 8:
+            label_font = ImageFont.truetype(font, label_font.size - 1)
+        draw.text((x + 3, top - 28), title, font=label_font, fill='#14253e')
+        positions.append((x, top))
+    canvas.save(dest / f'actor_{actor}_labels.png')
+    cmd = ['ffmpeg', '-v', 'error', '-y', '-filter_complex_threads', '1', '-loop', '1', '-framerate', '30',
+           '-i', str(dest / f'actor_{actor}_labels.png')]
+    for source in sources:
+        cmd += ['-threads', '1', '-i', source]
+    filters = ['[0:v]format=yuv420p[base0]']
+    for i,(x,y) in enumerate(positions):
+        filters += [f'[{i+1}:v]setpts=PTS-STARTPTS,scale={panel}:{panel}:force_original_aspect_ratio=decrease,'
+                    f'pad={panel}:{panel}:(ow-iw)/2:(oh-ih)/2:color=white,setsar=1[p{i}]',
+                    f'[base{i}][p{i}]overlay={x}:{y}:shortest=1[base{i+1}]']
+    output = dest / f'actor_{actor}.mp4'
+    subprocess.run(cmd + ['-filter_complex', ';'.join(filters), '-map', '[base8]', '-frames:v', str(frames),
+                         '-an', '-c:v', 'libx264', '-threads', '4', '-crf', '18', '-preset', 'fast',
+                         '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(output)], check=True)
+    poster = dest / f'actor_{actor}_poster.png'
+    subprocess.run(['ffmpeg','-v','error','-y','-i',str(output),'-vf','select=eq(n\\,72)',
+                    '-frames:v','1','-threads','1',str(poster)],check=True)
+    (dest / f'actor_{actor}.json').write_text(json.dumps(dict(actor=actor, source_frames=list(range(frames)),
+        fps=30, panel_size=[panel,panel], positions=positions, padding='aspect-preserving contain; white',
+        rows=['4 steps','full tail: 21 steps'], columns=['capture_vae','native','old','new'], labels=labels,
+        inputs=rows[0]['inputs'], sources=records, poster_frame=72, executor=dict(path=str(Path(__file__).resolve()),sha256=sha(__file__)),
+        video=dict(path=str(output),sha256=sha(output)), poster=dict(path=str(poster),sha256=sha(poster))),indent=2))
+    print('COMPOSED', actor, output)
+
+
+if __name__ == '__main__':
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--root',type=Path,required=True)
+    parser.add_argument('--actor',choices=['35','25','84'],required=True)
+    args=parser.parse_args()
+    build(args.root.resolve(),args.actor)

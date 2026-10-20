@@ -25,6 +25,9 @@ Checked saved predictions, original RGB, VAE GT, teacher and fixed GT regions en
 
 Panels share every source frame and playback rate. RGB and VAE roles remain distinct. Full sources and individual videos are preserved.
 Pixel errors use fixed foreground coverage. Pinned AlexNet LPIPS uses GT boxes and 256-pixel crops, with invalid small regions excluded.
+The crop resize can overshoot the RGB interval through FP32 rounding.
+Clamp only finite resized values within 1e-6 of that interval; reject larger excursions.
+The LPIPS owner still requires finite pixels in [0,1].
 
 ## Invariants
 
