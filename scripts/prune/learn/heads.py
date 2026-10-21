@@ -23,7 +23,7 @@ from scripts.prune.core import ltx_adapter, numerics, provenance, records, sessi
 from scripts.prune.data import foreground, training_windows, whole_clip
 from scripts.prune.data.learned_head_study import load_study, monitor_sigma_indices, study_sigmas
 from scripts.prune.evaluate import timing
-from scripts.prune.learn import adapters, checkpoints, losses, protocol
+from scripts.prune.learn import adapters, checkpoints, losses, protocol, visualization
 from scripts.prune.learn.gates import HeadGates, nearest_removed, select_legal
 from scripts.prune.learn.teacher_references import TeacherReferences
 from scripts.prune.score import hooks, token_sampling
@@ -572,6 +572,8 @@ def training_phase(study, current, args, deadline):
                 if runtime:
                     runtime.mask(gates)
                 accumulation = 1 if runtime else len(selected)
+                visualize = visualization.arm(training, config, update, primary=runtime is None or runtime.primary)
+                preview = None
                 for draw in selected:
                     sigma = study_sigmas(study)[draw["sigma_index"]]
                     grid, video, c0, capture, eps, inputs, manifest = training_input_case(
@@ -603,6 +605,16 @@ def training_phase(study, current, args, deadline):
                         accumulation,
                     )
                     loss.backward()
+                    if preview is None:
+                        preview = visualization.snapshot(
+                            training,
+                            (grid, video, c0, capture, eps, inputs, manifest),
+                            study=study["identity"],
+                            update=update,
+                            phase=phase,
+                            **draw,
+                            sigma=sigma,
+                        )
                     scalars.append(
                         {
                             "official": float(official),
@@ -729,6 +741,10 @@ def training_phase(study, current, args, deadline):
                 if gate_trace is not None and (runtime is None or runtime.primary):
                     # Rows: logits after the step, total gradient, sparsity gradient. Replays must match bytes.
                     records.publish_tensor(directory / f"gate_trace/{update:04d}.pt", gate_trace)
+                if visualize:
+                    visualization.save(
+                        current, preview, directory / f"visualizations/update_{update:04d}", runtime=runtime
+                    )
                 if update == end or update % 100 == 0 or update in (soft_end, selection_end, compact_end):
                     save_checkpoint(
                         directory / f"checkpoints/update_{update:04d}.pt",

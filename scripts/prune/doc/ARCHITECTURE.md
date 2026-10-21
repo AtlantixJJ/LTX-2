@@ -131,6 +131,8 @@ Existing head entrypoints and historical checkpoint formats retain their behavio
 `evaluate.media_common` owns shared pixel metrics, source RGB and media verification.
 `evaluate.timing` owns synchronized timing and ABA/BAB bracket statistics.
 `learn.receipt_logger` follows FFN or V3 receipts without loading a model.
+`learn.visualization` captures actual training predictions and owns matched noisy/GT/x0 previews for all three learners.
+It uses the session's decoder, preserves RNG and coordinates rank-zero decoding with the training owner.
 
 Retired study executors and their designs are preserved in the workspace cleanup archive.
 Current consumers do not import those executors. The source index lists supported modules.

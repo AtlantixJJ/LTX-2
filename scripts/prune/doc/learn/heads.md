@@ -108,6 +108,12 @@ Each rank publishes only its own case tensors; rank zero publishes the gathered 
 Every optimizer receipt contains global draws and separate rank sigma/timing records for W&B.
 Total loss and validation errors are global means. Rank sigma and memory appear as multiline charts.
 
+The shared [preview owner](visualization.md) saves the first training draw on rank zero every 100 optimizer updates by default.
+Set `visualization_interval` in a new frozen config to change this interval, or use zero to disable it.
+The actual noisy input, GT and native x0 prediction share the same window, fps and clean first latent.
+Predictions use the training forward before the update. Decoding runs after the optimizer step and preserves RNG.
+Outputs live in `training/<arm>/replicate_<seed>/visualizations/update_NNNN/`.
+
 The recipe keeps rank/alpha 128, gate LR 0.01 and `lambda(t)=0.01*(0.1+0.9*min(t/100,1))`.
 Retired FSDP and block-placement executors require their archived source snapshots.
 

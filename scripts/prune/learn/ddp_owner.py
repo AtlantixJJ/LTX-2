@@ -30,7 +30,7 @@ from scripts.onestep_avatar.model import common
 from scripts.prune.core import ltx_adapter, provenance, records, session
 from scripts.prune.core.records import unchanged_state_hash
 from scripts.prune.data import training_windows
-from scripts.prune.learn import adapters, checkpoints, heads
+from scripts.prune.learn import adapters, checkpoints, heads, visualization
 
 
 class Runtime:
@@ -399,7 +399,9 @@ def train(study, current, runtime, family, *, max_updates=None, pilot=False):
                 sigma = cfg["sigmas"][draw["sigma_index"]]
                 case = input_case(study, current, sources[draw["view"]], draw["noise_seed"], sigma, crop=True)
                 torch.cuda.reset_peak_memory_stats(runtime.device)
+                visualize = visualization.arm(step, cfg, number, primary=runtime.primary)
                 metrics = state.update(step, wrapped, case, number, ao, go)
+                preview = visualization.snapshot(step, case, study=study["identity"], update=number, **draw, sigma=sigma)
                 if runtime.primary:
                     family.after_update(ctx, number)
                 if any(p._version != version for p, version in frozen):
@@ -461,6 +463,10 @@ def train(study, current, runtime, family, *, max_updates=None, pilot=False):
                         chain,
                     )
                 family.after_checkpoint(ctx, number)
+                if visualize:
+                    visualization.save(
+                        current, preview, root / f"training/visualizations/update_{number:04d}", runtime=runtime
+                    )
                 if family.monitor_due(ctx, number, end):
                     monitor(study, current, runtime, step, number)
                 if family.final_update(ctx) == number:

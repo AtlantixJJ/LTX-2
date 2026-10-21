@@ -2,7 +2,7 @@
 
 ## Objective
 
-Compare A, its selection endpoint and r3 with matched native and capture videos.
+Compare the selected arm, its selection endpoint and r3 with matched native and capture videos.
 
 ## Usage
 
@@ -25,7 +25,7 @@ Hash checks prove matched input and noise across native, selection, final and r3
 
 ```mermaid
 flowchart LR
-  S("Saved predictions and capture") -->|"native, A selection, A final, r3"| D["Pinned VAE and fixed regions"]
+  S("Saved predictions and capture") -->|"native, selected arm before/after recovery, r3"| D["Pinned VAE and fixed regions"]
   D --> P("Synchronized RGB panels") --> Q(["Person LPIPS and visual review"])
 ```
 
@@ -34,11 +34,13 @@ flowchart LR
 All 12 test views use seed 2042 and three exact direct schedules: 36 decoded cases.
 Metrics exclude the supplied first frame. Person LPIPS uses capture-derived foreground boxes and coverage.
 Whole-frame LPIPS and pixel errors supplement it. Capture VAE versus recorded RGB gives the reconstruction ceiling.
-Six synchronized panels show Capture RGB, Capture VAE, native, A before recovery, A after recovery and r3.
+Six synchronized panels show Capture RGB, Capture VAE, native, the selected arm before recovery, the selected arm after recovery and r3.
 The shared renderer preserves source frame order, fps and aspect ratios in two rows of three.
 Original videos remain available beside the comparison and poster.
 
 ## Invariants
+
+Panel titles and comparison questions use A, B or C from the frozen arm configuration.
 
 Never infer a region from generated pixels. Reject changed prediction bytes or mismatched saved noise.
 Keep RGB and VAE roles explicit. Do not treat LPIPS as proof of identity or action correctness.

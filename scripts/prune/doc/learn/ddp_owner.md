@@ -15,6 +15,7 @@ This module supplies the runtime, input reuse, monitors, exact-resume acceptance
 4. `train` resumes from the latest canonical checkpoint, or saves update zero and its monitor.
 5. Each update consumes `world_size` frozen draws. A three-rank pilot consumes the first three draws of each group.
 6. Rank zero publishes one immutable update receipt; all ranks join the stop, checkpoint and monitor decisions.
+7. At each visualization interval, rank zero decodes the actual training draw through the shared [preview owner](visualization.md).
 
 ```mermaid
 flowchart LR
@@ -41,8 +42,10 @@ A family module exposes these names:
 - `check_start`: preconditions before training, for example V3 prerequisites and pending reviews.
 - `after_update`, `receipt_fields`, `reviews`, `checkpoint_due`, `after_checkpoint`, `monitor_due`, `final_update`: the loop variations.
 
-The update order is fixed: forward/backward/step, family records, receipt, stop vote, reviews, checkpoint, family tail, monitor, final-update check.
+The update order is fixed: forward/backward/step, family records, receipt, stop vote, reviews, checkpoint, family tail, preview, monitor, final-update check.
 Checkpoints occur every `checkpoint_interval` updates, when `checkpoint_due` is true, or when a stop is requested.
+Previews default to every 100 optimizer updates. `visualization_interval=0` disables them.
+The captured x0 uses the weights before the optimizer update; decoding adds no transformer forward.
 
 `verify_consumed` rebuilds the input chain from the receipts and must equal the checkpoint's chain.
 Each rank checks a disjoint share of the consumed inputs; a failure on any rank stops all ranks.
@@ -71,6 +74,7 @@ Hard links reuse the parent study's saved inputs; the input owner still validate
 `tests/test_ddp_owner_families.py` checks both hook sets and the family boundaries on CPU.
 `tests/test_ddp_owner_loop.py` runs both numerical families through three updates and a serialized one-plus-two resume on four CPU ranks.
 It compares complete state hashes, scientific receipt digests, input chains and draw order.
+It enables previews every two updates and checks exact resume after the preview writer consumes Torch RNG.
 The fixture pins CPU gradient summation to rank order because Gloo bucket rebuilds can change floating-point reduction order.
 Separate gradient tests exercise the stock DDP reducer against serial accumulation.
 The loop fixture does not establish bit-identical process-restart behavior for native NCCL.

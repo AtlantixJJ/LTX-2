@@ -1,4 +1,4 @@
-"""Decode A, selection, native and r3 on 36 prespecified held-out cases.
+"""Decode the current arm, selection, native and r3 on 36 held-out cases.
 
 Run in ltx with --study and --gpu-id 4, 5 or 6. Waits, within --wait-hours, for
 both fixed endpoint inference result sets and a free assigned GPU. No training
@@ -55,10 +55,11 @@ def run(study, gpu, shard_index=0, shard_count=1, wait_hours=24.0):
     import lpips
 
     metric = lpips.LPIPS(net="alex", verbose=False).to(current.device).eval()
+    label = {"joint_clip_reset_v3": "A", "heads_clip_reset_v3": "B", "budget_joint_v3": "C"}[study["config"]["arm"]]
     titles = [
         ("native", "Native"),
-        ("selection", "A before recovery"),
-        ("final", "A after recovery"),
+        ("selection", f"{label} before recovery"),
+        ("final", f"{label} after recovery"),
         ("r3", "Earlier r3 final"),
     ]
     summaries = []
@@ -94,7 +95,7 @@ def run(study, gpu, shard_index=0, shard_count=1, wait_hours=24.0):
                     refs,
                     rows,
                     titles,
-                    question="Does A preserve the person better than r3?",
+                    question=f"Does {label} preserve the person better than r3?",
                     dest=dest,
                     source=source,
                     sigma=sigma,
@@ -119,7 +120,7 @@ def run(study, gpu, shard_index=0, shard_count=1, wait_hours=24.0):
                 records.publish_json(dest / "results.json", row)
                 summaries.append(row)
                 print(
-                    f"A media shard={shard_index} {len(summaries)}/{expected} actor={source['actor']} sigma={sigma}",
+                    f"{label} media shard={shard_index} {len(summaries)}/{expected} actor={source['actor']} sigma={sigma}",
                     flush=True,
                 )
                 gc.collect()

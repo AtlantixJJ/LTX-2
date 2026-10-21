@@ -6,7 +6,7 @@ import torch
 from torch import nn
 
 from scripts.prune.core import ltx_adapter
-from scripts.prune.learn import adapters, checkpoints, losses
+from scripts.prune.learn import adapters, checkpoints, losses, visualization
 from scripts.prune.learn.ffn_gates import FFNGates
 from scripts.prune.learn.gates import HeadGates, select_legal
 from scripts.prune.score import hooks
@@ -69,7 +69,8 @@ class JointStep(nn.Module):
 
     def forward(self, video, epsilon, capture, prefix_tokens, update):
         self.masks()
-        velocity, _ = ltx_adapter.velocity_forward(self.model, video)
+        velocity, clean = ltx_adapter.velocity_forward(self.model, video)
+        visualization.capture_prediction(self, clean)
         terms = losses.velocity_mse(velocity, epsilon, capture, prefix_tokens)
         loss, penalty = losses.phase_loss(
             terms,

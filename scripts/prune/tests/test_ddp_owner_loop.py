@@ -18,7 +18,7 @@ from torch.nn.parallel import DistributedDataParallel
 
 from ltx_core.model.transformer.model import X0Model
 from scripts.prune.core import records
-from scripts.prune.learn import checkpoints, ddp_owner, ffn, joint
+from scripts.prune.learn import checkpoints, ddp_owner, ffn, joint, visualization
 from scripts.prune.tests.test_ffn_learning import Velocity, case, config
 
 
@@ -52,6 +52,8 @@ class CPURuntime(ddp_owner.Runtime):
 
 
 class Current:
+    device = torch.device("cpu")
+
     @contextmanager
     def transformer(self):
         torch.manual_seed(42)
@@ -75,6 +77,7 @@ def worker(rank, store, directory, family_name):
         headroom_bytes=0,
         checkpoint_interval=1,
         monitor_interval=50,
+        visualization_interval=2,
     )
     if family is joint:
         cfg.update(
@@ -101,8 +104,22 @@ def worker(rank, store, directory, family_name):
         patch.setattr(ddp_owner, "memory", lambda *_: [dict(rank=r, free=1) for r in range(4)])
         patch.setattr(ddp_owner, "monitor", lambda *_, **__: None)
 
+        def preview(current, snapshot, destination):
+            assert runtime.primary and snapshot["settings"]["update"] == 2
+            assert all(not value.requires_grad for value in snapshot["latents"].values())
+            torch.rand(5)  # The shared preview owner must restore this RNG draw.
+            records.publish_json(destination / "fixture.json", snapshot["settings"])
+
+        patch.setattr(visualization, "_write", preview)
+
         def inputs(study, current, source, seed, sigma, **kwargs):
             value = list(case(rank=rank, number=seed))
+            value[0] = SimpleNamespace(
+                tokens_per_latent_frame=1,
+                latent_frames=6,
+                fps=30,
+                unpatchify_block=lambda tokens, frames: tokens.transpose(1, 2).reshape(1, 4, frames, 1, 1),
+            )
             value[-2:] = [Path(directory), {"training_window": {"seed": seed}}]
             # The owner appends /manifest.json to its returned input directory.
             return tuple(value)
@@ -123,6 +140,8 @@ def worker(rank, store, directory, family_name):
             dist.barrier()
             owner = records.read_json(Path(study["root"]) / "monitoring/owner.json")
             assert owner["status"] == "stopped" and owner["update"] == 3
+            if runtime.primary:
+                assert (Path(study["root"]) / "training/visualizations/update_0002/fixture.json").is_file()
             # A bounded no-op continuation must not execute a fourth update.
             ddp_owner.train(study, Current(), runtime, family, max_updates=3)
         if rank == 0:

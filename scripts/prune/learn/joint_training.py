@@ -14,7 +14,7 @@ import torch
 from torch import nn
 
 from scripts.prune.core import ltx_adapter, records
-from scripts.prune.learn import adapters, checkpoints, losses
+from scripts.prune.learn import adapters, checkpoints, losses, visualization
 from scripts.prune.learn.readmission import JointPolicy, budget_projection
 from scripts.prune.score import hooks
 
@@ -126,13 +126,15 @@ class JointStep(nn.Module):
             if self.config["arm"] == "budget_joint_v3" and not self.frozen and gates.phase != "all_one":
                 p = (gates.alpha / 1.5).sigmoid()
                 gates.current = gates.decision.to(p.device) + (p - p.detach())
-                gates.current.register_hook(gates.capture_gradient)
+                if gates.current.requires_grad:
+                    gates.current.register_hook(gates.capture_gradient)
             else:
                 gates.microbatch()
 
     def forward(self, video, epsilon, capture, prefix_tokens, update):
         self.masks()
-        velocity, _ = ltx_adapter.velocity_forward(self.model, video)
+        velocity, clean = ltx_adapter.velocity_forward(self.model, video)
+        visualization.capture_prediction(self, clean)
         terms = losses.velocity_mse(velocity, epsilon, capture, prefix_tokens)
         penalty = self.heads.alpha.sum() * 0 + self.ffn.alpha.sum() * 0
         if not self.frozen and self.config["arm"] != "budget_joint_v3":

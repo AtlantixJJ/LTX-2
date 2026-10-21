@@ -2,13 +2,14 @@
 
 DDP sees every trainable parameter and both gate-gradient paths in this forward.
 The shared native velocity and loss owners retain all numerical decisions.
-Return detached monitoring scalars so the clean-output graph has no extra owner.
+Return detached monitoring scalars. Optional previews copy clean predictions to CPU.
+The preview owner never retains the clean-output graph or changes the loss.
 """
 
 import torch
 
 from scripts.prune.core import ltx_adapter
-from scripts.prune.learn import losses
+from scripts.prune.learn import losses, visualization
 
 
 class TrainingStep(torch.nn.Module):
@@ -19,7 +20,8 @@ class TrainingStep(torch.nn.Module):
 
     def forward(self, video, epsilon, capture, prefix_tokens, update, phase, regions=None, accumulation=2):
         gates = self.gates.microbatch()
-        velocity, _ = ltx_adapter.velocity_forward(self.model, video)
+        velocity, clean = ltx_adapter.velocity_forward(self.model, video)
+        visualization.capture_prediction(self, clean)
         terms = losses.velocity_mse(velocity, epsilon, capture, prefix_tokens, regions)
         cfg = self.config
         loss, penalty = losses.phase_loss(

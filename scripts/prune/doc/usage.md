@@ -235,6 +235,9 @@ Use [joint_media](evaluate/joint_media.md#usage) for 36 synchronized held-out co
 Run these direct CLIs in ltx on free GPUs 4–6. They preserve historical studies and record separate execution identities.
 Keep concurrent training on its independently accepted four-GPU group. Never share a GPU with another model worker.
 
+The [historical endpoint reader](evaluate/historical_clip.md#usage) scores the saved head-only update-600 checkpoint without resuming training.
+It first replays all 12 saved development predictions; held-out scoring requires parity at the unchanged 0.02 limit.
+
 ## Learned FFN masks
 
 Read the [study preparation](data/ffn_study.md), [training entrypoint](learn/ffn.md)
@@ -313,6 +316,23 @@ Validation averages unique cases gathered from all ranks. The third monitored si
 Metric tabs are `train`, `gates`, `memory`, `ranks` and `validation`, without a `learned_joint/` prefix.
 Chart refresh defaults to ten updates and includes every saved point; global scalar metrics log each update.
 Different arms use separate W&B runs with identical metric names. See [logger design](learn/wandb_logger.md).
+
+## Training visualization
+
+Head, FFN and joint training save a visualization every 100 optimizer updates by default.
+Set `"visualization_interval": 25` in the config before freezing a new study to save every 25 updates.
+Set `"visualization_interval": 0` to disable it.
+Resumed runs use the global optimizer update number.
+
+Each preview shows the actual noisy latent, GT latent and predicted x0, decoded with the selected video VAE.
+The prediction comes from the training forward before its optimizer update. All panels use rank zero's first draw.
+The comparison keeps the complete decoded window and original fps, including the clean first frame.
+
+Head outputs: `training/<arm>/replicate_<seed>/visualizations/update_NNNN/`.
+FFN and joint outputs: `training/visualizations/update_NNNN/`.
+Each directory contains `comparison.mp4`, `poster.png`, `rendering.json` and the three individual latent tensors and decoded videos.
+Decoding uses model-aware overlapping tiles while the transformer remains resident, then unloads the VAE and restores RNG.
+See the [preview design](learn/visualization.md) for memory and evidence limits.
 
 ## Queued baseline reproduction
 

@@ -110,8 +110,9 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `evaluate/bench_whole_clip_d0.py` | [evaluate/bench_whole_clip_d0.md](evaluate/bench_whole_clip_d0.md) | 129 |
 | `evaluate/decode.py` | [evaluate/decode.md](evaluate/decode.md) | 21 |
 | `evaluate/ffn.py` | [evaluate/ffn.md](evaluate/ffn.md) | 381 |
+| `evaluate/historical_clip.py` | [evaluate/historical_clip.md](evaluate/historical_clip.md) | 136 |
 | `evaluate/joint_final.py` | [evaluate/joint_final.md](evaluate/joint_final.md) | 245 |
-| `evaluate/joint_media.py` | [evaluate/joint_media.md](evaluate/joint_media.md) | 156 |
+| `evaluate/joint_media.py` | [evaluate/joint_media.md](evaluate/joint_media.md) | 157 |
 | `evaluate/learned_head_media.py` | [evaluate/learned_head_media.md](evaluate/learned_head_media.md) | 231 |
 | `evaluate/learned_heads.py` | [evaluate/learned_heads.md](evaluate/learned_heads.md) | 339 |
 | `evaluate/media_common.py` | [evaluate/media_common.md](evaluate/media_common.md) | 148 |
@@ -122,21 +123,22 @@ Rebuild, validate and inspect the report, including narrow layouts, after change
 | `learn/adapters.py` | [learn/adapters.md](learn/adapters.md) | 162 |
 | `learn/checkpoints.py` | [learn/checkpoints.md](learn/checkpoints.md) | 209 |
 | `learn/ddp.py` | [learn/ddp.md](learn/ddp.md) | 79 |
-| `learn/ddp_owner.py` | [learn/ddp_owner.md](learn/ddp_owner.md) | 513 |
+| `learn/ddp_owner.py` | [learn/ddp_owner.md](learn/ddp_owner.md) | 519 |
 | `learn/ffn.py` | [learn/ffn.md](learn/ffn.md) | 95 |
 | `learn/ffn_gates.py` | inline header | 79 |
-| `learn/ffn_training.py` | [learn/ffn_training.md](learn/ffn_training.md) | 213 |
+| `learn/ffn_training.py` | [learn/ffn_training.md](learn/ffn_training.md) | 214 |
 | `learn/gates.py` | [learn/gates.md](learn/gates.md) | 123 |
-| `learn/heads.py` | [learn/heads.md](learn/heads.md) | 1336 |
+| `learn/heads.py` | [learn/heads.md](learn/heads.md) | 1352 |
 | `learn/joint.py` | [learn/joint.md](learn/joint.md) | 228 |
-| `learn/joint_training.py` | [learn/joint_training.md](learn/joint_training.md) | 338 |
+| `learn/joint_training.py` | [learn/joint_training.md](learn/joint_training.md) | 340 |
 | `learn/losses.py` | [learn/losses.md](learn/losses.md) | 153 |
 | `learn/protocol.py` | inline header | 69 |
 | `learn/readmission.py` | [learn/readmission.md](learn/readmission.md) | 362 |
 | `learn/receipt_logger.py` | [learn/receipt_logger.md](learn/receipt_logger.md) | 96 |
 | `learn/run_full.py` | [learn/run_full.md](learn/run_full.md) | 228 |
-| `learn/step.py` | inline header | 42 |
+| `learn/step.py` | inline header | 44 |
 | `learn/teacher_references.py` | [learn/teacher_references.md](learn/teacher_references.md) | 105 |
+| `learn/visualization.py` | [learn/visualization.md](learn/visualization.md) | 157 |
 | `learn/wandb_logger.py` | [learn/wandb_logger.md](learn/wandb_logger.md) | 268 |
 | `score/__init__.py` | inline header | 1 |
 | `score/estimators.py` | [score/estimators.md](score/estimators.md) | 81 |
@@ -172,6 +174,7 @@ Run from `LTX-2` in `ltx`. Read each owner's Usage section before launching.
 | [`data.prompt_cache`](data/prompt_cache.md) | [Usage](data/prompt_cache.md#usage) |
 | [`evaluate.bench_whole_clip_d0`](evaluate/bench_whole_clip_d0.md) | [Usage](evaluate/bench_whole_clip_d0.md#usage) |
 | [`evaluate.ffn`](evaluate/ffn.md) | [Usage](evaluate/ffn.md#usage) |
+| [`evaluate.historical_clip`](evaluate/historical_clip.md) | [Usage](evaluate/historical_clip.md#usage) |
 | [`evaluate.joint_final`](evaluate/joint_final.md) | [Usage](evaluate/joint_final.md#usage) |
 | [`evaluate.joint_media`](evaluate/joint_media.md) | [Usage](evaluate/joint_media.md#usage) |
 | [`evaluate.learned_head_media`](evaluate/learned_head_media.md) | [Usage](evaluate/learned_head_media.md#usage) |

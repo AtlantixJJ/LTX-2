@@ -10,6 +10,8 @@ Compute joint head/FFN updates and save exact, versioned learning state.
 DDP sees all trainable parameters through that module's forward.
 Live providers multiply native activations before their output projections.
 The official velocity loss excludes the supplied clean frame.
+When requested, the shared [preview owner](visualization.md) copies native x0 to CPU without its graph.
+The DDP owner supplies the matching noisy input and GT and performs decoding after the update.
 
 ## Organization logic
 
