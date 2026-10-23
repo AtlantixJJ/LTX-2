@@ -19,6 +19,9 @@ ALLOWED = {
     # Study freezing binds learning identities, protocols and gate geometry.
     ("data/learned_head_study.py", "learn"),
     ("data/ffn_study.py", "learn"),
+    # Compact A preparation reads A's learned state and streams the merged compact export.
+    ("data/compact_study.py", "learn"),
+    ("data/compact_study.py", "score"),
     # Recovered exports read learned states and replay consumed inputs.
     ("score/export_joint.py", "learn"),
     ("score/export_learned_ffn.py", "learn"),

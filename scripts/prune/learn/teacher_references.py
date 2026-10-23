@@ -1,4 +1,9 @@
-"""Single immutable teacher evidence owner with bounded disk and CPU caches."""
+"""Store immutable original-model references with bounded disk and CPU caches.
+
+reference_key binds the declared input and component identity. Reuse only an
+exact identity match; conflicting stored predictions fail. The cold cache caps
+saved evidence and the hot cache evicts by its byte budget, avoiding unbounded
+teacher tensors while the student model is resident."""
 
 from __future__ import annotations
 

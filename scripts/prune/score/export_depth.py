@@ -1,4 +1,13 @@
-"""Stream an intact-block D0 deletion into a physically shorter checkpoint."""
+"""Stream intact-block deletion into a physically shorter checkpoint.
+
+create_artifact binds a supplied deletion set to a native saved baseline.
+export preserves retained payload bytes, renames blocks in original order and
+slices supported per-block config lists without CUDA or full weight loading.
+verify_export checks architecture and provenance; retained_blocks supplies the
+reversible functional parity reference. See doc/score/export_depth.md.
+
+CLI: python -m scripts.prune.score.export_depth --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

@@ -1,4 +1,8 @@
-"""Synchronized three-panel comparison video for the saved-rollout producer."""
+"""Render synchronized capture, native and candidate comparison videos.
+
+Normalize supported image tensor layouts, pad panels without changing aspect
+ratio and keep frame/fps coverage aligned. This renderer consumes images;
+model and VAE execution belong to its caller."""
 
 from __future__ import annotations
 

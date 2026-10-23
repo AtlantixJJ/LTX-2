@@ -1,4 +1,7 @@
-"""Decode a dense video latent through the session-owned video VAE."""
+"""Decode dense latents through the session-owned video VAE.
+
+Convert the decoded tensor to the requested frame/image format and release the
+session decoder on exit. This helper performs no denoising or model selection."""
 
 from __future__ import annotations
 

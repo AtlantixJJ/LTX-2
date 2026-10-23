@@ -1,10 +1,12 @@
-"""Bounded native acceptance for uniform-F18 DDP before sustained head training.
+"""Run bounded native acceptance for uniform temporal-crop head training.
 
-Even ranks use an F18 source and odd ranks a nonzero crop of an F28 source.
-The check proves zero-adapter all-one parity, soft and binary DDP gradients,
-frozen backbone weights, device headroom and an exact resumed update.
-See doc/checks/ddp_native.md.
-"""
+Even ranks use full F18 sources; odd ranks use a nonzero F28 crop. Check zero
+adapter/all-one parity, soft/binary gradients, frozen base weights, headroom
+and a serialized resumed update. The saved receipt binds study, method and
+configured world size. See doc/VALIDATION.md for native evidence requirements.
+
+CLI: python -m scripts.prune.checks.ddp_native --help.
+Workflows and launch settings: doc/usage.md."""
 
 import argparse
 import os

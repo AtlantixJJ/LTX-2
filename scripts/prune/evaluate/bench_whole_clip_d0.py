@@ -1,4 +1,12 @@
-"""Benchmark matched whole-clip D0 one-step forwards for baseline and compact export."""
+"""Measure matched baseline and candidate full-video D0 forward costs.
+
+Validate saved inputs and actual noise equality, reconstruct one case and load
+one model at a time. evaluate.timing checks the recorded prediction before
+warmed synchronized repetitions. An ABA or BAB bracket repeats the outer arm
+to measure drift. Save per-arm timing, resident parameters and peak memory.
+
+CLI: python -m scripts.prune.evaluate.bench_whole_clip_d0 --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

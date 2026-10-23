@@ -1,126 +1,87 @@
-# learn/heads
+# Learned head phases
 
 ## Objective
 
-Run bounded resident-model phases for the learned-head experiment.
+Train attention-head choices and low-rank recovery weights against saved capture velocity targets.
+The phase owner keeps one model resident and publishes resumable state plus matched monitoring evidence.
+The [glossary](../glossary.md) defines gates, original IDs, receipts and DDP.
 
 ## Usage
 
-Started by: a direct human or agent CLI. Run from `LTX-2` in conda environment `ltx`.
+For a fresh default GT study, use the [full-run recipe](../usage.md#uniform-f18-ddp-training).
+It launches `learn.run_full`, which checks acceptance and runs the phases in order.
+A direct bounded diagnostic from `LTX-2` in `ltx` is:
 
 ```bash
-CUBLAS_WORKSPACE_CONFIG=:4096:8 conda run --no-capture-output -n ltx python -m scripts.prune.learn.heads --study ../expr/refiner_prune/2.5/learned_heads_dev8_20261012_r2/configs/frozen_study.json --phase feasibility --gpu-id 0
+CUBLAS_WORKSPACE_CONFIG=:4096:8 python -m scripts.prune.learn.heads \
+  --study <frozen_study.json> --phase feasibility --gpu-id <configured_free_gpu>
 ```
 
-`--phase` selects one bounded phase. `--arm`, `--replicate-seed` and `--removed-heads` select the frozen arm. `--branch-prefix` reuses a verified soft-phase prefix. `--max-updates` bounds a smoke run.
-
-Outputs: Phase receipts, learning state, observations, monitoring predictions and timing probes.
-See the [run guide](../usage.md#learned-head-phases).
+`--phase` selects the operation; `--arm`, `--replicate-seed` and `--removed-heads` select a frozen experiment choice.
+`--max-updates` bounds a disposable smoke run. Use DDP launch settings from the run guide for optimizer phases.
+Outputs include checkpoints, immutable update/phase receipts, monitor tensors, input identities and gate traces under the study root.
 
 ## Data flow
 
-The frozen study selects explicit dev components and draws. The shared input owner constructs every complete native D0 input.
-`training_input_case` applies the frozen F18 crop only to optimizer inputs.
-`input_case` delegates to `whole_clip.load_case`, which reconstructs from the exact capture/noise buffers it verified.
-Each case loads each tensor once. Full-source monitoring and F18 cropping retain the same calculations and schedules.
-The current default uses full-replica DDP with one draw per rank and native gradient checkpointing.
-Four ranks consume four distinct draw indices; no rank duplication occurs.
+The frozen study binds components, actor splits and all draws.
+`data.whole_clip.load_case` verifies and deserializes each capture/noise buffer once.
+`data.training_windows` crops optimizer inputs when configured; monitoring uses complete sources.
+`core.ltx_adapter.velocity_forward` supplies native velocity for the [official loss](../core_algorithm.md#learned-velocity-and-binary-selection).
+The unchanged native model is an evaluation reference, not the velocity-loss target.
 
 ## Organization logic
 
-Feasibility checks native velocity conversion, all-one gates and zero adapters. Zero-adapter parity runs under `no_grad`; only optimizer forwards enable autograd. Ten backward updates test each complete clip length.
-Execution probes export three 152-head layouts and four FFN widths. ABA/BAB timing repeats twenty times when drift exceeds two percent.
-The frozen config sets the budget: `soft_updates`, `binary_updates` and `compact_updates` give global boundaries through `protocol.phase_budget`. The default preset uses 700 soft and 300 binary updates; an extended study can use 2,000 soft and 0 binary. Soft-only keeps soft gates through the selection end. Fixed energy and random arms ramp for 300 updates.
-Recovery slices adapters and Adam moments at original head IDs. Fresh controls reset adapters and moments. Sequential recovery adds 1,000 adapter updates beyond the compact end.
-Every attachment and fresh source-state reset consumes the frozen adapter rank, including rank 128.
+| Phase or recovery arm | Inputs | Decision or calculation | Saved outputs |
+|---|---|---|---|
+| `feasibility` | Frozen components, both full-source lengths, all configured sigmas | Check velocity conversion, all-one gates, zero adapters, initialized gates and bounded backwards | Native predictions, gradients, headroom and feasibility receipt |
+| `execution_probes` | Frozen source and declared test layouts | Compare dense, functional and compact execution; bracket timing | Layout-specific predictions, export differences and timing receipts |
+| `energy_calibration` | Frozen learning subset and sampled query tokens | Rank heads by `score.estimators.projected_energy` | Pinned `calibration/ranking.json` with actual coverage |
+| `teacher_references` | Selected split, exact inputs and unchanged model | Produce immutable teacher predictions for a teacher-reference study | Versioned bounded teacher cache |
+| `selection`, soft part | Paired draws, initialized head logits and adapters | Train sigmoid gates with the configured sparsity penalty | Updated FP32 logits/adapters, optimizer state, trace and input chain |
+| `selection`, binary part | Soft checkpoint and allowed block counts | Choose an exact legal binary budget each update; use a sigmoid surrogate gradient | Binary masks in original IDs, adapters and resumable state |
+| `compact_recovery` | Fixed selected IDs, compact base and selection adapters | Slice adapters and Adam moments by original IDs; train adapters with retained gate amplitude one | Fixed-width recovered checkpoint |
+| `compact_recovery`, arm `learned_sequential` | Selected IDs and that arm's declared recovery budget | Spend the extra recovery budget with fixed choices | Separately attributable continuation state |
+| `compact_recovery`, a configured fresh arm | Same selected IDs and a fresh source adapter initialization | Discard selection adapters/moments, then slice and recover | Independent fresh-recovery control |
+
+`learn.protocol.phase_budget` derives global boundaries from the frozen config.
+The [preset section](../usage.md#preset-values) owns update counts, ranks, learning rates and monitor settings.
+Soft-only, random and energy arms use their declared selection paths; they share the same input and adapter-state contracts.
+
+In default `monitor_reference=gt_capture` mode, monitors compare native predictions with GT capture without a teacher cache.
+`learn.run_full` runs matching DDP acceptance, selection, compact-base export, compact recovery and final merge.
+An energy arm requires an already prepared ranking record.
+Foreground or regional arms require reviewed GT region preparation; a study that defers those inputs cannot run them.
+
+Each DDP rank consumes its own frozen crop and computes one complete loss.
+DDP averages parameter gradients once. A decision is fixed for the whole update; each forward gets a fresh surrogate graph.
+Monitoring gathers unique full-source cases across ranks, then rank zero publishes one JSON result.
+
+When logits train, `gate_trace/NNNN.pt` records post-step logits, total averaged pre-clip gradients and analytic sparsity gradients.
+Subtract the sparsity row from the total-gradient row to obtain the velocity component.
+The shared preview owner saves the actual first rank-zero training forward and preserves RNG during decoding.
+See [preview and logging settings](../usage.md#training-visualization).
 
 ## Invariants
 
-The caller enables autograd locally. Base weights stay frozen. Non-reentrant block checkpointing is enabled. There is one legal decision per optimizer update.
+- Freeze backbone weights so recovery changes only the declared adapters and selection state.
+- Keep original head IDs through slicing, checkpointing and optimizer transfer; position and moment identity depend on them.
+- Preserve source/noise pins and consumed-window hashes so resume replays the same draws.
+- Restore complete optimizer and rank RNG state before another update; use a new frozen study after a loss change.
 
 ## Gotchas
 
-A failed memory or execution gate prevents sustained speed training. Timeout retains progress. Regional training rejects unavailable reviewed tracks. Monitoring never creates teacher substitutes.
+The initialized sigmoid of a positive logit is less than one; compare it separately from all-one-gate parity.
+A timeout saves completed progress; the full owner resumes only its bounded timeout segments with increased progress.
+Teacher-reference studies require their immutable reference evidence; GT mode follows its own configured prerequisites.
+Use [verification](../VALIDATION.md) for structural, native, decoded and speed qualification.
 
 ## Tests
 
-Run `test_learned_gates.py, test_head_learning_state.py, test_bench_learned_heads.py` with CUDA hidden. Native BF16 checks remain separate scientific gates.
+`tests/test_learned_gates.py` compares the legal selector with brute force and checks binary surrogate gradients.
+`tests/test_head_losses.py` checks the official loss and analytic sparsity gradient.
+`tests/test_head_learning_state.py` checks serialized resume and exact optimizer state.
 
-## Numerical and execution records
-
-Feasibility saves native velocity, ordinary clean predictions and initialized sigmoid-gate predictions at each exact sigma.
-Its ten optimizer updates per length use two sequential backward graphs with unchanged logits per update.
-Execution probes preserve functional-mask predictions separately from dense and compact outputs.
-They record both the functional/export difference and the intentional dense/pruned difference.
-Fresh and sequential arms retain their extra-compute lineage.
-Monitoring uses precomputed original-teacher references on four validation actors at sigma indices 0, 4 and 7.
-It saves trained and hardened predictions with the same adapter weights at each selection checkpoint.
-A timeout checkpoints the latest completed update; completed evidence remains immutable.
-
-## GT monitoring
-
-`monitor_reference=gt_capture` removes teacher-cache and speed-gate requirements for the declared quality experiment.
-Monitors measure velocity MSE, capture MSE and exact clean-frame equality.
-
-The GT preset defers foreground replay and bucket preparation because its main loss consumes only capture latents and noise.
-Regional and balanced arms reject that deferred scope. They require a separately prepared study.
-
-## Raw-logit sparsity
-
-The frozen config selects the sparsity penalty and logit offset. Pass the raw FP32 logits to the shared loss owner.
-Record the penalty form, offset and actual warmup coefficient with each update.
-Pass the frozen ramp duration and start multiplier to the shared coefficient owner for loss, gradient and receipt.
-The adapter LR uses its existing phase warmup. Gate LR is constant from the first update.
-Use the matching analytic sparsity gradient before clipping to separate velocity and sparsity gradient norms.
-Save `sparsity_logit_gradient_norm` and `velocity_logit_gradient_norm` after distributed gradient averaging and before gate clipping.
-The sparsity gradient includes the current lambda. The velocity component is the total gradient minus the analytic sparsity gradient.
-The shared W&B writer logs both as `train/` scalars at every update.
-Continuation restores the saved optimizers, masks, RNG state and global update count. A changed loss requires a separate frozen study.
-The continuation owner preserves source update receipts in checkpoint lineage; never rewrite their original study identities.
-
-## Frozen sigma grid
-
-Read the exact noise levels from the frozen study, never from the historical score grid.
-The current ten-level preset omits sigma 0.1 and includes all five official dev levels in [0.9, 0.95].
-Its input manifests declare the complete frozen training grid. Draw indices select that grid.
-Quick monitors use explicit `monitor_sigma_indices` when supplied; historical configs default to zero, four and the last level.
-The ten-level preset selects indices [0,7,9], preserving sigmas 0.9489720463752747, 0.7663628458976746 and 0.48016369342803955.
-For a fresh run, initialize adapters, logits, optimizer moments and RNG state from the declared seed.
-Updates up to `soft_updates` use soft gates. The next update starts binary refinement with sparsity disabled; with zero binary updates, compact recovery starts directly from the soft selection checkpoint.
-
-## Uniform F18 and DDP
-
-The `ddp_full_replicas` preset requires `uniform_f18=true`, accumulation one and a four-draw global batch on four GPUs.
-`learn.protocol` selects each rank's draw and checks complete schedule coverage.
-`data.training_windows` slices aligned continuous capture/noise tokens, resets positions and inserts the selected window's clean first latent.
-Preserve full source manifests. Each consumed draw records window bounds, coordinate policy and cropped tensor hashes.
-Resume verifies both full source bytes and the actual consumed slices.
-
-`TrainingStep` registers native model and pruning logits together inside the DDP forward.
-The local loss has no accumulation division. DDP averages gradients once across ranks.
-The runtime checks those gradients before separate clipping and Adam steps; it never reduces them a second time.
-The four copies have identical trained state. Freeze gate parameters when no gate optimizer is active.
-Checkpoint cursors use the frozen draw count per update.
-
-Quick GT monitoring assigns different actors to ranks and gathers all unique actor/sigma cases into one receipt.
-Monitoring still uses full source clips. It runs native no-grad forwards directly on replicas, without a DDP backward.
-Each rank publishes only its own case tensors; rank zero publishes the gathered monitor JSON.
-Every optimizer receipt contains global draws and separate rank sigma/timing records for W&B.
-Total loss and validation errors are global means. Rank sigma and memory appear as multiline charts.
-
-The shared [preview owner](visualization.md) saves the first training draw on rank zero every 100 optimizer updates by default.
-Set `visualization_interval` in a new frozen config to change this interval, or use zero to disable it.
-The actual noisy input, GT and native x0 prediction share the same window, fps and clean first latent.
-Predictions use the training forward before the update. Decoding runs after the optimizer step and preserves RNG.
-Outputs live in `training/<arm>/replicate_<seed>/visualizations/update_NNNN/`.
-
-The recipe keeps rank/alpha 128, gate LR 0.01 and `lambda(t)=0.01*(0.1+0.9*min(t/100,1))`.
-Retired FSDP and block-placement executors require their archived source snapshots.
-
-## Gate trace
-
-When gate logits train, the primary rank writes `training/<arm>/replicate_<seed>/gate_trace/NNNN.pt` for every update.
-It is a (3, blocks, heads) FP32 tensor: row 0 holds the logits after the optimizer step, row 1 the total logit gradient
-after DDP averaging and before clipping, and row 2 the analytic sparsity gradient (zero outside the soft phase).
-The velocity part is row 1 minus row 2. A replayed update must reproduce the same tensor; the update receipts are unchanged.
-Report code uses the trace for per-update regret and direction changes; without it, analysis falls back to checkpoints.
+`tests/test_head_adapters.py` checks original-ID parameter and Adam-moment transfer.
+`tests/test_ddp_training.py` compares distributed gradients with serial four-draw accumulation.
+`tests/test_gt_reference.py` and `tests/test_training_windows.py` check full-source GT monitoring and crop identities.
+`tests/test_bench_learned_heads.py` checks probe budgets, nonfinite timing refusal and drift decisions.

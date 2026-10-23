@@ -1,4 +1,13 @@
-"""CPU preparation of complete, actor-disjoint learned-head experiments."""
+"""Prepare actor-disjoint learning, validation and test inputs on CPU.
+
+Explicit evidence lists determine excluded actors; preparation does not scan
+experiment trees for membership. Pin source views, exact sigmas, components,
+context and deterministic paired draws before publishing a frozen study.
+Foreground and reviewed regions are required only by arms that consume them.
+The run guide owns the default preset and its GT monitoring settings.
+
+CLI: python -m scripts.prune.data.learned_head_study --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

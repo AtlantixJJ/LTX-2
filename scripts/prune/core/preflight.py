@@ -1,4 +1,13 @@
-"""Validate checkpoint paths, model capabilities and GPU headroom before model loading."""
+"""Validate model components and free device capacity before loading weights.
+
+check resolves a registry entry and checks the requested CUDA device, including
+making it current for decoder kernels. free_gpus reports decimal GB. Native
+whole-clip callers impose their larger GiB capacity guard separately.
+testing_gpu selects a diagnostic device only from the frozen test list and
+checks native capacity. CPU study preparation does not probe device state.
+
+CLI: python -m scripts.prune.core.preflight --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 
@@ -12,6 +21,26 @@ import torch
 
 from scripts.prune.core import artifacts, model_registry, provenance
 from scripts.prune.core.model_registry import RefinerModel
+
+
+def testing_gpu(config, gpu_id=None):
+    """Choose only from the frozen test list and require native capacity before loading.
+
+    Single-device diagnostics use unmasked physical CUDA indices. An omitted
+    ID selects the first configured test device, never a hardcoded machine ID.
+    Frozen-study validation owns list structure; this function checks availability.
+    """
+    if os.environ.get("CUDA_VISIBLE_DEVICES") is not None:
+        raise ValueError("single-device diagnostics require CUDA_VISIBLE_DEVICES unset; frozen GPU IDs are physical")
+    allowed = config["test_gpu_ids"]
+    chosen = allowed[0] if gpu_id is None else gpu_id
+    if type(chosen) is not int or chosen < 0 or chosen not in allowed:
+        raise ValueError("diagnostic GPU must belong to the frozen test_gpu_ids")
+    if not torch.cuda.is_available() or chosen >= torch.cuda.device_count():
+        raise ValueError(f"configured test GPU {chosen} is unavailable")
+    if torch.cuda.mem_get_info(chosen)[0] < 44 * 2**30:
+        raise ValueError(f"configured test GPU {chosen} needs at least 44 GiB free")
+    return chosen
 
 
 def free_gpus(min_free_gb: float = 4.0) -> list[dict]:

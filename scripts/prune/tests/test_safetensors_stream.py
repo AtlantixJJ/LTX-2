@@ -1,6 +1,7 @@
 """Streaming preserves real serialized bytes and rejects changed sources before publication."""
 
 import json
+import os
 
 import pytest
 import torch
@@ -100,7 +101,10 @@ def test_changed_source_and_invalid_transform_never_publish(tmp_path):
     shapes, metadata = safetensors_stream.inspect(source)
 
     def mutate(value):
-        source.touch()
+        # A fast touch can share the original filesystem timestamp. Advance
+        # it explicitly so this fixture always injects a real metadata change.
+        before = source.stat()
+        os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
         return value
 
     with pytest.raises(ValueError, match="source checkpoint changed"):

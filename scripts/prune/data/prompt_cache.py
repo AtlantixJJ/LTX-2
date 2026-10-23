@@ -1,4 +1,12 @@
-"""Cache text conditioning by model and prompt; verify cached tensors on request."""
+"""Cache video text conditioning by model key and prompt hash.
+
+get_or_build encodes a missing context and otherwise reuses the cache.
+verify re-encodes, compares actual tensors and replaces the cache; preserve a
+suspect file before diagnosis. Filenames do not include component hashes.
+The CLI verifies DEFAULT_PROMPT; explicit empty text uses the public API.
+
+CLI: python -m scripts.prune.data.prompt_cache --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

@@ -1,4 +1,13 @@
-"""Compare a native D0 structural export with its functional mask on saved inputs."""
+"""Compare an exported checkpoint with its declared functional D0 intervention.
+
+Reconstruct identical saved inputs and load one transformer at a time. Width
+artifacts attach binary masks; depth artifacts use the retained block list.
+Require finite matching shapes and the requested maximum difference; publish
+per-case differences and return failure on any rejected case.
+See doc/score/export_pruned.md and doc/score/export_depth.md.
+
+CLI: python -m scripts.prune.checks.export_parity --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

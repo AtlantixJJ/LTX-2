@@ -1,9 +1,13 @@
-"""Freeze V3 joint studies from the paired r3 and clipped draw authorities.
+"""Freeze joint clipped-selection studies from verified paired input authorities.
 
-Preparation preserves source bytes, exact schedules and the attention initializer.
-New policy and code identities never mutate a historical frozen study. See the
-matching design in doc/data/joint_study.md for the complete launch command.
-"""
+Copy exact schedules, source pins and the extended draw prefix into a new
+identity. The selected arm fixes the event policy; the matched-budget arm also
+pins a joint reference endpoint and budget receipt. Preparation writes no
+training state and never modifies its parent. Device IDs are frozen config,
+not machine constants. See doc/learn/readmission.md for policy state.
+
+CLI: python -m scripts.prune.data.joint_study --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ from pathlib import Path
 
 from scripts.prune.core.provenance import file_sha256
 from scripts.prune.core.records import digest, publish, publish_json
-from scripts.prune.data.study_io import code_identity, read_frozen, verify_files
+from scripts.prune.data.study_io import code_identity, read_device_config, read_frozen, validate_devices, verify_files
 
 SIGMAS = [0.9489720463752747, 0.7663628458976746, 0.48016369342803955]
 ARMS = ("joint_clip_reset_v3", "heads_clip_reset_v3", "budget_joint_v3")
@@ -23,8 +27,7 @@ ARMS = ("joint_clip_reset_v3", "heads_clip_reset_v3", "budget_joint_v3")
 def validate_config(cfg):
     if cfg["format"] != "joint_config_v3" or cfg["arm"] not in ARMS:
         raise ValueError("unknown joint arm or config")
-    if cfg["gpu_ids"] != [0, 1, 2, 3] or cfg["test_gpu_ids"] != [4, 5, 6] or cfg["world_size"] != 4:
-        raise ValueError("joint device assignment differs")
+    validate_devices(cfg)
     if [cfg["sigmas"][i] for i in cfg["monitor_sigma_indices"]] != SIGMAS:
         raise ValueError("joint exact monitor schedules differ")
     expected = dict(interval=50, late=10, earliest=200, limit=1500, recovery=200, alignment=128)
@@ -32,14 +35,14 @@ def validate_config(cfg):
         raise ValueError("joint frozen method differs")
     if cfg["arm"] == "budget_joint_v3":
         if not 200 <= cfg["selection_updates"] <= 1500 or not cfg.get("budget_receipt"):
-            raise ValueError("C requires A's endpoint and budget receipt")
+            raise ValueError("budget_joint_v3 requires the joint reference endpoint and budget receipt")
         if not 48 * (704 + 128) <= cfg.get("budget", 0) <= 1536 * 704 + 786432:
-            raise ValueError("C budget cannot satisfy charged block guards")
+            raise ValueError("budget_joint_v3 budget cannot satisfy charged block guards")
     elif cfg["selection_updates"] != 1500:
         raise ValueError("joint selection bound differs")
 
 
-def prepare(source, continuation, plan, output, *, arm=ARMS[0], budget_receipt=None, prerequisites=None):
+def prepare(source, continuation, plan, output, *, arm=ARMS[0], budget_receipt=None, prerequisites=None, device_config=None):
     source, continuation, plan, output = [Path(p).resolve() for p in (source, continuation, plan, output)]
     parent = json.loads(source.read_text())
     identity = parent.pop("identity")
@@ -50,6 +53,8 @@ def prepare(source, continuation, plan, output, *, arm=ARMS[0], budget_receipt=N
     if continuation_identity != digest(extended):
         raise ValueError("draw continuation identity changed")
     cfg = copy.deepcopy(parent["config"])
+    if device_config is not None:
+        cfg.update(read_device_config(device_config))
     cfg.update(
         format="joint_config_v3",
         arm=arm,
@@ -140,6 +145,7 @@ def main():
     parser.add_argument("--arm", choices=ARMS, default=ARMS[0])
     parser.add_argument("--budget-receipt", type=Path)
     parser.add_argument("--prerequisites", type=Path)
+    parser.add_argument("--device-config", type=Path, help="New device groups; the frozen parent remains unchanged")
     args = parser.parse_args()
     study = prepare(
         args.source_study,
@@ -149,6 +155,7 @@ def main():
         arm=args.arm,
         budget_receipt=args.budget_receipt,
         prerequisites=args.prerequisites,
+        device_config=args.device_config,
     )
     print(json.dumps(dict(identity=study["identity"], root=study["root"])))
 

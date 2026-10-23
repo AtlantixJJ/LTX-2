@@ -5,6 +5,8 @@ other fields. `code_identity` digests the package sources, the LTX core and
 pipeline utilities and the avatar corpus/model sources; any edit changes it.
 `read_frozen` checks format, identity and, by default, the code identity.
 `verify_files` hashes each distinct pinned path once.
+`validate_devices` checks disjoint device groups while retaining the four-rank
+draw contract; actual availability is checked at native startup.
 """
 
 import json
@@ -45,3 +47,38 @@ def verify_files(items):
             seen[path] = file_sha256(path)
         if seen[path] != item.get("sha256", item.get("file_sha256")):
             raise ValueError(f"frozen input changed: {path}")
+
+
+def validate_devices(config):
+    """Validate frozen physical-device groups without probing CUDA during CPU preparation.
+
+    Formal learning retains four draws/ranks. Device IDs can change in a new
+    config; each group must be nonempty, unique and disjoint from the other.
+    Runtime availability is checked immediately before model loading.
+    """
+    if type(config.get("world_size")) is not int or config["world_size"] != 4:
+        raise ValueError("the frozen draw contract requires four formal ranks")
+    for key in ("gpu_ids", "test_gpu_ids"):
+        values = config.get(key)
+        if (
+            not isinstance(values, list)
+            or not values
+            or any(type(value) is not int or value < 0 for value in values)
+            or len(set(values)) != len(values)
+        ):
+            raise ValueError(f"{key} must contain distinct nonnegative physical GPU IDs")
+    if len(config["gpu_ids"]) != config["world_size"] or set(config["gpu_ids"]) & set(config["test_gpu_ids"]):
+        raise ValueError("formal/test GPU groups must be disjoint and match the frozen world size")
+
+
+def read_device_config(path):
+    """Read only device groups for a new study, without changing its frozen parent.
+
+    The effective groups are copied into the new study config and identity.
+    Reject extra keys so this input cannot silently override the pruning method.
+    """
+    values = json.loads(Path(path).read_text())
+    if not isinstance(values, dict) or set(values) != {"gpu_ids", "test_gpu_ids", "world_size"}:
+        raise ValueError("device config requires only gpu_ids, test_gpu_ids and world_size")
+    validate_devices(values)
+    return values

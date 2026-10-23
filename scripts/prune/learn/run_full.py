@@ -1,4 +1,14 @@
-"""Direct bounded full-pilot execution and monitoring; no avatar queue dependency."""
+"""Run the frozen GT head recipe through bounded child phases and CPU logging.
+
+Check the configured devices and matching DDP acceptance, run selection, export
+the compact base, recover adapters and merge final weights. Resume only bounded
+TimeoutError segments with increased published progress; other failures stop.
+Publish launch/status records and stop owned loggers after the final receipt.
+The default arm list includes energy, which requires a prepared ranking; use
+--arms learned_joint for the gate learner alone. See doc/usage.md.
+
+CLI: python -m scripts.prune.learn.run_full --help.
+Workflows and launch settings: doc/usage.md."""
 
 import argparse
 import json

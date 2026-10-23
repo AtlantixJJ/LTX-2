@@ -2,8 +2,7 @@
 
 Run the training-free workflow or freeze a fresh learned-gate study with the current source identity.
 Use the actual reviewed specification for `--plan`. Existing frozen studies retain their isolated source trees.
-Completed-study recipes are preserved in the [cleanup archive](../../../../expr/prune_package_cleanup_20261020/originals/doc/usage.md).
-Those recipes require their original snapshots. They are not launch instructions for this tree.
+The [glossary](glossary.md) defines terms. The [file map](README.md#entry-scripts) lists every CLI and its source.
 
 ## Launch and output rules
 
@@ -17,10 +16,20 @@ Agents use the avatar queue for the restricted native baseline reproduction.
 That route has its own [recipe](#queued-baseline-reproduction).
 Other prune CLIs have no queue wrapper defined here.
 
+Replace angle-bracket placeholders before running a command. They identify required local inputs, not shell redirections.
 Replace the two view paths with existing corpus views.
 Choose different actors for calibration and held-out validation.
 All selected views in one producer run must have the same latent length.
+
 Choose a fresh run root and a free GPU after checking occupancy.
+
+For learned FFN/joint studies, freeze disjoint `gpu_ids` and `test_gpu_ids` in config; `world_size` remains four for the draw contract.
+Use those exact lists in torchrun. Single-device joint diagnostics default to the first frozen test device and require it to be available.
+Run those single-device diagnostics with `CUDA_VISIBLE_DEVICES` unset; otherwise logical indices can select the wrong physical GPU.
+Use `env -u CUDA_VISIBLE_DEVICES python ...` when the calling shell has a mask set.
+
+Preparers validate lists on CPU; native startup requires 44 GiB free on each selected device.
+The dedicated compact-recovery schema retains its own stricter device assignment; read its frozen config.
 
 ```bash
 cd LTX-2
@@ -49,7 +58,9 @@ python -m scripts.prune.data.prompt_cache \
   --model 2.5 --gpu-id "$PRUNE_GPU" --verify
 ```
 
-Preflight reports decimal GB, while the scorer and benchmark require 44 GiB.
+The generic `--min-free-gb` flag uses decimal GB.
+The scorer, functional ablation and baseline benchmark enforce 44 GiB before loading a model.
+Joint diagnostics and shared DDP startup use the same native-capacity guard.
 The second command verifies `DEFAULT_PROMPT`.
 The workflow below explicitly uses empty text, which has a different cache.
 
@@ -76,7 +87,7 @@ PY
 ```
 
 Verification re-encodes and replaces the cache. Preserve the old cache before investigating a mismatch.
-See [preflight](core/preflight.md#usage) and [prompt cache](data/prompt_cache.md#usage).
+See [preflight](../core/preflight.py) and [prompt cache](../data/prompt_cache.py).
 
 ## Save the baseline
 
@@ -98,7 +109,7 @@ The output contains a manifest, saved epsilon, latent outputs and decoded captur
 `--raw-only --arms d0` saves only raw D0 evidence.
 It cannot support a decoded comparison without separate media.
 Use a separate run directory for each seed consumed by native calibration.
-See [producer usage](evaluate/whole_clip_baseline.md#usage).
+See the [producer source](../evaluate/whole_clip_baseline.py) and [input contract](data/whole_clip.md).
 
 ## Calibration and functional ablation
 
@@ -118,10 +129,9 @@ python -m scripts.prune.evaluate.whole_clip_d0 \
   --gpu-id "$PRUNE_GPU" --output "$PRUNE_RUN/ablation.json"
 ```
 
-The scorer first reproduces every calibration baseline.
-The functional analyzer checks the unmasked held-out baseline, then measures head-only, FFN-only and combined masks.
-These are numerical ablations. They do not establish export fidelity or speed.
-See [scorer](score/whole_clip_d0_scores.md#usage) and [analyzer](evaluate/whole_clip_d0.md#usage).
+The scorer reproduces each calibration baseline. Functional mode checks finite replay of the unmasked held-out baseline,
+then measures head-only, FFN-only and combined masks. Apply the [evidence gates](VALIDATION.md) before making quality or speed claims.
+See [scorer](../score/whole_clip_d0_scores.py) and [analyzer](../evaluate/whole_clip_d0.py).
 
 ## Width export and parity
 
@@ -146,7 +156,7 @@ Use `compact` to test supported reduced execution widths with separate parity.
 Parity writes an indexed `d0-export-parity` run and prints its result path.
 Failure returns a nonzero exit status.
 Use an all-ones native artifact for the no-prune width control.
-See [export](score/export_pruned.md#usage) and [parity](checks/export_parity.md#usage).
+See [export](score/export_pruned.md#usage) and [parity](../checks/export_parity.py).
 
 ## Depth export
 
@@ -200,167 +210,248 @@ python -m scripts.prune.evaluate.bench_whole_clip_d0 \
 The paired analyzer checks actual saved epsilon equality.
 It writes metrics and synchronized capture VAE, baseline D0 VAE and candidate D0 VAE panels.
 Inspect those videos for identity, action and motion.
-The numerical metrics support that judgment; they do not replace it.
+The [verification guide](VALIDATION.md#g4-assess-held-out-decoded-quality) defines numerical and visual evidence.
 
 Repeat timing with `--order BAB` and a new output file when gains approach drift.
 Keep device, geometry and numerical policy fixed.
-See [analyzer](evaluate/whole_clip_d0.md#usage),
-[benchmark](evaluate/bench_whole_clip_d0.md#usage) and [acceptance](VALIDATION.md).
+See [analyzer](../evaluate/whole_clip_d0.py),
+[benchmark](../evaluate/bench_whole_clip_d0.py) and [acceptance](VALIDATION.md).
 
 ## Joint clipped gates with re-admission
 
-Use [joint study preparation](data/joint_study.md#usage) to freeze r3 inputs and all 6800 paired draws.
-The [V3 owner](learn/joint.md#usage) tests on physical GPUs 4–6 and requires separate four-rank acceptance on 0–3.
-The [optimizer and contribution checks](checks/joint_preflight.md#usage) and [export isolation](checks/joint_export.md#usage) retain independent receipts.
-The [V3 exporter](score/export_joint.md#usage) requires terminal alignment and the declared recovery endpoint.
-Historical V2 and learned-FFN studies remain separate.
-A three-rank pilot uses `--phase pilot --testing --max-updates 50`; it never initializes A.
-Final training uses `--phase formal` on GPUs 0–3 after preflight acceptance.
-Do not start model work on an occupied device.
+Freeze a fresh study from a verified parent FFN study and its extended paired-draw authority.
+Use exact arm names: `joint_clip_reset_v3`, `heads_clip_reset_v3` or `budget_joint_v3`.
+The [selection algorithm](core_algorithm.md#joint-clipped-selection-with-return) explains their differences.
+The preparer inherits the parent's device lists unless `--device-config <new_device_config.json>` supplies new groups.
+That JSON must contain exactly `gpu_ids`, `test_gpu_ids` and `world_size`.
+Its values become part of the new frozen config and identity; the parent remains unchanged.
+The budget arm additionally requires `--budget-receipt` from the joint reference endpoint.
+
+```bash
+CUDA_VISIBLE_DEVICES='' python -m scripts.prune.data.joint_study \
+  --source-study <parent_frozen_study.json> --continuation-study <extended_draw_study.json> \
+  --plan <reviewed_plan.md> --arm joint_clip_reset_v3 --output <fresh_study_root>
+```
+
+The preparer writes `<fresh_study_root>/configs/frozen_study.json`, paired draws and a pinned plan copy.
+Set `PRUNE_STUDY` to that exact config path; the study-root directory is recorded inside the file.
+
+For disposable tests, set the following variables from the frozen config, retaining device order:
+
+```bash
+PRUNE_STUDY="<frozen_study.json>"
+PRUNE_TEST_DEVICES="<comma_separated_test_gpu_ids>"
+PRUNE_TEST_RANKS="<length_of_test_gpu_ids>"
+PRUNE_TRAIN_DEVICES="<comma_separated_gpu_ids>"
+PRUNE_TRAIN_RANKS="<world_size>"
+
+CUDA_VISIBLE_DEVICES="$PRUNE_TEST_DEVICES" CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+  torchrun --standalone --nproc-per-node="$PRUNE_TEST_RANKS" \
+  -m scripts.prune.learn.joint --study "$PRUNE_STUDY" --phase native --testing
+
+CUDA_VISIBLE_DEVICES="$PRUNE_TEST_DEVICES" CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+  torchrun --standalone --nproc-per-node="$PRUNE_TEST_RANKS" \
+  -m scripts.prune.learn.joint --study "$PRUNE_STUDY" --phase pilot --testing --max-updates 50
+```
+
+The test pilot is bounded and cannot substitute for acceptance on the formal device group.
+The shared [DDP owner](learn/ddp_owner.md) documents how test-rank draws use the formal stride.
+
+### Prerequisites and formal launch
+
+The legacy phase names `p0` and `p1` mean optimizer replay and native channel ablations, as defined in the [glossary](glossary.md).
+Read complete parser options with `--help`; each shard must use a different output/case partition.
+
+```bash
+python -m scripts.prune.checks.joint_preflight --phase p0 --output <pilot_root> \
+  --traces <pilot_gradient_trace_directory>
+python -m scripts.prune.checks.joint_preflight --phase p1 --study "$PRUNE_STUDY" \
+  --gpu-id <configured_free_test_gpu> --shard 0 --shards 1
+python -m scripts.prune.checks.joint_export --study "$PRUNE_STUDY" --output <export_isolation_output>
+python -m scripts.prune.checks.joint_review --study "$PRUNE_STUDY" --pilot <pilot_root> \
+  --p1 <complete_channel_ablation_directory> --p2 <export_isolation_output> --output <prerequisite_receipt.json>
+```
+
+Freeze a new **formal** study with `data.joint_study --prerequisites <prerequisite_receipt.json>` after reviewing complete evidence.
+The replay requires at least 50 complete native channel-gradient traces; an independent-noise replay alone leaves correlation unresolved.
+Keep pilot evidence and final formal inputs separate. The formal owner requires pinned, passed prerequisites.
+Use its new `frozen_study.json` as `PRUNE_STUDY`, then run:
+
+```bash
+CUDA_VISIBLE_DEVICES="$PRUNE_TRAIN_DEVICES" CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+  torchrun --standalone --nproc-per-node="$PRUNE_TRAIN_RANKS" \
+  -m scripts.prune.learn.joint --study "$PRUNE_STUDY" --phase formal
+```
+
+`--phase formal` runs independent formal-rank native acceptance before training.
+`--phase train` resumes an authorized unchanged frozen study after its matching acceptance exists.
+Pending `allocation_review` and `alignment_review` triggers stop continuation; see the [review contract](learn/readmission.md#reviews-belong-to-the-training-owner).
+Code maintenance does not request a launch or a restart.
 
 ### Joint export fault isolation and split bundles
 
-The [operation diagnostic](checks/joint_faults.md#usage) locates compact attention differences on identical inputs.
-The [split bundle exporter](score/export_joint_split.md#usage) preserves the two adapter GEMMs instead of merging BF16 weights.
-Load bundles through `score.export_joint_split.open_bundle`; the base checkpoint alone omits the adapters.
-The [native matrix](checks/joint_split_parity.md#usage) checks every representation against the masked trained computation.
-The native gate projection preserves its original output width. V, attention, output and FFN up paths remain compact.
-The default split bundle preserves original FFN down reduction coordinates. Its actual cost must include that full-width GEMM.
-Timing requires a separate qualified benchmark. A merged BF16 export failure remains visible.
+```bash
+python -m scripts.prune.checks.joint_faults --study "$PRUNE_STUDY" --output <operation_diagnostic_output>
+python -m scripts.prune.checks.joint_split_parity --study "$PRUNE_STUDY" --output <split_parity_output>
+```
+
+These single-device diagnostics use the frozen test list and reject insufficient free capacity.
+`score.export_joint` writes merged final weights after terminal alignment and recovery.
+`score.export_joint_split` writes compact base weights, adapters and an envelope.
+Load that envelope with `score.export_joint_split.open_bundle`, including both payloads.
+The [runtime contract](score/export_pruned.md#learned-exports-and-split-bundles) explains FFN reduction geometry and fusion rounding.
 
 ## Completed joint V3 evaluation
 
-Use [joint_final](evaluate/joint_final.md#usage) for fixed selection/final held-out predictions and final split-bundle parity/timing.
-Use [joint_media](evaluate/joint_media.md#usage) for 36 synchronized held-out comparisons and fixed-region metrics.
-Run these direct CLIs in ltx on free GPUs 4–6. They preserve historical studies and record separate execution identities.
-Keep concurrent training on its independently accepted four-GPU group. Never share a GPU with another model worker.
+Read fixed completed checkpoints without creating an optimizer:
 
-The [historical endpoint reader](evaluate/historical_clip.md#usage) scores the saved head-only update-600 checkpoint without resuming training.
-It first replays all 12 saved development predictions; held-out scoring requires parity at the unchanged 0.02 limit.
+```bash
+python -m scripts.prune.evaluate.joint_final --help
+python -m scripts.prune.evaluate.joint_media --help
+python -m scripts.prune.evaluate.joint_monitor_media --help
+python -m scripts.prune.evaluate.historical_clip --help
+```
+
+`joint_final` saves fixed selection/final predictions and runs deployment parity/timing stages.
+`joint_media` decodes the matched held-out reference set.
+
+`joint_monitor_media` pairs existing development predictions; its legacy `--study-a`, `--study-b` and `--study-c` flags identify
+joint, head-only and budget-control studies respectively. Missing matched predictions are a named gap.
+`historical_clip` replays a saved head-only monitor before scoring its fixed endpoint.
+Source docstrings and parsers in the [entry map](README.md#entry-scripts) own stage-specific arguments.
+These schema-specific evaluators can retain stricter device rules; inspect their parser and the study before choosing a free device.
 
 ## Learned FFN masks
 
-Read the [study preparation](data/ffn_study.md), [training entrypoint](learn/ffn.md)
-and [export design](score/export_learned_ffn.md) for complete commands and arguments.
-Run CPU preparation first. The explicit preset supports FFN-only and joint head/FFN arms.
-The first formal preset learns joint masks with 1000 selection updates and 300 fixed-mask adapter updates.
-It retains 14,848 FFN channels per block and 1384 video self-attention heads overall.
+Prepare on CPU from a verified head study and an explicit config:
 
-Use physical GPUs 4–6 for the three-rank disposable native check.
-Use physical GPUs 0–3 for the formal owner, which first runs its own four-rank native acceptance.
-The device lists and rank counts are enforced. Test acceptance does not substitute for formal acceptance.
-Resume formal work with `--phase train`, using the unchanged frozen study and canonical checkpoints.
-Checkpoints and monitors retain source, noise, crop and original-ID evidence.
+```bash
+CUDA_VISIBLE_DEVICES='' python -m scripts.prune.data.ffn_study \
+  --source-study <parent_frozen_study.json> \
+  --config scripts/prune/configs/learned_ffn_dev10_ddp_joint.json \
+  --plan <reviewed_plan.md> --output <fresh_study_root>
+```
 
-Start the CPU W&B reader with `python -m scripts.prune.learn.receipt_logger --study <frozen_study.json>`.
-It follows saved optimizer and monitor receipts and never opens a CUDA model.
-Read `monitoring/status.json`, `monitoring/owner.json`, `monitoring/failure.json` and the launch log for local status.
-Final compact export requires the exact completed recovery checkpoint.
-`--probe` exports remain disposable and never qualify as final candidates.
+Use the formal/test torchrun variables above with `scripts.prune.learn.ffn --phase native --testing` for disposable acceptance,
+and `--phase formal` for separate formal acceptance followed by training.
+The preset supports `ffn_only` and `joint_heads_ffn` arms; each frozen study selects one.
+Resume only the unchanged authorized study with `--phase train`.
+`score.export_learned_ffn` requires its exact final recovery checkpoint; `--probe` selects a disposable export.
 
 ## Learned head phases
 
-Head-only training remains supported with the uniform-F18 DDP preset below.
-Fresh study preparation requires `--evidence-list` with an explicit pinned list of prior inspected evidence.
-Use completed immutable evidence; the preparer no longer scans experiment trees to choose actor exclusions.
-Use the [head owner](learn/heads.md), [checkpoint checks](checks/learned_heads.md),
-[paired evaluation](evaluate/learned_heads.md) and [media owner](evaluate/learned_head_media.md) for bounded phase commands.
-Code maintenance never restarts a stopped study.
+Fresh preparation requires an explicit `--evidence-list` of inspected prior evidence; preparation does not scan experiment trees.
+The [phase contract](learn/heads.md) lists what each phase consumes and produces.
+Default GT training defers regional preparation; choose a separately prepared study for foreground/region-weighted arms.
+
+## Preset values
+
+The JSON files own exact values. This section is the one descriptive copy of head/FFN preset settings.
+The **frozen study config**, including explicit overrides, controls a particular run.
+
+| Setting | [Head preset](../configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json) | [FFN preset](../configs/learned_ffn_dev10_ddp_joint.json) |
+|---|---|---|
+| Update budget | `soft_updates=700`, `binary_updates=300`, `compact_updates=500` | `selection_updates=1000`, `recovery_updates=300`, `head_soft_updates=700` |
+| Adapter ranks | `rank=128`, `lora_alpha=128` | `head_rank=128`, `ffn_rank=16` |
+| Learning rates | `gate_lr=0.01`, `adapter_lr=0.0001` | `gate_lr=0.01`, `adapter_lr=0.0001` |
+| Head budget | `removed_heads` choices `[152,352,508]` out of `blocks*heads=48*32` | `removed_heads=152` |
+| Allowed head block widths | `allowed_counts=[16,20,24,28,32]` | Inherited head config |
+| FFN retained width | Execution probes only | `ffn_kept=14848` of `ffn_width=16384`, `ffn_alignment=128` |
+| FFN ramp | Not applicable | `ffn_warmup=50`, `ffn_ramp_end=300` |
+| Optimizer inputs | `uniform_f18=true`, one draw per rank | Inherited `uniform_f18=true`, one draw per rank |
+| Head sparsity | `sparsity_penalty=relu_logits`, `sparsity_logit_offset=3`, `lambda_max=0.01`, `lambda_warmup=100`, `lambda_start_multiplier=0.1` | Inherited head penalty; no FFN penalty |
+| Monitoring | `monitor_reference=gt_capture`, `monitor_sigma_indices=[0,7,9]` | Inherited grid and monitor indices |
+
+The head preset's ten exact `sigmas` live in JSON.
+The update cycle is `sigma_indices_cycle=[0,9,1,8,2,7,3,6,4,5]`; four draws cover each sigma twice in five updates.
+Five levels are official dev levels in `[0.9,0.95]`.
+The head sparsity coefficient is `lambda(t)=0.01*(0.1+0.9*min(t/100,1))`, giving 0.00109 at update one and 0.01 from update 100.
+For the 152-head removal choice, 1,384 of 1,536 heads remain.
+V3 event constants and the budget cost have their sole descriptive home in the [joint algorithm](core_algorithm.md#joint-clipped-selection-with-return).
 
 ## Uniform F18 DDP training
 
-Use `configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json` for subsequent learned-head runs.
-It is also the default config when `data.learned_head_study --config` is omitted.
-Four ranks on GPUs 0–3 each store a full BF16 model and consume one independent F18 draw per update.
-Native non-reentrant block gradient checkpointing stays enabled. Adapters and gates are FP32.
-DDP averages their gradients once; no manual second gradient average runs.
-
-Keep F18 sources intact. Crop longer sources to one continuous 18-latent span using the draw's noise seed.
-Capture and saved epsilon share bounds. The first latent of the window is clean c0; positions start locally at zero.
-This yields 137 decoder frames at the original 1024×1024 geometry and fps.
-It does not re-encode raw RGB. Full-source manifests and per-draw crop hashes both remain saved.
-Calibration, export parity and GT quality evaluation still use full sources.
-
-Keep rank/alpha 128, adapter LR 0.0001, gate LR 0.01 and `mean(relu(alpha+3))`.
-Use `lambda(t)=0.01*(0.1+0.9*min(t/100,1))`: weight 0.00109 at update one and 0.01 from update 100.
-Use ten sigmas, the cycle `[0,9,1,8,2,7,3,6,4,5]` and 700-soft/300-binary/500-compact updates.
-The grid adds all missing official 30-step dev levels in [0.9,0.95] to the previous seven levels.
-Four draws per update cover each sigma twice in five updates. Draw cursors and checkpoint records use this batch size.
-Validation keeps the previous three levels through `monitor_sigma_indices=[0,7,9]`.
-Use a new empty output directory and freeze the current plan/code/config before any authorized launch.
+Use a new output directory and the current reviewed plan and source identity.
+Keep F18 sources intact; crop longer sources to a continuous 18-latent window with a separate RNG keyed by draw noise seed.
+Capture and epsilon share bounds, positions start locally at zero and the window's first latent is clean.
+These optimizer crops decode to 137 frames; monitoring, calibration and export parity retain complete sources.
+Both full-source file pins and consumed-window hashes are saved.
 
 ```bash
-conda activate ltx
-CUDA_VISIBLE_DEVICES= CUBLAS_WORKSPACE_CONFIG=:4096:8 python -m scripts.prune.data.learned_head_study \
+CUDA_VISIBLE_DEVICES='' CUBLAS_WORKSPACE_CONFIG=:4096:8 python -m scripts.prune.data.learned_head_study \
   --config scripts/prune/configs/learned_heads_dev10_ddp_gt_uniform_f18_rank128.json \
-  --plan /path/to/reviewed-study-plan.md \
-  --output ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_new
+  --evidence-list <inspected_evidence.json> --plan <reviewed_plan.md> --output <fresh_study_root>
 
-CUDA_VISIBLE_DEVICES= CUBLAS_WORKSPACE_CONFIG=:4096:8 setsid python -u -m scripts.prune.learn.run_full \
-  --study ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_new/configs/frozen_study.json \
-  --arms learned_joint \
-  > ../expr/refiner_prune/2.5/learned_heads_ddp_uniform_f18_new/logs/full.log 2>&1 < /dev/null &
+CUDA_VISIBLE_DEVICES='' CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+  python -u -m scripts.prune.learn.run_full --study <frozen_study.json> --arms learned_joint
 ```
 
-These are launch instructions for a future authorized run; the stopped study stays stopped.
-The owner checks occupancy, runs matching `checks.ddp_native` acceptance, then starts formal DDP training.
-Native acceptance covers crop semantics, full F18 and cropped F28 sources, gradients, memory and exact resume.
-The older two-rank F18 memory result is supporting evidence, not a replacement for the new four-rank acceptance.
-No teacher cache, fresh head scoring, speed test or avatar queue is required.
-
-W&B logging is enabled in this preset. One CPU writer reads rank-zero published receipts.
-Use one line-series chart per rank-varying value: `train/sigma`, `ranks/update_s` and the memory charts.
-Four ranks give four lines labeled rank 0 through rank 3 in each chart.
-`train/loss`, velocity MSE, sparse loss and `validation/trained_sigma_2_gt_latent_mse` each log a single mean.
-Validation averages unique cases gathered from all ranks. The third monitored sigma uses index two.
-Metric tabs are `train`, `gates`, `memory`, `ranks` and `validation`, without a `learned_joint/` prefix.
-Chart refresh defaults to ten updates and includes every saved point; global scalar metrics log each update.
-Different arms use separate W&B runs with identical metric names. See [logger design](learn/wandb_logger.md).
+Here too, `<frozen_study.json>` means `<fresh_study_root>/configs/frozen_study.json`.
+The full owner checks its configured devices, matching `checks.ddp_native` receipt and method before optimizer phases.
+It runs separate native acceptance when missing. GT mode requires neither teacher caching nor a speed test.
+For the energy control, prepare `calibration/ranking.json` explicitly before passing `--arms learned_joint energy`.
+Long jobs can use `setsid` and redirected logs after creating the study's log directory; the direct owner manages only its own children.
 
 ## Training visualization
 
-Head, FFN and joint training save a visualization every 100 optimizer updates by default.
-Set `"visualization_interval": 25` in the config before freezing a new study to save every 25 updates.
-Set `"visualization_interval": 0` to disable it.
-Resumed runs use the global optimizer update number.
+`visualization_interval` defaults to 100 updates; zero disables previews and another positive value changes their interval.
+Head, FFN and joint previews use rank zero's actual first training draw, before the optimizer update.
+Noisy input, GT and predicted x0 use the same crop, VAE, fps and full window coverage.
+Model-aware overlapping decoder tiles bound memory; decoding restores RNG and synchronizes ranks.
 
-Each preview shows the actual noisy latent, GT latent and predicted x0, decoded with the selected video VAE.
-The prediction comes from the training forward before its optimizer update. All panels use rank zero's first draw.
-The comparison keeps the complete decoded window and original fps, including the clean first frame.
+Head outputs live under `training/<arm>/replicate_<seed>/visualizations/update_NNNN/`.
+FFN/joint outputs use `training/visualizations/update_NNNN/`.
+Each directory includes `comparison.mp4`, `poster.png`, `rendering.json`, individual latents and decoded videos.
 
-Head outputs: `training/<arm>/replicate_<seed>/visualizations/update_NNNN/`.
-FFN and joint outputs: `training/visualizations/update_NNNN/`.
-Each directory contains `comparison.mp4`, `poster.png`, `rendering.json` and the three individual latent tensors and decoded videos.
-Decoding uses model-aware overlapping tiles while the transformer remains resident, then unloads the VAE and restores RNG.
-See the [preview design](learn/visualization.md) for memory and evidence limits.
+When `wandb.enabled=true`, use one CPU writer per arm.
+Head logging uses `learn.wandb_logger`; FFN/joint logging uses `learn.receipt_logger --study <frozen_study.json>`.
+Rank sigma/time/memory charts have one line per rank; losses and unique-case validation errors are averaged scalars.
+Metric tabs are `train`, `gates`, `memory`, `ranks` and `validation`, with separate runs rather than arm-name prefixes.
+In `validation/trained_sigma_2_gt_latent_mse`, suffix `_2` means position two in `monitor_sigma_indices`,
+which is grid index 9 in the default preset, sigma 0.48016369342803955.
+Chart refresh follows `wandb.chart_interval`; saved scalar/update coverage stays complete.
+
+Read the study's `monitoring/status.json`, `monitoring/owner.json`, failure records and launch log for local progress.
+Immutable evidence records belong beside the checkpoints; status files can change.
 
 ## Queued baseline reproduction
 
-Agents use the existing avatar queue for the native `prune_baseline` experiment.
-Start with its [run guide](../../onestep_avatar/configs/README.md#pruning-baseline-prune_baseline),
-[protocol design](../../onestep_avatar/doc/experiments/prune_baseline.md)
-and [queue usage](../../onestep_avatar/doc/usage.md).
+Agents use the existing avatar queue for its restricted native `prune_baseline` experiment.
+Read its [run guide](../../onestep_avatar/configs/README.md#pruning-baseline-prune_baseline),
+[protocol](../../onestep_avatar/doc/experiments/prune_baseline.md) and [queue usage](../../onestep_avatar/doc/usage.md).
 
-The scientific spec permits one absolute view, one seed, white distilled unguided raw output and context eight.
-It keeps the requested sigmas and supports D0, optionally D1.
-The selected prompt cache must exist first.
-
-The experiment supports a CPU spec check:
+The spec selects one absolute view, one seed, white distilled unguided raw output and context eight.
+It preserves requested sigmas and supports D0, optionally D1. Build the selected prompt cache first.
+Check the spec and job list before the queue owner launch:
 
 ```bash
-conda run -n ltx python -m scripts.onestep_avatar.experiments.prune_baseline \
-  --spec /abs/prune_baseline_spec.json --output /abs/fresh_prune_job --dry-run
+python -m scripts.onestep_avatar.experiments.prune_baseline \
+  --spec <prune_baseline_spec.json> --output <fresh_prune_job> --dry-run
 ```
 
-That check parses the spec without loading or hashing model components.
-Validate the prepared job list with the queue's `--dry-run`.
-Start the queue owner with `setsid`, following its documented process-ledger command.
-The prune producer's original files stay under `<job-output>/baseline/`.
-Job-root manifests and acceptance records belong to the wrapper.
+This parses the spec without model loading or component hashing.
+Start the queue owner with `setsid` and the documented shared process ledger.
+Original prune producer files remain under `<job-output>/baseline/`; wrapper records stay at the job root.
+Use the [reproduction controls](../../onestep_avatar/configs/README.md#pruning-reproduction-controls-prune_reproduction) for drift diagnosis.
 
-For drift diagnosis, use the existing
-[pruning reproduction controls](../../onestep_avatar/configs/README.md#pruning-reproduction-controls-prune_reproduction).
-Do not substitute new sigmas or change scientific flags to make a comparison pass.
+## Compact A LoRA recovery
+
+`compact_A_lora` is the recorded schema/CLI name for fresh adapter recovery on an aligned joint checkpoint.
+It fuses the source adapters into the base, restores aligned widths and trains fresh zero-output adapters with fresh Adam state.
+It preserves the paired draw prefix, full-source input identities and original retained unit order.
+
+```bash
+CUDA_VISIBLE_DEVICES='' python -m scripts.prune.data.compact_study \
+  --source-study <completed_joint_study.json> --plan <reviewed_compact_plan.md> \
+  --output <fresh_compact_study_root> --updates 500
+python -m scripts.prune.learn.compact --help
+python -m scripts.prune.evaluate.compact --help
+```
+
+Freeze isolated numerical source before preparing a new study.
+The dedicated compact schema and its source docstrings define alignment, acceptance, recovery and evaluation stages.
+Use its frozen device policy and independent formal-rank acceptance.
+The [workspace handoffs](../../../../plans/README.md) hold completed results and stopped-run status.
 
 ## CPU verification and stopping
 
@@ -369,9 +460,7 @@ CUDA_VISIBLE_DEVICES='' python -m pytest scripts/prune/tests -q -m 'not gpu'
 ruff check --select F,I scripts/prune
 ```
 
-If Ruff is unavailable in `ltx`, follow the repository's dev-tool setup.
-Run the tests with the `ltx` interpreter.
-
-Direct CLIs run in the foreground. Interrupt your own command to stop it.
-Keep partial outputs for diagnosis and use a new directory for another producer attempt.
-For managed jobs, use the avatar queue's documented owned-process stop path.
+Direct CLIs run in the foreground; interrupt your own command to stop it.
+Keep partial outputs for diagnosis and use a new root for another producer attempt.
+Managed avatar jobs use the queue's owned-process stop path.
+The [verification guide](VALIDATION.md) and [change-impact map](ARCHITECTURE.md#change-impact-map) define further checks.

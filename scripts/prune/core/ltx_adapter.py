@@ -1,13 +1,11 @@
-"""Every use of an underscore-prefixed ``ltx_core`` / ``ltx_pipelines`` symbol.
+"""Isolate access to private upstream model, transformer and VAE interfaces.
 
-Pinned at LTX-2 commit 9a1c49b (last upstream merge, 2026-08-25). When that
-pin moves, this is the ONE file that breaks -- nothing else in
-``scripts/prune`` may import a private name; ``tests/test_ltx_adapter.py``
-enforces it.
+velocity_forward calls the native velocity model once and applies the stock
+clean-prediction conversion. Transformer and VAE contexts delegate loading and
+cleanup to upstream owners. Keep private upstream imports here so an upstream
+interface change has one review point. tests/test_ltx_adapter.py enforces it.
 
-  DiffusionStage._transformer_ctx                                -> transformer_ctx
-  VideoDecoder._decoder_builder                                  -> video_decoder
-  ImageConditioner._build_encoder                                -> video_encoder
+Pinned at LTX-2 commit 9a1c49b as the upstream interface reference.
 """
 
 from __future__ import annotations

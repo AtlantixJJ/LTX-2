@@ -1,4 +1,9 @@
-"""Numerical joint head/FFN steps and independently versioned learning state."""
+"""Update aligned FFN masks, optional head gates and low-rank adapters.
+
+JointStep registers the frozen model and both live gate providers for one DDP
+parameter-gradient reduction. Choose masks once per update and build a fresh
+surrogate graph for every forward. Save FP32 state, optimizer moments, rank RNG
+and original-ID masks for exact replay; recovery freezes unit decisions."""
 
 from __future__ import annotations
 

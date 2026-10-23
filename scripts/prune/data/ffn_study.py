@@ -1,4 +1,13 @@
-"""Freeze a new FFN study from verified existing corpus and draw evidence."""
+"""Freeze an FFN-mask study from verified source inputs and paired draws.
+
+Validate the override config, inherit pinned source/context/component evidence,
+and extend the verified draw prefix for selection plus recovery. Publish the
+plan, draws, config and current code identity without changing the parent.
+Device lists come from config; validate_devices checks their structure while
+native launchers check actual availability.
+
+CLI: python -m scripts.prune.data.ffn_study --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 
@@ -11,7 +20,7 @@ from pathlib import Path
 from scripts.prune.core.provenance import file_sha256
 from scripts.prune.core.records import digest, publish, publish_json
 from scripts.prune.data.learned_head_study import draw_list
-from scripts.prune.data.study_io import code_identity, read_frozen, verify_files
+from scripts.prune.data.study_io import code_identity, read_frozen, validate_devices, verify_files
 from scripts.prune.learn.ffn_gates import aligned_width
 
 
@@ -47,8 +56,7 @@ def validate_config(config):
         warmup=config["ffn_warmup"],
         ramp_end=config["ffn_ramp_end"],
     )
-    if config["world_size"] != 4 or config["gpu_ids"] != [0, 1, 2, 3] or config["test_gpu_ids"] != [4, 5, 6]:
-        raise ValueError("FFN GPU assignment differs from the authorized launch")
+    validate_devices(config)
 
 
 def prepare(source, config, plan, output):

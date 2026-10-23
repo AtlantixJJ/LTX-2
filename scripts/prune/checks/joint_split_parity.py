@@ -1,10 +1,13 @@
-"""Verify compact head/FFN bundles while preserving split adapter arithmetic.
+"""Verify compact split bundles against their matched masked computation.
 
-Historical studies supply immutable saved inputs only. This diagnostic records
-current code and every source hash. It never resumes old training. Each bundle
-gets independent masked and reloaded compact forwards on exact matched inputs.
-See doc/checks/joint_split_parity.md.
-"""
+A frozen study supplies saved inputs; this diagnostic pins its own executor
+identity. Compare independent functional and reloaded bundle forwards and save
+each representation's result. Choose a free device from the frozen test list.
+The default bundle preserves full FFN down-reduction coordinates, as described
+in doc/score/export_pruned.md.
+
+CLI: python -m scripts.prune.checks.joint_split_parity --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 
@@ -16,18 +19,16 @@ from pathlib import Path
 import torch
 
 from scripts.onestep_avatar.model import common
-from scripts.prune.core import ltx_adapter, numerics, provenance, records, session
+from scripts.prune.core import ltx_adapter, numerics, preflight, provenance, records, session
 from scripts.prune.data.study_io import code_identity
 from scripts.prune.learn import adapters, ffn_training, joint_training
 from scripts.prune.learn.ddp_owner import input_case
 from scripts.prune.score import export_joint_split, export_pruned, hooks
 
 
-def run(study_path, output, gpu=5, reuse=None, selected_kinds=None):
+def run(study_path, output, gpu=None, reuse=None, selected_kinds=None):
     numerics.deterministic_policy()
     torch.set_num_threads(4)
-    if gpu not in (4, 5, 6):
-        raise ValueError("Native tests use GPUs 4–6")
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     study = json.loads(Path(study_path).read_text())
@@ -35,6 +36,7 @@ def run(study_path, output, gpu=5, reuse=None, selected_kinds=None):
     if identity != records.digest(study):
         raise ValueError("Historical study changed")
     study["identity"] = identity
+    gpu = preflight.testing_gpu(study["config"], gpu)
     current = session.open_model(
         "2.5",
         gpu,
@@ -180,7 +182,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--study", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--gpu-id", type=int, default=5)
+    p.add_argument("--gpu-id", type=int)
     p.add_argument("--reuse-zero-head", type=Path)
     p.add_argument("--kinds", nargs="+", choices=("zero", "head", "ffn", "joint", "pilot_aligned"))
     a = p.parse_args()

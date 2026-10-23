@@ -1,11 +1,10 @@
-"""One four-rank DDP owner for learned head/FFN mask families.
+"""Share native acceptance, monitoring and distributed training across mask families.
 
-A family module supplies its numerical state owner and a few hooks; this owner
-supplies the shared runtime, input reuse, monitors, exact-resume acceptance,
-consumed-input verification and the receipt-publishing update loop.
-The FFN family (`learn.ffn`) and the V3 joint family (`learn.joint`) use it.
-See doc/learn/ddp_owner.md for the hook contract and the update order.
-"""
+FFN, joint clipped selection and compact recovery supply numerical owners and
+family hooks. This module owns exact frozen device/rank validation, reused
+inputs, consumed-draw checks, update publication and checkpoint/monitor order.
+Release dead CUDA cache blocks before checking configured physical headroom.
+See doc/learn/ddp_owner.md for hook order and resume/failure semantics."""
 
 from __future__ import annotations
 
@@ -47,6 +46,8 @@ class Runtime:
         self.device = torch.device("cuda", self.local_rank)
         torch.cuda.set_device(self.device)
         dist.init_process_group("nccl", timeout=timedelta(minutes=15), device_id=self.device)
+        if self.any(torch.cuda.mem_get_info(self.device)[0] < 44 * 2**30):
+            raise ValueError("each frozen DDP device needs at least 44 GiB free before model loading")
 
     @property
     def primary(self):
@@ -103,6 +104,10 @@ def input_case(study, current, source, seed, sigma, *, crop=False):
 
 
 def memory(runtime, minimum):
+    # Release dead cached blocks before checking physical device headroom. Without
+    # this, a no-grad full-source forward leaves its activations reserved and
+    # `mem_get_info` reports the allocator cache as used memory.
+    torch.cuda.empty_cache()
     torch.cuda.synchronize(runtime.device)
     free, _ = torch.cuda.mem_get_info(runtime.device)
     row = dict(

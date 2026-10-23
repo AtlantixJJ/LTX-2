@@ -1,4 +1,12 @@
-"""Validate recovered candidates and saved numerical checks without selecting masks."""
+"""Validate recovered head envelopes and independently saved numerical checks.
+
+Check full source/components, original IDs, geometry wrappers, recovery cursor,
+consumed inputs and every merged tensor hash. structural_inventory checks
+coupled tensor shapes against declared head choices. These saved validators do
+not select masks, train adapters or supply missing native evidence.
+
+CLI: python -m scripts.prune.checks.learned_heads --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

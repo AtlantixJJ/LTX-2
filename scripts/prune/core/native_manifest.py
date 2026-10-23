@@ -1,9 +1,8 @@
-"""Shared whole-clip task and guidance fields for producers and saved readers.
+"""Build shared task, visibility, dtype and guidance fields for saved manifests.
 
-The rollout producer supports guided/dev modes; input-only manifests retain
-their narrower historic field set. Both obtain full visibility, dtype and
-guidance accounting here. This helper selects no schedule or source geometry.
-"""
+The rollout producer can record guided/dev tasks; capture-only input manifests
+use a narrower field set. This helper selects no schedule or source geometry,
+so every producer retains explicit ownership of those values."""
 
 import hashlib
 

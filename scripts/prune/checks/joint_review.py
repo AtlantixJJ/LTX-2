@@ -1,12 +1,13 @@
-"""Review complete saved preflight coverage without loading a model.
+"""Review complete saved optimizer, channel-ablation and export-isolation evidence.
 
-Run in ltx: python -m scripts.prune.checks.joint_review --study STUDY --pilot PILOT
---p1 P1_DIRECTORY --p2 P2_DIRECTORY --output NEW_RECEIPT. Native P1 must contain
-all 1152 ablations. Each case compares median early-block and late-block costs.
-All comparisons must favor early blocks for an automatic P1 pass; mixed findings
-stay unresolved. Pilot binary MSE must stay within 3% of native. P0 correlation
-and P2 remain separate required gates. No input is regenerated here.
-"""
+The --p1 input must cover each selected actor/sigma/block/removal count exactly
+once. Compare median early-block and late-block per-channel costs; mixed results
+stay unresolved. Check pilot binary capture MSE against native and pin optimizer
+replay and export acceptance. Publish named checks and source receipts without
+loading a model. Legacy CLI field names retain their saved format meanings.
+
+CLI: python -m scripts.prune.checks.joint_review --help.
+Workflows and launch settings: doc/usage.md."""
 
 import argparse
 import json

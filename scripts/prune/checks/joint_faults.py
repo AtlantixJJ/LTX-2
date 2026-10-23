@@ -1,9 +1,12 @@
-"""Localize export differences on exactly one saved attention input.
+"""Localize export rounding differences on one captured native attention input.
 
-This diagnostic reads a historical study as input provenance, not as a resumable
-training state. It records its own code identity. Native and sliced attention
-share captured x and RoPE tensors. See doc/checks/joint_faults.md.
-"""
+Read a frozen study as input provenance and record a separate diagnostic code
+identity. Replay native and sliced projections with identical x and rotary
+positions, then save local tensors for controlled kernel experiments. Device
+selection comes from the frozen test list. This creates no training owner.
+
+CLI: python -m scripts.prune.checks.joint_faults --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from scripts.prune.core import ltx_adapter, numerics, provenance, records, session
+from scripts.prune.core import ltx_adapter, numerics, preflight, provenance, records, session
 from scripts.prune.data.study_io import code_identity
 from scripts.prune.learn import adapters, ffn_training
 from scripts.prune.learn.ddp_owner import input_case
@@ -31,16 +34,15 @@ def error(a, b):
     )
 
 
-def run(study_path, output, gpu=4):
+def run(study_path, output, gpu=None):
     numerics.deterministic_policy()
     torch.set_num_threads(4)
-    if gpu not in (4, 5, 6):
-        raise ValueError("Use physical GPUs 4–6")
     study = json.loads(Path(study_path).read_text())
     identity = study.pop("identity")
     if records.digest(study) != identity:
         raise ValueError("historical study identity changed")
     study["identity"] = identity
+    gpu = preflight.testing_gpu(study["config"], gpu)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     current = session.open_model(
@@ -158,7 +160,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--study", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--gpu-id", type=int, default=4)
+    p.add_argument("--gpu-id", type=int)
     a = p.parse_args()
     run(a.study, a.output, a.gpu_id)
 

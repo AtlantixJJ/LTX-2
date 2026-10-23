@@ -1,9 +1,11 @@
-"""Non-destructive head/FFN mask hooks used by pruning calibration.
+"""Observe or mask video branches at their executed output-projection inputs.
 
-The masks are attached at the two executed branch boundaries.  They deliberately
-live outside checkpoint surgery: scoring can change a mask many times while the
-loaded checkpoint remains immutable.
-"""
+attn1 is video self-attention, attn2 is video text attention and ff is the video
+feed-forward branch. Functional binary masks cover both attention branches and
+post-activation FFN channels. Learned head providers gate attn1 only; FFN
+providers gate post-activation channels. Keep a decision fixed for an update,
+with a fresh surrogate graph per forward, including checkpoint recomputation.
+Attachments remove every hook on exit without rewriting source weights."""
 
 from __future__ import annotations
 

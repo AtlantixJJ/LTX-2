@@ -1,10 +1,12 @@
-"""Decode the current arm, selection, native and r3 on 36 held-out cases.
+"""Decode fixed joint endpoints and references into matched comparison media.
 
-Run in ltx with --study and --gpu-id 4, 5 or 6. Waits, within --wait-hours, for
-both fixed endpoint inference result sets and a free assigned GPU. No training
-changes or retries. Decoding and scoring use the shared `evaluate.ffn` media steps.
-See doc/evaluate/joint_media.md for metrics, source frames and limits.
-"""
+Wait within the requested deadline for saved inference and an idle assigned
+GPU, recording wait outcomes. Shared media owners decode/scoring inputs from
+recorded source geometry and preserve original videos. No training owner or
+transformer optimization is started. See doc/usage.md for evaluation stages.
+
+CLI: python -m scripts.prune.evaluate.joint_media --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

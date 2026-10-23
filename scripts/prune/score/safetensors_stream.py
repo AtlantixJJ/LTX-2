@@ -1,9 +1,10 @@
-"""Publish transformed safetensors with one tensor and a bounded copy buffer.
+"""Publish transformed safetensors with bounded host-memory use.
 
-The official serializer supplies header ordering from empty tensors. The writer
-reserves that header, streams and hashes payloads, then binds an optional envelope
-without rereading the source. See doc/score/safetensors_stream.md.
-"""
+Build the final header from meta tensors with the official serializer, stream
+unchanged payload chunks and materialize only the current transformed tensor.
+Hash output tensors during writing and bind the optional recovered envelope.
+Atomic publication accepts identical replay and rejects conflicting bytes;
+source mutation or interrupted copying leaves no published partial checkpoint."""
 
 from __future__ import annotations
 

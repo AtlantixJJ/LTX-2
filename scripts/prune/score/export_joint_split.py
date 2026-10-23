@@ -1,9 +1,13 @@
-"""Export sliced weights and split adapters with declared reduction geometry.
+"""Export sliced base weights with separate trained low-rank adapters.
 
-The default compacts attention and FFN up projections. It preserves the native
-FFN down-projection reduction coordinates to avoid BF16 sum-order changes.
-An envelope pins both payloads. See doc/score/export_joint_split.md.
-"""
+bundle preserves the two adapter matrix multiplications instead of merging
+BF16 weights. The default restores full original FFN down-reduction coordinates
+to preserve sum order; attention and FFN up paths remain compact. open_bundle
+loads both payloads through the envelope. Loading only base weights omits the
+adapters. See doc/score/export_pruned.md for the exporter/runtime contract.
+
+CLI: python -m scripts.prune.score.export_joint_split --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

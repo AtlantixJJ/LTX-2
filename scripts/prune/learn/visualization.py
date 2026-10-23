@@ -1,9 +1,10 @@
-"""Capture actual training forwards and publish matched VAE previews.
+"""Save matched noisy, capture and predicted frames from an actual training draw.
 
-Only the primary rank retains the first draw at each configured update.
-Predictions are detached before backward; decoding uses no training graph.
-See doc/learn/visualization.md for the layout, memory and RNG contracts.
-"""
+Only rank zero retains the configured first draw. Detach prediction tensors
+before backward; decode after the optimizer step without another transformer
+forward. Save full frame coverage, panel labels, source latents and rendering
+records. Model-aware overlapping VAE tiles bound memory. Restore RNG on success
+or failure and coordinate decoder use across ranks. See doc/usage.md."""
 
 from __future__ import annotations
 

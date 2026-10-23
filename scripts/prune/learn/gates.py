@@ -1,4 +1,10 @@
-"""Learn scalar head decisions without changing native attention connectivity."""
+"""Learn scalar self-attention head gates and select executable block widths.
+
+HeadGates uses sigmoid amplitudes for soft selection and binary decisions with
+a fresh sigmoid surrogate during refinement. select_legal maximizes retained
+scores with an exact block/count dynamic program, respecting per-block allowed
+counts and the total budget. Stable original IDs resolve ties. The native
+model's to_gate_logits modulation is separate and remains part of attention."""
 
 from __future__ import annotations
 

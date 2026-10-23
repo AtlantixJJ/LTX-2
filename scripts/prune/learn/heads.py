@@ -1,4 +1,13 @@
-"""Bounded native learned-head phases; one resident model per process."""
+"""Run bounded head selection and compact adapter-recovery phases.
+
+The frozen study supplies components, draws, loss configuration and monitoring
+mode. Keep one model resident per phase, preserve original IDs across parameter
+and Adam transfer, and publish full state plus consumed-input evidence. Default
+GT training runs through learn.run_full; phase order and outputs are defined
+in doc/learn/heads.md, with preset values in doc/usage.md.
+
+CLI: python -m scripts.prune.learn.heads --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

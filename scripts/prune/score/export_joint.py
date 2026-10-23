@@ -1,9 +1,13 @@
-"""V3 combined-mask export with terminal alignment and strict state provenance.
+"""Export terminal joint masks, merged adapters and a recovered envelope.
 
-Merge FP32 adapter deltas before structural slicing. This artifact has a separate
-family from historical head/FFN exports. No compact or speed qualification follows
-from serialization alone. See doc/score/export_joint.md.
-"""
+Require selection completion, terminal alignment and the exact recovery
+endpoint. Stream FP32 adapter merging before coupled slicing, then pin original
+IDs, inputs, state and tensor inventory in a separate recovered family.
+The runtime and split-bundle alternatives are defined in
+doc/score/export_pruned.md; qualification is defined in doc/VALIDATION.md.
+
+CLI: python -m scripts.prune.score.export_joint --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

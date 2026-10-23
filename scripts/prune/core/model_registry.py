@@ -1,4 +1,9 @@
-"""Resolve checkpoint paths, sigma grids and probed model capabilities."""
+"""Resolve checkpoint components, schedules and probed capabilities by release.
+
+Explicit path overrides take precedence over registered defaults. Resolution
+requires component files and probes supported model features; it never downloads
+weights. Callers still choose their exact task schedule and transformer variant.
+See doc/usage.md for release selection and component overrides."""
 
 from __future__ import annotations
 

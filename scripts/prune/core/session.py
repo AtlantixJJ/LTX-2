@@ -1,4 +1,10 @@
-"""Shared bootstrap for pruning entry points."""
+"""Open selected components and own transformer, text-context and VAE lifetimes.
+
+open_model performs preflight and resolves prompt context; open_session forwards
+parsed arguments. open_frozen checks pinned study components and actual context
+bytes. Context managers release model memory on exit. Callers own schedules and
+geometry. Nominal BF16 preserves native FP32 modulation tables from checkpoint;
+flattening that mixed inventory changes the model. See doc/ARCHITECTURE.md."""
 
 from __future__ import annotations
 

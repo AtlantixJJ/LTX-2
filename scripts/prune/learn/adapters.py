@@ -1,4 +1,9 @@
-"""Frozen BF16 projections with FP32 low-rank state and original-ID transfer."""
+"""Attach FP32 low-rank updates to frozen BF16 projection weights.
+
+ProjectionAdapter preserves the base linear path and adds two trainable matrix
+multiplications, initialized with zero output. Original-ID slicing transfers
+V/output or FFN up/down parameters and matching Adam moments. Fresh controls
+initialize source-shaped adapters before slicing, preserving comparable draws."""
 
 from __future__ import annotations
 

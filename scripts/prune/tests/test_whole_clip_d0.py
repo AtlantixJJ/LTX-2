@@ -202,3 +202,39 @@ def test_recovered_dispatch_rejects_unknown_envelope(tmp_path: Path, monkeypatch
     }
     with pytest.raises(ValueError, match="unsupported recovered"):
         whole_clip.verify_candidate(base, candidate)
+
+
+@pytest.mark.parametrize("recorded_value,direct_value", [(0.0, float("nan")), (float("nan"), 0.0), (3e38, -3e38)])
+def test_functional_ablation_refuses_nonfinite_replay_before_masking(tmp_path, monkeypatch, recorded_value, direct_value):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from scripts.prune.evaluate import whole_clip_d0 as owner
+
+    recorded = torch.tensor([[[0.0], [recorded_value]]])
+    expected = tmp_path / "expected.pt"
+    torch.save(recorded, expected)
+    row = {"artifacts": {"capture": "unused"}}
+    manifest = dict(model=dict(transformer_path="unused", transformer_fingerprint="source", model_key="2.5"),
+                    text_context=dict(prompt=""))
+    monkeypatch.setattr(owner.whole_clip, "load_manifest", lambda *_: manifest)
+    monkeypatch.setattr(owner.whole_clip, "records", lambda *_: {("heldout", 0.5): row})
+    monkeypatch.setattr(owner.provenance, "checkpoint_fingerprint", lambda *_: "source")
+    monkeypatch.setattr(owner.export_pruned, "checkpoint_mask_widths", lambda *_: {})
+    monkeypatch.setattr(owner.hooks, "read_mask_artifact", lambda *a, **k: ({"0.attn1": [1], "0.ff": [1]}, "hash"))
+    monkeypatch.setattr(owner.hooks, "require_native_heldout_scope", lambda *a, **k: None)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *_: (48 * 2**30, 48 * 2**30))
+    value = torch.tensor([[[0.0], [direct_value]]])
+    model = lambda **kwargs: (value, None)
+    current = SimpleNamespace(device=torch.device("cpu"), transformer=lambda *_: nullcontext(model))
+    monkeypatch.setattr(owner.session, "open_model", lambda *a, **k: current)
+    grid = SimpleNamespace(latent_frames=2, unpatchify_block=lambda value, *_: value)
+    monkeypatch.setattr(owner.whole_clip, "build_input", lambda *a, **k: (grid, None, torch.zeros(1, 1, 1), row))
+    monkeypatch.setattr(owner, "load_training_master", lambda *_: (torch.zeros(1, 2, 1, 1), 30))
+    monkeypatch.setattr(owner.whole_clip, "load_epsilon", lambda *_: torch.zeros(1, 2, 1))
+    monkeypatch.setattr(owner.whole_clip, "latent_path", lambda *_: expected)
+    with pytest.raises(ValueError, match="direct baseline differs"):
+        owner.functional_ablation(tmp_path, tmp_path / "mask.json", tmp_path / "out.json",
+                                  view="heldout", sigmas=[0.5], gpu_id=0)
+    assert not (tmp_path / "out.json").exists()

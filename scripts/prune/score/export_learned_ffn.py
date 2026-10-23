@@ -1,4 +1,13 @@
-"""Fuse learned adapters and export both original-ID structural mask families."""
+"""Merge learned head/FFN adapters and export original-ID binary selections.
+
+masks_from_state restores both structural families. stream_merge holds one
+changed tensor while applying adapter deltas and coupled slicing. The recovered
+envelope pins state, masks, consumed draws and every output tensor. Probe
+exports remain separate from completed recovery candidates. native_parity
+compares split, fused and compact arithmetic on the same saved inputs.
+
+CLI: python -m scripts.prune.score.export_learned_ffn --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

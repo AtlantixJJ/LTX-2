@@ -1,8 +1,12 @@
-"""Evaluate completed V3 checkpoints with unchanged saved full-clip inputs.
+"""Evaluate completed joint selection and recovery checkpoints on saved inputs.
 
-Historical study identities remain immutable. This post-training owner pins its
-own source identity and never resumes training. See doc/evaluate/joint_final.md.
-"""
+Read frozen identities and pin this evaluator's source independently. Rebuild
+functional masks and adapters for fixed full-source cases, then measure split
+bundle parity and deployment cost in separate stages. Evaluation does not
+resume training or repair missing scientific evidence.
+
+CLI: python -m scripts.prune.evaluate.joint_final --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

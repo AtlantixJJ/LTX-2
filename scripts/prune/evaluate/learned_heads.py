@@ -1,4 +1,12 @@
-"""Frozen merged candidates, paired saved teacher evidence and native numerical checks."""
+"""Evaluate merged head candidates and their independent native checks.
+
+Use pinned saved teacher/GT evidence and exact full-source inputs for paired
+latent metrics. Aggregate by actor for bootstrap uncertainty, preserving view
+and sigma dependence. native_checks separates structural transfer, adapter
+transfer, fusion and merged reload. Frozen evaluation never selects masks.
+
+CLI: python -m scripts.prune.evaluate.learned_heads --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

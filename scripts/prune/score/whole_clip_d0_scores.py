@@ -1,4 +1,14 @@
-"""Score dense-export pruning units on whole-clip bidirectional D0 capture inputs."""
+"""Rank native head and FFN activations and publish a content-pinned width mask.
+
+Reconstruct every calibration view/sigma and reproduce its saved unmasked D0
+prediction before accepting observations. Average sampled squared activations
+across cases, take RMS and multiply by projection norm. Allocate low-score
+removals independently per branch with deterministic ties. The output binds
+scores, sampling coverage, masks and full calibration-manifest content.
+See doc/core_algorithm.md for what the proxy measures and ignores.
+
+CLI: python -m scripts.prune.score.whole_clip_d0_scores --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

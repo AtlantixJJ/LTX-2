@@ -1,12 +1,16 @@
 # Pruning report and wording rules
 
+Read the [glossary](glossary.md) for shared terms.
+
 ## Scope and references
 
 Apply these rules to pruning reports, figure captions, comparison media and design documents.
 The [workspace report rules](../../../../CLAUDE.md#structuring-an-experiment-report) define the shared report structure.
 The [avatar documentation rules](../../onestep_avatar/doc/README.md#documentation-rules) define the shared technical wording.
 The [avatar media guide](../../onestep_avatar/doc/media.md#text-inside-the-video) defines comparison titles and labels.
+
 This guide applies those contracts to pruning. Explicit task instructions determine the model, schedule, layout and scientific scope.
+Prune's [documentation rules](README.md#documentation-rules) own page structure; the avatar links supply wording and media conventions.
 
 ## Wording
 
@@ -19,6 +23,7 @@ Apply the same wording rules as `onestep_avatar`:
 - Use active voice, present tense and the imperative for instructions.
 - Keep the articles `a`, `an` and `the`. Do not stack more than three nouns.
 - Use one term per concept. Define it before use.
+- Explain the reason for each non-obvious rule; sentence length is only one part of clarity.
 - Put ordered steps and conditions in lists.
 - Preserve exact code names, paths, values and equations.
 - Use `must` for a rule and `can` for an option.
@@ -27,6 +32,7 @@ Use `video segment` for consecutive encoded frames. Explain `span` when quoting 
 Define `c0` as the first-image input with no added noise.
 Define sigma, raw energy, normalized score, GT and each comparison arm before using them.
 Do not describe projected head energy as causal importance or a percentage of output energy.
+
 Distinguish the original scheduler grid, its eligible tail, selected noise levels and actual model calls.
 Use full precision in saved records. Rounded display values must retain an explicit exact-value source.
 
@@ -42,6 +48,7 @@ Open with these separate parts, in order:
 
 Organize sections by scientific question. Each experimental sub-question changes one factor against a stated baseline.
 Use plain question headings of 15 words or fewer. Use defined terms or everyday language.
+
 Put exact settings in the setup, not in question headings. Avoid new jargon, config names and experiment IDs in headings.
 Keep older IDs and methods in an appendix. Mark planned work without evidence as **not run yet**.
 
@@ -88,15 +95,18 @@ Document a failed or negative result without changing the scientific question.
 
 Include an image only when it explains setup, supports a conclusion or verifies evidence.
 Its caption states that purpose. Put redundant examples in an archive and link its location.
+
 Give each experiment a small left-to-right Mermaid flow from source to metric.
 Label the edge changed by the tested factor. Use the [avatar legend](../../onestep_avatar/doc/core_algorithm.md#7-end-to-end-data-flow).
 Render with `npx -y @mermaid-js/mermaid-cli` and inspect the result.
 
 Use one synchronized comparison video per matched case and comparison.
 Preserve full source videos. Follow the task's panel layout and keep roles in consistent positions.
+
 Match source frames and playback rate. State shared coverage when lengths differ.
 Verify the recorded crop, scale, matte and frame map before interpreting alignment.
 Scale and pad panels to equal displayed heights. Preserve aspect ratios and all relevant evidence.
+
 Label missing panels explicitly. Never create replacement evidence during report rebuilding.
 
 Video text uses the same rules as the avatar media:
@@ -120,9 +130,10 @@ Code under `expr/` reads saved artifacts for report sections, captions, plots an
 It must not load models, decode latents, start queue jobs or repair missing scientific results.
 This matches the [avatar report boundary](../../onestep_avatar/doc/architecture.md#saved-report-ownership).
 
-Keep prose in `configs/narrative.json` and layout in `code/report.py` within the study output.
+Keep prose in `configs/narrative.json` and layout in `<study_root>/code/report.py` within the study output.
 Rebuild the report from checked saved results. Rebuilding must preserve the specified layout.
 Run the saved-artifact validator after each report change. Keep the study plan current.
+
 The validator checks coverage, identities, metrics, plotted data, references and media links.
 It must reject missing evidence before publishing a completed report.
 

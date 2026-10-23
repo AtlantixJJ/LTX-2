@@ -1,4 +1,8 @@
-"""Probe VAE scale factors and convert pixel and latent shapes."""
+"""Probe VAE temporal/spatial factors and convert latent shapes to pixel shapes.
+
+Read factors from the selected encoder/decoder configuration rather than an
+entrypoint constant. The aligned frame count is temporal_factor*(latents-1)+1;
+this preserves the first image when converting a temporal latent count."""
 
 from __future__ import annotations
 

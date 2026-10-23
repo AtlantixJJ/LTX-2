@@ -1,4 +1,7 @@
-"""Paths and attributable run directories for whole-clip pruning artifacts."""
+"""Locate output roots and allocate attributable run directories.
+
+The model key separates releases. A run records its script and provenance
+under the ignored experiment root, so unrelated commands do not share outputs."""
 
 from __future__ import annotations
 

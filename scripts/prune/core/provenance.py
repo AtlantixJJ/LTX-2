@@ -1,4 +1,9 @@
-"""Checkpoint fingerprints, content hashes and attributable run metadata."""
+"""Hash saved inputs and record attributable checkpoint and process identities.
+
+file_sha256 binds full file bytes; checkpoint_fingerprint samples a checkpoint
+for identity and is not a full integrity hash. verified_sha256 also checks that
+a file did not change during the read. stamp combines component identity,
+software and source revision for artifacts consumed by native readers."""
 
 from __future__ import annotations
 

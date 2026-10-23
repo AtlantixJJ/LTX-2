@@ -1,84 +1,65 @@
-# Whole-clip bidirectional pruning
+# Pruning LTX video transformers
 
-This package calibrates and evaluates attention-head, FFN-channel and intact-block pruning.
-The native task is one full-video bidirectional D0 forward at each exact `[sigma,0]` schedule.
-Capture latent frame zero is clean. Later frames are generated.
+This package removes attention heads, feed-forward channels or complete transformer blocks from LTX models.
+It measures the result on saved video inputs, exports runnable checkpoints and checks quality and execution cost.
+Use LTX-2.5 for new work. The checkpoint registry also retains LTX-2.3 for reproduction.
 
-Start with the [run guide](doc/usage.md) for complete commands.
-Read the [design index](doc/README.md), [architecture](doc/ARCHITECTURE.md),
-[algorithm](doc/core_algorithm.md), [verification](doc/VALIDATION.md)
-and [known gaps](doc/known_gaps.md) for implementation contracts.
-The [method review](doc/METHODS.md) supplies research context and proposed comparisons.
-The [report and wording guide](doc/reporting.md) applies the avatar language and media rules to pruning reports.
+Start with the [overview](doc/overview.md) and [glossary](doc/glossary.md).
+The [algorithm](doc/core_algorithm.md) explains the calculations, including joint selection with removal and return.
 
-## Workflow
+## What gets pruned
 
-Run from `LTX-2` in the `ltx` conda environment.
-Use LTX-2.5 for new work. Check `nvidia-smi` before model loading.
-Keep fresh outputs under `../expr/refiner_prune/2.5/`.
+Training-free scores can remove video self-attention heads, video text cross-attention heads and video feed-forward channels.
+Learned methods select video self-attention heads and, in joint methods, feed-forward channels.
+Depth export removes an explicitly supplied list of complete blocks.
 
-1. [Save a baseline](doc/usage.md#save-the-baseline) with
-   `python -m scripts.prune.evaluate.whole_clip_baseline`.
-   Fix source bundles, prompt, epsilon, seed, fps, geometry and exact sigmas.
-2. [Calibrate and ablate](doc/usage.md#calibration-and-functional-ablation) with
-   `python -m scripts.prune.score.whole_clip_d0_scores` and
-   `python -m scripts.prune.evaluate.whole_clip_d0 --functional-mask`.
-   Calibration must reproduce the saved native baseline.
-3. [Export width masks](doc/usage.md#width-export-and-parity) with
-   `python -m scripts.prune.score.export_pruned`.
-   `masked_full` is the default control. `compact_faithful` compresses storage while restoring original execution widths.
-   `compact` reduces supported executed widths. `sparse` selects active heads with full-width projections.
-4. [Export retained blocks](doc/usage.md#depth-export), when testing depth, with
-   `python -m scripts.prune.score.export_depth`.
-   This CPU exporter uses a separate native depth artifact.
-5. [Check export parity](doc/usage.md#width-export-and-parity) with
-   `python -m scripts.prune.checks.export_parity`.
-   Compare the export with its in-memory intervention. Default maximum absolute tolerance is 0.02.
-6. [Judge quality and cost](doc/usage.md#held-out-quality-and-timing) with
-   `python -m scripts.prune.evaluate.whole_clip_d0` and
-   `python -m scripts.prune.evaluate.bench_whole_clip_d0`.
-   Inspect synchronized VAE panels and timing drift separately.
+Sessions load the video-only transformer. Audio and audio-video attention are outside width selection;
+width exports preserve their stored tensors. Deleting a complete block also deletes its audio tensors.
+Q/K projections and their full original normalization remain intact during width export.
+Residual feature width stays unchanged.
 
-The shared [preflight and prompt-cache commands](doc/usage.md#preflight-and-prompt-cache)
-are `python -m scripts.prune.core.preflight` and
-`python -m scripts.prune.data.prompt_cache`.
+## Choose a method
 
-## Native reproduction and evidence
+- **Training-free scores** rank sampled activations and turn low scores into fixed binary masks.
+  Use this route for calibration and controlled functional ablations without optimization.
+- **Learned gates** train head scores and low-rank adapters, then select fixed widths and recover with adapters.
+  The binary-channel variant also learns aligned feed-forward masks.
+- **Clipped selection with return**, called **V3**, trains both families together.
+  It periodically removes units, allows eligible units to return, and ends with aligned widths and fixed-mask recovery.
+  `joint_clip_reset_v3` is the current joint selection method; its head-only and budget-matched controls have explicit arm names.
 
-Agents run the restricted raw baseline through the existing avatar `prune_baseline` queue experiment.
-Humans can use the queue or direct producer.
-See the [queued reproduction recipe](doc/usage.md#queued-baseline-reproduction).
+Implemented methods and completed studies have different kinds of evidence.
+Read a study's report through the [workspace handoffs](../../../plans/README.md) for its measured results.
+The package guides describe code behavior, with no run status embedded in recipes.
 
-The original producer manifest and tensors remain in `<job-output>/baseline/`.
-The queue wrapper owns separate full component/software pins and completion records.
-Prune retains its broader standalone interfaces.
+## Shared input and output
 
-Calibration actors cannot serve as held-out actors through another clip, Part, view or alias.
-The paired baseline must retain pinned calibration rows.
-The saved analyzer visits every row; judge and report held-out rows separately.
+Every native pruning forward reconstructs a saved capture and saved noise at one exact `[sigma, 0]` denoising step.
+The first capture latent frame stays clean because it is the image condition; other frames receive noise.
+Attention sees the complete video in both directions. Optimizer inputs can use the explicitly configured continuous temporal crop.
+The [input contract](doc/data/whole_clip.md) gives the identities, coordinates and reconstruction order.
 
-A smaller checkpoint does not establish faster execution.
-Acceptance requires matched inputs, export parity, held-out numerical and decoded quality,
-and measured same-device cost beyond drift.
-See [working rules](CLAUDE.md).
+All four width export modes preserve the declared kept units:
 
-## Focused checks
+| Mode | Stored weights | Executed computation |
+|---|---|---|
+| `masked_full` | Full widths | Compute all heads/channels, then zero inactive outputs before projection |
+| `sparse` | Full widths | Select active attention heads; projections and feed-forward widths stay full |
+| `compact` | Sliced V/output and feed-forward weights; full Q/K | Execute retained widths where supported |
+| `compact_faithful` | Compact weights | Pad back to original execution widths to preserve reduction geometry |
 
-```bash
-conda activate ltx
-CUDA_VISIBLE_DEVICES='' python -m pytest scripts/prune/tests -q -m 'not gpu'
-ruff check --select F,I scripts/prune
-```
+The [export contract](doc/score/export_pruned.md) connects these modes to the transformer runtime.
+Learned exports can merge adapters or preserve their separate matrix multiplications in a split bundle.
+The bundle loader must load both base weights and adapters.
 
-The [verification guide](doc/VALIDATION.md#cpu-gate) explains test coverage and native gates.
+## Reading paths
 
-V3 joint head/FFN selection uses the [shared DDP owner](doc/learn/ddp_owner.md).
-Start with [V3 preparation and training](doc/usage.md#joint-clipped-gates-with-re-admission), then use
-[completed-study evaluation](doc/usage.md#completed-joint-v3-evaluation).
-Completed lineage executors are retained in the workspace cleanup archive.
+- To **understand the method**, read [overview](doc/overview.md), [algorithm](doc/core_algorithm.md) and [evidence gates](doc/VALIDATION.md).
+- To **run a workflow**, read the [run guide](doc/usage.md). It owns commands, device selection and preset values.
+- To **change code**, read [working rules](CLAUDE.md), the [change-impact map](doc/ARCHITECTURE.md#change-impact-map),
+  and the relevant source docstring in the [file map](doc/README.md#current-source-owners).
+- To **write a report**, use the [report guide](doc/reporting.md). Results and saved media belong under ignored `expr/` paths.
 
-Learned head pruning with bounded LoRA recovery is implemented under [`learn/`](learn/).
-Start with [CPU study preparation](doc/data/learned_head_study.md), then follow the [phase run guide](doc/usage.md#learned-head-phases).
-The [export](doc/score/export_learned_heads.md), [checks](doc/checks/learned_heads.md),
-[paired evaluation](doc/evaluate/learned_heads.md) and [media](doc/evaluate/learned_head_media.md) pages describe their separate evidence gates.
-Native feasibility and decoded quality remain required before claiming an accepted compact candidate.
+Claim acceptable quality only after the declared held-out numerical and decoded checks pass.
+Claim faster execution only from warmed, synchronized measurements on the same device, with gains exceeding drift.
+The [verification guide](doc/VALIDATION.md) owns the precise requirements and test commands.

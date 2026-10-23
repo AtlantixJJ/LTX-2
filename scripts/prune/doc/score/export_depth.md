@@ -4,13 +4,14 @@
 
 Write a shorter native LTX transformer checkpoint by removing complete blocks,
 without loading weight tensors into host RAM or allocating CUDA memory. This is
-an architecture diagnostic until native BF16 parity, quality and timing are run.
+an architecture diagnostic with evidence assessed by the [verification guide](../VALIDATION.md).
+The [glossary](../glossary.md) defines depth artifacts and original block IDs.
 
 `create_artifact(baseline_root, calibration_views, sigmas, removed_blocks)` binds
 an explicitly chosen, sorted deletion set to a saved native D0 baseline.
 `read_artifact` validates that binding. `export(source, artifact_path, output)`
 writes the checkpoint and returns its fingerprint, file sizes and parameter
-accounting. `verify_export` validates architecture/provenance for native
+accounting. `score.export_depth.verify_export` validates architecture/provenance for native
 consumers. `retained_blocks` supplies a reversible in-memory reference for
 export parity; it restores the original `ModuleList` even when the forward fails.
 
@@ -22,17 +23,15 @@ There is no `--dry-run` option. The command reads saved calibration inputs and c
 ```bash
 conda activate ltx
 CUDA_VISIBLE_DEVICES='' python -m scripts.prune.score.export_depth \
-  --baseline ../expr/refiner_prune/2.5/prune_doc_example/baseline \
-  --calibration-views /abs/corpus/Part_1/0008_01/views/view00_cam51 \
+  --baseline <baseline_root> --calibration-views <calibration_view> \
   --sigmas 0.725 0.909375 1.0 \
-  --remove-blocks 3 7 8 15 \
-  --artifact ../expr/refiner_prune/2.5/prune_doc_example/depth_diagnostic.json \
-  --output ../expr/refiner_prune/2.5/prune_doc_example/depth_diagnostic.safetensors \
-  --purpose diagnostic_architecture --quality-status failed_prior_functional_gate
+  --remove-blocks 1 \
+  --artifact <depth_candidate.json> --output <depth_candidate.safetensors> \
+  --purpose calibration_candidate --quality-status not_evaluated
 ```
 
-This command explicitly labels the four-block set as a failed diagnostic.
-It does not select or qualify a new candidate. For a no-prune architecture control, supply
+This example supplies original block 1 as the deletion set; the saved baseline must contain the listed exact sigmas.
+The resulting artifact starts unqualified. For a no-prune architecture control, supply
 `--remove-blocks` with no indices and `--purpose no_prune_control`.
 
 | Argument | Meaning |
@@ -73,6 +72,7 @@ explicitly map such indices or reject deleted ones.
 Only the JSON header and bounded payload chunks are resident during copying.
 Payload dtype, shape and bytes remain unchanged. A temporary file is format
 validated and atomically published without overwriting an existing destination.
+
 Source paths, symlinks and hard-link aliases cannot be overwritten. Source inode,
 size and modification/change times are checked before and after copying; artifact
 and manifest content must still match before publication. Failed copying removes
@@ -110,10 +110,11 @@ does not compare tensor payloads or establish numerical parity.
 
 ## Tests
 
-CPU tests compare
+`tests/test_export_depth.py` compares
 retained tensor values and real small video/AV model forwards, strict reload,
 cache entries/full block-causal references, cache eviction, retained-block
 backward gradients, clean c0, aliases, source mutation,
-manifest/artifact/config mutation and interrupted-copy cleanup. A production
-BF16 held-out run through `checks.export_parity --depth-artifact` remains required
-at maximum absolute latent difference 0.02, followed by separate quality/timing.
+manifest/artifact/config mutation and interrupted-copy cleanup.
+`tests/test_safetensors_stream.py` separately checks bounded streaming payloads and serialization.
+A production BF16 held-out run through `checks.export_parity --depth-artifact` remains required
+under the [standard export tolerance](../VALIDATION.md#g3-reproduce-the-functional-export-reference), followed by quality and timing.

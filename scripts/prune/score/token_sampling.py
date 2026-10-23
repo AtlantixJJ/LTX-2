@@ -1,4 +1,9 @@
-"""Deterministic spatial sampling of native generated-frame tokens."""
+"""Select deterministic spatial query tokens from generated latent frames.
+
+stride samples flat spatial offsets; balanced_grid distributes a comparable
+sample budget over row/column midpoints. Neither includes clean frame zero.
+Record exact indices and their hash so score coverage is reproducible.
+See doc/core_algorithm.md for the sampler example and score interpretation."""
 
 from __future__ import annotations
 

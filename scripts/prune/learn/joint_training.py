@@ -1,10 +1,11 @@
-"""V3 joint clipped selection, task-gradient receipts and exact checkpoint state.
+"""Update clipped head/channel scores and adapters and save exact joint state.
 
-The historical FFN learner remains separate. The DDP reducer averages the total
-loss once. The known analytical penalty is subtracted to recover task gradients
-in raw-score units; executed-gate gradients are captured before its surrogate.
-See doc/learn/joint_training.md.
-"""
+DDP averages parameter gradients once. Gate-output hooks separately capture
+local task derivatives before the surrogate; their diagnostic average never
+updates parameter gradients. After a selection event, reset gate Adam state
+while preserving adapter moments. Save partial-window policy, both gate
+optimizers, adapter state, rank RNG and draw cursor. CPU damping medians avoid
+nondeterministic CUDA median indices. See doc/learn/readmission.md."""
 
 from __future__ import annotations
 

@@ -1,8 +1,12 @@
-# Whole-clip pruning verification
+# Evidence and verification
+
+A candidate needs attributable inputs, the declared computation, held-out quality and measured execution cost.
+These checks answer different questions, so save each result separately.
+The [glossary](glossary.md) defines terms; [overview](overview.md) and [algorithm](core_algorithm.md) explain the computation.
 
 ## CPU gate
 
-Run from `LTX-2` with the `ltx` interpreter:
+Run from `LTX-2` using the `ltx` interpreter:
 
 ```bash
 conda activate ltx
@@ -10,170 +14,130 @@ CUDA_VISIBLE_DEVICES='' python -m pytest scripts/prune/tests -q -m 'not gpu'
 ruff check --select F,I scripts/prune
 ```
 
-The collection hook skips only tests already marked `gpu` when CUDA is hidden.
-CPU fixtures retain import, metadata, shape and small-model checks.
-A marker does not disable imports. Ruff follows the repository's dev-tool setup when unavailable in `ltx`.
+Collection skips only tests already marked `gpu` when CUDA is unavailable or hidden.
+CPU fixtures retain their imports and small-model behavior checks.
+For docs, the contract checks source coverage, symbol/file references, glossary labels, placeholders, links, headings and CLI flags.
+It also compares documented defaults and worked calculations with code and presets.
+Render changed Mermaid diagrams and inspect readable wide/narrow versions.
 
-For documentation changes, check source coverage, required headings, local links and documented CLI options.
-Render and inspect changed Mermaid diagrams.
-Documentation verification does not require expensive GPU work.
+## Evidence gates
 
-## Learned FFN controls
+### G1: reproduce the saved baseline
 
-`tests/test_ffn_learning.py` checks aligned counts, stable ties and binary surrogate gradients.
-It compares the live post-GELU boundary with independent native FFN algebra.
-It verifies frozen base weights, exact resumed updates across freezing, original-ID Adam transfer and FP32 fusion.
-Four real CPU DDP ranks compare joint gradients with independent serial four-draw accumulation.
+Reconstruct exact capture, saved epsilon, VAE, fps, geometry, text bytes and `[sigma,0]` schedules.
+Use one bidirectional block, BF16 tensors, FP32 timesteps and clean c0.
+Require finite outputs and finite differences, with maximum absolute latent difference at most **0.02**.
+This is the default native replay and export-parity tolerance used throughout this package; a stricter frozen study can require more.
+Compare saved noise tensors directly: a seed identifies the RNG request, not its resulting device-specific bytes.
 
-`learn.ffn --phase native --testing` uses GPUs 4–6 for disposable native tests.
-The formal owner requires a separate four-rank receipt on GPUs 0–3 before its first training update.
-Both checks exercise all-one parity, checkpointed gradients, exact serialized resume and fixed-mask recovery.
-F18 and cropped-F28 inputs and full-source inference retain separate memory evidence.
-`score.export_learned_ffn --probe --parity-gpu-id 4` records split/fused/compact native parity separately.
-Preserve parity failures with the unchanged 0.02 tolerance. Training success does not qualify compact execution or speed.
+The saved completion reader verifies hashes, coverage, finite BF16 tensors and c0 without opening a model.
+The queued baseline wrapper additionally pins complete components and software.
+Use its [reproduction recipe](usage.md#queued-baseline-reproduction) when the wrapper owns the task.
 
-## Report verification
+### G2: bind artifacts and held-out scope
 
-Apply the [report and wording contract](reporting.md).
-Check question structure, defined terms, figure data, matched identities and scientific coverage.
-Inspect synchronized media and wide/narrow layouts. Preserve aspect ratios and readable labels.
-Rebuild from saved artifacts with model, VAE and queue loaders blocked.
-A missing required input must produce a named error and zero model or decoder jobs.
-The report validator runs after each change. Its result does not replace the native gates below.
-
-## G1: native baseline reproduction
-
-Reconstruct the exact capture, VAE, fps, geometry, context bytes, seed and saved epsilon.
-Use one bidirectional block and the exact `[sigma,0]` schedule.
-Inspect the actual float32 sigma and token timesteps, BF16 latents and clean capture frame zero.
-
-Calibration forwards must reproduce their saved D0 outputs.
-The scorer rejects nonfinite maximum differences and values above 0.02.
-Use the existing avatar `prune_baseline` queue experiment for native reproduction.
-Saved noise and D0 tensors must be compared directly across old/new runs.
-Equal seeds alone do not prove equal noise.
-
-The saved completion reader checks structure, coverage, hashes, finite BF16 tensors and exact c0.
-It opens no model and cannot regenerate device-specific CUDA noise.
-The wrapper separately checks full component and software pins.
-See [producer verification](evaluate/whole_clip_baseline.md#saved-completion-verification)
-and [queued baseline](usage.md#queued-baseline-reproduction).
-
-## G2: artifact identity and held-out scope
-
-Require `whole_clip_d0_mask_v1` for width or `whole_clip_d0_depth_v1` for intact-block removal.
-Check native task, attention, conditioning, model/VAE identity and full calibration-manifest content.
-Check source, noise and context identities.
-
-Exclude calibration actors across clips, Parts, views and aliases.
-Also reject a held-out capture reused from calibration.
+Require the declared versioned candidate family, complete calibration-manifest content and actual source/noise/context pins.
+Keep calibration actors outside held-out data across clips, Parts, views and aliases; reject a reused capture too.
 Held-out sigmas must occur in calibration.
+Keep pinned calibration rows in the selected baseline for distribution validation, then report held-out rows separately.
+The saved analyzer visits every row, including calibration rows.
+The [input contract](data/whole_clip.md) owns manifest and recovered-family dispatch.
 
-The selected baseline must retain the pinned calibration rows for distribution validation.
-The saved quality analyzer visits all rows. Identify held-out rows separately in the report.
-See [native input contract](data/whole_clip.md) and [mask checks](score/hooks.md).
+### G3: reproduce the functional export reference
 
-## G3: export parity
+Use identical saved inputs for the in-memory intervention and exported model, loading one transformer at a time.
+Use functional masks for width export and an ordered retained-block list for depth export.
+Require matching shapes, finite outputs/differences and the G1 tolerance on every declared case.
+Include a no-prune control and record relative L2 as supporting evidence.
 
-Use identical saved inputs for the in-memory intervention and exported model.
-Width reference is the functional mask.
-Depth reference is the ordered retained block list.
-Load one transformer at a time.
+Learned candidates need separate structural-transfer, adapter-transfer, fusion and merged-reload checks.
+Their envelopes must cover retained IDs, consumed draws, components and merged tensors.
+Use the split-bundle loader when adapters remain separate; the base checkpoint alone has different arithmetic.
+A changed rounding point, normalization or fitted weight needs its own functional reference.
+Depth metadata verification covers architecture and accounting; establish payload and native numerical agreement with their own checks.
 
-The default gate requires matching shapes and maximum absolute latent difference at most 0.02.
-Report relative L2 and finite values as additional evidence.
-Include a no-prune export control.
-A changed normalization or fitted weight requires its own reference.
+### G4: assess held-out decoded quality
 
-Depth architecture verification checks inventory, config, mappings and accounting.
-It does not compare payload bytes or establish numerical parity.
-The native parity gate remains separate.
-See [export parity](checks/export_parity.md).
+Predeclare acceptance thresholds, actors, seeds, exact schedules and coverage before blind evaluation.
+Report generated-frame direction relative L2/cosine, capture latent MSE and candidate/baseline disagreement.
+Exclude clean c0; it is supplied conditioning.
+Latent agreement measures numerical change, not identity, action correctness or useful motion.
 
-## G4: held-out decoded quality
+Inspect synchronized capture VAE, native D0 VAE and candidate D0 VAE videos for identity, detail, pose, motion and temporal consistency.
+Include matched capture RGB when judging original capture fidelity, and label RGB versus VAE decoding.
+Verify recorded crop, scale, matte, frame map and source hashes before interpreting alignment.
+State sample size, selection rule and the clips actually inspected.
+Required region metrics need reviewed GT tracks and available pinned LPIPS weights; missing required coverage fails acceptance.
 
-Report generated-frame direction relative L2/cosine, capture latent MSE and prediction disagreement.
-Exclude clean frame zero.
-State sample size, actor split, seeds and exact schedules.
+### G5: measure execution cost
 
-Inspect synchronized capture VAE, baseline D0 VAE and candidate D0 VAE panels.
-Judge identity, detail, pose, motion and temporal consistency.
-Identify VAE decoding explicitly. Include matched capture RGB when a report assesses original capture fidelity.
-Verify preprocessing coordinates and source hashes before interpreting alignment.
+Use warmed, synchronized repeated forwards on the same GPU with fixed input, software, precision and numerical policy.
+The baseline benchmark requires at least one warmup and three timed calls.
+Use both ABA and BAB brackets when gains approach drift; repeat the outside arm to expose changing device conditions.
+Claim a speedup only when it exceeds drift and timing spread and satisfies the frozen study's declared gate.
 
-Latent metrics measure numerical agreement. They do not prove correct action or useful motion.
-Predeclare acceptance thresholds before blind tests.
-See [comparison logic](evaluate/whole_clip_d0.md).
+Report checkpoint bytes, resident-video parameter counts, peak allocated memory and forward latency with separate denominators.
+A smaller checkpoint establishes storage savings; actual execution measurements establish latency and device-memory savings.
+Include every required split-adapter or padded full-width GEMM in the timed computation.
 
-## G5: measured cost
+## Learned native acceptance
 
-Measure repeated warmed and synchronized forwards on the same GPU.
-Keep input, software, precision and numerical policy fixed.
-Use ABA and BAB brackets when gains are close to measured drift.
-The benchmark requires at least one warmup and three timed calls.
+Head feasibility covers both complete source lengths and every sigma in the frozen config.
+The run guide's [preset section](usage.md#preset-values) owns the exact grid source and monitor indices.
+Check native velocity conversion, wrapper parity, all-one gates, zero adapters and the distinct initialized sigmoid-gate student.
+The bounded full-source feasibility phase uses ten backwards per length and its configured device-headroom requirement.
 
-A speed claim must exceed drift and timing spread.
-Report checkpoint bytes, resident-video parameters and peak allocated memory separately.
-A compact file or mask is not a speed result.
-See [benchmark logic](evaluate/bench_whole_clip_d0.md).
+For uniform temporal crops, `checks.ddp_native` independently verifies full F18 and nonzero cropped-F28 inputs,
+soft/binary gradients, frozen base weights, device headroom and serialized resume.
+The receipt must match study identity, method and configured world size before sustained training.
+Full-source monitoring capacity needs its own check because a crop fits less memory.
 
-## Worked evidence checks
+FFN and joint families run separate disposable-test and formal-rank acceptance through the shared owner.
+Both exercise all-one parity, checkpointed backward, exact resume and fixed-mask recovery.
+Match receipts to the frozen device list and rank count; a smaller test group cannot substitute for the formal group.
+Joint optimizer replay, native channel ablations and export-isolation review remain separately pinned prerequisites.
+The descriptive review names in the [state contract](learn/readmission.md) are distinct from G1–G5.
 
-- Rehashing a malformed tensor does not make its shape, dtype, finiteness or c0 valid.
-- A depth export can match retained source blocks while losing quality against the full teacher.
-- A local ridge fit can reduce projection MSE without improving held-out model output.
-- A benchmark can improve its median within the bracket drift. That is insufficient speed evidence.
+## Test ownership
 
-## Test ownership and limits
+- `tests/test_input_loading.py`, `tests/test_whole_clip_baseline.py` and `tests/test_whole_clip_d0.py` cover saved input and replay refusals.
+- `tests/test_estimators.py`, `tests/test_projected_energy.py` and `tests/test_token_sampling.py` cover score meaning and sample coordinates.
+- `tests/test_export_pruned.py`, `tests/test_export_depth.py`, `tests/test_safetensors_stream.py` and `tests/test_joint_exports.py` cover surgery and payloads.
+- `tests/test_head_losses.py`, `tests/test_learned_gates.py` and `tests/test_head_adapters.py` cover loss, binary decisions and original-ID transfer.
+- `tests/test_ffn_learning.py`, `tests/test_ddp_training.py` and `tests/test_readmission.py` compare numerical families and real CPU reducer gradients with serial controls.
+- `tests/test_ddp_owner_loop.py` checks full-state resume, receipt digests, draw order, preview RNG and missing-input failure votes.
+  Its fixture pins CPU reduction order; native NCCL process-restart equivalence remains a separate requirement.
+- `tests/test_bench_learned_heads.py` checks nonfinite benchmark refusals and timing drift decisions.
+- `tests/test_compact_recovery.py` checks aligned compact setup, fresh adapters, frozen weights and serialized Adam replay.
+- `tests/test_doc_contract.py` checks the documentation contract and its intentional failure cases.
+- `tests/test_device_policy.py` checks relocated disjoint groups, frozen rank counts, native capacity and physical-ID remapping refusals.
 
-The [module index](README.md) links each production owner and its Tests section.
-Depth tests use real small video/AV models, strict reload, cache comparisons and backward gradients.
-Saved-baseline tests exercise a tiny real transformer and model-free completion refusals.
+The [change-impact map](ARCHITECTURE.md#change-impact-map) selects checks for a particular edit.
+CPU correctness checks complement native BF16 replay, decoded quality and timing evidence.
 
-Those CPU results establish focused correctness.
-Native BF16 baseline, export, quality and timing evidence are independent acceptance gates.
-Do not label a candidate accepted while a required gate remains unrun.
+## Supported scope and persistent limits
 
-## Learned head controls
+Native pruning readers require white-capture, unguided, BF16, single-step D0 inputs.
+The baseline producer has broader dev/guided/D1 options; verify reader support before using those outputs for pruning.
+The registry includes multiple releases; scorer, functional ablation and baseline benchmark currently open LTX-2.5 sessions.
 
-The focused CPU controls cover exact +3 initialization, independent microbatch graphs and analytic sparsity gradients.
-They compare tiny legal-count selection with brute force and verify binary-forward STE gradients.
-The official FP32 loss fixture matches `FlexibleStrategy._compute_modality_loss`.
-Other controls verify original-ID adapter/moment slicing, zero delta, exact resumed updates and fusion payloads.
-GT region tests cover source coordinates, expansion, crop mapping, visibility and empty coverage.
-Teacher tests verify immutable reuse and bounded evidence storage.
+Prompt-cache names bind model key and prompt text, without a component hash.
+Revalidate after changing the text encoder. Its CLI verifies `DEFAULT_PROMPT`; empty-text context uses the public API in [usage](usage.md#preflight-and-prompt-cache).
+Native baseline rows use one seed per input root; create separate roots for additional seeds.
+Raw-only evidence requires separately produced media for decoded comparisons.
+Sampled checkpoint fingerprints identify a checkpoint; full-file hashes establish full-file integrity.
 
-Native feasibility remains required at both 18 and 28 latent frames and all eight sigmas.
-It separates ordinary wrapper parity, all-one gates, zero adapters and the attenuated sigmoid(3) student.
-Ten complete-clip backwards per length must leave at least 2 GiB of device headroom.
-Execution probes test the three declared head layouts, all-one export and FFN-only widths.
-Use both ABA and BAB; drift above two percent increases repetitions to twenty.
+Depth export consumes a selected block set; this package supplies no automatic depth selector.
+The scoring proxy and its spatial samplers have the limits defined in the [algorithm](core_algorithm.md#training-free-scores-and-masks).
+Study-specific unrun checks, measured failures and quality/speed outcomes live in the [workspace handoffs](../../../../plans/README.md) and their saved reports.
 
-Check structural transfer, adapter transfer, fusion and merged reload independently.
-Keep failures rather than treating later recovery as proof of earlier parity.
-Merged reload must have maximum absolute difference at most 0.02 for every case.
-Recovered validation requires complete update/draw coverage and full source/noise/context/tensor hashes.
-Required decoded region metrics and reviewed videos cannot pass with missing coverage.
+## Comprehension review
 
-## Uniform-F18 DDP and logging
+After a method change, ask a fresh reader to use README, overview and algorithm alone to answer:
+which branches change; how c0 stays clean; what the score measures and ignores; how export modes execute;
+when units leave, return or become permanent; why score and gate moments reset; how selection ends and recovery runs;
+and what evidence supports acceptance or speed.
 
-The four-rank CPU DDP fixture compares real reducer gradients with independent serial four-draw accumulation.
-It includes native-style non-reentrant checkpointing and hook-owned gates, verifies frozen state and exact checkpoint resume.
-Crop fixtures check F18 identity, nonzero longer-source windows, local conditioning, region alignment and saved source hashes.
-Logger fixtures check one rank line per series and globally averaged losses and unique validation cases.
-No online W&B request or GPU workload is needed for those CPU checks.
-
-`checks.ddp_native` is the separate native BF16 gate for a newly frozen DDP study.
-It checks F18 and cropped-F28 sources, nonzero crop conditioning, all-one parity, soft/binary gradients, memory and exact resume.
-The saved acceptance must match the study, DDP method and configured world size before sustained training.
-Two-rank full-F18 memory evidence does not establish four-rank crop execution or full-source validation memory.
-Keep those native checks pending when the user has stopped GPU training.
-
-## Shared DDP owner
-
-`test_ddp_owner_families.py` checks family hooks and checkpoint/monitor boundaries.
-`test_import_boundaries.py` prevents new upward dependencies.
-`test_doc_contract.py` checks source inventory, designs, entrypoints, commands and local links.
-Shared-owner CPU coverage does not establish native gradient parity against the pre-refactor snapshot.
-Require matched disposable three-rank native receipts before qualifying this refactor for a new training study.
-Do not resume an existing study with changed source identity.
+Then check three maintenance tasks: write a launch command from usage, identify the input-builder change impact,
+and explain a removal/return rule. Compare answers with source and record the review with the change.
+This is a review activity; the CPU doc contract supplies repeatable checks between reviews.

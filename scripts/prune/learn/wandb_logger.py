@@ -1,4 +1,13 @@
-"""One CPU W&B writer per arm, reading published global receipts only."""
+"""Publish one CPU W&B run per arm from already saved optimizer and monitor receipts.
+
+Numeric update filenames identify published records; ignore atomic temporary
+files. A durable cursor prevents duplicate steps. Rank-dependent sigma, time
+and memory use labeled series; losses and unique-case validation use global
+means. The configured chart interval controls refresh, not data coverage.
+This reader never loads a model or creates a CUDA context.
+
+CLI: python -m scripts.prune.learn.wandb_logger --help.
+Workflows and launch settings: doc/usage.md."""
 
 import argparse
 import fcntl

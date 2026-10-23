@@ -1,4 +1,11 @@
-"""Validated saved inputs for native bidirectional whole-clip D0 experiments."""
+"""Validate saved D0 evidence and reconstruct its exact full-video model input.
+
+Both build_input and load_case call _reconstruct_input for FP32 noising, clean
+first-frame conditioning and bidirectional geometry. load_case deserializes the
+same capture/noise buffers it hashes, once per tensor. Candidate validation
+dispatches every supported width/depth/recovered family through shared owners.
+Optional RGB/metadata pins are checked only when present in a source record.
+See doc/data/whole_clip.md for the cross-module input contract."""
 
 from __future__ import annotations
 
@@ -397,7 +404,7 @@ def load_case(root, source_record, *, current, sigmas, seed, sigma):
 def _prepare_score_inputs(root, source_record, *, current, sigmas, seed):
     """Save capture-only D0 input evidence, without producing rollout predictions.
 
-    Noising and conditioning remain in build_input. A completed input manifest
+    Noising and conditioning remain in _reconstruct_input. A completed input manifest
     always reuses its pinned epsilon. Orphaned input files require diagnosis.
     """
     import os  # noqa: PLC0415

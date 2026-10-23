@@ -1,9 +1,13 @@
-"""Saved P0 optimizer replay and native P1 channel ablations for V3.
+"""Measure optimizer sensitivity and native one-block channel-ablation costs.
 
-P0 draws identical seeded gradients at each scale and never treats synthetic
-noise as native evidence. P1 changes one block and fraction per matched case.
-Both publish immutable observations. See doc/checks/joint_preflight.md.
-"""
+The p0 CLI phase replays correlated seeded gradients and optional saved task
+gradients across scales; synthetic observations stay labeled. The p1 phase
+changes one block and fraction per matched validation case, supports sharding
+and saves immutable predictions and cost deltas. Test devices come from frozen
+config. Review requirements are defined in doc/VALIDATION.md.
+
+CLI: python -m scripts.prune.checks.joint_preflight --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ from pathlib import Path
 
 import torch
 
-from scripts.prune.core import numerics, records
+from scripts.prune.core import numerics, preflight, records
 from scripts.prune.core.provenance import file_sha256
 
 
@@ -140,8 +144,7 @@ def p1(study, gpu, shard, shards, *, timing_only=False):
 
     numerics.deterministic_policy()
     torch.set_num_threads(4)
-    if gpu not in (4, 5, 6):
-        raise ValueError("P1 tests use GPUs 4–6")
+    gpu = preflight.testing_gpu(study["config"], gpu)
     current = session.open_model(
         "2.5",
         gpu,
@@ -238,7 +241,7 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--study", type=Path)
     parser.add_argument("--traces", type=Path)
-    parser.add_argument("--gpu-id", type=int, default=4)
+    parser.add_argument("--gpu-id", type=int)
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--shards", type=int, default=1)
     parser.add_argument("--timing-only", action="store_true")

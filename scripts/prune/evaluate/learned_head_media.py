@@ -1,4 +1,12 @@
-"""Decode frozen learned-head evidence and render synchronized RGB/VAE comparisons."""
+"""Decode frozen learned-head evidence and render synchronized comparisons.
+
+Validate the saved evaluation and source identities, then compare capture RGB,
+capture VAE, native and candidate under matched frame maps. Preserve individual
+videos and publish layout and metric records beside each grid. Decoding uses
+the pinned VAE; missing required evidence fails before replacement generation.
+
+CLI: python -m scripts.prune.evaluate.learned_head_media --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

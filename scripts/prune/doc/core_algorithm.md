@@ -1,188 +1,218 @@
-# Whole-clip pruning algorithm
+# Pruning calculations
+
+Pruning changes selected transformer units while keeping the saved denoising task fixed.
+This page defines the shared input, scoring and learned-selection calculations.
+The [glossary](glossary.md) defines terms; the [overview](overview.md) lists the branches each method can remove.
 
 ## Terms and shapes
 
-- **D0** noises capture latents and predicts clean capture latents.
-- **D1** noises guide latents. It is an optional producer arm, not the pruning calibration task.
-- **c0** is the clean capture's first latent frame.
-- **epsilon** is the saved random noise tensor.
-- **sigma** is the starting noise level for one direct denoising step.
-- **Functional mask** zeros a head or FFN channel at its output-projection input.
-- **Export parity** compares that intervention with its saved checkpoint execution.
-- **Held-out actor** is an actor excluded from calibration across clips, Parts and views.
-
-Dense video latents have shape `[1,C,F,H,W]`.
+Capture latents have shape `[1,C,F,H,W]`: batch, channels, latent frames, latent height and latent width.
 With patch size one, tokens have shape `[1,F*H*W,C]`.
-A frame occupies `H*W` consecutive tokens.
-Token `(f,h,w)` has index `(f*H+h)*W+w`.
+Token `(f,h,w)` has index `(f*H+h)*W+w`; one latent frame occupies `H*W` consecutive tokens.
 
-Use registered VAE scales. The aligned pixel count is `time*(F-1)+1`.
+Use registered VAE factors from `core.geometry`.
+The aligned pixel **frame count** is `temporal_factor*(F-1)+1`; the supported temporal factor is eight.
+Spatial height and width use their own registered factors.
 Preserve the recorded fps and source coordinates.
 
 ## Input reconstruction
 
-1. Validate the saved native D0 manifest and requested view/sigma row.
-2. Check capture, VAE, epsilon and context identities.
-3. Build the same grid from capture shape, fps and registered scales.
-4. Mix source and noise in float32:
-   `x_sigma=(1-sigma)*capture+sigma*epsilon`.
-   Cast the result to BF16.
-5. Replace the first `H*W` tokens with `c0`.
-6. Set those tokens' timesteps to zero. Keep other token timesteps at sigma.
-7. Use float32 global sigma and float32 token timesteps.
-8. Set `attention_mask=None` for full bidirectional visibility.
-9. Run the complete clip as one block with no cache.
-10. Restore exact `c0` in the predicted clean output.
+`data.whole_clip._reconstruct_input` owns the calculation for both public input-loading paths.
+The [input contract](data/whole_clip.md) explains validation and candidate-family dispatch.
 
-BF16 applies to weights, latents and ordinary context.
-It does not mean a BF16 schedule.
-The session's transformer wrapper returns clean predictions; do not convert them as velocity a second time.
+1. Validate the saved D0 manifest and requested view/sigma row.
+2. Verify capture, VAE, saved epsilon and actual text-context bytes.
+3. Rebuild the grid from capture shape, recorded fps and registered VAE factors.
+4. Mix in FP32: `x_sigma=(1-sigma)*capture+sigma*epsilon`, then cast to BF16.
+5. Replace the first `H*W` tokens with the clean capture's first latent frame, c0.
+6. Set those tokens' timesteps to zero; all remaining token timesteps equal sigma.
+7. Keep the global sigma and token timesteps in FP32.
+8. Use `attention_mask=None`, one full bidirectional block and no cache.
+9. Predict clean latents with the session's X0 wrapper.
+10. Restore exact c0 in the predicted output.
 
-```mermaid
-flowchart LR
-  Y("capture tokens") --> N["float32 noise mix"]
-  E("saved epsilon") --> N
-  N --> C["insert clean c0"]
-  I("capture c0") --> C
-  C --> M["one bidirectional model call"]
-  T("text context and float32 sigma") --> M
-  M --> P["restore clean c0"] --> O(["BF16 clean latent"])
-  I --> P
-  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
-  classDef tensor fill:#dcf5df,stroke:#43854b,color:#173b1c;
-  classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
-  class N,C,M,P proc;
-  class Y,E,I,T tensor;
-  class O out;
-```
+The first latent stays clean because it is the image condition, not a generated frame.
+Using a dense all-ones mask can allocate quadratic attention bias; `None` expresses full visibility directly.
+BF16 weights and latents do not require rounding the schedule.
 
-## Worked calculation
+Worked input: let `F=3`, `H=W=2` and `C=128`. There are 12 tokens; tokens `[0,4)` contain c0.
+A later scalar with capture 2, epsilon 6 and sigma 0.5 becomes 4.
+A first-frame scalar with the same values stays 2 and has timestep zero. Global sigma stays 0.5.
 
-Let `F=3`, `H=W=2`, and `C=128`.
-There are 12 tokens. Tokens `[0,4)` contain the clean first frame.
-The block plan is `[(0,3)]`.
+## Training-free scores and masks
 
-For a later scalar source 2, epsilon 6 and sigma 0.5, the model input is 4.
-For a first-frame scalar source 2, replace that mix with 2 and set its token timestep to zero.
-The global sigma remains 0.5.
+`score.whole_clip_d0_scores.score` observes activations immediately before head and FFN output projections.
+For head h, let `a_h` be its activation vector and `W_h` its columns in the output projection.
+The default score is:
 
-At sigma 1, capture and guide have zero weight in the noise mix.
-With identical epsilon, context and c0, D0 and D1 have identical model inputs.
-Equal inputs are a useful control; verify saved outputs within the same numerical policy.
+`score_h = sqrt(mean_cases(mean_sampled_tokens_and_head_channels(a_h**2))) * norm_F(W_h)`.
 
-## Calibration and interventions
+Each calibration case has equal weight, even when sample counts differ.
+For an FFN channel, use its scalar post-activation RMS and the norm of its down-projection column.
+The scorer checks a fresh unmasked forward against the saved baseline before accepting each case.
 
-For each calibration view/sigma, reproduce the saved baseline before accepting scores.
-The scorer rejects nonfinite maximum differences and differences above 0.02.
-It samples generated-frame tokens and observes activations before output projections.
+`score.token_sampling.sample_indices` excludes the clean frame.
+`stride` samples flat spatial offsets; `balanced_grid` spreads a comparable sample count over rows and columns.
+For a 32×32 latent frame and stride 16, flat offsets visit columns 0 and 16, giving 64 sampled tokens per generated frame.
+The balanced sampler uses an 8×8 midpoint grid instead.
 
-The default proxy is sampled activation RMS multiplied by the corresponding projection norm.
-Average squared activation means equally across calibration cases before taking RMS.
-Remove low scores independently in each branch, with stable ties and one retained unit minimum.
+`score.estimators.fractional_masks` removes `round(unit_count*fraction)` lowest scores per branch, retaining at least one unit.
+Stable ties remove lower original IDs first.
+For scores `[1,1,3,4]` and fraction 0.5, the mask is `[0,0,1,1]`.
+Head masks zero complete head vectors before `to_out[0]`; FFN masks zero post-activation channels before `ff.net[2]`.
+The exact branch coverage is defined in the [overview](overview.md#parts-that-can-change).
 
-Head masks multiply a complete head's channels before `to_out[0]`.
-FFN masks multiply post-activation channels before `ff.net[2]`.
-Checkpoint export must preserve coupled projections, normalization and positional identity.
-Depth parity instead uses an ordered retained block list.
+The RMS proxy ignores cancellation between channels, interactions between heads and downstream behavior.
+It observes selected query tokens rather than the full spatial grid.
+`score.estimators.projected_energy` instead returns `mean_tokens(norm(W_h @ a_h)**2)` for each head.
+It uses FP32 head-local Gram matrices and FP64 accumulation; it returns mean squared energy, without a square root.
+`learn.heads.energy_phase` uses this helper for the fixed-energy comparison arm.
+Both measures still require held-out interventions to assess model quality.
 
-## Metrics and their limits
+## Learned velocity and binary selection
 
-Quality metrics exclude clean latent frame zero.
-The direction is `d=(x_sigma-predicted_x0)/sigma`.
-Relative L2 is `norm(d_candidate-d_baseline)/norm(d_baseline)`.
-Cosine compares direction angle. Capture MSE compares predicted and capture latents.
-These metrics do not prove identity, motion correctness or decoded quality.
+Learning uses `core.ltx_adapter.velocity_forward` to obtain native velocity and its stock timestep-based clean conversion.
+The target is `epsilon.float()-capture.float()`.
+Compute FP32 mean squared velocity error over generated tokens and channels; exclude c0 from the loss.
+Do not reconstruct velocity from an already rounded clean prediction, because that changes the training target calculation.
 
-Export parity uses maximum absolute latent difference, with default tolerance 0.02.
-A passing result proves agreement with the declared intervention, not agreement with the unpruned teacher.
+Head learning converts FP32 logits to sigmoid amplitudes during soft selection.
+The configured sparsity penalty and coefficient ramp encourage removal.
+Binary refinement uses `decision + (sigmoid(alpha)-stopgrad(sigmoid(alpha)))`.
+The forward is exactly binary while backward uses the sigmoid derivative.
 
-Timing uses warmed, synchronized transformer calls.
-Speedup is `baseline_ms/candidate_ms`.
-ABA/BAB orders repeat the outside arm to expose drift.
-Storage size and parameter counts require their own denominators.
+`learn.gates.select_legal` solves an exact block/count dynamic program for the configured total retained count and allowed block widths.
+Stable original IDs break ties. One decision serves every draw and checkpoint recomputation within an update.
+The [head phase contract](learn/heads.md) describes phase inputs and outputs; [preset values](usage.md#preset-values) have one home in the run guide.
+
+The FFN-mask variant ranks individual channel scores per block and keeps an aligned configured count.
+Its count ramps from dense to the requested width; its binary surrogate has a fresh graph for every forward.
+The fixed count supplies the FFN budget, so this variant adds no FFN sparsity penalty.
+After selection, retained original IDs stay fixed during adapter recovery.
+
+## Joint clipped selection with return
+
+V3 uses one FP32 score per video self-attention head and per FFN channel.
+`learn.readmission` owns selection state; `learn.joint_training` owns gradients and optimizers.
+The default geometries are 48×32 heads and 48×16,384 channels.
+
+For each non-permanent unit, forward amplitude is `clamp(alpha,0,1)`.
+The straight-through expression differentiates `clamp(alpha,-3,3)` instead, including PyTorch's endpoint derivatives.
+This lets a zero-amplitude removed unit receive gradients and return.
+Permanently removed units multiply by zero and have zero score gradient.
+
+The sparsity term is:
+
+`lambda(t)/head_count * (sum_heads(relu(alpha+3)) + rho*sum_channels(relu(alpha+3)))`.
+
+Only enabled, non-permanent units contribute.
+`learn.joint_training.JointStep.forward` derives lambda from `lambda_max` with its 100-update ramp;
+`rho` balances channel and head costs. The frozen study sets `rho=1/704`.
+The head-only arm `heads_clip_reset_v3` disables FFN selection and FFN adapters.
+
+### Event defaults
+
+These are `learn.readmission.JointPolicy` defaults and the standard joint preparer's policy.
+The policy's schedule is frozen under `config.policy`; family thresholds and caps are code constants.
+
+| Quantity | Source key or owner | Default |
+|---|---|---:|
+| Event interval | `policy.interval` | 50 updates |
+| Late-window length | `policy.late` | 10 updates |
+| Earliest quiet stop | `policy.earliest` | 200 |
+| Hard selection limit | `policy.limit` | 1,500 |
+| Fixed-mask recovery | `policy.recovery` | 200 updates |
+| FFN alignment | `policy.alignment` | 128 channels |
+| Strong drop/rise, heads | `Family.config.strong` | 0.25 |
+| Persistent drop, heads | `Family.config.persistent` | 0.15 |
+| Strong drop/rise, FFN | `Family.config.strong` | 0.35 |
+| Persistent drop, FFN | `Family.config.persistent` | 0.25 |
+| Maximum give-back | `Family.candidates` | 0.1 |
+| Event removal cap and separate return cap | `Family.event` | `floor(0.04*pre_event_kept)` |
+| Per-block minimum | `Family.config.minimum` | 1 head; alignment channels |
+| Per-block FFN removal cap | `Family.config.block_cap` | `floor(0.25*pre_event_block_kept)` |
+
+### One selection event
+
+Each unit keeps only its window minimum, maximum, final score and score at the late-window start.
+This bounds memory by the number of units instead of storing every score trajectory.
+All decisions use the pre-event state so a unit cannot leave and return in the same event.
+
+1. For a kept unit compute `drop=1-final`, `down_giveback=(final-min)/(1-min)` and `late_change=final-late_start`.
+   Both give-back denominators use an FP64 floor of `1e-30`, preventing division by zero when there was no movement.
+2. A removal candidate must have give-back at most the limit and negative late change.
+   Its drop must reach the strong threshold, or the persistent threshold in two consecutive events without an earlier return.
+3. For a removed, non-permanent unit, compute `rise=final` and `up_giveback=(max-final)/max`.
+   It can return if rise reaches the strong threshold, give-back is small enough and late change is positive.
+4. Rank removals by decreasing drop, then increasing give-back, then original ID.
+   Apply per-block limits before the family-wide cap. Rank returns by the mirrored rule with their own cap.
+5. Remove selected units and restore selected returns. A unit removed after any earlier return becomes permanent.
+6. Reset scores to one for kept units and zero for removed units; clear **gate** Adam state and score gradients.
+   Adapter parameters and their Adam state continue across events.
+
+Resetting scores makes the next window measure movement from the new binary decision.
+Clearing gate moments prevents momentum from the previous window from driving that new measurement.
+A removed but non-permanent score still learns between events; its continuous forward amplitude can rise before the binary return.
+
+Worked event: a kept head ends at 0.70, with minimum 0.68 and late-start score 0.74.
+Its drop is 0.30, give-back is `0.02/0.32=0.0625` and late change is −0.04, so it is a strong removal candidate.
+With 100 pre-event kept heads, at most four heads are removed and at most four returned, subject to block limits.
+The candidate can still lose its place to a higher-ranked head.
+If it later ends a removed window at 0.30, maximum 0.32 and late-start 0.26, it qualifies to return.
+If removed again after that return, it becomes permanent for the remaining selection stage.
+
+### Selection end and recovery
+
+Two consecutive quiet events can end selection at or after `policy.earliest`, while removal events remain enabled.
+Quiet means no score-eligible removal or return candidates, rather than merely no applied changes after caps.
+At the hard limit selection always stops. The final two scheduled events allow returns only.
+With default timing those events occur at updates 1,450 and 1,500.
+
+At selection end, align each block's FFN count upward to `policy.alignment` by restoring removed channels.
+Restoration prefers non-permanent units, larger last rise, smaller removal drop and lower original ID, in that order.
+This final alignment can restore a permanent unit; permanence governs selection events, not the alignment pass.
+Keep heads unchanged, reset gate state again, and train adapters with the resulting fixed masks for `policy.recovery` updates.
+The final checkpoint is `selection_end + recovery`. The [state contract](learn/readmission.md) covers exact resume and review pauses.
+
+### Matched-budget control
+
+`budget_joint_v3` uses binary projection instead of removal/return events.
+`learn.readmission.budget_projection` reserves one highest-score head and the minimum channels in every block, charging those units to the budget.
+It then takes a globally descending score prefix; it does not divide each score by cost.
+
+One head costs `cost=704` FFN-channel units. Selection stops at the first unaffordable unit, leaving any slack unused.
+The configured budget ramps to a pinned joint reference budget and stops at that reference's selection endpoint.
+It then uses terminal alignment and fixed-mask adapter recovery like the other joint arms.
+
+## Export modes and runtime
+
+| Mode | Storage | Execution |
+|---|---|---|
+| `masked_full` | Full source tensors | All heads/channels computed; inactive activations zeroed before output projections |
+| `sparse` | Full source tensors | Full projections; attention selects active heads and scatters back; FFN remains full |
+| `compact` | Retained V/output, gate and FFN slices; full Q/K | Retained execution widths; native head-gate projection keeps original output geometry |
+| `compact_faithful` | Compact slices | Reconstruct original GEMM and attention widths from zero-padded weights |
+
+For retained heads 0 and 2 at head dimension 4, keep channels 0–3 and 8–11 in V and output weights.
+Full Q/K normalization still sees all original heads; original head positions select rotary frequencies.
+The [export/runtime contract](score/export_pruned.md) owns each metadata key and its runtime reader.
+[Depth export](score/export_depth.md) removes whole blocks in original order.
+
+## Metrics and evidence
+
+Generated-frame direction is `d=(x_sigma-predicted_x0)/sigma`.
+Direction relative L2 is `norm(d_candidate-d_baseline)/norm(d_baseline)`; cosine compares their angle.
+For baseline direction 4 and candidate direction 2, relative L2 is 0.5 and cosine is 1.
+Capture MSE measures squared latent error to the recorded capture. Clean c0 is excluded.
+
+Export parity measures the maximum absolute difference from the declared functional reference.
+Decoded evidence assesses identity, motion and detail on matched videos.
+Timing measures warmed, synchronized forwards; speedup is `baseline_ms/candidate_ms`.
+ABA/BAB brackets repeat the outer arm to estimate drift.
+The [verification guide](VALIDATION.md#evidence-gates) owns tolerances, required coverage and the limits of each claim.
 
 ## Diagram legend
 
-Use a left-to-right flow.
-Rounded input nodes hold tensors, rectangular nodes hold operations, and output nodes hold saved artifacts.
-Use green for tensors, blue for operations and purple for outputs.
-This follows the [avatar legend](../../onestep_avatar/doc/core_algorithm.md#7-end-to-end-data-flow).
-Diagrams explain data flow. Saved hashes and numerical checks establish evidence.
-
-## Squared projected energy
-
-`score.estimators.projected_energy` measures each head's mean squared projected vector norm on selected query tokens.
-It uses FP32 head-local Gram matrices, bounded token chunks and FP64 sums.
-The helper supplies numerical scores. It does not own a dataset runner, actor split, bootstrap report or accepted pruning candidate.
-
-## Learned FFN binary masks
-
-Each original video FFN channel has one FP32 score.
-Stable descending score order selects each block's declared retained count.
-Equal scores keep lower original channel IDs. The preset retains 14,848 of 16,384 channels.
-The count ramps in multiples of 128 after 50 dense updates and reaches its final value at update 300.
-Multiply post-GELU activations by `binary_mask + (sigmoid(score) - stopgrad(sigmoid(score)))`.
-The grouped subtraction keeps the forward exactly binary.
-Keep one decision per update and a fresh surrogate graph per forward.
-There is no FFN sparsity term; the exact count already defines the budget.
-Freeze original IDs after update 1000, then train adapters for 300 further updates.
-The joint arm uses existing head sigmoid learning and legal binary refinement alongside these FFN masks.
-The [training design](learn/ffn_training.md) owns state and numerical details.
-
-## Learned head velocity path
-
-Use native velocity from `core.ltx_adapter.velocity_forward` for learning.
-The helper calls the velocity model once and applies the stock timestep-based clean conversion.
-Do not divide rounded clean outputs by sigma to form the training prediction.
-The target is saved `epsilon.float() - capture.float()`.
-Reduce squared error over generated tokens and channels in FP32; c0 has no loss weight.
-The unchanged teacher remains an evaluation reference, rather than the loss target.
-
-Every logit starts at +3. Soft gates use sigmoid with temperature one.
-The first 700 updates add the frozen sparsity penalty and its configured coefficient ramp.
-The current ten-level GT preset uses mean `relu(alpha+3)` and `lambda(t)=0.01*(0.1+0.9*min(t/100,1))`.
-The effective coefficient is 0.00109 at update one and 0.01 from update 100. Gate LR is constant 0.01.
-Earlier presets retain their declared zero-start, 300-update ramp for reproduction.
-The sparsity derivative is zero at or below alpha minus three. This stops pressure, without clamping the optimizer state.
-The older eight-level preset also supports mean-sigmoid sparsity for exact reproduction.
-The next 300 updates use an exact legal binary forward and a sigmoid straight-through gradient.
-An exact block/count dynamic program selects retained original heads.
-A fixed decision serves all draws and backward recomputation within an update.
-Full-replica DDP uses one complete local loss per rank and one averaged gradient update.
-Four ranks consume four independently scheduled F18 windows. No second gradient reduction occurs.
-The current learner uses the frozen DDP draw contract.
-
-At update 1,000, freeze the binary IDs and transfer adapters at their frozen rank and Adam moments by channel identity.
-The compact network then receives 500 adapter updates, with retained pruning amplitudes one.
-The soft-only arm hardens after 1,000 soft updates.
-Energy and random arms use a matched 300-update removal ramp and the same adapter budget.
-Fresh recovery discards selection adapters and moments, then initializes full-source adapters before slicing.
-
-```mermaid
-flowchart LR
-  I("saved capture and epsilon") --> N["shared D0 input"]
-  N -->|"scalar pruning gates"| M["native velocity forward"]
-  M --> L["official generated-token loss"]
-  L --> A(["FP32 gate and adapter update"])
-  classDef proc fill:#dbe7ff,stroke:#3b5ea8,color:#10203f;
-  classDef tensor fill:#dcf5df,stroke:#43854b,color:#173b1c;
-  classDef out fill:#ece0f8,stroke:#7048a0,color:#26123f;
-  class N,M,L proc;
-  class I tensor;
-  class A out;
-```
-
-Recovered outputs use the `width_recovered` family.
-Their versioned envelope binds full study and component identities, original head IDs, all consumed draws and merged tensor contents.
-
-## Uniform F18 optimizer inputs
-
-Use every latent in F18 sources and one uniform continuous 18-latent span in longer sources.
-For F28 sources, start positions zero through ten are legal and equally selectable.
-Select the start using a separate RNG keyed by the draw noise seed. Preserve optimizer RNG state.
-Slice capture and saved epsilon at the same bounds. Rebuild window-local positions and first-keyframe marks.
-The window's first latent is clean c0; only its remaining 17 latents enter velocity MSE.
-The aligned decoder output is 137 frames at the original spatial geometry and fps.
-This is a slice of continuous VAE latents, not an independent re-encode of a raw RGB crop.
-Full-source calibration, export parity and quality evaluation retain the original input contract.
-Store both full source/noise file pins and actual consumed window tensor hashes.
+Use small left-to-right Mermaid flows, with green rounded tensor inputs, blue rectangular operations and purple saved artifacts.
+The [overview diagram](overview.md#shared-path) shows the package flow.
+Render and inspect changed diagrams, including at narrow reading widths.

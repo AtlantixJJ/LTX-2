@@ -1,9 +1,19 @@
-"""Compare matched one-step, whole-clip D0 rollouts from two transformer checkpoints."""
+"""Compare saved D0 rollouts or execute functional head/FFN ablations.
+
+Saved comparison validates candidate family and actual noise equality, then
+measures generated-frame directions and capture error and renders paired VAE
+media. Functional mode reconstructs held-out input, checks finite native replay
+before masks, and measures head-only, FFN-only and combined interventions.
+See doc/core_algorithm.md for metrics and doc/VALIDATION.md for evidence gates.
+
+CLI: python -m scripts.prune.evaluate.whole_clip_d0 --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 from contextlib import ExitStack
 from pathlib import Path
@@ -241,7 +251,7 @@ def functional_ablation(
 
             direct = forward(grid, modality, c0)
             max_abs = float((recorded.float() - direct.float()).abs().max())
-            if max_abs > 0.02:
+            if not math.isfinite(max_abs) or max_abs > 0.02:
                 raise ValueError(f"direct baseline differs from saved D0 latent: {max_abs}")
             result = {"view": view, "sigma": sigma, "saved_baseline_max_abs": max_abs, "arms": {}}
             with ExitStack() as stack:

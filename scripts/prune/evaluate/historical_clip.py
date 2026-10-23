@@ -1,14 +1,12 @@
-"""Evaluate the saved head-only selection endpoint without resuming its study.
+"""Replay a saved head-only endpoint before new fixed-checkpoint evaluation.
 
-Run from LTX-2 in ltx: python -m scripts.prune.evaluate.historical_clip
---study <completed-A-study> --checkpoint <historical-update-0600.pt>
---historical-study <old-study> --monitor <old-monitor-0600.json>
---output <fresh-output> --gpu-id <free-4-5>.
-The strict reader verifies checkpoint tensors, binary post-reset gates and matched
-sources. Replay all 12 saved monitor predictions before scoring 108 held-out
-cases. A monitor discrepancy above 0.02 stops scoring and remains unqualified.
-No optimizer or historical training owner is constructed.
-"""
+Verify the original checkpoint, post-reset binary gates and saved monitor
+predictions under the standard replay tolerance. Only a successful replay
+permits held-out scoring. The recorded study supplies input provenance; this
+reader constructs no optimizer and never resumes its training owner.
+
+CLI: python -m scripts.prune.evaluate.historical_clip --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

@@ -1,4 +1,12 @@
-"""Export compact head widths, then merge recovered adapters without reselecting heads."""
+"""Export selected head widths and merge fixed-width recovered adapters.
+
+compact_base fixes original head IDs and geometry wrappers before recovery.
+final_merged validates the completed recovered state and merges only its compact
+V/output adapters. Both stages use the frozen adapter rank and preserve full
+original Q/K normalization. They never reselect heads during export.
+
+CLI: python -m scripts.prune.score.export_learned_heads --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

@@ -1,8 +1,13 @@
-"""V3 native acceptance and joint selection with explicit G1/G2 review gates.
+"""Run joint clipped selection with allocation and alignment reviews.
 
-This family module supplies V3 hooks to the shared DDP owner (`learn.ddp_owner`).
-See doc/learn/joint.md. This owner never starts a historical study.
-"""
+Supply family hooks to learn.ddp_owner; learn.readmission owns decisions and
+learn.joint_training owns numerical state. Pending review triggers stop new
+updates, including legacy review records. New records use descriptive review
+names so they are distinct from the package evidence gates.
+See doc/learn/readmission.md for policy and review semantics.
+
+CLI: python -m scripts.prune.learn.joint --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 
@@ -87,12 +92,12 @@ def check_start(study, root, cfg, *, pilot, max_updates):
         if not prerequisite.get("passed") or not prerequisite.get("checks") or not all(prerequisite["checks"].values()):
             raise ValueError("formal V3 prerequisites are unresolved")
         joint_study.verify_files(prerequisite["source_receipts"])
-    for review_path in (root / "reviews").glob("G*.json"):
+    for review_path in (root / "reviews").glob("*.json"):
         review = json.loads(review_path.read_text())
         if review.get("triggers"):
             raise ValueError(f"review gate remains pending: {review_path}")
     if pilot and (max_updates is None or max_updates > 50):
-        raise ValueError("disposable three-rank pilot is bounded to 50 updates")
+        raise ValueError("disposable testing pilot is bounded to 50 updates")
 
 
 def after_update(ctx, number):
@@ -126,7 +131,7 @@ def receipt_fields(ctx, number):
 
 
 def reviews(ctx, number):
-    """G2 scores alignment at the selection end; G1 reviews allocation and quality at update 100."""
+    """Review terminal alignment and early allocation independently of the evidence gates."""
     step, root, cfg, runtime = ctx.step, ctx.root, ctx.cfg, ctx.runtime
     review, stop = None, False
     if step.event and step.policy.recovering:
@@ -144,7 +149,7 @@ def reviews(ctx, number):
         if not prereq.get("passed", False):
             triggers.append("prerequisites_unresolved")
         review = dict(
-            gate="G2",
+            gate="alignment_review",
             update=number,
             triggers=triggers,
             restored=ids,
@@ -169,7 +174,7 @@ def reviews(ctx, number):
             triggers.append("channel_cap_both_events")
         if result["capture_mse"] / baseline > 1.03:
             triggers.append("monitor_above_three_percent")
-        review = dict(gate="G1", update=number, triggers=triggers, monitor=result["capture_mse"])
+        review = dict(gate="allocation_review", update=number, triggers=triggers, monitor=result["capture_mse"])
         stop = stop or bool(triggers)
     if review and runtime.primary:
         records.publish_json(root / f"reviews/{review['gate']}_{number:04d}.json", review)
@@ -218,9 +223,9 @@ def main():
     parser.add_argument("--max-updates", type=int)
     args = parser.parse_args()
     if args.testing and args.phase not in ("native", "pilot"):
-        raise ValueError("GPUs 4–6 are reserved for disposable native tests")
+        raise ValueError("the testing device group is reserved for disposable native tests")
     if args.phase == "pilot" and not args.testing:
-        raise ValueError("pilot uses the three-rank testing device list")
+        raise ValueError("pilot uses the frozen testing device list")
     ddp_owner.run(sys.modules[__name__], args, joint_study.load)
 
 

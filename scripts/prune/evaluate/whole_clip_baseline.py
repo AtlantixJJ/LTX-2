@@ -1,4 +1,13 @@
-"""Save native whole-clip one-step D0/D1 rollouts for pruning; see doc/evaluate/whole_clip_baseline.md."""
+"""Produce saved full-video D0/D1 one-step rollout evidence.
+
+Encode/read source masters, save seeded epsilon, build exact schedules and
+condition the first latent before each full bidirectional model call. The
+producer can decode media or write raw-only evidence. verify_completion reads
+and checks saved files, finite BF16 shapes and clean c0 without a model; it
+cannot regenerate CUDA noise. See doc/data/whole_clip.md and doc/usage.md.
+
+CLI: python -m scripts.prune.evaluate.whole_clip_baseline --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

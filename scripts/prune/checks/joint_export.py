@@ -1,9 +1,12 @@
-"""Isolate native export transitions without changing the 0.02 acceptance limit.
+"""Isolate learned export transitions on an identical saved native case.
 
-The same saved case passes through functional adapters, FP32 accumulation then
-BF16 merged weights, full-width reload and uneven compact reload. Layer hooks
-record residual outputs to locate the first divergent block. See design page.
-"""
+Compare functional adapters, FP32 accumulation, BF16 merged full-width reload
+and uneven compact reload. Save residual traces to find the first divergent
+block. Select an available device from frozen test_gpu_ids before model load.
+The standard tolerance and qualification rules live in doc/VALIDATION.md.
+
+CLI: python -m scripts.prune.checks.joint_export --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 
@@ -14,17 +17,16 @@ from pathlib import Path
 import torch
 
 from scripts.onestep_avatar.model import common
-from scripts.prune.core import ltx_adapter, numerics, provenance, records, session
+from scripts.prune.core import ltx_adapter, numerics, preflight, provenance, records, session
 from scripts.prune.data import joint_study
 from scripts.prune.learn import adapters, ffn_training, joint_training
 from scripts.prune.learn.ddp_owner import input_case
 from scripts.prune.score import export_learned_ffn, export_pruned, hooks
 
 
-def run(study, output, *, gpu=6):
-    if gpu not in (4, 5, 6):
-        raise ValueError("export tests use GPUs 4–6")
+def run(study, output, *, gpu=None):
     numerics.deterministic_policy()
+    gpu = preflight.testing_gpu(study["config"], gpu)
     torch.set_num_threads(4)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -227,7 +229,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--study", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--gpu-id", default=6, type=int)
+    parser.add_argument("--gpu-id", type=int)
     args = parser.parse_args()
     run(joint_study.load(args.study), args.output, gpu=args.gpu_id)
 

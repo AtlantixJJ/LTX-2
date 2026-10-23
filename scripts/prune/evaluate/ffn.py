@@ -1,4 +1,12 @@
-"""Evaluate saved binary head/FFN checkpoints with matched native D0 evidence."""
+"""Evaluate saved binary head/FFN checkpoints on matched full-source D0 cases.
+
+Construct fixed evaluation cases, load native inputs and either unchanged or
+checkpoint-conditioned models, then save predictions and comparisons. decoded
+uses common source pixels and fixed GT regions; benchmark times the declared
+functional computation. No optimizer update occurs in evaluation.
+
+CLI: python -m scripts.prune.evaluate.ffn --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

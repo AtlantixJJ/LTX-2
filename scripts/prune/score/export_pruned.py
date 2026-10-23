@@ -1,4 +1,13 @@
-"""Export whole-clip D0 structural masks as self-describing safetensors checkpoints."""
+"""Export structural width masks as self-describing safetensors checkpoints.
+
+Validate binary branch widths, plan coupled V/output/gate and FFN slicing on
+meta tensors, then stream payloads. Q/K remain full for original normalization.
+The four storage/execution modes and every runtime config key are defined in
+doc/score/export_pruned.md. The CLI validates native provenance; direct export
+callers must supply their own provenance checks.
+
+CLI: python -m scripts.prune.score.export_pruned --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 

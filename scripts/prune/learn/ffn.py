@@ -1,9 +1,12 @@
-"""Bounded native checks and DDP training for learned FFN and head masks.
+"""Run bounded native acceptance and learned FFN/head-mask training.
 
-This family module supplies FFN hooks to the shared DDP owner (`learn.ddp_owner`).
-Selection learns aligned binary channel masks, and head gates in the joint arm;
-fixed-mask adapter recovery follows. See doc/learn/ffn.md.
-"""
+Supply aligned binary-channel and optional head-gate hooks to learn.ddp_owner;
+learn.ffn_training owns loss, optimizer and state. Selection ends at the frozen
+boundary, then adapter recovery uses fixed masks. Native receipts for testing
+and formal device groups remain distinct. See doc/learn/ddp_owner.md.
+
+CLI: python -m scripts.prune.learn.ffn --help.
+Workflows and launch settings: doc/usage.md."""
 
 from __future__ import annotations
 
@@ -87,7 +90,7 @@ def main():
     parser.add_argument("--max-updates", type=int)
     args = parser.parse_args()
     if args.testing and args.phase != "native":
-        raise ValueError("GPUs 4–6 are reserved for disposable native tests")
+        raise ValueError("the testing device group is reserved for disposable native tests")
     ddp_owner.run(sys.modules[__name__], args, ffn_study.load)
 
 

@@ -1,4 +1,9 @@
-"""Verify recorded cropped mattes and GT region coordinates; pool through corpus owners."""
+"""Verify cropped person mattes and reviewed source-pixel face/hand tracks.
+
+Use public corpus owners for pooling and crop geometry. Region coverage maps
+reviewed GT coordinates into the actual capture crop; a missing or unreviewed
+schema fails rather than guessing keypoint meanings. person_coverage and
+region_coverage return token-aligned weights used by the configured loss."""
 
 from __future__ import annotations
 
