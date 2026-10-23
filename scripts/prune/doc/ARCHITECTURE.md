@@ -63,7 +63,7 @@ Other pruning CLIs keep direct launch ownership; see the [run guide](usage.md).
 | DDP loop or family hooks | Source docstrings, [DDP contract](learn/ddp_owner.md) | `tests/test_ddp_owner_loop.py`, `tests/test_ddp_owner_families.py`, `tests/test_ffn_learning.py`, `tests/test_readmission.py`, `tests/test_import_boundaries.py`; matched native gradient/state replay |
 | Frozen device policy | Config before freezing, [launch guide](usage.md#launch-and-output-rules) | `tests/test_device_policy.py`; new native acceptance for the selected ranks |
 | Session or adapter interface | Source docstring, callers in prune and avatar, relevant shared contract | `tests/test_session.py`, `tests/test_ltx_adapter.py`, affected avatar-interface tests |
-| Reports or media | [Reporting rules](reporting.md), narrative config and generator | Saved-artifact rebuild and validation; inspect wide/narrow layouts and synchronized videos |
+| Reports or media | [Reporting rules](reporting.md), the study's figure scripts and number checker | Rerun the number checker and figure scripts from saved artifacts; inspect wide/narrow layouts and synchronized videos |
 | Docs, source inventory or entrypoints | [File map](README.md), relevant shared guide and docstring | `tests/test_doc_contract.py`; render and inspect changed diagrams |
 
 The [verification guide](VALIDATION.md) defines what each native check must establish.
